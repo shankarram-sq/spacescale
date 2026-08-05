@@ -4,13 +4,12 @@ on:
   workflow_run:
     workflows: [CI]
     types: [completed]
-    branches: [main]
+    branches: [staging, main]
 
-# Never let two main-branch rollouts modify Cloudflare traffic concurrently.
-# Older validated commits are also rejected below if main has advanced while a
-# delivery run was queued.
+# Never let two rollouts for the same release branch modify Cloudflare traffic concurrently.
+# Stale staging and production commits are rejected again before deployment.
 concurrency:
-  group: cloudflare-collab-canvas-main-delivery
+  group: cloudflare-collab-canvas-${{ github.event.workflow_run.head_branch }}-delivery
   cancel-in-progress: false
 
 permissions:
@@ -21,57 +20,66 @@ env:
   WRANGLER_VERSION: 4.118.0
 
 jobs:
-  staging:
+  staging_deploy:
     name: Staging deploy and 20-client smoke
     if: >-
       ${{
         github.event.workflow_run.conclusion == 'success' &&
         github.event.workflow_run.event == 'push' &&
-        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_branch == 'staging' &&
         github.event.workflow_run.head_repository.full_name == github.repository
       }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment:
       name: staging
-      url: https://cloudflare-collab-canvas-staging.spacescale.workers.dev
+      url: https://staging-cloud-collab.spacescale.net
     permissions:
       contents: read
-      # The token broker must accept only GitHub OIDC tokens for this repository,
-      # main ref, workflow, run, and the staging environment. No reusable broker
-      # credential is stored in GitHub.
-      id-token: write
+      statuses: write
     env:
       VALIDATED_SHA: ${{ github.event.workflow_run.head_sha }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
       ALLOWED_ORIGINS: ${{ vars.ALLOWED_ORIGINS }}
-      TURNSTILE_TOKEN_BROKER_URL: ${{ vars.TURNSTILE_TOKEN_BROKER_URL }}
-      STAGING_URL: https://cloudflare-collab-canvas-staging.spacescale.workers.dev
+      STAGING_URL: https://staging-cloud-collab.spacescale.net
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
 
-      - name: Verify this is the current validated main commit
+      - name: Verify this is the current validated staging commit
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$VALIDATED_SHA"
-          current_main="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+          current_staging="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
             --retry 2 --retry-all-errors --max-time 20 \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/main" | jq -er '.sha')"
-          test "$current_main" = "$VALIDATED_SHA" || {
-            echo "main advanced after this CI run; refusing to deploy a stale commit" >&2
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/staging" | jq -er '.sha')"
+          test "$current_staging" = "$VALIDATED_SHA" || {
+            echo "staging advanced after this CI run; refusing to deploy a stale commit" >&2
             exit 1
           }
+
+      - name: Mark exact-SHA staging validation pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/statuses/$VALIDATED_SHA" \
+            -f state=pending \
+            -f context=cloudflare/staging \
+            -f description='Staging deployment and smoke test are running' \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            >/dev/null
 
       - uses: actions/setup-node@v4
         with:
@@ -90,46 +98,67 @@ jobs:
           set -euo pipefail
           : "${CLOUDFLARE_ACCOUNT_ID:?Configure the environment-scoped Cloudflare account ID}"
           : "${CLOUDFLARE_API_TOKEN:?Configure an environment-scoped Workers Scripts Edit token}"
-          : "${TURNSTILE_SITE_KEY:?Configure the staging widget public site key}"
-          : "${TURNSTILE_TOKEN_BROKER_URL:?Configure the staging Turnstile token broker URL}"
           test "$(node -p "require('./node_modules/wrangler/package.json').version")" = "$WRANGLER_VERSION"
-          case "$TURNSTILE_TOKEN_BROKER_URL" in
-            https://*) ;;
-            *) echo "The Turnstile broker URL must use HTTPS" >&2; exit 1 ;;
-          esac
-          if [[ "$TURNSTILE_SITE_KEY" =~ ^[123]x0{10,} ]] || ((${#TURNSTILE_SITE_KEY} < 10)); then
-            echo "A real, dedicated staging Turnstile site key is required" >&2
-            exit 1
-          fi
 
       - name: Build production web assets
         run: npm run build:web
 
-      - name: Deploy the isolated staging Worker
+      - name: Upload the isolated staging Worker version
+        id: staging_candidate
         shell: bash
         run: |
           set -euo pipefail
-          output="$RUNNER_TEMP/wrangler-staging-deploy.jsonl"
+          output="$RUNNER_TEMP/wrangler-staging-upload.jsonl"
           rm -f "$output"
-          WRANGLER_OUTPUT_FILE_PATH="$output" npx --no-install wrangler deploy \
+          WRANGLER_OUTPUT_FILE_PATH="$output" npx --no-install wrangler versions upload \
             --env staging \
             --strict \
             --tag "staging-${VALIDATED_SHA:0:12}" \
-            --message "validated main ${VALIDATED_SHA}" \
-            --var "APP_HOSTNAME:cloudflare-collab-canvas-staging.spacescale.workers.dev" \
+            --message "validated staging ${VALIDATED_SHA}" \
+            --var "APP_HOSTNAME:staging-cloud-collab.spacescale.net" \
             --var "BOARD_CREATION_ENABLED:true" \
             --var "ALLOWED_ORIGINS:${ALLOWED_ORIGINS}" \
-            --var "TURNSTILE_SITE_KEY:${TURNSTILE_SITE_KEY}" \
-            --var "TURNSTILE_ENABLED:true" \
+            --var "TURNSTILE_ENABLED:false" \
             --var "ENVIRONMENT:staging"
-          jq -e --arg sha "$VALIDATED_SHA" '
-            select(.type == "deploy") |
-            .worker_name == "cloudflare-collab-canvas-staging" and
-            (.version_id | type == "string" and
+
+          entry="$(jq -sc '
+            [.[] | select(
+              .type == "version-upload" and
+              .worker_name == "cloudflare-collab-canvas-staging"
+            )] | last // error("missing staging version-upload output")
+          ' "$output")"
+          version="$(jq -er '
+            .version_id |
+            select(type == "string" and
               test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"; "i"))
-          ' "$output" >/dev/null
+          ' <<< "$entry")"
+          echo "version_id=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Promote the staging version without reconciling routes
+        env:
+          STAGING_VERSION: ${{ steps.staging_candidate.outputs.version_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler versions deploy \
+            "${STAGING_VERSION}@100" \
+            --env staging \
+            --yes \
+            --message "validated staging ${VALIDATED_SHA}"
+
+          status="$RUNNER_TEMP/wrangler-staging-status.json"
+          npx --no-install wrangler deployments status \
+            --env staging --json > "$status"
+          jq -e --arg version "$STAGING_VERSION" '
+            .versions as $versions |
+            ($versions | length) == 1 and
+            $versions[0].version_id == $version and
+            $versions[0].percentage == 100
+          ' "$status" >/dev/null
 
       - name: Probe staging health and static assets
+        env:
+          STAGING_VERSION: ${{ steps.staging_candidate.outputs.version_id }}
         shell: bash
         run: |
           set -euo pipefail
@@ -139,92 +168,90 @@ jobs:
           curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
             --retry 5 --retry-all-errors --max-time 20 \
             -D "$headers" -o "$health" "$STAGING_URL/healthz"
-          jq -e '.ok == true and .service == "cloudflare-collab-canvas-edge"' "$health" >/dev/null
+          jq -e --arg version "$STAGING_VERSION" '
+            .ok == true and
+            .service == "cloudflare-collab-canvas-edge" and
+            .versionId == $version
+          ' "$health" >/dev/null
           tr -d '\r' < "$headers" | grep -Eiq '^x-content-type-options:[[:space:]]*nosniff[[:space:]]*$'
           curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
             --retry 3 --retry-all-errors --max-time 20 \
             -o "$index" "$STAGING_URL/"
           grep -q 'Commonspace' "$index"
 
-      - name: Obtain fresh staging-only Turnstile tokens and run the short load test
+      - name: Run the short 20-client staging load test
         shell: bash
         run: |
           set -euo pipefail
-          umask 077
+          LOAD_BASE_URL="$STAGING_URL" LOAD_ALLOW_REMOTE=1 npm run load:smoke
 
-          # Broker contract: validate the GitHub OIDC issuer/signature, audience,
-          # repository, main ref, workflow identity, run ID/SHA, and staging
-          # environment. Obtain browser-generated tokens from only the dedicated
-          # staging widget and exact hostname. Tokens must be fresh, single-use,
-          # action-bound, never cached, and returned only once. A reusable
-          # Turnstile token is not accepted.
-          audience="cloudflare-collab-canvas-staging-turnstile-broker"
-          oidc_response="$RUNNER_TEMP/github-oidc.json"
-          request="$RUNNER_TEMP/turnstile-request.json"
-          response="$RUNNER_TEMP/turnstile-response.json"
-          trap 'rm -f "$oidc_response" "$request" "$response"' EXIT
-          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
-            --retry 2 --retry-all-errors --max-time 20 \
-            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            -o "$oidc_response" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${audience}"
-          oidc_token="$(jq -er '.value | select(type == "string" and length > 100)' "$oidc_response")"
-          echo "::add-mask::$oidc_token"
+      - name: Publish exact-SHA staging attestation
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRIOR_JOB_STATUS: ${{ job.status }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          state=failure
+          description='Staging deployment or smoke test failed'
+          if [[ "$PRIOR_JOB_STATUS" == success ]]; then
+            state=success
+            description='Staging deployment and smoke test passed'
+          fi
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/statuses/$VALIDATED_SHA" \
+            -f state="$state" \
+            -f context=cloudflare/staging \
+            -f description="$description" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            >/dev/null
 
-          jq -n \
-            --arg hostname "cloudflare-collab-canvas-staging.spacescale.workers.dev" \
-            --arg repository "$GITHUB_REPOSITORY" \
-            --arg sha "$VALIDATED_SHA" \
-            --arg runId "$GITHUB_RUN_ID" \
-            '{
-              hostname: $hostname,
-              repository: $repository,
-              commitSha: $sha,
-              runId: $runId,
-              tokens: {board_create: 1, invitation_claim: 20}
-            }' > "$request"
+  staging:
+    name: Verify exact commit passed staging
+    if: >-
+      ${{
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: read
+    steps:
+      - name: Require successful staging delivery for this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VALIDATED_SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_staging="$(gh api \
+            "repos/$GITHUB_REPOSITORY/commits/staging" --jq '.sha')"
+          test "$current_staging" = "$VALIDATED_SHA" || {
+            echo "main must contain the current, successfully staged commit" >&2
+            exit 1
+          }
 
-          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
-            --max-time 120 \
-            -H "Authorization: Bearer $oidc_token" \
-            -H 'Content-Type: application/json' \
-            --data-binary "@$request" \
-            -o "$response" "$TURNSTILE_TOKEN_BROKER_URL"
-
-          now="$(date +%s)"
+          status_json="$(gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/commits/$VALIDATED_SHA/status" \
+            -f per_page=100
+          )"
           jq -e \
-            --arg hostname "cloudflare-collab-canvas-staging.spacescale.workers.dev" \
-            --arg runId "$GITHUB_RUN_ID" \
-            --argjson now "$now" '
-              type == "object" and
-              (keys == ["boardCreateToken", "expiresAt", "hostname", "invitationClaimTokens", "issuedAt", "runId"]) and
-              .hostname == $hostname and .runId == $runId and
-              (.issuedAt | type == "number") and
-              (.expiresAt | type == "number") and
-              .issuedAt >= ($now - 180) and .issuedAt <= ($now + 30) and
-              .expiresAt >= ($now + 220) and .expiresAt <= ($now + 330) and
-              (.boardCreateToken | type == "string" and length >= 20 and length <= 2048) and
-              (.invitationClaimTokens | type == "array" and length == 20) and
-              all(.invitationClaimTokens[]; type == "string" and length >= 20 and length <= 2048) and
-              (([.boardCreateToken] + .invitationClaimTokens | unique | length) == 21)
-            ' "$response" >/dev/null || {
-              echo "The token broker response violated the fresh single-use token contract" >&2
-              exit 1
-            }
-
-          board_token="$(jq -r '.boardCreateToken' "$response")"
-          claim_tokens="$(jq -c '.invitationClaimTokens' "$response")"
-          echo "::add-mask::$board_token"
-          while IFS= read -r token; do echo "::add-mask::$token"; done \
-            < <(jq -r '.invitationClaimTokens[]' "$response")
-
-          LOAD_BASE_URL="$STAGING_URL" \
-          LOAD_ALLOW_REMOTE=1 \
-          LOAD_TURNSTILE_TOKEN="$board_token" \
-          LOAD_TURNSTILE_CLAIM_TOKENS="$claim_tokens" \
-          npm run load:smoke
-
-          # The EXIT trap keeps freshly minted tokens out of outputs, caches, and artifacts.
+            --arg target_prefix "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/" '
+              [.statuses[] | select(.context == "cloudflare/staging")] |
+              sort_by(.id) |
+              last |
+              .state == "success" and
+              .creator.login == "github-actions[bot]" and
+              (.target_url | startswith($target_prefix))
+            ' <<< "$status_json" >/dev/null || {
+            echo "the exact main commit lacks a trusted successful staging attestation" >&2
+            exit 1
+          }
 
   production:
     name: Approved production promotion
