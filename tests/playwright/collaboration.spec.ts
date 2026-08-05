@@ -303,6 +303,7 @@ test("an owner names and restores a recovery point, then revokes an invitation",
   await drawer.getByRole("button", { name: "Restore Baseline" }).click();
   await expect.poll(() => page.locator("#drawing-area [data-item-id]").count()).toBe(1);
   await expect(page.getByTestId("save-status")).toContainText("Saved");
+  await expect(drawer).toBeHidden();
 
   const inviteUrl = await createInvite(page, "viewer", "Review link");
   page.once("dialog", (dialog) => dialog.accept());

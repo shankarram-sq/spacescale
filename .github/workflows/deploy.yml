@@ -165,18 +165,40 @@ jobs:
           health="$RUNNER_TEMP/staging-health.json"
           headers="$RUNNER_TEMP/staging-headers.txt"
           index="$RUNNER_TEMP/staging-index.html"
-          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
-            --retry 5 --retry-all-errors --max-time 20 \
-            -D "$headers" -o "$health" "$STAGING_URL/healthz"
-          jq -e --arg version "$STAGING_VERSION" '
-            .ok == true and
-            .service == "cloudflare-collab-canvas-edge" and
-            .versionId == $version
-          ' "$health" >/dev/null
-          tr -d '\r' < "$headers" | grep -Eiq '^x-content-type-options:[[:space:]]*nosniff[[:space:]]*$'
+
+          release_ready=false
+          for attempt in $(seq 1 12); do
+            curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+              --retry 3 --retry-all-errors --max-time 20 \
+              -D "$headers" -o "$health" \
+              "$STAGING_URL/healthz?release=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${attempt}"
+            if jq -e --arg version "$STAGING_VERSION" '
+                .ok == true and
+                .service == "cloudflare-collab-canvas-edge" and
+                .versionId == $version
+              ' "$health" >/dev/null &&
+              tr -d '\r' < "$headers" |
+                grep -Eiq '^x-content-type-options:[[:space:]]*nosniff[[:space:]]*$'
+            then
+              release_ready=true
+              break
+            fi
+
+            observed_version="$(jq -r '.versionId // "unavailable"' "$health" 2>/dev/null || echo invalid-response)"
+            echo "Waiting for staging version $STAGING_VERSION (attempt $attempt/12; observed $observed_version)"
+            if ((attempt < 12)); then
+              sleep 5
+            fi
+          done
+          test "$release_ready" = true || {
+            echo "Staging did not converge to version $STAGING_VERSION" >&2
+            jq -c '{ok, service, versionId}' "$health" >&2 || true
+            exit 1
+          }
+
           curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
             --retry 3 --retry-all-errors --max-time 20 \
-            -o "$index" "$STAGING_URL/"
+            -o "$index" "$STAGING_URL/?release=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           grep -q 'Commonspace' "$index"
 
       - name: Run the short 20-client staging load test

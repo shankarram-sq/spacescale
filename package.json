@@ -24,7 +24,7 @@
     "format": "biome format --write .",
     "test": "vitest run --config vitest.config.ts",
     "test:watch": "vitest --config vitest.config.ts",
-    "test:edge": "vitest run --config vitest.cloudflare.config.ts",
+    "test:edge": "npm run build:web && vitest run --config vitest.cloudflare.config.ts",
     "test:e2e": "npm run build:web && playwright test --config tests/playwright/playwright.config.ts",
     "load:smoke": "tsx tests/load/run.ts --smoke",
     "load": "tsx tests/load/run.ts",
