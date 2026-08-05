@@ -11,54 +11,69 @@ provision a Cloudflare dashboard or alert.
 
 ## Provisioning
 
-1. Create separate staging and production Turnstile widgets. Allow only
-   `cloudflare-collab-canvas-staging.spacescale.workers.dev` on staging and
-   `spacescale.net` on production. Use the public site key and secret from the
-   same widget; never cross-pair or reuse widgets between environments.
-2. Run `npm run cf:check`.
-3. Run `npm run cf:bootstrap -- --env <development|staging|production>`.
-4. Install production runtime secrets with
+1. Provision the isolated staging Worker, its private `staging-cloud-collab`
+   R2 bucket, and the `staging-cloud-collab.spacescale.net` Worker Custom
+   Domain. Keep its Durable Object namespace and signing keys separate from
+   production.
+2. Create one dedicated production Turnstile widget. Allow only
+   `spacescale.net`, and copy its public site key and Siteverify secret from
+   the same widget. Staging deliberately has no Turnstile widget or credentials.
+3. Run `npm run cf:check` for the selected environment.
+4. Run `npm run cf:bootstrap -- --env <development|staging|production>`.
+5. Install production runtime secrets with
    `npx wrangler secret put SESSION_SIGNING_KEY_CURRENT`,
    `npx wrangler secret put CLASSROOM_INTEGRATION_KEY`, and
-   `npx wrangler secret put TURNSTILE_SECRET_KEY`. Install staging secrets with
-   `npx wrangler secret put SESSION_SIGNING_KEY_CURRENT --env staging`,
-   `npx wrangler secret put CLASSROOM_INTEGRATION_KEY --env staging`, and
-   `npx wrangler secret put TURNSTILE_SECRET_KEY --env staging`.
-5. Deploy with the bootstrap `--deploy` flag. Do not initialize individual
+   `npx wrangler secret put TURNSTILE_SECRET_KEY`. Install only the two
+   staging signing secrets with
+   `npx wrangler secret put SESSION_SIGNING_KEY_CURRENT --env staging` and
+   `npx wrangler secret put CLASSROOM_INTEGRATION_KEY --env staging`.
+6. Deploy staging only from the `staging` branch. Do not initialize individual
    board objects from CI; the creator request chooses their placement.
-6. Validate `/healthz`, create a disposable staging board, commit one item,
+7. Validate `/healthz`, create a disposable staging board, commit one item,
    reconnect from its prior sequence, create a named snapshot, and confirm both
    JSON and SVG exports. Verify the named snapshot through the owner API and
    its private immutable R2 object metadata without printing board content.
+8. Move `main` to that unchanged commit only after the staging delivery and
+   20-client smoke test pass. Production remains behind its GitHub environment
+   approval gate.
 
 The public environment values are committed in `config/environments.json` and
-must agree with `.env` before bootstrap: staging uses bucket
-`cloudflare-collab-canvas-staging-snapshots` and hostname
-`cloudflare-collab-canvas-staging.spacescale.workers.dev`; production uses
-bucket `collab-canvas-snapshots` and hostname `spacescale.net`. Keep
+must agree with local configuration before bootstrap: staging uses bucket
+`staging-cloud-collab` and hostname
+`staging-cloud-collab.spacescale.net`; production uses bucket
+`collab-canvas-snapshots` and hostname `spacescale.net`. Keep
 `BOARD_CREATION_ENABLED=true` normally; set the committed public switch to
 `false` for an intentional creation freeze before deploying. Bootstrap rejects
-hostname/bucket/switch drift and production-like deployments using Turnstile
-test keys.
+hostname, bucket, and switch drift.
 
 Set `ALLOWED_ORIGINS` to a comma-separated list of exact classroom application
-origins in local `.env` and in each deployment environment. It is public
+origins in local configuration and in each GitHub environment. It is public
 configuration, not a secret. Missing, blank, path-bearing, wildcard-pattern, or
 malformed values deny framing. A literal `*` allows every iframe parent.
 Normal board pages remain non-embeddable.
 
-The production Wrangler target declares `spacescale.net` as a Custom Domain and
-disables its `workers.dev` fallback. Confirm the Custom Domain and certificate
-are active after the first authorized deployment before enabling board
-creation. Development and staging explicitly use isolated `workers.dev`
-targets and inherit no production route.
+Both release targets are Worker Custom Domains with their `workers.dev`
+fallback disabled. Confirm the custom domains and certificates are active after
+the first authorized deployment. Ongoing staging CI uses Worker version
+upload/deploy and deliberately does not reconcile that pre-attached domain, so
+its token needs no Zone Workers Routes permission. Staging has its own Worker,
+Durable Object namespace, R2 bucket, runtime signing keys, and test data; it
+inherits no production route, binding, secret, or data.
 
-The default Workers/R2 management token cannot inspect Turnstile widgets. If
-`cf:check` reports `manualDashboardConfirmationRequired`, confirm in the
-Turnstile dashboard that the configured public site key and installed secret
-come from the same environment-specific widget and that its hostname allowlist
-contains the exact environment hostname. A token with Turnstile Sites Read
-lets `cf:check` perform this comparison without emitting keys or secrets.
+Staging fixes `TURNSTILE_ENABLED=false` so Playwright, AI-driven browser tests,
+and the 20-client smoke test can exercise board creation and capability claims
+without interactive challenges. Treat it as a public, lower-trust automation
+surface and use disposable test data only. Production fixes
+`TURNSTILE_ENABLED=true` and fails closed without its real site key and
+Siteverify secret.
+
+The default Workers/R2 management token cannot inspect Turnstile widgets. For
+production, if `cf:check` reports
+`manualDashboardConfirmationRequired`, confirm in the Turnstile dashboard that
+the configured public site key and installed secret come from the same widget
+and that its hostname allowlist contains `spacescale.net`. A token with
+Turnstile Sites Read lets `cf:check` perform this comparison without emitting
+keys or secrets. Staging has no widget pairing to inspect.
 
 ## Session-key rotation
 
@@ -77,16 +92,23 @@ migration, not routine session-key maintenance.
 
 ## Deploy and rollback
 
-Run `npm run check`, deploy staging, run the multi-client smoke/load suites, and
-then create a production Worker version. Cloudflare-native Git builds and the
-repository's protected GitHub workflow are both documented in
-[deployment-ci.md](deployment-ci.md); use only one automatic production deploy
-path at a time. Retain the prior version. Until version
-affinity is configured for both HTML and content-hashed Static Assets, attach a
-candidate at 0%, verify it with a version override, and promote atomically
-rather than percentage-splitting browser traffic. Roll back Worker code only
-when it can read every forward schema migration already applied; never pair a
-destructive schema change with incompatible old code.
+Push a candidate commit to `staging` and wait for CI, the isolated staging
+version promotion, and the 20-client smoke test to pass. The workflow then
+publishes a `cloudflare/staging` commit-status attestation for that exact SHA.
+Fast-forward `main` to that SHA without amending, squashing, or creating a new
+merge commit. The production workflow verifies that the current staging tip
+matches `main` and that the latest trusted attestation on that commit succeeded
+before requesting production approval. Any changed SHA must repeat staging
+validation.
+
+Cloudflare-native Git builds and the repository's protected GitHub workflow are
+both documented in [deployment-ci.md](deployment-ci.md); use only one automatic
+production deploy path at a time. Retain the prior production version. Until
+version affinity is configured for both HTML and content-hashed Static Assets,
+attach a candidate at 0%, verify it with a version override, and promote
+atomically rather than percentage-splitting browser traffic. Roll back Worker
+code only when it can read every forward schema migration already applied;
+never pair a destructive schema change with incompatible old code.
 
 ## Metadata-only board inspection
 
@@ -579,6 +601,7 @@ Permanent deletion is not a version-one product operation.
 
 Keep Cloudflare rate-limiting/WAF rules in front of `/api/v1/boards` and
 `*/claims` as defense in depth. The Worker has bounded per-isolate creation and
-claim buckets, and production/staging capability flows require action-bound
-Turnstile validation. Alert on R2 snapshot failures without treating them as
-evidence that an authoritative board is absent.
+claim buckets. Production capability flows require action-bound Turnstile;
+staging deliberately disables it for isolated automation. Alert on R2 snapshot
+failures without treating them as evidence that an authoritative board is
+absent.

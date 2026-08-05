@@ -23,6 +23,7 @@ import {
   waitForClientRole,
   waitForClientSequence,
 } from "./browser-client.ts";
+import { isLocalHostname, validateLoadTarget } from "./target.ts";
 
 const CLIENT_COUNT = 20;
 const NORMAL_EDITOR_COUNT = 5;
@@ -1324,25 +1325,7 @@ function integerOption(
 }
 
 function validateTarget(options: HarnessConfig): void {
-  const url = new URL(options.baseUrl);
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("The load target must use HTTP or HTTPS.");
-  }
-  if (url.username || url.password || url.search || url.hash) {
-    throw new Error("The load target may not contain credentials, a query, or a fragment.");
-  }
-  const local = isLocalHostname(url.hostname);
-  if (!local && url.protocol !== "https:") {
-    throw new Error("Remote load targets must use HTTPS.");
-  }
-  if (url.hostname === "spacescale.net" || url.hostname.endsWith(".spacescale.net")) {
-    throw new Error("The production spacescale.net host is never a valid load-test target.");
-  }
-  if (!local && !options.allowRemote) {
-    throw new Error(
-      "Remote load tests require --allow-remote/LOAD_ALLOW_REMOTE=1 to prevent accidental production traffic.",
-    );
-  }
+  validateLoadTarget(options.baseUrl, options.allowRemote);
   const drawers = options.stress ? CLIENT_COUNT : NORMAL_EDITOR_COUNT;
   const perDrawerCommitRate = options.actionCount / (options.durationMs / 1_000) / drawers;
   if (perDrawerCommitRate > 4.5) {
@@ -1448,10 +1431,6 @@ function requiredParticipant(participants: Participant[], index: number): Partic
   const participant = participants[index];
   if (participant === undefined) throw new Error(`Participant ${index} was not provisioned.`);
   return participant;
-}
-
-function isLocalHostname(hostname: string): boolean {
-  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
 }
 
 function redactUrl(value: string): string {

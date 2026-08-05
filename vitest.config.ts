@@ -12,7 +12,12 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["packages/**/*.test.ts", "apps/web/**/*.test.ts", "scripts/**/*.test.ts"],
+    include: [
+      "packages/**/*.test.ts",
+      "apps/web/**/*.test.ts",
+      "scripts/**/*.test.ts",
+      "tests/load/**/*.test.ts",
+    ],
     exclude: ["node_modules", "dist", "apps/edge/**"],
     environment: "node",
     coverage: {

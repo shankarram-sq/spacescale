@@ -92,8 +92,8 @@
     },
     "staging": {
       "name": "cloudflare-collab-canvas-staging",
-      "workers_dev": true,
-      "routes": [],
+      "workers_dev": false,
+      "routes": [{ "pattern": "staging-cloud-collab.spacescale.net", "custom_domain": true }],
       "assets": {
         "directory": "apps/web/dist",
         "binding": "ASSETS",
@@ -117,16 +117,16 @@
       "r2_buckets": [
         {
           "binding": "BOARD_SNAPSHOTS",
-          "bucket_name": "cloudflare-collab-canvas-staging-snapshots"
+          "bucket_name": "staging-cloud-collab"
         }
       ],
       "version_metadata": {
         "binding": "WORKER_VERSION"
       },
       "vars": {
-        "APP_HOSTNAME": "cloudflare-collab-canvas-staging.spacescale.workers.dev",
+        "APP_HOSTNAME": "staging-cloud-collab.spacescale.net",
         "BOARD_CREATION_ENABLED": "true",
-        "TURNSTILE_ENABLED": "true",
+        "TURNSTILE_ENABLED": "false",
         "ENVIRONMENT": "staging"
       }
     }

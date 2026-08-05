@@ -13,6 +13,7 @@ type EnvironmentName = "development" | "staging" | "production";
 type PublicEnvironment = {
   bucketName: string;
   hostname: string;
+  turnstileEnabled: boolean;
   boardCreationEnabled: boolean;
 };
 type TurnstileWidget = {
@@ -26,11 +27,9 @@ loadLocalEnv();
 const env = requireEnvironment([
   "CLOUDFLARE_ACCOUNT_ID",
   "CLOUDFLARE_API_TOKEN",
-  "TURNSTILE_SECRET_KEY",
   "SESSION_SIGNING_KEY_CURRENT",
   "CLASSROOM_INTEGRATION_KEY",
   "R2_BUCKET_NAME",
-  "TURNSTILE_SITE_KEY",
   "APP_HOSTNAME",
 ] as const);
 env.ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.trim() ?? "";
@@ -52,7 +51,10 @@ if (!selectedEnvironment) {
   );
 }
 const [environmentName, environmentConfiguration] = selectedEnvironment;
-assertTurnstileSiteKeyForEnvironment(env.TURNSTILE_SITE_KEY ?? "", environmentName);
+if (environmentConfiguration.turnstileEnabled) {
+  Object.assign(env, requireEnvironment(["TURNSTILE_SECRET_KEY", "TURNSTILE_SITE_KEY"] as const));
+  assertTurnstileSiteKeyForEnvironment(env.TURNSTILE_SITE_KEY ?? "", environmentName);
+}
 const requestedBoardCreation = process.env.BOARD_CREATION_ENABLED?.trim();
 if (
   requestedBoardCreation !== undefined &&
@@ -75,6 +77,7 @@ report({
   environment: environmentName,
   hostnameMatchesCommittedConfiguration: true,
   bucketMatchesCommittedConfiguration: true,
+  turnstileEnabled: environmentConfiguration.turnstileEnabled,
   boardCreationEnabled: environmentConfiguration.boardCreationEnabled,
 });
 
@@ -116,7 +119,10 @@ report({
       ? null
       : false,
   expectedWorkerAttached,
-  predeployAttachmentRequired: environmentName === "production" && configuredDomain === undefined,
+  predeployAttachmentRequired:
+    environmentConfiguration.hostname !== "localhost" &&
+    !environmentConfiguration.hostname.endsWith(".workers.dev") &&
+    configuredDomain === undefined,
   errorCodes: (domains.envelope.errors ?? []).map((error) => error.code),
 });
 
@@ -134,66 +140,81 @@ report({
   errorCodes: (buckets.envelope.errors ?? []).map((error) => error.code),
 });
 
-const turnstileBody = new URLSearchParams({
-  secret: env.TURNSTILE_SECRET_KEY ?? "",
-  response: "codex-credential-validation-probe",
-});
-const turnstileResponse = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-  method: "POST",
-  headers: { "Content-Type": "application/x-www-form-urlencoded" },
-  body: turnstileBody,
-  signal: AbortSignal.timeout(15_000),
-});
-const turnstile = (await turnstileResponse.json()) as {
-  success?: boolean;
-  "error-codes"?: string[];
-};
-const turnstileErrors = turnstile["error-codes"] ?? [];
-report({
-  check: "turnstile_secret",
-  httpStatus: turnstileResponse.status,
-  endpointReachable: turnstileResponse.ok,
-  secretAccepted: !turnstileErrors.includes("invalid-input-secret"),
-  expectedProbeRejected: turnstile.success === false,
-  errorCodes: turnstileErrors,
-});
+let turnstileAccessInvalid = false;
+if (environmentConfiguration.turnstileEnabled) {
+  const turnstileBody = new URLSearchParams({
+    secret: env.TURNSTILE_SECRET_KEY ?? "",
+    response: "codex-credential-validation-probe",
+  });
+  const turnstileResponse = await fetch(
+    "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: turnstileBody,
+      signal: AbortSignal.timeout(15_000),
+    },
+  );
+  const turnstile = (await turnstileResponse.json()) as {
+    success?: boolean;
+    "error-codes"?: string[];
+  };
+  const turnstileErrors = turnstile["error-codes"] ?? [];
+  report({
+    check: "turnstile_secret",
+    httpStatus: turnstileResponse.status,
+    endpointReachable: turnstileResponse.ok,
+    secretAccepted: !turnstileErrors.includes("invalid-input-secret"),
+    expectedProbeRejected: turnstile.success === false,
+    errorCodes: turnstileErrors,
+  });
 
-// This lookup is intentionally optional: the least-privilege Workers/R2 token
-// documented by the project cannot read Turnstile widget configuration. When
-// a token with Turnstile Sites Read is used, validate the public key, allowed
-// hostname, and (when Cloudflare returns it) the Siteverify secret as one unit.
-const widget = await cloudflareRequest<TurnstileWidget>(
-  `/accounts/${account}/challenges/widgets/${encodeURIComponent(env.TURNSTILE_SITE_KEY ?? "")}`,
-);
-const widgetReadable = widget.response.ok && widget.envelope.success && !!widget.envelope.result;
-const widgetSiteKeyMatches = widgetReadable
-  ? widget.envelope.result?.sitekey === env.TURNSTILE_SITE_KEY
-  : null;
-const widgetHostnameAllowed = widgetReadable
-  ? widget.envelope.result?.domains?.includes(env.APP_HOSTNAME ?? "") === true
-  : null;
-const returnedWidgetSecret = widget.envelope.result?.secret;
-const widgetSecretMatches =
-  widgetReadable && typeof returnedWidgetSecret === "string"
-    ? returnedWidgetSecret === env.TURNSTILE_SECRET_KEY
+  // This lookup is intentionally optional: the least-privilege Workers/R2 token
+  // documented by the project cannot read Turnstile widget configuration. When
+  // a token with Turnstile Sites Read is used, validate the public key, allowed
+  // hostname, and (when Cloudflare returns it) the Siteverify secret as one unit.
+  const widget = await cloudflareRequest<TurnstileWidget>(
+    `/accounts/${account}/challenges/widgets/${encodeURIComponent(env.TURNSTILE_SITE_KEY ?? "")}`,
+  );
+  const widgetReadable = widget.response.ok && widget.envelope.success && !!widget.envelope.result;
+  const widgetSiteKeyMatches = widgetReadable
+    ? widget.envelope.result?.sitekey === env.TURNSTILE_SITE_KEY
     : null;
-report({
-  check: "turnstile_widget_pairing",
-  httpStatus: widget.response.status,
-  widgetReadable,
-  siteKeyMatches: widgetSiteKeyMatches,
-  hostnameAllowed: widgetHostnameAllowed,
-  secretPairingValidated: widgetSecretMatches,
-  manualDashboardConfirmationRequired: !widgetReadable || widgetSecretMatches === null,
-  errorCodes: (widget.envelope.errors ?? []).map((error) => error.code),
-});
+  const widgetHostnameAllowed = widgetReadable
+    ? widget.envelope.result?.domains?.includes(env.APP_HOSTNAME ?? "") === true
+    : null;
+  const returnedWidgetSecret = widget.envelope.result?.secret;
+  const widgetSecretMatches =
+    widgetReadable && typeof returnedWidgetSecret === "string"
+      ? returnedWidgetSecret === env.TURNSTILE_SECRET_KEY
+      : null;
+  report({
+    check: "turnstile_widget_pairing",
+    httpStatus: widget.response.status,
+    widgetReadable,
+    siteKeyMatches: widgetSiteKeyMatches,
+    hostnameAllowed: widgetHostnameAllowed,
+    secretPairingValidated: widgetSecretMatches,
+    manualDashboardConfirmationRequired: !widgetReadable || widgetSecretMatches === null,
+    errorCodes: (widget.envelope.errors ?? []).map((error) => error.code),
+  });
 
-const readableWidgetInvalid =
-  widgetReadable &&
-  (widgetSiteKeyMatches !== true ||
-    widgetHostnameAllowed !== true ||
-    widgetSecretMatches === false);
-
+  const readableWidgetInvalid =
+    widgetReadable &&
+    (widgetSiteKeyMatches !== true ||
+      widgetHostnameAllowed !== true ||
+      widgetSecretMatches === false);
+  turnstileAccessInvalid =
+    !turnstileResponse.ok ||
+    turnstileErrors.includes("invalid-input-secret") ||
+    readableWidgetInvalid;
+} else {
+  report({
+    check: "turnstile",
+    enabled: false,
+    skipped: true,
+  });
+}
 if (
   !token.envelope.success ||
   token.envelope.result?.status !== "active" ||
@@ -201,9 +222,7 @@ if (
   !domains.envelope.success ||
   (configuredDomain !== undefined && !expectedWorkerAttached) ||
   !buckets.envelope.success ||
-  !turnstileResponse.ok ||
-  turnstileErrors.includes("invalid-input-secret") ||
-  readableWidgetInvalid
+  turnstileAccessInvalid
 ) {
   process.exitCode = 1;
 }

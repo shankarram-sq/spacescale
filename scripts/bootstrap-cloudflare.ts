@@ -151,19 +151,25 @@ async function assertBucketPrivate(
 
 loadLocalEnv();
 const args = parseArguments(process.argv.slice(2));
-const env = requireEnvironment([
+const configuration = configurationFor(args.environment);
+const requiredEnvironmentVariables = [
   "CLOUDFLARE_ACCOUNT_ID",
   "CLOUDFLARE_API_TOKEN",
   "R2_BUCKET_NAME",
   "CLASSROOM_INTEGRATION_KEY",
   "APP_HOSTNAME",
-  "TURNSTILE_SITE_KEY",
-] as const);
+] as const;
+const env = requireEnvironment(
+  configuration.turnstileEnabled
+    ? [...requiredEnvironmentVariables, "TURNSTILE_SITE_KEY"]
+    : requiredEnvironmentVariables,
+);
 env.ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.trim() ?? "";
 assertPublicConfiguration(env);
-const configuration = configurationFor(args.environment);
 assertPublicConfiguration({ APP_HOSTNAME: configuration.hostname });
-assertTurnstileSiteKeyForEnvironment(env.TURNSTILE_SITE_KEY ?? "", args.environment);
+if (configuration.turnstileEnabled) {
+  assertTurnstileSiteKeyForEnvironment(env.TURNSTILE_SITE_KEY ?? "", args.environment);
+}
 if (env.R2_BUCKET_NAME !== configuration.bucketName) {
   throw new Error(
     `R2_BUCKET_NAME does not match committed ${args.environment} configuration (${configuration.bucketName}).`,
@@ -233,12 +239,13 @@ if (args.deploy) {
     "--var",
     `ALLOWED_ORIGINS:${env.ALLOWED_ORIGINS}`,
     "--var",
-    `TURNSTILE_SITE_KEY:${env.TURNSTILE_SITE_KEY}`,
-    "--var",
     `TURNSTILE_ENABLED:${configuration.turnstileEnabled}`,
     "--var",
     `ENVIRONMENT:${args.environment}`,
   );
+  if (configuration.turnstileEnabled) {
+    wranglerArguments.push("--var", `TURNSTILE_SITE_KEY:${env.TURNSTILE_SITE_KEY}`);
+  }
   const deployment = spawnSync(
     process.platform === "win32" ? "npx.cmd" : "npx",
     wranglerArguments,

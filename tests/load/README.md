@@ -23,8 +23,7 @@ an independent Chromium context and therefore an independent
 Start the local Worker in one terminal:
 
 ```sh
-npm run build:web
-npx wrangler dev --env development --ip 127.0.0.1 --port 8787
+npm run dev
 ```
 
 Run the short smoke scenario in another terminal:
@@ -69,18 +68,17 @@ addresses, or use an explicitly test-scoped rate-limit exemption.
 For staging, remote targeting must be deliberate:
 
 ```sh
-LOAD_BASE_URL=https://cloudflare-collab-canvas-staging.spacescale.workers.dev \
+LOAD_BASE_URL=https://staging-cloud-collab.spacescale.net \
 LOAD_ALLOW_REMOTE=1 \
-LOAD_TURNSTILE_TOKEN=fresh-single-use-token \
-LOAD_TURNSTILE_CLAIM_TOKENS='["fresh-claim-01","fresh-claim-02","fresh-claim-03","fresh-claim-04","fresh-claim-05","fresh-claim-06","fresh-claim-07","fresh-claim-08","fresh-claim-09","fresh-claim-10","fresh-claim-11","fresh-claim-12","fresh-claim-13","fresh-claim-14","fresh-claim-15","fresh-claim-16","fresh-claim-17","fresh-claim-18","fresh-claim-19","fresh-claim-20"]' \
 npm run load
 ```
 
-Remote targets require both HTTPS and the explicit opt-in; the known
-`spacescale.net` production domain is categorically rejected. Turnstile tokens
-are single-use and expire, so generate the action-specific values just before
-the run. Use a staging deployment with its own Durable Object namespace, R2
-bucket, session key, and Turnstile widget.
+The committed staging hostname is the only accepted remote target, and it
+requires both HTTPS and the explicit opt-in. The `spacescale.net` production
+domain and every other remote hostname are categorically rejected. The
+isolated staging Worker deliberately disables Turnstile so Playwright
+automation needs no challenge tokens. It still uses its own Durable Object
+namespace, R2 bucket, session key, and classroom integration key.
 
 After its initial burst of five, a single-host staging run spaces invitation
 claims by 12.25 seconds to honor the gateway's per-IP refill rate. This adds
@@ -110,7 +108,7 @@ eviction through a test-environment control hook:
 LOAD_EVICTION_URL=https://staging-control.example/evict-board-room \
 LOAD_EVICTION_AUTHORIZATION='Bearer test-control-secret' \
 LOAD_REQUIRE_EVICTION=1 \
-LOAD_BASE_URL=https://cloudflare-collab-canvas-staging.spacescale.workers.dev \
+LOAD_BASE_URL=https://staging-cloud-collab.spacescale.net \
 LOAD_ALLOW_REMOTE=1 \
 npm run load
 ```

@@ -1,4 +1,4 @@
-# Copy to .dev.vars for `wrangler dev`; never commit real values.
+# Local-only values loaded directly by `npm run dev`; never deploy these values.
 SESSION_SIGNING_KEY_CURRENT="local-development-signing-key-change-before-sharing"
 SESSION_SIGNING_KEY_PREVIOUS=""
 # Local-only classroom launch key. Never deploy or share this value.

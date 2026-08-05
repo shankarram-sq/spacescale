@@ -15,7 +15,7 @@
     "undici": "8.10.0"
   },
   "scripts": {
-    "dev": "npm run build:web && wrangler dev",
+    "dev": "npm run build:web && wrangler dev --env development --local --env-file .dev.vars.example",
     "dev:web": "vite --config apps/web/vite.config.ts",
     "build": "npm run build:web && wrangler deploy --dry-run --env= --outdir dist/worker",
     "build:web": "vite build --config apps/web/vite.config.ts",
@@ -25,7 +25,7 @@
     "test": "vitest run --config vitest.config.ts",
     "test:watch": "vitest --config vitest.config.ts",
     "test:edge": "vitest run --config vitest.cloudflare.config.ts",
-    "test:e2e": "playwright test --config tests/playwright/playwright.config.ts",
+    "test:e2e": "npm run build:web && playwright test --config tests/playwright/playwright.config.ts",
     "load:smoke": "tsx tests/load/run.ts --smoke",
     "load": "tsx tests/load/run.ts",
     "check": "npm run docs:env-check && npm run observability:check && npm run lint && npm run typecheck && npm run protocol:compat && npm run test && npm run build && npm run test:edge && npm run security:scan",
@@ -35,7 +35,7 @@
     "security:scan": "tsx scripts/check-secret-leaks.ts",
     "cf:check": "tsx scripts/check-cloudflare-access.ts",
     "cf:bootstrap": "tsx scripts/bootstrap-cloudflare.ts",
-    "cf:types": "wrangler types apps/edge/worker-configuration.d.ts --include-runtime false --env-interface CloudflareBindings",
+    "cf:types": "wrangler types apps/edge/worker-configuration.d.ts --include-runtime false --env-interface CloudflareBindings --env-file .dev.vars.example",
     "docs:env-check": "tsx scripts/check-env-docs.ts"
   },
   "devDependencies": {

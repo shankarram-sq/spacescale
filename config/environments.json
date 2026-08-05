@@ -7,10 +7,10 @@
     "boardCreationEnabled": true
   },
   "staging": {
-    "bucketName": "cloudflare-collab-canvas-staging-snapshots",
+    "bucketName": "staging-cloud-collab",
     "jurisdiction": "default",
-    "hostname": "cloudflare-collab-canvas-staging.spacescale.workers.dev",
-    "turnstileEnabled": true,
+    "hostname": "staging-cloud-collab.spacescale.net",
+    "turnstileEnabled": false,
     "boardCreationEnabled": true
   },
   "production": {

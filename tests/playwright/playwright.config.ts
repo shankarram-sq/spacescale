@@ -1,5 +1,7 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig, devices } from "@playwright/test";
 
+const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const localBaseUrl = "https://127.0.0.1:8787";
 const localClassroomHostUrl = "http://localhost:4173";
 const baseUrl = process.env.PLAYWRIGHT_BASE_URL ?? localBaseUrl;
@@ -27,7 +29,8 @@ export default defineConfig({
     : [
         {
           command:
-            "npx wrangler dev --env development --ip 127.0.0.1 --port 8787 --local-protocol https",
+            "npx wrangler dev --env development --local --env-file .dev.vars.example --ip 127.0.0.1 --port 8787 --local-protocol https",
+          cwd: repositoryRoot,
           url: `${localBaseUrl}/healthz`,
           ignoreHTTPSErrors: true,
           reuseExistingServer: !process.env.CI,

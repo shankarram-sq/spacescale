@@ -95,17 +95,19 @@ for (const environmentName of ["development", "staging", "production"] as const)
       `${environmentName} TURNSTILE_SITE_KEY must be supplied by the deployment environment`,
     );
   }
-  if (environmentName === "production") {
+  if (environmentName === "development") {
+    if (deployed.workers_dev !== true || (deployed.routes?.length ?? 0) !== 0) {
+      errors.push("development must use its isolated workers.dev deployment without routes");
+    }
+  } else {
     const customDomain = deployed.routes?.find(
       (route) => route.pattern === environment.hostname && route.custom_domain === true,
     );
     if (deployed.workers_dev !== false || customDomain === undefined) {
       errors.push(
-        "production must be fail-closed to workers.dev and attached to its custom domain",
+        `${environmentName} must be fail-closed to workers.dev and attached to its custom domain`,
       );
     }
-  } else if (deployed.workers_dev !== true || (deployed.routes?.length ?? 0) !== 0) {
-    errors.push(`${environmentName} must use its isolated workers.dev deployment without routes`);
   }
 }
 

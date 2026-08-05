@@ -166,16 +166,17 @@ test("classroom iframes join one board with live owner controls and attribution"
 });
 
 function readDevVar(name: string): string {
-  const contents = readFileSync(".dev.vars", "utf8");
+  const localVariablesFile = process.env.LOCAL_DEV_VARS_FILE ?? ".dev.vars.example";
+  const contents = readFileSync(localVariablesFile, "utf8");
   const line = contents
     .split(/\r?\n/u)
     .find((candidate) => candidate.trimStart().startsWith(`${name}=`));
-  if (line === undefined) throw new Error(`${name} is missing from .dev.vars.`);
+  if (line === undefined) throw new Error(`${name} is missing from ${localVariablesFile}.`);
   const raw = line.slice(line.indexOf("=") + 1).trim();
   const quoted =
     (raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"));
   const value = quoted ? raw.slice(1, -1) : raw;
-  if (value.length === 0) throw new Error(`${name} is empty in .dev.vars.`);
+  if (value.length === 0) throw new Error(`${name} is empty in ${localVariablesFile}.`);
   return value;
 }
 
