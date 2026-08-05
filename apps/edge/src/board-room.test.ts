@@ -17,6 +17,9 @@ import type { BoardRow, Env } from "./types";
 const boardId = "b_AAAAAAAAAAAAAAAAAAAAAA";
 const actorId = "a_AAAAAAAAAAAAAAAAAAAAAA";
 const editorId = "a_BBBBBBBBBBBBBBBBBBBBBA";
+const coOwnerId = `a_${"C".repeat(22)}`;
+const studentId = `a_${"D".repeat(22)}`;
+const placeholderOwnerId = `a_${"P".repeat(22)}`;
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -54,6 +57,30 @@ async function initializeBoard(stub: DurableObjectStub): Promise<void> {
   await response.arrayBuffer();
 }
 
+async function launchClassroom(
+  stub: DurableObjectStub,
+  actor: string,
+  role: "viewer" | "editor" | "owner",
+  launchIssuedAtMs: number,
+  displayName = "Classroom participant",
+  ownerRecoveryHash = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+): Promise<Response> {
+  return stub.fetch(
+    internalActorRequest(actor, "/__internal/classroom-launch", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        publicId: boardId,
+        title: "Classroom board",
+        role,
+        displayName,
+        launchIssuedAtMs,
+        placeholderOwnerActorId: placeholderOwnerId,
+        ownerRecoveryHash,
+      }),
+    }),
+  );
+}
 async function addEditor(stub: DurableObjectStub): Promise<void> {
   await runInDurableObject(stub, (_instance, durableState) => {
     const now = Date.now();
@@ -264,6 +291,9 @@ describe("BoardRoom initialization", () => {
       owners: durableState.storage.sql
         .exec<{ count: number }>("SELECT COUNT(*) AS count FROM members WHERE role = 'owner'")
         .one().count,
+      classroomMode: durableState.storage.sql
+        .exec<{ classroom_mode: number }>("SELECT classroom_mode FROM board")
+        .one().classroom_mode,
       accounting: durableState.storage.sql
         .exec<{ item_count: number; item_bytes: number }>(
           `SELECT snapshot_live_item_count AS item_count,
@@ -272,9 +302,10 @@ describe("BoardRoom initialization", () => {
         .one(),
     }));
     expect(state).toEqual({
-      migrations: [1, 2, 3, 4, 5],
+      migrations: [1, 2, 3, 4, 5, 6, 7],
       boards: 1,
       owners: 1,
+      classroomMode: 0,
       accounting: { item_count: 0, item_bytes: 0 },
     });
 
@@ -286,6 +317,686 @@ describe("BoardRoom initialization", () => {
     expect(value).toMatchObject({ protocolVersion: 1 });
   });
 
+  it("migrates existing boards to multiple active owners", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+
+    const state = await runInDurableObject(stub, (_instance, durableState) => {
+      const now = Date.now();
+      durableState.storage.sql.exec(
+        `INSERT INTO members(actor_id, role, display_name, created_at_ms, updated_at_ms)
+         VALUES (?, 'owner', 'Co-owner', ?, ?)`,
+        coOwnerId,
+        now,
+        now,
+      );
+      return {
+        activeOwners: durableState.storage.sql
+          .exec<{ count: number }>(
+            "SELECT COUNT(*) AS count FROM members WHERE role = 'owner' AND revoked_at_ms IS NULL",
+          )
+          .one().count,
+        legacyIndex: durableState.storage.sql
+          .exec<{ count: number }>(
+            `SELECT COUNT(*) AS count FROM sqlite_master
+             WHERE type = 'index' AND name = 'members_one_active_owner'`,
+          )
+          .one().count,
+      };
+    });
+    expect(state).toEqual({ activeOwners: 2, legacyIndex: 0 });
+  });
+
+  it("creates a private classroom board from a viewer and adopts the first active owner", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    const issuedAt = Date.now() - 10_000;
+
+    const viewerLaunch = await launchClassroom(stub, studentId, "viewer", issuedAt, "Student");
+    expect(viewerLaunch.status).toBe(201);
+    expect(await viewerLaunch.json()).toMatchObject({
+      board: { id: boardId, accessMode: "private", aclVersion: 1 },
+      actor: { id: studentId, role: "viewer", displayName: "Student" },
+      created: true,
+      launchApplied: true,
+      primaryOwner: false,
+    });
+
+    const viewerState = await runInDurableObject(stub, (_instance, durableState) => ({
+      board: durableState.storage.sql
+        .exec<{ owner_actor_id: string; classroom_mode: number; access_mode: string }>(
+          "SELECT owner_actor_id, classroom_mode, access_mode FROM board",
+        )
+        .one(),
+      members: durableState.storage.sql
+        .exec<{ actor_id: string; role: string }>(
+          "SELECT actor_id, role FROM members ORDER BY actor_id",
+        )
+        .toArray(),
+      placeholderMembers: durableState.storage.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM members WHERE actor_id = ?",
+          placeholderOwnerId,
+        )
+        .one().count,
+    }));
+    expect(viewerState).toEqual({
+      board: {
+        owner_actor_id: placeholderOwnerId,
+        classroom_mode: 1,
+        access_mode: "private",
+      },
+      members: [{ actor_id: studentId, role: "viewer" }],
+      placeholderMembers: 0,
+    });
+
+    const firstOwner = await launchClassroom(stub, actorId, "owner", issuedAt + 1, "Coach one");
+    expect(firstOwner.status).toBe(200);
+    expect(await firstOwner.json()).toMatchObject({
+      board: { aclVersion: 2 },
+      actor: { id: actorId, role: "owner" },
+      primaryOwner: true,
+    });
+
+    const secondOwner = await launchClassroom(stub, coOwnerId, "owner", issuedAt + 2, "Coach two");
+    expect(secondOwner.status).toBe(200);
+    expect(await secondOwner.json()).toMatchObject({
+      board: { aclVersion: 3 },
+      actor: { id: coOwnerId, role: "owner" },
+      primaryOwner: false,
+    });
+
+    const membersResponse = await stub.fetch(
+      internalActorRequest(coOwnerId, `/api/v1/boards/${boardId}/members`),
+    );
+    expect(membersResponse.status).toBe(200);
+    expect(await membersResponse.json()).toMatchObject({
+      aclVersion: 3,
+      members: expect.arrayContaining([
+        expect.objectContaining({ actorId, role: "owner", primaryOwner: true }),
+        expect.objectContaining({ actorId: coOwnerId, role: "owner", primaryOwner: false }),
+        expect.objectContaining({ actorId: studentId, role: "viewer", primaryOwner: false }),
+      ]),
+    });
+  });
+
+  it("does not let a newer classroom launch demote the primary owner", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    const issuedAt = Date.now() - 10_000;
+    const initial = await launchClassroom(stub, actorId, "owner", issuedAt, "Coach one");
+    expect(initial.status).toBe(201);
+
+    const downgrade = await launchClassroom(stub, actorId, "viewer", issuedAt + 1, "Coach renamed");
+    expect(downgrade.status).toBe(200);
+    expect(await downgrade.json()).toMatchObject({
+      board: { aclVersion: 2 },
+      actor: { id: actorId, role: "owner", displayName: "Coach renamed" },
+      launchApplied: true,
+      primaryOwner: true,
+    });
+
+    const state = await runInDurableObject(stub, (_instance, durableState) => ({
+      ownerActorId: durableState.storage.sql
+        .exec<{ owner_actor_id: string }>("SELECT owner_actor_id FROM board")
+        .one().owner_actor_id,
+      member: durableState.storage.sql
+        .exec<{ role: string; display_name: string }>(
+          "SELECT role, display_name FROM members WHERE actor_id = ?",
+          actorId,
+        )
+        .one(),
+    }));
+    expect(state).toEqual({
+      ownerActorId: actorId,
+      member: { role: "owner", display_name: "Coach renamed" },
+    });
+  });
+
+  it("reopens an existing classroom board without resetting its persisted state", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    const issuedAt = Date.now() - 10_000;
+    expect((await launchClassroom(stub, actorId, "owner", issuedAt, "Coach")).status).toBe(201);
+    expect((await launchClassroom(stub, studentId, "editor", issuedAt + 1, "Student")).status).toBe(
+      200,
+    );
+
+    const coach = await connect(stub, actorId);
+    const itemId = "018f0000-0000-7000-8000-000000000832";
+    coach.socket.send(
+      JSON.stringify(
+        createCommit(
+          "018f0000-0000-7000-8000-000000000830",
+          "018f0000-0000-7000-8000-000000000831",
+          itemId,
+        ),
+      ),
+    );
+    await coach.next((frame) => frame.t === "server.action" && frame.seq === 1);
+
+    const customizedTitle = "Coach-customized classroom board";
+    const lock = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          title: customizedTitle,
+          drawingPolicy: "locked",
+          expectedAclVersion: 2,
+        }),
+      }),
+    );
+    expect(lock.status).toBe(200);
+    expect(await lock.json()).toMatchObject({
+      board: { title: customizedTitle, drawingPolicy: "locked", aclVersion: 3 },
+    });
+
+    const named = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/snapshots`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "classroom-relaunch-snapshot-0001",
+        },
+        body: JSON.stringify({ label: "Before classroom relaunch" }),
+      }),
+    );
+    expect(named.status).toBe(201);
+    const namedResult = (await named.json()) as {
+      snapshot: {
+        seq: number;
+        sha256: string;
+        itemCount: number;
+        byteCount: number;
+        kind: "named";
+        label: string;
+        createdAt: number;
+      };
+    };
+    expect(namedResult).toMatchObject({
+      snapshot: {
+        seq: 1,
+        kind: "named",
+        label: "Before classroom relaunch",
+        itemCount: 1,
+      },
+    });
+
+    const downgrade = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/members/${studentId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ role: "viewer", expectedAclVersion: 3 }),
+      }),
+    );
+    expect(downgrade.status).toBe(200);
+    expect(await downgrade.json()).toMatchObject({ aclVersion: 4 });
+
+    const reopened = await launchClassroom(stub, coOwnerId, "viewer", issuedAt + 2, "New student");
+    expect(reopened.status).toBe(200);
+    expect(await reopened.json()).toMatchObject({
+      board: { id: boardId, drawingPolicy: "locked", aclVersion: 5 },
+      actor: { id: coOwnerId, role: "viewer", displayName: "New student" },
+      created: false,
+      launchApplied: true,
+    });
+
+    const bootstrap = await stub.fetch(
+      internalActorRequest(coOwnerId, `/api/v1/boards/${boardId}/bootstrap`),
+    );
+    expect(bootstrap.status).toBe(200);
+    expect(await bootstrap.json()).toMatchObject({
+      board: {
+        id: boardId,
+        drawingPolicy: "locked",
+        aclVersion: 5,
+        latestSeq: 1,
+        snapshotSeq: 1,
+      },
+      actor: { id: coOwnerId, role: "viewer", displayName: "New student" },
+      snapshot: {
+        boardId,
+        seq: 1,
+        settings: { title: customizedTitle },
+        items: [expect.objectContaining({ id: itemId, createdBy: actorId })],
+      },
+    });
+
+    const snapshots = await stub.fetch(internalRequest(`/api/v1/boards/${boardId}/snapshots`));
+    expect(snapshots.status).toBe(200);
+    const snapshotList = (await snapshots.json()) as {
+      snapshots: Array<{
+        seq: number;
+        sha256: string;
+        itemCount: number;
+        byteCount: number;
+        kind: "automatic" | "named" | "pre_clear";
+        label: string | null;
+        createdBy: string | null;
+        createdAt: number;
+      }>;
+    };
+    expect(snapshotList.snapshots).toContainEqual({
+      ...namedResult.snapshot,
+      createdBy: actorId,
+    });
+
+    const members = await stub.fetch(internalRequest(`/api/v1/boards/${boardId}/members`));
+    expect(members.status).toBe(200);
+    expect(await members.json()).toMatchObject({
+      aclVersion: 5,
+      members: expect.arrayContaining([
+        expect.objectContaining({ actorId, role: "owner", primaryOwner: true }),
+        expect.objectContaining({ actorId: studentId, role: "viewer" }),
+        expect.objectContaining({ actorId: coOwnerId, role: "viewer" }),
+      ]),
+    });
+    coach.socket.close(1000, "done");
+  });
+
+  it("keeps a paginated owner-only activity feed after action compaction", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    const editor = await connect(stub, editorId);
+    const first = {
+      commandId: "018f0000-0000-7000-8000-000000000810",
+      actionId: "018f0000-0000-7000-8000-000000000811",
+      itemId: "018f0000-0000-7000-8000-000000000812",
+    };
+    const second = {
+      commandId: "018f0000-0000-7000-8000-000000000820",
+      actionId: "018f0000-0000-7000-8000-000000000821",
+      itemId: "018f0000-0000-7000-8000-000000000822",
+    };
+    editor.socket.send(JSON.stringify(createCommit(first.commandId, first.actionId, first.itemId)));
+    await editor.next((frame) => frame.t === "server.action" && frame.seq === 1);
+    editor.socket.send(
+      JSON.stringify(createCommit(second.commandId, second.actionId, second.itemId)),
+    );
+    await editor.next((frame) => frame.t === "server.action" && frame.seq === 2);
+
+    const denied = await stub.fetch(
+      internalActorRequest(editorId, `/api/v1/boards/${boardId}/activity?afterSeq=0&limit=1`),
+    );
+    expect(denied.status).toBe(403);
+
+    const firstPage = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/activity?afterSeq=0&limit=1`),
+    );
+    expect(firstPage.status).toBe(200);
+    expect(await firstPage.json()).toEqual({
+      events: [
+        {
+          seq: 1,
+          actionId: first.actionId,
+          actor: { id: editorId, displayName: "Editor" },
+          kind: "item.create",
+          itemIds: [first.itemId],
+          acceptedAt: expect.any(Number),
+        },
+      ],
+      nextAfterSeq: 1,
+      hasMore: true,
+    });
+
+    await runInDurableObject(stub, (_instance, durableState) => {
+      durableState.storage.sql.exec("DELETE FROM actions WHERE seq = 1");
+    });
+    const secondPage = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/activity?afterSeq=1&limit=1`),
+    );
+    expect(secondPage.status).toBe(200);
+    expect(await secondPage.json()).toEqual({
+      events: [
+        {
+          seq: 2,
+          actionId: second.actionId,
+          actor: { id: editorId, displayName: "Editor" },
+          kind: "item.create",
+          itemIds: [second.itemId],
+          acceptedAt: expect.any(Number),
+        },
+      ],
+      nextAfterSeq: 2,
+      hasMore: false,
+    });
+    const retained = await runInDurableObject(stub, (_instance, durableState) => ({
+      actions: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM actions")
+        .one().count,
+      activities: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM activity_log")
+        .one().count,
+    }));
+    expect(retained).toEqual({ actions: 1, activities: 2 });
+    editor.socket.close(1000, "done");
+  });
+
+  it("does not let stale classroom URLs undo a newer role change or revocation", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    const issuedAt = Date.now() - 10_000;
+    const studentIssuedAt = Date.now() + 30_000;
+    expect((await launchClassroom(stub, actorId, "owner", issuedAt, "Coach")).status).toBe(201);
+    expect(
+      (await launchClassroom(stub, studentId, "editor", studentIssuedAt, "Student")).status,
+    ).toBe(200);
+
+    const downgrade = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/members/${studentId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ role: "viewer", expectedAclVersion: 2 }),
+      }),
+    );
+    expect(downgrade.status).toBe(200);
+    expect(await downgrade.json()).toMatchObject({ aclVersion: 3 });
+
+    const staleAfterDowngrade = await launchClassroom(
+      stub,
+      studentId,
+      "editor",
+      studentIssuedAt,
+      "Old student URL",
+    );
+    expect(staleAfterDowngrade.status).toBe(200);
+    expect(await staleAfterDowngrade.json()).toMatchObject({
+      board: { aclVersion: 3 },
+      actor: { role: "viewer", displayName: "Student" },
+      launchApplied: false,
+    });
+
+    const revoke = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/members/${studentId}`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ expectedAclVersion: 3 }),
+      }),
+    );
+    expect(revoke.status).toBe(200);
+    expect(await revoke.json()).toMatchObject({ aclVersion: 4 });
+
+    const staleAfterRevoke = await launchClassroom(
+      stub,
+      studentId,
+      "editor",
+      studentIssuedAt,
+      "Old student URL",
+    );
+    expect(staleAfterRevoke.status).toBe(404);
+    const state = await runInDurableObject(stub, (_instance, durableState) => ({
+      aclVersion: durableState.storage.sql
+        .exec<{ acl_version: number }>("SELECT acl_version FROM board")
+        .one().acl_version,
+      member: durableState.storage.sql
+        .exec<{ role: string; display_name: string; revoked_at_ms: number | null }>(
+          "SELECT role, display_name, revoked_at_ms FROM members WHERE actor_id = ?",
+          studentId,
+        )
+        .one(),
+    }));
+    expect(state.aclVersion).toBe(4);
+    expect(state.member).toMatchObject({ role: "viewer", display_name: "Student" });
+    expect(state.member.revoked_at_ms).not.toBeNull();
+  });
+
+  it("keeps both classroom owners active when primary recovery custody transfers", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    const issuedAt = Date.now() - 10_000;
+    await (await launchClassroom(stub, actorId, "owner", issuedAt, "Coach one")).arrayBuffer();
+    await (
+      await launchClassroom(stub, coOwnerId, "owner", issuedAt + 1, "Coach two")
+    ).arrayBuffer();
+    const target = await connect(stub, coOwnerId);
+
+    const transfer = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/ownership-transfer`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ targetActorId: coOwnerId, expectedAclVersion: 2 }),
+      }),
+    );
+    expect(transfer.status).toBe(200);
+    expect(await transfer.json()).toMatchObject({
+      ownerActorId: coOwnerId,
+      aclVersion: 3,
+      recoveryTokenDelivered: true,
+    });
+    expect(await target.next((frame) => frame.t === "access.changed")).toMatchObject({
+      role: "owner",
+      aclVersion: 3,
+    });
+
+    const state = await runInDurableObject(stub, (_instance, durableState) => ({
+      primaryOwner: durableState.storage.sql
+        .exec<{ owner_actor_id: string }>("SELECT owner_actor_id FROM board")
+        .one().owner_actor_id,
+      roles: durableState.storage.sql
+        .exec<{ actor_id: string; role: string }>(
+          "SELECT actor_id, role FROM members ORDER BY actor_id",
+        )
+        .toArray(),
+    }));
+    expect(state).toEqual({
+      primaryOwner: coOwnerId,
+      roles: [
+        { actor_id: actorId, role: "owner" },
+        { actor_id: coOwnerId, role: "owner" },
+      ],
+    });
+    target.socket.close(1000, "done");
+  });
+
+  it("preserves unrelated classroom co-owners during owner recovery", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    const issuedAt = Date.now() - 10_000;
+    const recoveryToken = "classroom-recovery-token-abcdefghijklmnopqrstuvwxyz";
+    const recoveryHash = await sha256Base64Url(recoveryToken);
+    await (
+      await launchClassroom(stub, actorId, "owner", issuedAt, "Coach one", recoveryHash)
+    ).arrayBuffer();
+    await (
+      await launchClassroom(stub, coOwnerId, "owner", issuedAt + 1, "Coach two", recoveryHash)
+    ).arrayBuffer();
+
+    const recovery = await stub.fetch(
+      internalActorRequest(studentId, `/api/v1/boards/${boardId}/claims`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "recovery",
+          token: recoveryToken,
+          displayName: "Recovered owner",
+          confirmOwnershipTransfer: true,
+        }),
+      }),
+    );
+    expect(recovery.status).toBe(200);
+    expect(await recovery.json()).toMatchObject({
+      actor: { id: studentId, role: "owner" },
+      aclVersion: 3,
+    });
+
+    const state = await runInDurableObject(stub, (_instance, durableState) => ({
+      primaryOwner: durableState.storage.sql
+        .exec<{ owner_actor_id: string }>("SELECT owner_actor_id FROM board")
+        .one().owner_actor_id,
+      roles: durableState.storage.sql
+        .exec<{ actor_id: string; role: string }>(
+          "SELECT actor_id, role FROM members ORDER BY actor_id",
+        )
+        .toArray(),
+    }));
+    expect(state).toEqual({
+      primaryOwner: studentId,
+      roles: [
+        { actor_id: actorId, role: "editor" },
+        { actor_id: coOwnerId, role: "owner" },
+        { actor_id: studentId, role: "owner" },
+      ],
+    });
+  });
+
+  it("lets every owner administer and draw under owner-only policy while locked denies all", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+
+    const promote = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/members/${editorId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ role: "owner", expectedAclVersion: 2 }),
+      }),
+    );
+    expect(promote.status).toBe(200);
+    expect(await promote.json()).toMatchObject({ aclVersion: 3 });
+
+    const members = await stub.fetch(
+      internalActorRequest(editorId, `/api/v1/boards/${boardId}/members`),
+    );
+    expect(members.status).toBe(200);
+    expect(await members.json()).toMatchObject({
+      members: expect.arrayContaining([
+        expect.objectContaining({ actorId, role: "owner", primaryOwner: true }),
+        expect.objectContaining({ actorId: editorId, role: "owner", primaryOwner: false }),
+      ]),
+    });
+
+    const ownerOnly = await stub.fetch(
+      internalActorRequest(editorId, `/api/v1/boards/${boardId}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ drawingPolicy: "owner_only", expectedAclVersion: 3 }),
+      }),
+    );
+    expect(ownerOnly.status).toBe(200);
+    expect(await ownerOnly.json()).toMatchObject({
+      board: { drawingPolicy: "owner_only", aclVersion: 4 },
+    });
+
+    const primary = await connect(stub, actorId);
+    const secondary = await connect(stub, editorId);
+    const firstCommandId = "018f0000-0000-7000-8000-0000000000b0";
+    primary.socket.send(
+      JSON.stringify(
+        createCommit(
+          firstCommandId,
+          "018f0000-0000-7000-8000-0000000000b1",
+          "018f0000-0000-7000-8000-0000000000b2",
+        ),
+      ),
+    );
+    expect(
+      await primary.next(
+        (frame) => frame.t === "server.action" && frame.commandId === firstCommandId,
+      ),
+    ).toMatchObject({ seq: 1, actor: { id: actorId } });
+
+    const secondCommandId = "018f0000-0000-7000-8000-0000000000c0";
+    secondary.socket.send(
+      JSON.stringify(
+        createCommit(
+          secondCommandId,
+          "018f0000-0000-7000-8000-0000000000c1",
+          "018f0000-0000-7000-8000-0000000000c2",
+        ),
+      ),
+    );
+    expect(
+      await secondary.next(
+        (frame) => frame.t === "server.action" && frame.commandId === secondCommandId,
+      ),
+    ).toMatchObject({ seq: 2, actor: { id: editorId } });
+
+    const locked = await stub.fetch(
+      internalActorRequest(editorId, `/api/v1/boards/${boardId}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ drawingPolicy: "locked", expectedAclVersion: 4 }),
+      }),
+    );
+    expect(locked.status).toBe(200);
+    expect(await locked.json()).toMatchObject({
+      board: { drawingPolicy: "locked", aclVersion: 5 },
+    });
+    await Promise.all([
+      primary.next((frame) => frame.t === "access.changed" && frame.drawingPolicy === "locked"),
+      secondary.next((frame) => frame.t === "access.changed" && frame.drawingPolicy === "locked"),
+    ]);
+
+    const blockedPrimaryCommand = "018f0000-0000-7000-8000-0000000000d0";
+    primary.socket.send(
+      JSON.stringify(
+        createCommit(
+          blockedPrimaryCommand,
+          "018f0000-0000-7000-8000-0000000000d1",
+          "018f0000-0000-7000-8000-0000000000d2",
+        ),
+      ),
+    );
+    expect(
+      await primary.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === blockedPrimaryCommand,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 2 });
+
+    const blockedSecondaryCommand = "018f0000-0000-7000-8000-0000000000e0";
+    secondary.socket.send(
+      JSON.stringify(
+        createCommit(
+          blockedSecondaryCommand,
+          "018f0000-0000-7000-8000-0000000000e1",
+          "018f0000-0000-7000-8000-0000000000e2",
+        ),
+      ),
+    );
+    expect(
+      await secondary.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === blockedSecondaryCommand,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 2 });
+
+    const rotateAsSecondary = await stub.fetch(
+      internalActorRequest(editorId, `/api/v1/boards/${boardId}/owner-recovery/rotate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ expectedAclVersion: 5 }),
+      }),
+    );
+    expect(rotateAsSecondary.status).toBe(403);
+
+    const demotePrimary = await stub.fetch(
+      internalActorRequest(editorId, `/api/v1/boards/${boardId}/members/${actorId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ role: "editor", expectedAclVersion: 5 }),
+      }),
+    );
+    expect(demotePrimary.status).toBe(409);
+
+    const removeSecondary = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/members/${editorId}`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ expectedAclVersion: 5 }),
+      }),
+    );
+    expect(removeSecondary.status).toBe(200);
+    expect(await removeSecondary.json()).toMatchObject({ aclVersion: 6, revoked: true });
+    primary.socket.close(1000, "done");
+    secondary.socket.close(1000, "done");
+  });
+
+  it("echoes only the supported whiteboard WebSocket subprotocol", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const request = socketRequest(actorId);
+    request.headers.set("Sec-WebSocket-Protocol", "whiteboard.v1, auth.sensitive-token");
+    const response = await stub.fetch(request);
+    expect(response.status).toBe(101);
+    expect(response.headers.get("Sec-WebSocket-Protocol")).toBe("whiteboard.v1");
+    response.webSocket?.accept();
+    response.webSocket?.close(1000, "done");
+  });
   it("emits privacy-safe normalized room, replay, commit, storage, and broadcast events", async () => {
     const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
@@ -509,8 +1220,8 @@ describe("BoardRoom initialization", () => {
     expect(beforeCheckpoint).toEqual({
       usageRows: 0,
       actionUsage: [
-        { seq: 1, frames: 1, reads: 8, writes: 14 },
-        { seq: 2, frames: 1, reads: 8, writes: 12 },
+        { seq: 1, frames: 1, reads: 8, writes: 15 },
+        { seq: 2, frames: 1, reads: 8, writes: 13 },
       ],
     });
 
@@ -546,7 +1257,7 @@ describe("BoardRoom initialization", () => {
       incoming_frames: 2,
       billed_request_estimate: 1,
       rows_read_estimate: 23,
-      rows_written_estimate: 32,
+      rows_written_estimate: 34,
       r2_reads: 1,
       r2_writes: 1,
       actions: 2,

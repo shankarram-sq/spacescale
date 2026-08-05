@@ -63,14 +63,53 @@ export function assertPublicConfiguration(values: Record<string, string>): void 
   ) {
     throw new Error("APP_HOSTNAME must contain only a valid hostname.");
   }
-  const signingKey = values.SESSION_SIGNING_KEY_CURRENT;
-  if (signingKey) {
-    const looksBase64 = /^[A-Za-z\d+/]+={0,2}$/u.test(signingKey) && signingKey.length % 4 === 0;
+  for (const [name, key] of [
+    ["SESSION_SIGNING_KEY_CURRENT", values.SESSION_SIGNING_KEY_CURRENT],
+    ["CLASSROOM_INTEGRATION_KEY", values.CLASSROOM_INTEGRATION_KEY],
+  ] as const) {
+    if (!key) continue;
+    const looksBase64 = /^[A-Za-z\d+/]+={0,2}$/u.test(key) && key.length % 4 === 0;
     const keyBytes = looksBase64
-      ? Buffer.from(signingKey, "base64").byteLength
-      : Buffer.byteLength(signingKey, "utf8");
+      ? Buffer.from(key, "base64").byteLength
+      : Buffer.byteLength(key, "utf8");
     if (keyBytes < 32) {
-      throw new Error("SESSION_SIGNING_KEY_CURRENT must contain at least 32 random bytes.");
+      throw new Error(`${name} must contain at least 32 random bytes.`);
+    }
+  }
+  const allowedOrigins = values.ALLOWED_ORIGINS?.trim();
+  if (allowedOrigins && allowedOrigins !== "*") {
+    if (allowedOrigins.length > 2_048) {
+      throw new Error("ALLOWED_ORIGINS is too long.");
+    }
+    const sources = allowedOrigins.split(",").map((source) => source.trim());
+    if (sources.length > 20 || sources.some((source) => source.length === 0)) {
+      throw new Error("ALLOWED_ORIGINS must contain 1 to 20 comma-separated origins.");
+    }
+    for (const source of sources) {
+      let origin: URL;
+      try {
+        origin = new URL(source);
+      } catch {
+        throw new Error("ALLOWED_ORIGINS must contain only absolute origins.");
+      }
+      const local =
+        origin.hostname === "localhost" ||
+        origin.hostname === "127.0.0.1" ||
+        origin.hostname === "[::1]";
+      if (
+        source.includes("*") ||
+        origin.username !== "" ||
+        origin.password !== "" ||
+        origin.pathname !== "/" ||
+        origin.search !== "" ||
+        origin.hash !== "" ||
+        origin.origin !== source ||
+        (origin.protocol !== "https:" && !(local && origin.protocol === "http:"))
+      ) {
+        throw new Error(
+          "ALLOWED_ORIGINS must be '*' or comma-separated exact HTTPS origins without paths.",
+        );
+      }
     }
   }
 }

@@ -17,10 +17,12 @@ provision a Cloudflare dashboard or alert.
    same widget; never cross-pair or reuse widgets between environments.
 2. Run `npm run cf:check`.
 3. Run `npm run cf:bootstrap -- --env <development|staging|production>`.
-4. Install production secrets with
-   `npx wrangler secret put SESSION_SIGNING_KEY_CURRENT` and
+4. Install production runtime secrets with
+   `npx wrangler secret put SESSION_SIGNING_KEY_CURRENT`,
+   `npx wrangler secret put CLASSROOM_INTEGRATION_KEY`, and
    `npx wrangler secret put TURNSTILE_SECRET_KEY`. Install staging secrets with
-   `npx wrangler secret put SESSION_SIGNING_KEY_CURRENT --env staging` and
+   `npx wrangler secret put SESSION_SIGNING_KEY_CURRENT --env staging`,
+   `npx wrangler secret put CLASSROOM_INTEGRATION_KEY --env staging`, and
    `npx wrangler secret put TURNSTILE_SECRET_KEY --env staging`.
 5. Deploy with the bootstrap `--deploy` flag. Do not initialize individual
    board objects from CI; the creator request chooses their placement.
@@ -38,6 +40,12 @@ bucket `collab-canvas-snapshots` and hostname `spacescale.net`. Keep
 `false` for an intentional creation freeze before deploying. Bootstrap rejects
 hostname/bucket/switch drift and production-like deployments using Turnstile
 test keys.
+
+Set `ALLOWED_ORIGINS` to a comma-separated list of exact classroom application
+origins in local `.env` and in each deployment environment. It is public
+configuration, not a secret. Missing, blank, path-bearing, wildcard-pattern, or
+malformed values deny framing. A literal `*` allows every iframe parent.
+Normal board pages remain non-embeddable.
 
 The production Wrangler target declares `spacescale.net` as a Custom Domain and
 disables its `workers.dev` fallback. Confirm the Custom Domain and certificate
@@ -62,12 +70,18 @@ lets `cf:check` perform this comparison without emitting keys or secrets.
 
 Never reuse signing keys between environments.
 
+`CLASSROOM_INTEGRATION_KEY` is also an identity-derivation key. Keep it stable
+within an environment and back it up in the secret manager. Rotating it creates
+new derived classroom board and actor IDs; treat rotation as a classroom data
+migration, not routine session-key maintenance.
+
 ## Deploy and rollback
 
 Run `npm run check`, deploy staging, run the multi-client smoke/load suites, and
-then create a production Worker version. The repository's protected workflow
-and its required GitHub environment configuration are documented in
-[deployment-ci.md](deployment-ci.md). Retain the prior version. Until version
+then create a production Worker version. Cloudflare-native Git builds and the
+repository's protected GitHub workflow are both documented in
+[deployment-ci.md](deployment-ci.md); use only one automatic production deploy
+path at a time. Retain the prior version. Until version
 affinity is configured for both HTML and content-hashed Static Assets, attach a
 candidate at 0%, verify it with a version override, and promote atomically
 rather than percentage-splitting browser traffic. Roll back Worker code only

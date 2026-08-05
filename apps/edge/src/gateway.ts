@@ -1,6 +1,7 @@
 import { BoardRoom } from "./board-room";
+import { ClassroomAuthService, type VerifiedClassroomLaunch } from "./classroom-auth";
 import { bytesToBase64Url, randomBoardId, randomToken, sha256 } from "./crypto";
-import { assertExactKeys, readJsonBody } from "./http/body";
+import { assertExactKeys, isRecord, readJsonBody } from "./http/body";
 import { errorResponse, HttpError } from "./http/errors";
 import {
   expectedOrigin,
@@ -49,7 +50,7 @@ export default {
       });
       response = errorResponse(error, requestId);
     }
-    const secured = withSecurityHeaders(response, requestId);
+    const secured = withSecurityHeaders(response, request, env, requestId);
     if (new URL(request.url).pathname.startsWith("/api/")) {
       secured.headers.set("Cache-Control", "no-store");
     }
@@ -98,6 +99,61 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
     );
   }
 
+  if (url.pathname === "/api/v1/embed/session") {
+    if (request.method !== "POST") return methodNotAllowed("POST");
+    requireSameOrigin(request, env);
+    const clientAddress = request.headers.get("cf-connecting-ip") ?? "local";
+    enforceGatewayRateLimit(`embed:ip:${clientAddress}`, 120, 2);
+    const body = await readJsonBody(request, 8 * 1_024);
+    assertExactKeys(body, ["token"], ["token"]);
+
+    const now = Date.now();
+    const classroom = new ClassroomAuthService(env);
+    const launch = await classroom.verifyLaunchToken(body.token, now);
+    enforceGatewayRateLimit(`embed:actor:${launch.actorId}`, 10, 1 / 10);
+
+    const stub = env.BOARD_ROOMS.getByName(launch.boardId);
+    const internalLaunch = new Request(`${url.origin}/__internal/classroom-launch`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        publicId: launch.boardId,
+        title: launch.boardName,
+        role: launch.role,
+        displayName: launch.displayName,
+        launchIssuedAtMs: launch.issuedAtMs,
+        placeholderOwnerActorId: launch.placeholderOwnerActorId,
+        ownerRecoveryHash: launch.ownerRecoveryHash,
+      }),
+    });
+    const launchResponse = await stub.fetch(
+      makeInternalRequest(internalLaunch, launch.actorId, launch.expiresAtMs, requestId),
+    );
+    if (!launchResponse.ok) return launchResponse;
+    const effective = parseClassroomLaunchResponse(await launchResponse.json(), launch);
+
+    const identity = new HmacIdentityService(env);
+    const issued = await identity.issueEmbedSession(
+      launch.actorId,
+      launch.boardId,
+      launch.expiresAtMs,
+      now,
+    );
+    const origin = expectedOrigin(request, env);
+    return Response.json(
+      {
+        sessionToken: issued.token,
+        sessionExpiresAt: issued.session.expiresAt,
+        board: {
+          ...effective.board,
+          url: `${origin}/embed/b/${launch.boardId}`,
+        },
+        actor: effective.actor,
+      },
+      { headers: { "Cache-Control": "no-store" } },
+    );
+  }
+
   if (url.pathname === "/api/v1/boards") {
     if (request.method !== "POST") return methodNotAllowed("POST");
     requireSameOrigin(request, env);
@@ -110,6 +166,9 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
     }
     const identity = new HmacIdentityService(env);
     const session = await identity.verifySession(request);
+    if (session.boardId !== undefined) {
+      throw new HttpError(403, "FORBIDDEN", "The classroom session is board-scoped.");
+    }
     await identity.verifyCsrf(request, session);
     const clientAddress = request.headers.get("cf-connecting-ip") ?? "local";
     enforceGatewayRateLimit(`create:ip:${clientAddress}`, 30, 1 / 5);
@@ -177,21 +236,28 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
   const boardMatch = BOARD_ROUTE.exec(url.pathname);
   if (boardMatch !== null) {
     const boardId = requireBoardId(boardMatch[1] ?? "");
-    const identity = new HmacIdentityService(env);
-    const session = await identity.verifySession(request);
     const isSocket = url.pathname.endsWith("/socket");
-    if (MUTATING_METHODS.has(request.method) || isSocket) {
-      requireSameOrigin(request, env);
+    const socketAuth = isSocket
+      ? authenticateWebSocketRequest(request)
+      : { request, negotiatedProtocol: false };
+    const routedRequest = socketAuth.request;
+    const identity = new HmacIdentityService(env);
+    const session = await identity.verifySession(routedRequest);
+    if (session.boardId !== undefined && session.boardId !== boardId) {
+      throw new HttpError(403, "FORBIDDEN", "The classroom session is not valid for this board.");
     }
-    if (MUTATING_METHODS.has(request.method)) {
-      await identity.verifyCsrf(request, session);
+    if (MUTATING_METHODS.has(routedRequest.method) || isSocket) {
+      requireSameOrigin(routedRequest, env);
     }
-    let roomRequest = request;
-    if (url.pathname.endsWith("/claims") && request.method === "POST") {
-      const clientAddress = request.headers.get("cf-connecting-ip") ?? "local";
+    if (MUTATING_METHODS.has(routedRequest.method)) {
+      await identity.verifyCsrf(routedRequest, session);
+    }
+    let roomRequest = routedRequest;
+    if (url.pathname.endsWith("/claims") && routedRequest.method === "POST") {
+      const clientAddress = routedRequest.headers.get("cf-connecting-ip") ?? "local";
       enforceGatewayRateLimit(`claim:ip:${clientAddress}`, 5, 1 / 12);
       enforceGatewayRateLimit(`claim:actor:${session.actorId}`, 5, 1 / 12);
-      const body = await readJsonBody(request.clone(), 8 * 1_024);
+      const body = await readJsonBody(routedRequest.clone(), 8 * 1_024);
       assertExactKeys(
         body,
         ["type", "token", "displayName", "confirmOwnershipTransfer", "turnstileToken"],
@@ -216,16 +282,19 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
         body.type === "invite" ? "invitation_claim" : "recovery_claim",
       );
       const { turnstileToken: _turnstileToken, ...forwardedBody } = body;
-      roomRequest = new Request(request.url, {
-        method: request.method,
-        headers: request.headers,
+      roomRequest = new Request(routedRequest.url, {
+        method: routedRequest.method,
+        headers: routedRequest.headers,
         body: JSON.stringify(forwardedBody),
       });
     }
     const stub = env.BOARD_ROOMS.getByName(boardId);
-    return stub.fetch(
+    const roomResponse = await stub.fetch(
       makeInternalRequest(roomRequest, session.actorId, session.expiresAt, requestId),
     );
+    return socketAuth.negotiatedProtocol && roomResponse.status === 101
+      ? selectWebSocketProtocol(roomResponse)
+      : roomResponse;
   }
 
   if (url.pathname.startsWith("/api/")) {
@@ -233,6 +302,102 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
   }
 
   return env.ASSETS.fetch(request);
+}
+
+type ClassroomLaunchResponse = {
+  board: {
+    id: string;
+    title: string;
+    accessMode: "private" | "link_view";
+    drawingPolicy: "editors_enabled" | "owner_only" | "locked";
+    aclVersion: number;
+  };
+  actor: {
+    id: string;
+    role: "owner" | "editor" | "viewer";
+    displayName: string;
+  };
+};
+
+function parseClassroomLaunchResponse(
+  value: unknown,
+  launch: VerifiedClassroomLaunch,
+): ClassroomLaunchResponse {
+  if (!isRecord(value) || !isRecord(value.board) || !isRecord(value.actor)) {
+    throw new HttpError(500, "INTERNAL_ERROR", "The classroom room response is invalid.");
+  }
+  const board = value.board;
+  const actor = value.actor;
+  if (
+    board.id !== launch.boardId ||
+    typeof board.title !== "string" ||
+    (board.accessMode !== "private" && board.accessMode !== "link_view") ||
+    (board.drawingPolicy !== "editors_enabled" &&
+      board.drawingPolicy !== "owner_only" &&
+      board.drawingPolicy !== "locked") ||
+    !Number.isSafeInteger(board.aclVersion) ||
+    (board.aclVersion as number) < 1 ||
+    actor.id !== launch.actorId ||
+    (actor.role !== "owner" && actor.role !== "editor" && actor.role !== "viewer") ||
+    typeof actor.displayName !== "string"
+  ) {
+    throw new HttpError(500, "INTERNAL_ERROR", "The classroom room response is invalid.");
+  }
+  const title = optionalTitle(board.title);
+  const displayName = requireDisplayName(actor.displayName);
+  return {
+    board: {
+      id: launch.boardId,
+      title,
+      accessMode: board.accessMode,
+      drawingPolicy: board.drawingPolicy,
+      aclVersion: board.aclVersion as number,
+    },
+    actor: { id: launch.actorId, role: actor.role, displayName },
+  };
+}
+
+function authenticateWebSocketRequest(request: Request): {
+  request: Request;
+  negotiatedProtocol: boolean;
+} {
+  const rawProtocols = request.headers.get("sec-websocket-protocol");
+  if (rawProtocols === null || !rawProtocols.includes("auth.")) {
+    return { request, negotiatedProtocol: false };
+  }
+  if (rawProtocols.length > 8_192 || request.headers.has("authorization")) {
+    throw new HttpError(400, "BAD_REQUEST", "The WebSocket authentication is invalid.");
+  }
+  const protocols = rawProtocols.split(",").map((value) => value.trim());
+  const authProtocols = protocols.filter((value) => value.startsWith("auth."));
+  if (
+    protocols.length !== 2 ||
+    authProtocols.length !== 1 ||
+    protocols.filter((value) => value === "whiteboard.v1").length !== 1
+  ) {
+    throw new HttpError(400, "BAD_REQUEST", "The WebSocket authentication is invalid.");
+  }
+  const token = authProtocols[0]?.slice("auth.".length) ?? "";
+  if (token.length === 0 || token.length > 4_096 || /[^A-Za-z0-9._-]/u.test(token)) {
+    throw new HttpError(400, "BAD_REQUEST", "The WebSocket authentication is invalid.");
+  }
+  const headers = new Headers(request.headers);
+  headers.set("authorization", `Bearer ${token}`);
+  headers.set("sec-websocket-protocol", "whiteboard.v1");
+  return { request: new Request(request, { headers }), negotiatedProtocol: true };
+}
+
+function selectWebSocketProtocol(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set("Sec-WebSocket-Protocol", "whiteboard.v1");
+  const init: ResponseInit & { webSocket?: WebSocket } = {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  };
+  const socket = (response as Response & { webSocket?: WebSocket }).webSocket;
+  if (socket !== undefined && socket !== null) init.webSocket = socket;
+  return new Response(response.body, init);
 }
 
 function methodNotAllowed(allow: string): Response {

@@ -52,7 +52,9 @@ the Cloudflare deployment API.
 | `TURNSTILE_SITE_KEY` | Public site key from **Cloudflare Dashboard → Turnstile → widget → Site Key**. It may be exposed to the browser. |
 | `SESSION_SIGNING_KEY_CURRENT` | Secret HMAC key for device sessions. Generate independently per environment with `openssl rand -base64 32`. |
 | `SESSION_SIGNING_KEY_PREVIOUS` | Optional prior session key, accepted only during rotation. Leave empty on a new installation. |
+| `CLASSROOM_INTEGRATION_KEY` | Secret HMAC key shared with the trusted classroom backend for participant-specific embed URLs. Generate with `openssl rand -base64 32` and keep it stable. |
 | `APP_HOSTNAME` | Public hostname only—no scheme, path, query, or trailing slash. Example: `whiteboard.example.com` or a `workers.dev` hostname. |
+| `ALLOWED_ORIGINS` | Comma-separated exact HTTPS origins allowed to embed `/embed`. Missing, blank, or invalid configuration denies all framing; a literal `*` explicitly allows every parent. |
 | `BOARD_CREATION_ENABLED` | Public fail-closed operational switch. `true` permits new boards; `false` preserves existing-board read/reconnect/export routes while rejecting creation. |
 | `CLOUDFLARE_ACCOUNT_ID` | Account ID from **Dashboard → account → Account home/Overview**. It is an identifier, not a cryptographic secret. |
 | `CLOUDFLARE_API_TOKEN` | Secret Cloudflare management API token used by bootstrap/CI; it is not an R2 S3 credential. Creation and scope are below. |
@@ -148,10 +150,17 @@ To deploy only after successful provisioning:
 npm run cf:bootstrap -- --env production --deploy
 ```
 
+Cloudflare can also pull this repository, run `npm run check`, and deploy it
+directly with Workers Builds. Runtime secrets stay on the Worker, so this path
+does not need a GitHub deployment API token. The exact dashboard settings,
+staging separation, and rollout tradeoffs are documented in
+[docs/deployment-ci.md](docs/deployment-ci.md#cloudflare-workers-builds).
+
 Install runtime secrets before the first production request:
 
 ```sh
 npx wrangler secret put SESSION_SIGNING_KEY_CURRENT
+npx wrangler secret put CLASSROOM_INTEGRATION_KEY
 npx wrangler secret put TURNSTILE_SECRET_KEY
 ```
 
@@ -159,6 +168,7 @@ Install distinct staging secrets explicitly against the staging environment:
 
 ```sh
 npx wrangler secret put SESSION_SIGNING_KEY_CURRENT --env staging
+npx wrangler secret put CLASSROOM_INTEGRATION_KEY --env staging
 npx wrangler secret put TURNSTILE_SECRET_KEY --env staging
 ```
 
@@ -199,3 +209,7 @@ See [docs/operations.md](docs/operations.md) for deployment, rollback,
 recovery, quotas, and incident procedures. GitHub environment, staging token
 broker, approval, candidate-smoke, and rollback setup is in
 [docs/deployment-ci.md](docs/deployment-ci.md).
+
+Trusted-backend signing, iframe setup, live coach controls, co-owners, and the
+activity feed are documented in
+[docs/classroom-embedding.md](docs/classroom-embedding.md).

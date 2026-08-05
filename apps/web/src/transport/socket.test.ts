@@ -13,7 +13,10 @@ class FakeWebSocket {
 
   private readonly listeners = new Map<string, Array<(event: any) => void>>();
 
-  constructor(readonly url: string | URL) {
+  constructor(
+    readonly url: string | URL,
+    readonly protocols?: string | string[],
+  ) {
     fakeSockets.push(this);
   }
 
@@ -148,5 +151,25 @@ describe("protocol rollout handling", () => {
     expect(vi.getTimerCount()).toBe(0);
     vi.advanceTimersByTime(60_000);
     expect(fakeSockets).toHaveLength(1);
+  });
+
+  it("uses subprotocols for embed authorization without putting the bearer in the URL", () => {
+    const boardSocket = new BoardSocket("b_test", hooks(), "es1.classroom-session.signature");
+    boardSocket.connect();
+
+    expect(fakeSockets).toHaveLength(1);
+    expect(fakeSockets[0]?.protocols).toEqual([
+      "whiteboard.v1",
+      "auth.es1.classroom-session.signature",
+    ]);
+    expect(String(fakeSockets[0]?.url)).not.toContain("classroom-session");
+    expect(String(fakeSockets[0]?.url)).toContain("since=0");
+  });
+
+  it("leaves the legacy cookie WebSocket constructor unchanged", () => {
+    const boardSocket = new BoardSocket("b_test", hooks());
+    boardSocket.connect();
+
+    expect(fakeSockets[0]?.protocols).toBeUndefined();
   });
 });

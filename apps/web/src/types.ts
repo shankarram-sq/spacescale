@@ -166,7 +166,7 @@ export type Bootstrap = {
   snapshot: BoardSnapshot | { url: string; seq: number; format?: string; version?: number };
 };
 
-export type Member = Actor & { role: Role; connected?: boolean };
+export type Member = Actor & { role: Role; connected?: boolean; primaryOwner?: boolean };
 export type Presence = Actor & {
   connectionId?: string;
   role?: Role;

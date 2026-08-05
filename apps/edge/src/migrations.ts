@@ -231,6 +231,57 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
       UPDATE board SET usage_checkpoint_seq = latest_seq;
     `,
   },
+  {
+    version: 6,
+    name: "classroom_multi_owner",
+    sql: `
+      DROP INDEX members_one_active_owner;
+
+      ALTER TABLE board ADD COLUMN classroom_mode INTEGER NOT NULL DEFAULT 0
+        CHECK (classroom_mode IN (0, 1));
+    `,
+  },
+  {
+    version: 7,
+    name: "durable_activity_attribution",
+    sql: `
+      CREATE TABLE activity_log (
+        seq INTEGER PRIMARY KEY,
+        action_id TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        affected_item_ids_json TEXT NOT NULL CHECK (json_valid(affected_item_ids_json)),
+        accepted_at_ms INTEGER NOT NULL
+      );
+
+      INSERT INTO activity_log(
+        seq, action_id, actor_id, display_name, kind, affected_item_ids_json, accepted_at_ms
+      )
+      SELECT seq, action_id, actor_id,
+        CASE WHEN json_type(payload_json, '$.publicResult.actor.displayName') = 'text'
+          THEN json_extract(payload_json, '$.publicResult.actor.displayName')
+          ELSE 'Participant'
+        END,
+        kind, affected_item_ids_json, accepted_at_ms
+      FROM actions;
+
+      CREATE TRIGGER actions_activity_log_after_insert
+      AFTER INSERT ON actions
+      BEGIN
+        INSERT INTO activity_log(
+          seq, action_id, actor_id, display_name, kind, affected_item_ids_json, accepted_at_ms
+        ) VALUES (
+          NEW.seq, NEW.action_id, NEW.actor_id,
+          CASE WHEN json_type(NEW.payload_json, '$.publicResult.actor.displayName') = 'text'
+            THEN json_extract(NEW.payload_json, '$.publicResult.actor.displayName')
+            ELSE 'Participant'
+          END,
+          NEW.kind, NEW.affected_item_ids_json, NEW.accepted_at_ms
+        );
+      END;
+    `,
+  },
 ] as const;
 
 export function applyMigrations(

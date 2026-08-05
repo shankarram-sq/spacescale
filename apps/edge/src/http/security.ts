@@ -38,8 +38,16 @@ export function requireSameOrigin(request: Request, env: Env): void {
   }
 }
 
-export function withSecurityHeaders(response: Response, requestId: string): Response {
+export function withSecurityHeaders(
+  response: Response,
+  request: Request,
+  env: Pick<Env, "ALLOWED_ORIGINS">,
+  requestId: string,
+): Response {
   const headers = new Headers(response.headers);
+  const pathname = new URL(request.url).pathname;
+  const embedDocument = pathname === "/embed" || pathname.startsWith("/embed/");
+  const frameAncestors = embedDocument ? configuredFrameAncestors(env.ALLOWED_ORIGINS) : "'none'";
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("Referrer-Policy", "no-referrer");
   headers.set(
@@ -48,9 +56,12 @@ export function withSecurityHeaders(response: Response, requestId: string): Resp
   );
   headers.set(
     "Content-Security-Policy",
-    "default-src 'self'; script-src 'self' https://challenges.cloudflare.com; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-src https://challenges.cloudflare.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+    "default-src 'self'; script-src 'self' https://challenges.cloudflare.com; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-src https://challenges.cloudflare.com; object-src 'none'; base-uri 'none'; frame-ancestors " +
+      frameAncestors +
+      "; form-action 'self'",
   );
-  headers.set("X-Frame-Options", "DENY");
+  if (embedDocument) headers.delete("X-Frame-Options");
+  else headers.set("X-Frame-Options", "DENY");
   headers.set("Cross-Origin-Opener-Policy", "same-origin");
   headers.set("X-Request-Id", requestId);
   const init: ResponseInit & { webSocket?: WebSocket } = {
@@ -63,6 +74,47 @@ export function withSecurityHeaders(response: Response, requestId: string): Resp
   return new Response(response.body, init);
 }
 
+export function configuredFrameAncestors(value: string | undefined): string {
+  if (value === undefined || value.trim().length === 0) return "'none'";
+  const configuration = value.trim();
+  if (configuration.length > 2_048) return "'none'";
+  if (configuration === "*") return "*";
+
+  const sources = configuration.split(",").map((source) => source.trim());
+  if (sources.length === 0 || sources.length > 20 || sources.some((source) => !source)) {
+    return "'none'";
+  }
+
+  const origins = new Set<string>();
+  for (const source of sources) {
+    let parsed: URL;
+    try {
+      parsed = new URL(source);
+    } catch {
+      return "'none'";
+    }
+    const localHttp =
+      parsed.protocol === "http:" &&
+      (parsed.hostname === "localhost" ||
+        parsed.hostname === "127.0.0.1" ||
+        parsed.hostname === "[::1]");
+    if (parsed.protocol !== "https:" && !localHttp) return "'none'";
+    if (
+      source.includes("*") ||
+      parsed.username !== "" ||
+      parsed.password !== "" ||
+      parsed.pathname !== "/" ||
+      parsed.search !== "" ||
+      parsed.hash !== "" ||
+      parsed.origin !== source
+    ) {
+      return "'none'";
+    }
+    origins.add(parsed.origin);
+  }
+  return [...origins].join(" ") || "'none'";
+}
+
 export function makeInternalRequest(
   original: Request,
   actorId: string,
@@ -71,6 +123,7 @@ export function makeInternalRequest(
 ): Request {
   const headers = new Headers(original.headers);
   for (const header of INTERNAL_HEADERS) headers.delete(header);
+  headers.delete("authorization");
   headers.set(INTERNAL_ACTOR_HEADER, actorId);
   headers.set(INTERNAL_EXPIRY_HEADER, String(sessionExpiresAt));
   headers.set(INTERNAL_REQUEST_ID_HEADER, requestId);

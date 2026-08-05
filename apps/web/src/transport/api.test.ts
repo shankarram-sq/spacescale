@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiClient } from "./api";
+import { ApiClient, takeEmbedLaunch } from "./api";
 
 type CapturedRequest = { path: string; init: RequestInit };
 
@@ -144,5 +144,136 @@ describe("board archive API", () => {
     expect(headers.get("x-csrf-token")).toBe("csrf-token");
     expect(headers.get("content-type")).toBe("application/json");
     expect(headers.get("accept")).toBe("application/json");
+  });
+});
+
+describe("classroom embed session", () => {
+  it("exchanges a launch token before storing and using the bearer", async () => {
+    const requests: CapturedRequest[] = [];
+    const historyValue = {
+      state: { source: "classroom" } as unknown,
+      replaceState: vi.fn((state: unknown) => {
+        historyValue.state = state;
+      }),
+    };
+    vi.stubGlobal("history", historyValue);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+        requests.push({ path: String(input), init });
+        if (requests.length === 1) {
+          return Response.json({
+            sessionToken: "es1.session.signature",
+            sessionExpiresAt: 2_000_000_000_000,
+            board: {
+              id: "b_1234567890123456789012",
+              url: "/embed/b/b_1234567890123456789012",
+              title: "Biology lab",
+            },
+            actor: {
+              id: "a_1234567890123456789012",
+              displayName: "Ada",
+              role: "editor",
+            },
+          });
+        }
+        if (requests.length === 2) return Response.json({ csrfToken: "embed-csrf" });
+        return Response.json({ ok: true });
+      }),
+    );
+
+    const api = new ApiClient(true);
+    const launched = await api.startEmbedSession("cl1.launch.signature");
+    await api.ensureSession();
+    await api.request("/api/v1/boards/b_1234567890123456789012/settings", {
+      method: "PATCH",
+      body: JSON.stringify({ drawingPolicy: "locked" }),
+    });
+
+    expect(launched).toMatchObject({
+      board: { id: "b_1234567890123456789012", title: "Biology lab" },
+      actor: { id: "a_1234567890123456789012", role: "editor" },
+    });
+    expect(requests[0]?.path).toBe("/api/v1/embed/session");
+    expect(requests[0]?.init.body).toBe(JSON.stringify({ token: "cl1.launch.signature" }));
+    expect(new Headers(requests[0]?.init.headers).has("authorization")).toBe(false);
+    expect(new Headers(requests[1]?.init.headers).get("authorization")).toBe(
+      "Bearer es1.session.signature",
+    );
+    expect(requests[1]?.path).not.toContain("es1.session.signature");
+    expect(new Headers(requests[2]?.init.headers).get("authorization")).toBe(
+      "Bearer es1.session.signature",
+    );
+    expect(new Headers(requests[2]?.init.headers).get("x-csrf-token")).toBe("embed-csrf");
+    expect(historyValue.state).toEqual({
+      source: "classroom",
+      "cf-collab-canvas.embed-bearer": "es1.session.signature",
+    });
+  });
+
+  it("restores a bearer only for an embed client and leaves legacy requests unchanged", async () => {
+    vi.stubGlobal("history", {
+      state: {
+        "cf-collab-canvas.embed-bearer": "es1.restored.signature",
+      },
+      replaceState: vi.fn(),
+    });
+    const requests: CapturedRequest[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+        requests.push({ path: String(input), init });
+        return Response.json({ ok: true });
+      }),
+    );
+
+    await new ApiClient(true).request("/embed-resource");
+    await new ApiClient(false).request("/legacy-resource");
+
+    expect(new Headers(requests[0]?.init.headers).get("authorization")).toBe(
+      "Bearer es1.restored.signature",
+    );
+    expect(new Headers(requests[1]?.init.headers).has("authorization")).toBe(false);
+  });
+
+  it("scrubs the launch fragment before returning the one-time token", () => {
+    const replaceState = vi.fn();
+    const locationValue = {
+      pathname: "/embed",
+      search: "?theme=light",
+      hash: "#launch=cl1.launch.signature",
+    } as Location;
+    const historyValue = { state: { source: "lms" }, replaceState } as unknown as History;
+
+    expect(takeEmbedLaunch(locationValue, historyValue)).toBe("cl1.launch.signature");
+    expect(replaceState).toHaveBeenCalledWith({ source: "lms" }, "", "/embed?theme=light");
+  });
+
+  it("keeps owner roles and primary-owner metadata in the member response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          members: [
+            {
+              actorId: "a_1234567890123456789012",
+              displayName: "Coach",
+              role: "owner",
+              primaryOwner: true,
+            },
+          ],
+        }),
+      ),
+    );
+
+    await expect(new ApiClient(false).members("b_1234567890123456789012")).resolves.toEqual([
+      {
+        id: "a_1234567890123456789012",
+        displayName: "Coach",
+        role: "owner",
+        connected: false,
+        primaryOwner: true,
+      },
+    ]);
   });
 });

@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const localBaseUrl = "https://127.0.0.1:8787";
+const localClassroomHostUrl = "http://localhost:4173";
 const baseUrl = process.env.PLAYWRIGHT_BASE_URL ?? localBaseUrl;
 const localProjectHeaders = (lastOctet: number): Record<string, string> | undefined =>
   process.env.PLAYWRIGHT_BASE_URL ? undefined : { "CF-Connecting-IP": `198.18.0.${lastOctet}` };
@@ -23,14 +24,22 @@ export default defineConfig({
   },
   webServer: process.env.PLAYWRIGHT_BASE_URL
     ? undefined
-    : {
-        command:
-          "npx wrangler dev --env development --ip 127.0.0.1 --port 8787 --local-protocol https",
-        url: `${localBaseUrl}/healthz`,
-        ignoreHTTPSErrors: true,
-        reuseExistingServer: !process.env.CI,
-        timeout: 120_000,
-      },
+    : [
+        {
+          command:
+            "npx wrangler dev --env development --ip 127.0.0.1 --port 8787 --local-protocol https",
+          url: `${localBaseUrl}/healthz`,
+          ignoreHTTPSErrors: true,
+          reuseExistingServer: !process.env.CI,
+          timeout: 120_000,
+        },
+        {
+          command: "node classroom-host.mjs",
+          url: `${localClassroomHostUrl}/healthz`,
+          reuseExistingServer: !process.env.CI,
+          timeout: 30_000,
+        },
+      ],
   projects: [
     {
       name: "chromium",

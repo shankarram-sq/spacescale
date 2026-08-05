@@ -1,5 +1,7 @@
 # Copy to .dev.vars for `wrangler dev`; never commit real values.
 SESSION_SIGNING_KEY_CURRENT="local-development-signing-key-change-before-sharing"
 SESSION_SIGNING_KEY_PREVIOUS=""
+# Local-only classroom launch key. Never deploy or share this value.
+CLASSROOM_INTEGRATION_KEY="local-development-classroom-launch-key-change-before-sharing"
 # Cloudflare's always-pass test secret. Never deploy it.
 TURNSTILE_SECRET_KEY="1x0000000000000000000000000000000AA"

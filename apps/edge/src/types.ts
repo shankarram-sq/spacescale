@@ -8,6 +8,8 @@ export interface Env {
   BOARD_SNAPSHOTS: R2Bucket;
   WORKER_VERSION: WorkerVersionMetadata;
   APP_HOSTNAME: string;
+  CLASSROOM_INTEGRATION_KEY?: string;
+  ALLOWED_ORIGINS?: string;
   ENVIRONMENT?: string;
   SESSION_SIGNING_KEY_CURRENT: string;
   SESSION_SIGNING_KEY_PREVIOUS?: string;
@@ -22,6 +24,7 @@ export interface DeviceSession {
   issuedAt: number;
   expiresAt: number;
   keyVersion: "current" | "previous";
+  boardId?: string;
 }
 
 export interface InternalActorContext {
@@ -50,6 +53,7 @@ export interface BoardRow {
   access_mode: AccessMode;
   drawing_policy: DrawingPolicy;
   owner_actor_id: string;
+  classroom_mode: number;
   latest_seq: number;
   next_z: number;
   acl_version: number;

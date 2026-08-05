@@ -113,13 +113,16 @@ async function releaseAcks(page: Page): Promise<void> {
 async function outboxCommands(page: Page, boardId: string): Promise<StoredCommand[]> {
   return page.evaluate(async (requestedBoardId) => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open("cf-collab-canvas", 1);
+      const request = indexedDB.open("cf-collab-canvas");
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error ?? new Error("Could not open the outbox."));
     });
     try {
-      const transaction = database.transaction("outbox", "readonly");
-      const request = transaction.objectStore("outbox").index("boardId").getAll(requestedBoardId);
+      const transaction = database.transaction("outbox-v2", "readonly");
+      const request = transaction
+        .objectStore("outbox-v2")
+        .index("boardId")
+        .getAll(requestedBoardId);
       return await new Promise<StoredCommand[]>((resolve, reject) => {
         request.onsuccess = () => resolve(request.result as StoredCommand[]);
         request.onerror = () => reject(request.error ?? new Error("Could not read the outbox."));

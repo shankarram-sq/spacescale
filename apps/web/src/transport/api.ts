@@ -2,6 +2,21 @@ import type { AccessMode, BoardSnapshot, Bootstrap, DrawingPolicy, Member, Role 
 
 export type FragmentClaim = { type: "invite" | "recovery"; token: string };
 
+export type EmbedSession = {
+  sessionToken: string;
+  sessionExpiresAt: number;
+  board: {
+    id: string;
+    url: string;
+    title: string;
+  };
+  actor: {
+    id: string;
+    displayName: string;
+    role: Role;
+  };
+};
+
 export type ManagedInvitation = {
   id: string;
   role: "viewer" | "editor";
@@ -42,7 +57,32 @@ export class ApiError extends Error {
 
 export class ApiClient {
   private csrfToken = "";
+  private embedBearer: string | null;
   turnstile: { enabled: boolean; siteKey: string | null } = { enabled: false, siteKey: null };
+
+  constructor(
+    useStoredEmbedSession = typeof location !== "undefined" &&
+      /^\/embed(?:\/|$)/u.test(location.pathname),
+  ) {
+    this.embedBearer = useStoredEmbedSession ? loadEmbedBearer() : null;
+  }
+
+  get embedSessionToken(): string | null {
+    return this.embedBearer;
+  }
+
+  async startEmbedSession(token: string): Promise<EmbedSession> {
+    const result = await this.request<unknown>(
+      "/api/v1/embed/session",
+      { method: "POST", body: JSON.stringify({ token }) },
+      false,
+      false,
+    );
+    const parsed = parseEmbedSession(result);
+    this.embedBearer = parsed.sessionToken;
+    storeEmbedBearer(parsed.sessionToken);
+    return parsed;
+  }
 
   async ensureSession(): Promise<void> {
     const result = await this.request<Record<string, unknown>>(
@@ -66,6 +106,17 @@ export class ApiClient {
         siteKey: typeof result.turnstile.siteKey === "string" ? result.turnstile.siteKey : null,
       };
     }
+  }
+
+  async refreshSession(): Promise<void> {
+    if (this.embedBearer !== null) {
+      throw new ApiError(
+        "AUTH_REQUIRED",
+        "Open this board again from your classroom to renew access.",
+        401,
+      );
+    }
+    await this.ensureSession();
   }
 
   async bootstrap(boardId: string): Promise<Bootstrap> {
@@ -131,14 +182,22 @@ export class ApiClient {
       const role = value.role;
       if (!id || !displayName || (role !== "viewer" && role !== "editor" && role !== "owner"))
         return [];
-      return [{ id, displayName, role, connected: value.connected === true } satisfies Member];
+      return [
+        {
+          id,
+          displayName,
+          role,
+          connected: value.connected === true,
+          primaryOwner: value.primaryOwner === true,
+        } satisfies Member,
+      ];
     });
   }
 
   async updateMember(
     boardId: string,
     actorId: string,
-    role: Exclude<Role, "owner">,
+    role: Role,
     expectedAclVersion: number,
   ): Promise<Record<string, unknown>> {
     return this.request(
@@ -275,11 +334,15 @@ export class ApiClient {
     path: string,
     init: RequestInit = {},
     includeCsrf = true,
+    includeEmbedBearer = true,
   ): Promise<T> {
     const method = (init.method ?? "GET").toUpperCase();
     const headers = new Headers(init.headers);
     headers.set("Accept", "application/json");
     if (init.body) headers.set("Content-Type", "application/json");
+    if (includeEmbedBearer && this.embedBearer) {
+      headers.set("Authorization", `Bearer ${this.embedBearer}`);
+    }
     if (includeCsrf && method !== "GET" && method !== "HEAD" && this.csrfToken) {
       headers.set("X-CSRF-Token", this.csrfToken);
     }
@@ -325,8 +388,99 @@ export function takeFragmentClaim(locationValue: Location = window.location): Fr
   return invite ? { type: "invite", token: invite } : null;
 }
 
+export function takeEmbedLaunch(
+  locationValue: Location = window.location,
+  historyValue: History = window.history,
+): string | null {
+  if (!/^\/embed\/?$/u.test(locationValue.pathname)) return null;
+  const parameters = new URLSearchParams(
+    locationValue.hash.startsWith("#") ? locationValue.hash.slice(1) : locationValue.hash,
+  );
+  const launch = parameters.get("launch");
+  if (launch === null) return null;
+
+  // The one-time launch credential must leave browser-visible URL state before
+  // the network request starts. It is never persisted.
+  historyValue.replaceState(
+    historyValue.state,
+    "",
+    `${locationValue.pathname}${locationValue.search}`,
+  );
+  return launch;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+const EMBED_BEARER_HISTORY_KEY = "cf-collab-canvas.embed-bearer";
+
+function loadEmbedBearer(): string | null {
+  try {
+    const state: unknown = history.state;
+    if (!isRecord(state)) return null;
+    const token = state[EMBED_BEARER_HISTORY_KEY];
+    return typeof token === "string" && /^es1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(token)
+      ? token
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeEmbedBearer(token: string): void {
+  try {
+    const current: unknown = history.state;
+    const state = isRecord(current) ? current : {};
+    history.replaceState({ ...state, [EMBED_BEARER_HISTORY_KEY]: token }, "");
+  } catch {
+    // The in-memory copy remains usable when session history is unavailable.
+  }
+}
+
+function parseEmbedSession(value: unknown): EmbedSession {
+  if (!isRecord(value) || !isRecord(value.board) || !isRecord(value.actor)) {
+    throw invalidEmbedSession(value);
+  }
+  const role = value.actor.role;
+  if (
+    typeof value.sessionToken !== "string" ||
+    !/^es1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(value.sessionToken) ||
+    !Number.isSafeInteger(value.sessionExpiresAt) ||
+    typeof value.board.id !== "string" ||
+    !/^b_[A-Za-z0-9_-]{22}$/u.test(value.board.id) ||
+    typeof value.board.url !== "string" ||
+    typeof value.board.title !== "string" ||
+    typeof value.actor.id !== "string" ||
+    !/^a_[A-Za-z0-9_-]{22}$/u.test(value.actor.id) ||
+    typeof value.actor.displayName !== "string" ||
+    (role !== "viewer" && role !== "editor" && role !== "owner")
+  ) {
+    throw invalidEmbedSession(value);
+  }
+  return {
+    sessionToken: value.sessionToken,
+    sessionExpiresAt: value.sessionExpiresAt as number,
+    board: {
+      id: value.board.id,
+      url: value.board.url,
+      title: value.board.title,
+    },
+    actor: {
+      id: value.actor.id,
+      displayName: value.actor.displayName,
+      role,
+    },
+  };
+}
+
+function invalidEmbedSession(details: unknown): ApiError {
+  return new ApiError(
+    "INVALID_RESPONSE",
+    "The server did not return a valid classroom session.",
+    500,
+    details,
+  );
 }
 
 function parseRecoverySnapshot(value: unknown): RecoverySnapshot[] {

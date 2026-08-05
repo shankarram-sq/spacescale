@@ -1,5 +1,5 @@
 import "./styles.css";
-import { ApiClient, ApiError, takeFragmentClaim } from "./transport/api";
+import { ApiClient, ApiError, takeEmbedLaunch, takeFragmentClaim } from "./transport/api";
 import {
   acknowledgeRecoveredOwnership,
   BoardApp,
@@ -14,14 +14,29 @@ const root = document.querySelector<HTMLElement>("#app");
 if (!root) throw new Error("Application root is missing.");
 
 const api = new ApiClient();
-const boardId = boardIdFromPath();
-const fragmentClaim = takeFragmentClaim();
+let boardId = boardIdFromPath();
+const embedPath = /^\/embed(?:\/|$)/u.test(window.location.pathname);
+const embedLaunch = takeEmbedLaunch();
+const fragmentClaim = embedPath ? null : takeFragmentClaim();
 
 void start();
 
 async function start(): Promise<void> {
   try {
-    await api.ensureSession();
+    if (embedLaunch !== null) {
+      showBootMessage("Opening your classroom board…");
+      const launched = await api.startEmbedSession(embedLaunch);
+      boardId = launched.board.id;
+      history.replaceState(history.state, "", `/embed/b/${encodeURIComponent(launched.board.id)}`);
+      await api.ensureSession();
+    } else if (embedPath) {
+      if (api.embedSessionToken === null) {
+        throw new ApiError("AUTH_REQUIRED", "Open this board again from your classroom.", 401);
+      }
+      await api.ensureSession();
+    } else {
+      await api.ensureSession();
+    }
     if (!boardId) {
       renderLanding(root as HTMLElement, api);
       return;

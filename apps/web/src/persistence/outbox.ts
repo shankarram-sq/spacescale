@@ -1,8 +1,11 @@
 import type { CommitFrame } from "../types";
 
 const DATABASE_NAME = "cf-collab-canvas";
-const DATABASE_VERSION = 1;
-const STORE_NAME = "outbox";
+const DATABASE_VERSION = 2;
+// Version-one entries had no actor identity and cannot be attributed safely.
+// Leave that legacy store quarantined and use a compound-keyed store instead.
+const STORE_NAME = "outbox-v2";
+const BOARD_ACTOR_INDEX = "boardActor";
 const MAX_COMMANDS = 500;
 const MAX_BYTES = 10 * 1024 * 1024;
 const RETENTION_MS = 24 * 60 * 60 * 1_000;
@@ -10,6 +13,7 @@ const RETENTION_MS = 24 * 60 * 60 * 1_000;
 export type OutboxEntry = {
   commandId: string;
   boardId: string;
+  actorId: string;
   createdAt: number;
   byteLength: number;
   command: CommitFrame;
@@ -35,9 +39,9 @@ export class OutboxLimitError extends Error {
 export class DurableOutbox {
   private databasePromise: Promise<IDBDatabase> | null = null;
 
-  async put(boardId: string, command: CommitFrame): Promise<OutboxEntry> {
+  async put(boardId: string, actorId: string, command: CommitFrame): Promise<OutboxEntry> {
     const commandBytes = new TextEncoder().encode(JSON.stringify(command)).byteLength;
-    const existing = await this.listAll(boardId);
+    const existing = await this.listAll(boardId, actorId);
     const duplicate = existing.find((entry) => entry.commandId === command.commandId);
     if (duplicate) return duplicate;
     if (existing.length >= MAX_COMMANDS) throw new OutboxLimitError("commands");
@@ -47,6 +51,7 @@ export class DurableOutbox {
     const entry: OutboxEntry = {
       commandId: command.commandId,
       boardId,
+      actorId,
       createdAt: Date.now(),
       byteLength: commandBytes,
       command: structuredClone(command),
@@ -59,25 +64,25 @@ export class DurableOutbox {
     return entry;
   }
 
-  async remove(commandId: string): Promise<void> {
+  async remove(boardId: string, actorId: string, commandId: string): Promise<void> {
     const database = await this.database();
     const transaction = database.transaction(STORE_NAME, "readwrite");
     const committed = transactionDone(transaction);
-    await requestDone(transaction.objectStore(STORE_NAME).delete(commandId));
+    await requestDone(transaction.objectStore(STORE_NAME).delete([boardId, actorId, commandId]));
     await committed;
   }
 
-  async removeMany(commandIds: readonly string[]): Promise<void> {
+  async removeMany(boardId: string, actorId: string, commandIds: readonly string[]): Promise<void> {
     if (commandIds.length === 0) return;
     const database = await this.database();
     const transaction = database.transaction(STORE_NAME, "readwrite");
     const store = transaction.objectStore(STORE_NAME);
-    for (const commandId of commandIds) store.delete(commandId);
+    for (const commandId of commandIds) store.delete([boardId, actorId, commandId]);
     await transactionDone(transaction);
   }
 
-  async contents(boardId: string, now = Date.now()): Promise<OutboxContents> {
-    const entries = await this.listAll(boardId);
+  async contents(boardId: string, actorId: string, now = Date.now()): Promise<OutboxContents> {
+    const entries = await this.listAll(boardId, actorId);
     const active: OutboxEntry[] = [];
     const expired: OutboxEntry[] = [];
     for (const entry of entries) {
@@ -91,21 +96,25 @@ export class DurableOutbox {
     };
   }
 
-  async removeExpired(boardId: string, now = Date.now()): Promise<OutboxEntry[]> {
-    const { expired } = await this.contents(boardId, now);
+  async removeExpired(boardId: string, actorId: string, now = Date.now()): Promise<OutboxEntry[]> {
+    const { expired } = await this.contents(boardId, actorId, now);
     if (expired.length === 0) return [];
     const database = await this.database();
     const transaction = database.transaction(STORE_NAME, "readwrite");
-    for (const entry of expired) transaction.objectStore(STORE_NAME).delete(entry.commandId);
+    for (const entry of expired) {
+      transaction.objectStore(STORE_NAME).delete([entry.boardId, entry.actorId, entry.commandId]);
+    }
     await transactionDone(transaction);
     return expired;
   }
 
-  private async listAll(boardId: string): Promise<OutboxEntry[]> {
+  private async listAll(boardId: string, actorId: string): Promise<OutboxEntry[]> {
     const database = await this.database();
     const transaction = database.transaction(STORE_NAME, "readonly");
-    const index = transaction.objectStore(STORE_NAME).index("boardId");
-    const entries = (await requestDone(index.getAll(IDBKeyRange.only(boardId)))) as OutboxEntry[];
+    const index = transaction.objectStore(STORE_NAME).index(BOARD_ACTOR_INDEX);
+    const entries = (await requestDone(
+      index.getAll(IDBKeyRange.only([boardId, actorId])),
+    )) as OutboxEntry[];
     return entries.sort((a, b) => a.createdAt - b.createdAt);
   }
 
@@ -115,10 +124,20 @@ export class DurableOutbox {
       const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
       request.onupgradeneeded = () => {
         const database = request.result;
-        if (database.objectStoreNames.contains(STORE_NAME)) return;
-        const store = database.createObjectStore(STORE_NAME, { keyPath: "commandId" });
-        store.createIndex("boardId", "boardId", { unique: false });
-        store.createIndex("createdAt", "createdAt", { unique: false });
+        const store = database.objectStoreNames.contains(STORE_NAME)
+          ? (request.transaction as IDBTransaction).objectStore(STORE_NAME)
+          : database.createObjectStore(STORE_NAME, {
+              keyPath: ["boardId", "actorId", "commandId"],
+            });
+        if (!store.indexNames.contains("boardId")) {
+          store.createIndex("boardId", "boardId", { unique: false });
+        }
+        if (!store.indexNames.contains("createdAt")) {
+          store.createIndex("createdAt", "createdAt", { unique: false });
+        }
+        if (!store.indexNames.contains(BOARD_ACTOR_INDEX)) {
+          store.createIndex(BOARD_ACTOR_INDEX, ["boardId", "actorId"], { unique: false });
+        }
       };
       request.onsuccess = () => {
         const database = request.result;

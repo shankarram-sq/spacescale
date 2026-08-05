@@ -103,9 +103,10 @@ const MAX_CONNECTIONS_PER_ACTOR = 5;
 const MAX_REPLAY_ACTIONS = 100;
 const SNAPSHOT_ACTION_INTERVAL = 250;
 const SNAPSHOT_TIME_MS = 60_000;
-// `actions` is a rowid table with two bounded-lookup secondary indexes. Keep
-// this billing invariant covered by the focused action-accounting test.
-const ACTION_INSERT_BILLED_ROWS = 3;
+// `actions` is a rowid table with two secondary indexes; its insert trigger
+// also appends one index-free activity row. Keep this invariant covered by the
+// focused action-accounting test.
+const ACTION_INSERT_BILLED_ROWS = 4;
 const MAX_CATCH_UP_ROUNDS = 5;
 const MAX_ITEM_IDENTITIES = 50_000;
 const ACTION_COMPACTION_TRIGGER = 20_000;
@@ -127,6 +128,7 @@ const PRE_CLEAR_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 const RETAINED_AUTOMATIC_SNAPSHOTS = 20;
 const MAX_RETENTION_DELETES_PER_ALARM = 20;
 const INTERNAL_INIT_PATH = "/__internal/initialize";
+const INTERNAL_CLASSROOM_LAUNCH_PATH = "/__internal/classroom-launch";
 const TELEMETRY_AGGREGATE_INTERVAL_MS = 60_000;
 // Start graceful shedding before the hard 200 frame/s room ceiling so a
 // 20-drawer burst cannot monopolize the Durable Object input queue. The
@@ -263,6 +265,11 @@ export class BoardRoom extends DurableObject<Env> {
       return this.initialize(request, actor);
     }
 
+    if (url.pathname === INTERNAL_CLASSROOM_LAUNCH_PATH) {
+      requireMethod(request, "POST");
+      return this.classroomLaunch(request, actor);
+    }
+
     const board = this.requireBoard();
     const prefix = `/api/v1/boards/${board.public_id}`;
     if (!url.pathname.startsWith(`${prefix}/`))
@@ -292,6 +299,10 @@ export class BoardRoom extends DurableObject<Env> {
     if (suffix === "/members") {
       requireMethod(request, "GET");
       return this.listMembers(actor, board);
+    }
+    if (suffix === "/activity") {
+      requireMethod(request, "GET");
+      return this.listActivity(request, actor, board);
     }
     const memberMatch = /^\/members\/(a_[A-Za-z0-9_-]{22})$/u.exec(suffix);
     if (memberMatch !== null) {
@@ -420,6 +431,182 @@ export class BoardRoom extends DurableObject<Env> {
     return Response.json({ initialized: true, created }, { status: created ? 201 : 200 });
   }
 
+  private async classroomLaunch(request: Request, actor: InternalActorContext): Promise<Response> {
+    const body = await readJsonBody(request, 16 * 1_024);
+    assertExactKeys(
+      body,
+      [
+        "publicId",
+        "title",
+        "role",
+        "displayName",
+        "launchIssuedAtMs",
+        "placeholderOwnerActorId",
+        "ownerRecoveryHash",
+      ],
+      [
+        "publicId",
+        "title",
+        "role",
+        "displayName",
+        "launchIssuedAtMs",
+        "placeholderOwnerActorId",
+        "ownerRecoveryHash",
+      ],
+    );
+    if (typeof body.publicId !== "string" || !/^b_[A-Za-z0-9_-]{22}$/u.test(body.publicId)) {
+      throw new HttpError(400, "BAD_REQUEST", "The board ID is invalid.");
+    }
+    const title = optionalTitle(body.title);
+    if (body.role !== "viewer" && body.role !== "editor" && body.role !== "owner") {
+      throw new HttpError(400, "BAD_REQUEST", "The classroom role is invalid.");
+    }
+    const role = body.role;
+    const displayName = requireDisplayName(body.displayName);
+    const launchIssuedAtMs = requireSafeInteger(
+      body.launchIssuedAtMs,
+      "launchIssuedAtMs",
+      0,
+      Number.MAX_SAFE_INTEGER,
+    );
+    const placeholderOwnerActorId = requireActorId(body.placeholderOwnerActorId);
+    const recoveryHash =
+      typeof body.ownerRecoveryHash === "string" ? base64UrlToBytes(body.ownerRecoveryHash) : null;
+    if (recoveryHash === null || recoveryHash.byteLength !== 32) {
+      throw new HttpError(400, "BAD_REQUEST", "The recovery capability is invalid.");
+    }
+
+    const now = Date.now();
+    let created = false;
+    let launchApplied = false;
+    let primaryOwner = false;
+    let aclVersion = 1;
+    this.ctx.storage.transactionSync(() => {
+      let board = readBoard(this.#sql);
+      if (board === null) {
+        this.#sql.exec(
+          `INSERT INTO board(
+             singleton, public_id, title, access_mode, drawing_policy,
+             owner_actor_id, owner_recovery_hash, snapshot_live_item_count,
+             snapshot_live_item_bytes, classroom_mode, created_at_ms, updated_at_ms
+           ) VALUES (1, ?, ?, 'private', 'editors_enabled', ?, ?, 0, 0, 1, ?, ?)`,
+          body.publicId,
+          title,
+          placeholderOwnerActorId,
+          recoveryHash,
+          now,
+          now,
+        );
+        board = this.requireBoard();
+        created = true;
+      } else if (board.public_id !== body.publicId || board.classroom_mode !== 1) {
+        throw new HttpError(409, "CONFLICT", "The board was already initialized.");
+      }
+      // Primary custody must move through the explicit ownership-transfer path.
+      // A signed launch may update this actor's name, but cannot strand custody.
+      const effectiveRole: BoardRole = actor.actorId === board.owner_actor_id ? "owner" : role;
+
+      const member = this.#sql
+        .exec<{
+          role: BoardRole;
+          display_name: string;
+          updated_at_ms: number;
+          revoked_at_ms: number | null;
+        }>(
+          `SELECT role, display_name, updated_at_ms, revoked_at_ms
+           FROM members WHERE actor_id = ?`,
+          actor.actorId,
+        )
+        .toArray()[0];
+      if (member === undefined || launchIssuedAtMs > member.updated_at_ms) {
+        if (member === undefined) this.ensureMemberCapacity();
+        this.#sql.exec(
+          `INSERT INTO members(
+             actor_id, role, display_name, created_at_ms, updated_at_ms, revoked_at_ms
+           ) VALUES (?, ?, ?, ?, ?, NULL)
+           ON CONFLICT(actor_id) DO UPDATE SET
+             role = excluded.role,
+             display_name = excluded.display_name,
+             updated_at_ms = excluded.updated_at_ms,
+             revoked_at_ms = NULL`,
+          actor.actorId,
+          effectiveRole,
+          displayName,
+          now,
+          launchIssuedAtMs,
+        );
+        this.#sql.exec(
+          `INSERT INTO history_state(actor_id, history_version, updated_at_ms)
+           VALUES (?, 0, ?) ON CONFLICT(actor_id) DO NOTHING`,
+          actor.actorId,
+          now,
+        );
+        launchApplied = true;
+      }
+
+      const activeMember = this.#sql
+        .exec<{ role: BoardRole; revoked_at_ms: number | null }>(
+          "SELECT role, revoked_at_ms FROM members WHERE actor_id = ?",
+          actor.actorId,
+        )
+        .one();
+      const currentPrimary = this.#sql
+        .exec<{ role: BoardRole; revoked_at_ms: number | null }>(
+          "SELECT role, revoked_at_ms FROM members WHERE actor_id = ?",
+          board.owner_actor_id,
+        )
+        .toArray()[0];
+      const needsPrimaryOwner =
+        currentPrimary === undefined ||
+        currentPrimary.revoked_at_ms !== null ||
+        currentPrimary.role !== "owner";
+      if (
+        activeMember.revoked_at_ms === null &&
+        activeMember.role === "owner" &&
+        needsPrimaryOwner
+      ) {
+        this.#sql.exec("UPDATE board SET owner_actor_id = ? WHERE singleton = 1", actor.actorId);
+        launchApplied = true;
+      }
+
+      if (created) {
+        aclVersion = 1;
+        this.#sql.exec("UPDATE board SET updated_at_ms = ? WHERE singleton = 1", now);
+      } else if (launchApplied) {
+        aclVersion = board.acl_version + 1;
+        this.#sql.exec(
+          `UPDATE board SET acl_version = ?, updated_at_ms = ? WHERE singleton = 1`,
+          aclVersion,
+          now,
+        );
+      } else {
+        aclVersion = board.acl_version;
+      }
+      primaryOwner = this.requireBoard().owner_actor_id === actor.actorId;
+    });
+
+    this.#telemetry = await durableObjectTelemetryContext(this.env, body.publicId);
+    if (!created && launchApplied) this.broadcastAccessChanged(actor.actorId);
+    const board = this.requireBoard();
+    const access = this.requireView(board, actor.actorId);
+    return Response.json(
+      {
+        board: {
+          id: board.public_id,
+          title: board.title,
+          accessMode: board.access_mode,
+          drawingPolicy: board.drawing_policy,
+          aclVersion,
+        },
+        actor: { id: actor.actorId, role: access.role, displayName: access.displayName },
+        created,
+        launchApplied,
+        primaryOwner,
+      },
+      { status: created ? 201 : 200, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+
   private bootstrap(actor: InternalActorContext, capturedBoard: BoardRow): Response {
     const board = readBoard(this.#sql) ?? capturedBoard;
     const access = this.requireView(board, actor.actorId);
@@ -475,6 +662,7 @@ export class BoardRoom extends DurableObject<Env> {
         createdAt: member.created_at_ms,
         updatedAt: member.updated_at_ms,
         revokedAt: member.revoked_at_ms,
+        primaryOwner: member.actor_id === board.owner_actor_id,
       }));
     return Response.json(
       { aclVersion: board.acl_version, members },
@@ -482,6 +670,80 @@ export class BoardRoom extends DurableObject<Env> {
     );
   }
 
+  private listActivity(request: Request, actor: InternalActorContext, board: BoardRow): Response {
+    this.requireOwner(board, actor.actorId);
+    const url = new URL(request.url);
+    const allowedParameters = new Set(["afterSeq", "limit"]);
+    if ([...url.searchParams.keys()].some((key) => !allowedParameters.has(key))) {
+      throw new HttpError(400, "BAD_REQUEST", "The activity query is invalid.");
+    }
+    if (
+      url.searchParams.getAll("afterSeq").length > 1 ||
+      url.searchParams.getAll("limit").length > 1
+    ) {
+      throw new HttpError(400, "BAD_REQUEST", "The activity query is invalid.");
+    }
+    const parseParameter = (
+      name: "afterSeq" | "limit",
+      fallback: number,
+      minimum: number,
+      maximum: number,
+    ): number => {
+      const raw = url.searchParams.get(name);
+      if (raw === null) return fallback;
+      if (!/^(?:0|[1-9]\d*)$/u.test(raw)) {
+        throw new HttpError(400, "BAD_REQUEST", "The activity query is invalid.");
+      }
+      return requireSafeInteger(Number(raw), name, minimum, maximum);
+    };
+    const afterSeq = parseParameter("afterSeq", 0, 0, Number.MAX_SAFE_INTEGER);
+    const limit = parseParameter("limit", 100, 1, 500);
+    const rows = this.#sql
+      .exec<{
+        seq: number;
+        action_id: string;
+        actor_id: string;
+        display_name: string;
+        kind: string;
+        affected_item_ids_json: string;
+        accepted_at_ms: number;
+      }>(
+        `SELECT seq, action_id, actor_id, display_name, kind,
+          affected_item_ids_json, accepted_at_ms
+         FROM activity_log WHERE seq > ? ORDER BY seq LIMIT ?`,
+        afterSeq,
+        limit + 1,
+      )
+      .toArray();
+    const hasMore = rows.length > limit;
+    const events = rows.slice(0, limit).map((row) => {
+      let itemIds: unknown;
+      try {
+        itemIds = JSON.parse(row.affected_item_ids_json);
+      } catch {
+        throw new HttpError(500, "INTERNAL_ERROR", "Stored activity data is invalid.");
+      }
+      if (!Array.isArray(itemIds) || itemIds.some((itemId) => typeof itemId !== "string")) {
+        throw new HttpError(500, "INTERNAL_ERROR", "Stored activity data is invalid.");
+      }
+      return {
+        seq: row.seq,
+        actionId: row.action_id,
+        actor: { id: row.actor_id, displayName: row.display_name },
+        kind: row.kind,
+        itemIds,
+        acceptedAt: row.accepted_at_ms,
+      };
+    });
+    return Response.json(
+      {
+        events,
+        nextAfterSeq: events.at(-1)?.seq ?? afterSeq,
+        hasMore,
+      },
+      { headers: { "Cache-Control": "no-store" } },
+    );
+  }
   private async patchMember(
     request: Request,
     actor: InternalActorContext,
@@ -496,8 +758,8 @@ export class BoardRoom extends DurableObject<Env> {
       Number.MAX_SAFE_INTEGER,
     );
     const role = body.role;
-    if (role !== undefined && role !== "viewer" && role !== "editor") {
-      throw new HttpError(400, "BAD_REQUEST", "Members may be viewers or editors.");
+    if (role !== undefined && role !== "viewer" && role !== "editor" && role !== "owner") {
+      throw new HttpError(400, "BAD_REQUEST", "The member role is invalid.");
     }
     const displayName =
       body.displayName === undefined ? undefined : requireDisplayName(body.displayName);
@@ -510,18 +772,24 @@ export class BoardRoom extends DurableObject<Env> {
       this.requireOwner(board, actor.actorId);
       this.checkAcl(board, expected);
       const member = this.#sql
-        .exec<{ role: BoardRole; display_name: string; revoked_at_ms: number | null }>(
-          "SELECT role, display_name, revoked_at_ms FROM members WHERE actor_id = ?",
+        .exec<{
+          role: BoardRole;
+          display_name: string;
+          updated_at_ms: number;
+          revoked_at_ms: number | null;
+        }>(
+          "SELECT role, display_name, updated_at_ms, revoked_at_ms FROM members WHERE actor_id = ?",
           targetActorId,
         )
         .toArray()[0];
       if (member === undefined || member.revoked_at_ms !== null) {
         throw new HttpError(404, "NOT_FOUND", "Member not found.");
       }
-      if (member.role === "owner")
-        throw new HttpError(409, "CONFLICT", "Use ownership transfer for the owner.");
+      if (targetActorId === board.owner_actor_id && role !== undefined && role !== "owner") {
+        throw new HttpError(409, "CONFLICT", "Transfer primary ownership before demoting it.");
+      }
       aclVersion = board.acl_version + 1;
-      const now = Date.now();
+      const now = Math.max(Date.now(), member.updated_at_ms + 1);
       this.#sql.exec(
         "UPDATE members SET role = ?, display_name = ?, updated_at_ms = ? WHERE actor_id = ?",
         role ?? member.role,
@@ -559,17 +827,18 @@ export class BoardRoom extends DurableObject<Env> {
       this.requireOwner(board, actor.actorId);
       this.checkAcl(board, expected);
       const member = this.#sql
-        .exec<{ role: BoardRole; revoked_at_ms: number | null }>(
-          "SELECT role, revoked_at_ms FROM members WHERE actor_id = ?",
+        .exec<{ role: BoardRole; updated_at_ms: number; revoked_at_ms: number | null }>(
+          "SELECT role, updated_at_ms, revoked_at_ms FROM members WHERE actor_id = ?",
           targetActorId,
         )
         .toArray()[0];
       if (member === undefined || member.revoked_at_ms !== null) {
         throw new HttpError(404, "NOT_FOUND", "Member not found.");
       }
-      if (member.role === "owner")
-        throw new HttpError(409, "CONFLICT", "The owner cannot be revoked.");
-      const now = Date.now();
+      if (targetActorId === board.owner_actor_id) {
+        throw new HttpError(409, "CONFLICT", "The primary owner cannot be revoked.");
+      }
+      const now = Math.max(Date.now(), member.updated_at_ms + 1);
       aclVersion = board.acl_version + 1;
       this.#sql.exec(
         "UPDATE members SET revoked_at_ms = ?, updated_at_ms = ? WHERE actor_id = ?",
@@ -720,8 +989,8 @@ export class BoardRoom extends DurableObject<Env> {
       this.ctx.storage.transactionSync(() => {
         const board = this.requireBoard();
         const currentMember = this.#sql
-          .exec<{ role: BoardRole; revoked_at_ms: number | null }>(
-            "SELECT role, revoked_at_ms FROM members WHERE actor_id = ?",
+          .exec<{ role: BoardRole; updated_at_ms: number; revoked_at_ms: number | null }>(
+            "SELECT role, updated_at_ms, revoked_at_ms FROM members WHERE actor_id = ?",
             actor.actorId,
           )
           .toArray()[0];
@@ -760,6 +1029,8 @@ export class BoardRoom extends DurableObject<Env> {
         this.ensureBoardActive(board);
         if (currentMember === undefined) this.ensureMemberCapacity();
         role = invitation.role;
+        const memberMutationAt = Math.max(now, (currentMember?.updated_at_ms ?? -1) + 1);
+
         this.#sql.exec(
           "UPDATE invitations SET use_count = use_count + 1 WHERE invitation_id = ?",
           invitation.invitation_id,
@@ -776,7 +1047,7 @@ export class BoardRoom extends DurableObject<Env> {
           role,
           displayName,
           now,
-          now,
+          memberMutationAt,
         );
         this.#sql.exec(
           `INSERT INTO history_state(actor_id, history_version, updated_at_ms)
@@ -788,7 +1059,7 @@ export class BoardRoom extends DurableObject<Env> {
         this.#sql.exec(
           "UPDATE board SET acl_version = ?, updated_at_ms = ? WHERE singleton = 1",
           aclVersion,
-          now,
+          memberMutationAt,
         );
       });
       this.broadcastAccessChanged(actor.actorId);
@@ -813,20 +1084,30 @@ export class BoardRoom extends DurableObject<Env> {
       this.ensureBoardActive(board);
       const currentOwner = board.owner_actor_id;
       const recoveringMember = this.#sql
-        .exec<{ present: number }>(
-          "SELECT 1 AS present FROM members WHERE actor_id = ?",
+        .exec<{ updated_at_ms: number }>(
+          "SELECT updated_at_ms FROM members WHERE actor_id = ?",
           actor.actorId,
         )
         .toArray()[0];
+      const currentOwnerMember = this.#sql
+        .exec<{ updated_at_ms: number }>(
+          "SELECT updated_at_ms FROM members WHERE actor_id = ?",
+          currentOwner,
+        )
+        .toArray()[0];
+      const membershipChangedAt = Math.max(
+        now,
+        (recoveringMember?.updated_at_ms ?? -1) + 1,
+        (currentOwnerMember?.updated_at_ms ?? -1) + 1,
+      );
       if (recoveringMember === undefined) this.ensureMemberCapacity();
       if (currentOwner !== actor.actorId) {
         this.#sql.exec(
           "UPDATE members SET role = 'editor', updated_at_ms = ? WHERE actor_id = ? AND revoked_at_ms IS NULL",
-          now,
+          membershipChangedAt,
           currentOwner,
         );
       }
-      // The unique owner index requires demotion before promotion.
       this.#sql.exec(
         `INSERT INTO members(actor_id, role, display_name, created_at_ms, updated_at_ms, revoked_at_ms)
          VALUES (?, 'owner', ?, ?, ?, NULL)
@@ -836,7 +1117,7 @@ export class BoardRoom extends DurableObject<Env> {
         actor.actorId,
         displayName,
         now,
-        now,
+        membershipChangedAt,
       );
       aclVersion = board.acl_version + 1;
       this.#sql.exec(
@@ -845,7 +1126,7 @@ export class BoardRoom extends DurableObject<Env> {
         actor.actorId,
         replacementHash,
         aclVersion,
-        now,
+        membershipChangedAt,
       );
     });
     this.broadcastAccessChanged();
@@ -876,7 +1157,7 @@ export class BoardRoom extends DurableObject<Env> {
     if (targetActorId === actor.actorId)
       throw new HttpError(409, "CONFLICT", "Choose another editor.");
     const initialBoard = this.requireBoard();
-    this.requireOwner(initialBoard, actor.actorId);
+    this.requirePrimaryOwner(initialBoard, actor.actorId);
     this.checkAcl(initialBoard, expected);
     const recoveryToken = randomToken(32);
     const recoveryHash = await sha256(recoveryToken);
@@ -892,29 +1173,46 @@ export class BoardRoom extends DurableObject<Env> {
     let aclVersion = expected;
     this.ctx.storage.transactionSync(() => {
       const board = this.requireBoard();
-      this.requireOwner(board, actor.actorId);
+      this.requirePrimaryOwner(board, actor.actorId);
       this.checkAcl(board, expected);
       const target = this.#sql
-        .exec<{ role: BoardRole; revoked_at_ms: number | null }>(
-          "SELECT role, revoked_at_ms FROM members WHERE actor_id = ?",
+        .exec<{ role: BoardRole; updated_at_ms: number; revoked_at_ms: number | null }>(
+          "SELECT role, updated_at_ms, revoked_at_ms FROM members WHERE actor_id = ?",
           targetActorId,
         )
         .toArray()[0];
-      if (target === undefined || target.revoked_at_ms !== null || target.role !== "editor") {
+      const eligibleRole =
+        target?.role === "editor" || (board.classroom_mode === 1 && target?.role === "owner");
+      if (target === undefined || target.revoked_at_ms !== null || !eligibleRole) {
         throw new HttpError(
           409,
           "CONFLICT",
-          "Ownership can only be transferred to an active editor.",
+          board.classroom_mode === 1
+            ? "Primary ownership can only be transferred to an active editor or owner."
+            : "Ownership can only be transferred to an active editor.",
+        );
+      }
+      const currentPrimary = this.#sql
+        .exec<{ updated_at_ms: number }>(
+          "SELECT updated_at_ms FROM members WHERE actor_id = ?",
+          actor.actorId,
+        )
+        .one();
+      const membershipChangedAt = Math.max(
+        now,
+        target.updated_at_ms + 1,
+        currentPrimary.updated_at_ms + 1,
+      );
+      if (board.classroom_mode !== 1) {
+        this.#sql.exec(
+          "UPDATE members SET role = 'editor', updated_at_ms = ? WHERE actor_id = ?",
+          membershipChangedAt,
+          actor.actorId,
         );
       }
       this.#sql.exec(
-        "UPDATE members SET role = 'editor', updated_at_ms = ? WHERE actor_id = ?",
-        now,
-        actor.actorId,
-      );
-      this.#sql.exec(
         "UPDATE members SET role = 'owner', updated_at_ms = ? WHERE actor_id = ?",
-        now,
+        membershipChangedAt,
         targetActorId,
       );
       aclVersion = board.acl_version + 1;
@@ -924,7 +1222,7 @@ export class BoardRoom extends DurableObject<Env> {
         targetActorId,
         recoveryHash,
         aclVersion,
-        now,
+        membershipChangedAt,
       );
     });
     this.broadcastAccessChanged();
@@ -955,7 +1253,7 @@ export class BoardRoom extends DurableObject<Env> {
     const now = Date.now();
     this.ctx.storage.transactionSync(() => {
       const board = this.requireBoard();
-      this.requireOwner(board, actor.actorId);
+      this.requirePrimaryOwner(board, actor.actorId);
       this.checkAcl(board, expected);
       aclVersion = board.acl_version + 1;
       this.#sql.exec(
@@ -1665,7 +1963,7 @@ export class BoardRoom extends DurableObject<Env> {
           replayBytes: 0,
           resyncRequired: true,
         });
-        return new Response(null, { status: 101, webSocket: client });
+        return webSocketUpgradeResponse(client, request);
       }
 
       let cursor = since;
@@ -1718,7 +2016,7 @@ export class BoardRoom extends DurableObject<Env> {
         resyncRequired: true,
       });
     }
-    return new Response(null, { status: 101, webSocket: client });
+    return webSocketUpgradeResponse(client, request);
   }
 
   async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -3207,8 +3505,16 @@ export class BoardRoom extends DurableObject<Env> {
 
   private requireOwner(board: BoardRow, actorId: string) {
     const access = this.requireView(board, actorId);
-    if (access.role !== "owner" || board.owner_actor_id !== actorId) {
-      throw new HttpError(403, "FORBIDDEN", "Only the board owner may perform this action.");
+    if (access.role !== "owner") {
+      throw new HttpError(403, "FORBIDDEN", "Only a board owner may perform this action.");
+    }
+    return access;
+  }
+
+  private requirePrimaryOwner(board: BoardRow, actorId: string) {
+    const access = this.requireOwner(board, actorId);
+    if (board.owner_actor_id !== actorId) {
+      throw new HttpError(403, "FORBIDDEN", "Only the primary owner may perform this action.");
     }
     return access;
   }
@@ -4335,6 +4641,18 @@ function sendJson(socket: WebSocket, value: unknown): void {
   socket.send(JSON.stringify(value));
 }
 
+function webSocketUpgradeResponse(socket: WebSocket, request: Request): Response {
+  const requestedProtocols = (request.headers.get("sec-websocket-protocol") ?? "")
+    .split(",")
+    .map((protocol) => protocol.trim());
+  const headers = new Headers();
+  if (requestedProtocols.includes("whiteboard.v1")) {
+    // Authentication-bearing protocols are consumed by the gateway. Never
+    // reflect an arbitrary protocol value from the request back to a client.
+    headers.set("Sec-WebSocket-Protocol", "whiteboard.v1");
+  }
+  return new Response(null, { status: 101, headers, webSocket: socket });
+}
 function canDraw(policy: DrawingPolicy, role: BoardRole): boolean {
   if (policy === "locked" || role === "viewer") return false;
   if (policy === "owner_only") return role === "owner";

@@ -155,9 +155,11 @@ const env = requireEnvironment([
   "CLOUDFLARE_ACCOUNT_ID",
   "CLOUDFLARE_API_TOKEN",
   "R2_BUCKET_NAME",
+  "CLASSROOM_INTEGRATION_KEY",
   "APP_HOSTNAME",
   "TURNSTILE_SITE_KEY",
 ] as const);
+env.ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.trim() ?? "";
 assertPublicConfiguration(env);
 const configuration = configurationFor(args.environment);
 assertPublicConfiguration({ APP_HOSTNAME: configuration.hostname });
@@ -228,6 +230,8 @@ if (args.deploy) {
     `APP_HOSTNAME:${configuration.hostname}`,
     "--var",
     `BOARD_CREATION_ENABLED:${configuration.boardCreationEnabled}`,
+    "--var",
+    `ALLOWED_ORIGINS:${env.ALLOWED_ORIGINS}`,
     "--var",
     `TURNSTILE_SITE_KEY:${env.TURNSTILE_SITE_KEY}`,
     "--var",

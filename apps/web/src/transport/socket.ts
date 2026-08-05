@@ -61,6 +61,7 @@ export class BoardSocket {
   constructor(
     private readonly boardId: string,
     private readonly hooks: SocketHooks,
+    private readonly authorizationToken: string | null = null,
   ) {
     document.addEventListener("visibilitychange", this.onVisibilityChange);
   }
@@ -86,7 +87,9 @@ export class BoardSocket {
     url.searchParams.set("since", String(this.hooks.getSequence()));
     url.searchParams.set("client", this.clientInstanceId);
 
-    const socket = new WebSocket(url);
+    const socket = this.authorizationToken
+      ? new WebSocket(url, ["whiteboard.v1", `auth.${this.authorizationToken}`])
+      : new WebSocket(url);
     this.socket = socket;
     socket.addEventListener("open", () => {
       if (generation !== this.generation) return;

@@ -156,41 +156,45 @@ export class BoardApp {
       notify: (message, kind) => this.notify(message, kind),
     });
 
-    this.socket = new BoardSocket(bootstrap.board.id, {
-      getSequence: () => this.model.lastAppliedSeq,
-      onPhase: (phase) => {
-        this.phase = phase;
-        if (phase === "archived") this.enterArchivedState();
-        this.updatePermissions();
+    this.socket = new BoardSocket(
+      bootstrap.board.id,
+      {
+        getSequence: () => this.model.lastAppliedSeq,
+        onPhase: (phase) => {
+          this.phase = phase;
+          if (phase === "archived") this.enterArchivedState();
+          this.updatePermissions();
+        },
+        onWelcome: (state) => {
+          this.bootstrap.actor.role = state.role;
+          this.bootstrap.actor.sessionExpiresAt = state.sessionExpiresAt;
+          this.bootstrap.board.drawingPolicy = state.drawingPolicy;
+          this.bootstrap.board.aclVersion = state.aclVersion;
+          this.history.historyVersion = state.historyVersion;
+          this.history.canUndo = state.canUndo;
+          this.history.canRedo = state.canRedo;
+          this.updatePermissions();
+        },
+        onAction: (action, replay) => this.handleAction(action, replay),
+        onReady: () => {
+          this.flushOutbox();
+          this.socket.sendPresence(null, this.tools.tool);
+        },
+        onRejected: (frame) => this.handleRejection(frame),
+        onHistory: (state) => {
+          this.history = state;
+          this.updateHistoryControls();
+        },
+        onAccessChanged: (frame) => this.handleAccessChanged(frame),
+        onOwnerRecovery: (token, aclVersion) => this.handleOwnerRecovery(token, aclVersion),
+        onPreview: (preview, cancelKey) => this.handlePreview(preview, cancelKey),
+        onPresence: (presences, replace) => this.handlePresence(presences, replace),
+        onResync: (reason) => this.resync(reason),
+        onNotice: (message, kind) => this.notify(message, kind),
+        refreshSession: () => this.api.refreshSession(),
       },
-      onWelcome: (state) => {
-        this.bootstrap.actor.role = state.role;
-        this.bootstrap.actor.sessionExpiresAt = state.sessionExpiresAt;
-        this.bootstrap.board.drawingPolicy = state.drawingPolicy;
-        this.bootstrap.board.aclVersion = state.aclVersion;
-        this.history.historyVersion = state.historyVersion;
-        this.history.canUndo = state.canUndo;
-        this.history.canRedo = state.canRedo;
-        this.updatePermissions();
-      },
-      onAction: (action, replay) => this.handleAction(action, replay),
-      onReady: () => {
-        this.flushOutbox();
-        this.socket.sendPresence(null, this.tools.tool);
-      },
-      onRejected: (frame) => this.handleRejection(frame),
-      onHistory: (state) => {
-        this.history = state;
-        this.updateHistoryControls();
-      },
-      onAccessChanged: (frame) => this.handleAccessChanged(frame),
-      onOwnerRecovery: (token, aclVersion) => this.handleOwnerRecovery(token, aclVersion),
-      onPreview: (preview, cancelKey) => this.handlePreview(preview, cancelKey),
-      onPresence: (presences, replace) => this.handlePresence(presences, replace),
-      onResync: (reason) => this.resync(reason),
-      onNotice: (message, kind) => this.notify(message, kind),
-      refreshSession: () => this.api.ensureSession(),
-    });
+      api.embedSessionToken,
+    );
 
     this.bindShellEvents();
     this.model.subscribe(() => this.updateStatus());
@@ -509,7 +513,7 @@ export class BoardApp {
 
   private async restoreOutbox(): Promise<void> {
     try {
-      const contents = await this.outbox.contents(this.bootstrap.board.id);
+      const contents = await this.outbox.contents(this.bootstrap.board.id, this.bootstrap.actor.id);
       this.expiredRecovery = contents.expired;
       for (const entry of contents.active) {
         try {
@@ -577,7 +581,11 @@ export class BoardApp {
       return;
     }
     try {
-      await this.outbox.removeMany(commands.map((command) => command.commandId));
+      await this.outbox.removeMany(
+        this.bootstrap.board.id,
+        this.bootstrap.actor.id,
+        commands.map((command) => command.commandId),
+      );
       this.model.discardOptimistic();
       this.notify("Unsaved edits were discarded. The shared board is unchanged.", "info");
     } catch {
@@ -615,7 +623,7 @@ export class BoardApp {
       op: normalizedOperation,
     };
     try {
-      await this.outbox.put(this.bootstrap.board.id, command);
+      await this.outbox.put(this.bootstrap.board.id, this.bootstrap.actor.id, command);
     } catch (error) {
       if (error instanceof OutboxLimitError) {
         this.recoveryBanner.hidden = false;
@@ -639,7 +647,7 @@ export class BoardApp {
       );
       if (pending) {
         this.model.reject(action.commandId);
-        void this.outbox.remove(action.commandId);
+        void this.outbox.remove(this.bootstrap.board.id, this.bootstrap.actor.id, action.commandId);
         this.updateStatus();
         return;
       }
@@ -650,7 +658,9 @@ export class BoardApp {
     try {
       const result = this.model.applyAction(action);
       this.bootstrap.board.latestSeq = action.seq;
-      if (result.acknowledged) void this.outbox.remove(action.commandId);
+      if (result.acknowledged) {
+        void this.outbox.remove(this.bootstrap.board.id, this.bootstrap.actor.id, action.commandId);
+      }
       if (!replay && action.actor.id !== this.bootstrap.actor.id) {
         this.liveRegion.textContent = `${action.actor.displayName} updated the board.`;
       }
@@ -670,7 +680,7 @@ export class BoardApp {
     const code = typeof frame.code === "string" ? frame.code : "REJECTED";
     if (commandId) {
       this.model.reject(commandId);
-      void this.outbox.remove(commandId);
+      void this.outbox.remove(this.bootstrap.board.id, this.bootstrap.actor.id, commandId);
     }
     if (code === "STALE_HISTORY" && typeof frame.historyVersion === "number") {
       this.history = {
@@ -782,7 +792,7 @@ export class BoardApp {
   private async resync(reason: string): Promise<void> {
     this.notify(reason, "info");
     const next = await this.api.bootstrap(this.bootstrap.board.id);
-    const contents = await this.outbox.contents(next.board.id);
+    const contents = await this.outbox.contents(next.board.id, next.actor.id);
     const activeCommands: CommitFrame[] = [];
     for (const entry of contents.active) {
       try {
@@ -989,9 +999,9 @@ export class BoardApp {
     section.innerHTML = `
       <h3>Who can draw now</h3>
       <div class="segmented-control" data-policy-controls aria-label="Drawing policy">
-        <button type="button" data-policy="editors_enabled">Editors</button>
-        <button type="button" data-policy="owner_only">Owner only</button>
-        <button type="button" data-policy="locked">Locked</button>
+        <button type="button" data-policy="editors_enabled">Students can edit</button>
+        <button type="button" data-policy="owner_only">Lock students</button>
+        <button type="button" data-policy="locked">Lock everyone</button>
       </div>
       <label class="field-row"><span>Board link</span><select data-access-mode aria-label="Board link access"><option value="link_view">Anyone with link can view</option><option value="private">Members only</option></select></label>
     `;
@@ -1091,7 +1101,7 @@ export class BoardApp {
     safety.className = "access-section safety-section";
     safety.innerHTML = `
       <h3>Recovery & board</h3>
-      <p>Recovery links are shown once. Store yours somewhere private.</p>
+      <p>Primary ownership recovery links are shown once and must be stored privately.</p>
       <button type="button" data-rotate-recovery>Rotate recovery link</button>
       <button class="danger-button" type="button" data-clear-board>Clear board</button>
       <div class="archive-danger-zone">
@@ -1102,10 +1112,11 @@ export class BoardApp {
       </div>
       <div class="one-time-secret" data-recovery-result hidden></div>
     `;
-    query(safety, "[data-rotate-recovery]", HTMLButtonElement).addEventListener(
-      "click",
-      () => void this.rotateRecovery(),
+    const rotateRecoveryButton = query(safety, "[data-rotate-recovery]", HTMLButtonElement);
+    rotateRecoveryButton.hidden = !this.accessMembers.some(
+      (member) => member.id === this.bootstrap.actor.id && member.primaryOwner === true,
     );
+    rotateRecoveryButton.addEventListener("click", () => void this.rotateRecovery());
     query(safety, "[data-clear-board]", HTMLButtonElement).addEventListener(
       "click",
       () => void this.clearBoard(),
@@ -1134,10 +1145,10 @@ export class BoardApp {
     identity.append(avatar, text);
     row.append(identity);
 
-    if (member.role === "owner") {
+    if (member.primaryOwner === true) {
       const owner = document.createElement("span");
       owner.className = "role-pill";
-      owner.textContent = "Owner";
+      owner.textContent = "Primary owner";
       row.append(owner);
       return row;
     }
@@ -1146,20 +1157,23 @@ export class BoardApp {
     const select = document.createElement("select");
     select.setAttribute("aria-label", `Role for ${member.displayName}`);
     select.innerHTML =
-      '<option value="editor">Editor</option><option value="viewer">Viewer</option>';
+      '<option value="owner">Owner</option><option value="editor">Editor</option><option value="viewer">Viewer</option>';
     select.value = member.role;
     select.addEventListener(
       "change",
-      () => void this.changeMemberRole(member, select.value as "editor" | "viewer"),
+      () => void this.changeMemberRole(member, select.value as Member["role"]),
     );
     actions.append(select);
-    if (member.role === "editor") {
+    const currentActorIsPrimary = this.accessMembers.some(
+      (value) => value.id === this.bootstrap.actor.id && value.primaryOwner === true,
+    );
+    if (currentActorIsPrimary && (member.role === "editor" || member.role === "owner")) {
       const transfer = document.createElement("button");
       transfer.type = "button";
       transfer.className = "make-owner";
-      transfer.setAttribute("aria-label", `Make ${member.displayName} the board owner`);
-      transfer.title = "Transfer ownership";
-      transfer.textContent = "Owner";
+      transfer.setAttribute("aria-label", `Make ${member.displayName} the primary owner`);
+      transfer.title = "Transfer primary ownership";
+      transfer.textContent = "Make primary";
       transfer.addEventListener("click", () => void this.transferOwnership(member));
       actions.append(transfer);
     }
@@ -1356,7 +1370,7 @@ export class BoardApp {
     }
   }
 
-  private async changeMemberRole(member: Member, role: "editor" | "viewer"): Promise<void> {
+  private async changeMemberRole(member: Member, role: Member["role"]): Promise<void> {
     try {
       const result = await this.api.updateMember(
         this.bootstrap.board.id,
@@ -1391,7 +1405,7 @@ export class BoardApp {
   private async transferOwnership(member: Member): Promise<void> {
     if (
       !confirm(
-        `Make ${member.displayName} the owner? You will become an editor, and every previous recovery link will stop working.`,
+        `Make ${member.displayName} the primary owner? They will control ownership recovery, and every previous recovery link will stop working.`,
       )
     )
       return;
@@ -1402,12 +1416,10 @@ export class BoardApp {
         this.bootstrap.board.aclVersion,
       );
       this.adoptAclVersion(result);
-      this.bootstrap.actor.role = "editor";
-      const previousOwner = this.accessMembers.find(
-        (value) => value.id === this.bootstrap.actor.id,
-      );
-      if (previousOwner) previousOwner.role = "editor";
+      const previousOwner = this.accessMembers.find((value) => value.primaryOwner === true);
+      if (previousOwner) previousOwner.primaryOwner = false;
       member.role = "owner";
+      member.primaryOwner = true;
       this.closeDrawers();
       this.updatePermissions();
       this.renderParticipants();
@@ -1504,7 +1516,7 @@ export class BoardApp {
     this.archivePending = true;
     this.updatePermissions();
     try {
-      const outbox = await this.outbox.contents(this.bootstrap.board.id);
+      const outbox = await this.outbox.contents(this.bootstrap.board.id, this.bootstrap.actor.id);
       if (
         this.model.pendingCount > 0 ||
         outbox.active.length > 0 ||
@@ -1828,7 +1840,7 @@ export class BoardApp {
     if (this.expiredRecovery.length > 0) {
       const commandIds = this.expiredRecovery.map((entry) => entry.commandId);
       void this.outbox
-        .removeMany(commandIds)
+        .removeMany(this.bootstrap.board.id, this.bootstrap.actor.id, commandIds)
         .then(() => {
           this.expiredRecovery = [];
           this.syncRecoveryBanner();
@@ -1874,7 +1886,7 @@ export class BoardApp {
 }
 
 export function boardIdFromPath(pathname = window.location.pathname): string | null {
-  const match = pathname.match(/^\/b\/([^/]+)\/?$/);
+  const match = pathname.match(/^\/(?:embed\/)?b\/([^/]+)\/?$/u);
   if (!match?.[1]) return null;
   try {
     const boardId = decodeURIComponent(match[1]);

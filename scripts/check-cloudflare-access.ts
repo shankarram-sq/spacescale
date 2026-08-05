@@ -28,10 +28,12 @@ const env = requireEnvironment([
   "CLOUDFLARE_API_TOKEN",
   "TURNSTILE_SECRET_KEY",
   "SESSION_SIGNING_KEY_CURRENT",
+  "CLASSROOM_INTEGRATION_KEY",
   "R2_BUCKET_NAME",
   "TURNSTILE_SITE_KEY",
   "APP_HOSTNAME",
 ] as const);
+env.ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.trim() ?? "";
 assertPublicConfiguration(env);
 
 const environments = JSON.parse(readFileSync("config/environments.json", "utf8")) as Record<

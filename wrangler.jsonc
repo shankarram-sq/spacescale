@@ -5,6 +5,7 @@
   "compatibility_date": "2026-08-04",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
+  "keep_vars": true,
   "routes": [{ "pattern": "spacescale.net", "custom_domain": true }],
   "assets": {
     "directory": "apps/web/dist",
@@ -83,6 +84,7 @@
       "vars": {
         "APP_HOSTNAME": "localhost",
         "BOARD_CREATION_ENABLED": "true",
+        "ALLOWED_ORIGINS": "http://localhost,http://localhost:4173,http://localhost:5173,https://127.0.0.1:8787",
         "TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
         "TURNSTILE_ENABLED": "false",
         "ENVIRONMENT": "development"
