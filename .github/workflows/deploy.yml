@@ -241,6 +241,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      actions: read
       contents: read
       statuses: read
     steps:
@@ -262,16 +263,58 @@ jobs:
             "repos/$GITHUB_REPOSITORY/commits/$VALIDATED_SHA/status" \
             -f per_page=100
           )"
-          jq -e \
-            --arg target_prefix "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/" '
+          attestation="$(jq -cer '
               [.statuses[] | select(.context == "cloudflare/staging")] |
               sort_by(.id) |
               last |
-              .state == "success" and
-              .creator.login == "github-actions[bot]" and
-              (.target_url | startswith($target_prefix))
-            ' <<< "$status_json" >/dev/null || {
+              select(.state == "success")
+            ' <<< "$status_json")" || {
             echo "the exact main commit lacks a trusted successful staging attestation" >&2
+            exit 1
+          }
+
+          target_prefix="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/"
+          attested_run_id="$(jq -er --arg prefix "$target_prefix" '
+            .target_url |
+            select(type == "string" and startswith($prefix)) |
+            ltrimstr($prefix) |
+            select(test("^[1-9][0-9]*$"))
+          ' <<< "$attestation")" || {
+            echo "the staging attestation does not reference an exact Actions run" >&2
+            exit 1
+          }
+
+          run_json="$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$attested_run_id"
+          )"
+          jobs_json="$(gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$attested_run_id/jobs" \
+            -f per_page=100
+          )"
+          jq -e \
+            --arg sha "$VALIDATED_SHA" \
+            --arg repository "$GITHUB_REPOSITORY" '
+              .name == "Deploy" and
+              .path == ".github/workflows/deploy.yml" and
+              .event == "workflow_run" and
+              .status == "completed" and
+              .conclusion == "success" and
+              .head_sha == $sha and
+              .head_repository.full_name == $repository
+            ' <<< "$run_json" >/dev/null || {
+            echo "the staging attestation does not reference a trusted successful Deploy run" >&2
+            exit 1
+          }
+          jq -e --arg sha "$VALIDATED_SHA" '
+            [.jobs[] | select(
+              .name == "Staging deploy and 20-client smoke" and
+              .head_sha == $sha
+            )] |
+            length == 1 and
+            .[0].status == "completed" and
+            .[0].conclusion == "success"
+          ' <<< "$jobs_json" >/dev/null || {
+            echo "the attested Deploy run lacks a successful exact-SHA staging job" >&2
             exit 1
           }
 

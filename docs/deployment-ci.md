@@ -78,6 +78,13 @@ release branches, with deliberately separate authority:
   attestation for that SHA is successful. The production GitHub environment
   must then be approved before any production candidate is uploaded.
 
+The production gate resolves the attestation's exact numeric Actions run URL
+through GitHub's API. It verifies the run is a completed, successful `Deploy`
+workflow for the same repository and SHA, then verifies that run contains one
+successful exact-SHA **Staging deploy and 20-client smoke** job. It does not
+depend on the commit-status `creator` field, which GitHub may return as null for
+statuses written with a workflow `GITHUB_TOKEN`.
+
 The staging workflow uses `wrangler versions upload` followed by
 `wrangler versions deploy ...@100`. These commands update code and traffic but
 do not reconcile routes, so the ongoing staging token needs no Zone Workers
