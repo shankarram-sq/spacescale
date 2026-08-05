@@ -1,0 +1,84 @@
+import type { Env } from "../types";
+import { HttpError } from "./errors";
+
+export const INTERNAL_ACTOR_HEADER = "x-whiteboard-internal-actor";
+export const INTERNAL_EXPIRY_HEADER = "x-whiteboard-internal-session-expiry";
+export const INTERNAL_REQUEST_ID_HEADER = "x-whiteboard-internal-request-id";
+
+const INTERNAL_HEADERS = [
+  INTERNAL_ACTOR_HEADER,
+  INTERNAL_EXPIRY_HEADER,
+  INTERNAL_REQUEST_ID_HEADER,
+] as const;
+
+export function expectedOrigin(request: Request, env: Env): string {
+  const url = new URL(request.url);
+  if (url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]") {
+    return url.origin;
+  }
+  return `https://${env.APP_HOSTNAME}`;
+}
+
+export function requireSecureTransport(request: Request): void {
+  const url = new URL(request.url);
+  if (
+    url.protocol !== "https:" &&
+    url.hostname !== "localhost" &&
+    url.hostname !== "127.0.0.1" &&
+    url.hostname !== "[::1]"
+  ) {
+    throw new HttpError(400, "BAD_REQUEST", "HTTPS is required.");
+  }
+}
+
+export function requireSameOrigin(request: Request, env: Env): void {
+  const origin = request.headers.get("origin");
+  if (origin === null || origin !== expectedOrigin(request, env)) {
+    throw new HttpError(403, "FORBIDDEN", "The request origin is not allowed.");
+  }
+}
+
+export function withSecurityHeaders(response: Response, requestId: string): Response {
+  const headers = new Headers(response.headers);
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("Referrer-Policy", "no-referrer");
+  headers.set(
+    "Permissions-Policy",
+    "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()",
+  );
+  headers.set(
+    "Content-Security-Policy",
+    "default-src 'self'; script-src 'self' https://challenges.cloudflare.com; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-src https://challenges.cloudflare.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+  );
+  headers.set("X-Frame-Options", "DENY");
+  headers.set("Cross-Origin-Opener-Policy", "same-origin");
+  headers.set("X-Request-Id", requestId);
+  const init: ResponseInit & { webSocket?: WebSocket } = {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  };
+  const socket = (response as Response & { webSocket?: WebSocket }).webSocket;
+  if (socket !== undefined && socket !== null) init.webSocket = socket;
+  return new Response(response.body, init);
+}
+
+export function makeInternalRequest(
+  original: Request,
+  actorId: string,
+  sessionExpiresAt: number,
+  requestId: string,
+): Request {
+  const headers = new Headers(original.headers);
+  for (const header of INTERNAL_HEADERS) headers.delete(header);
+  headers.set(INTERNAL_ACTOR_HEADER, actorId);
+  headers.set(INTERNAL_EXPIRY_HEADER, String(sessionExpiresAt));
+  headers.set(INTERNAL_REQUEST_ID_HEADER, requestId);
+  return new Request(original, { headers });
+}
+
+export function stripInternalHeaders(request: Request): Request {
+  const headers = new Headers(request.headers);
+  for (const header of INTERNAL_HEADERS) headers.delete(header);
+  return new Request(request, { headers });
+}

@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.sample
+cloudflare-collab-canvas.md
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+node_modules/
+dist/
+coverage/
+apps/web/dist/
+playwright-report/
+test-results/
+.wrangler/
+*.tsbuildinfo

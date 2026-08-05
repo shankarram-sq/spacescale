@@ -1,0 +1,293 @@
+import { safeLog } from "./logging";
+import type { DurableObjectTelemetryContext } from "./telemetry";
+
+export interface SchemaMigration {
+  version: number;
+  name: string;
+  sql: string;
+}
+
+export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
+  {
+    version: 1,
+    name: "board_authority",
+    sql: `
+      CREATE TABLE board (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        public_id TEXT NOT NULL UNIQUE,
+        title TEXT NOT NULL,
+        access_mode TEXT NOT NULL CHECK (access_mode IN ('private', 'link_view')),
+        drawing_policy TEXT NOT NULL DEFAULT 'editors_enabled'
+          CHECK (drawing_policy IN ('editors_enabled', 'owner_only', 'locked')),
+        owner_actor_id TEXT NOT NULL,
+        owner_recovery_hash BLOB NOT NULL,
+        latest_seq INTEGER NOT NULL DEFAULT 0,
+        next_z INTEGER NOT NULL DEFAULT 1,
+        acl_version INTEGER NOT NULL DEFAULT 1,
+        min_replay_seq INTEGER NOT NULL DEFAULT 0,
+        latest_snapshot_seq INTEGER NOT NULL DEFAULT 0,
+        dirty_since_seq INTEGER,
+        dirty_since_at_ms INTEGER,
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        archived_at_ms INTEGER
+      );
+
+      CREATE TABLE members (
+        actor_id TEXT PRIMARY KEY,
+        role TEXT NOT NULL CHECK (role IN ('viewer', 'editor', 'owner')),
+        display_name TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        revoked_at_ms INTEGER
+      ) WITHOUT ROWID;
+
+      CREATE UNIQUE INDEX members_one_active_owner
+        ON members(role)
+        WHERE role = 'owner' AND revoked_at_ms IS NULL;
+
+      CREATE TABLE invitations (
+        invitation_id TEXT PRIMARY KEY,
+        token_hash BLOB NOT NULL UNIQUE,
+        role TEXT NOT NULL CHECK (role IN ('viewer', 'editor')),
+        label TEXT,
+        max_uses INTEGER NOT NULL,
+        use_count INTEGER NOT NULL DEFAULT 0,
+        expires_at_ms INTEGER NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        revoked_at_ms INTEGER
+      ) WITHOUT ROWID;
+
+      CREATE TABLE items (
+        item_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        z_order INTEGER NOT NULL,
+        version_seq INTEGER NOT NULL,
+        state_token TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
+        data_json TEXT NOT NULL CHECK (json_valid(data_json)),
+        min_x REAL,
+        min_y REAL,
+        max_x REAL,
+        max_y REAL
+      ) WITHOUT ROWID;
+
+      CREATE UNIQUE INDEX items_z_order ON items(z_order);
+      CREATE INDEX items_live_paint_order ON items(deleted, z_order);
+
+      CREATE TABLE actions (
+        seq INTEGER PRIMARY KEY,
+        action_id TEXT NOT NULL,
+        command_id TEXT NOT NULL,
+        request_hash TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+        affected_item_ids_json TEXT NOT NULL CHECK (json_valid(affected_item_ids_json)),
+        undoable INTEGER NOT NULL CHECK (undoable IN (0, 1)),
+        target_action_seq INTEGER,
+        accepted_at_ms INTEGER NOT NULL
+      );
+
+      CREATE UNIQUE INDEX actions_action_id ON actions(action_id);
+      CREATE UNIQUE INDEX actions_command_id ON actions(command_id);
+
+      CREATE TABLE history_entries (
+        normal_action_seq INTEGER PRIMARY KEY,
+        actor_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('active', 'undone', 'invalidated')),
+        last_transition_seq INTEGER NOT NULL
+      );
+
+      CREATE INDEX history_undo_stack
+        ON history_entries(actor_id, state, normal_action_seq DESC);
+      CREATE INDEX history_redo_stack
+        ON history_entries(actor_id, state, last_transition_seq DESC);
+
+      CREATE TABLE history_state (
+        actor_id TEXT PRIMARY KEY,
+        history_version INTEGER NOT NULL DEFAULT 0,
+        updated_at_ms INTEGER NOT NULL
+      ) WITHOUT ROWID;
+
+      CREATE TABLE snapshots (
+        seq INTEGER PRIMARY KEY,
+        r2_json_key TEXT NOT NULL,
+        r2_svg_key TEXT,
+        sha256 TEXT NOT NULL,
+        item_count INTEGER NOT NULL,
+        byte_count INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('automatic', 'named', 'pre_clear')),
+        label TEXT,
+        created_by TEXT,
+        created_at_ms INTEGER NOT NULL
+      );
+
+      CREATE UNIQUE INDEX snapshots_r2_json_key ON snapshots(r2_json_key);
+
+      CREATE TABLE scheduled_jobs (
+        job_name TEXT PRIMARY KEY,
+        due_at_ms INTEGER NOT NULL,
+        attempt INTEGER NOT NULL DEFAULT 0,
+        payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+        updated_at_ms INTEGER NOT NULL
+      ) WITHOUT ROWID;
+    `,
+  },
+  {
+    version: 2,
+    name: "http_idempotency_and_usage",
+    sql: `
+      CREATE TABLE http_receipts (
+        actor_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        request_hash TEXT NOT NULL,
+        response_json TEXT NOT NULL CHECK (json_valid(response_json)),
+        status INTEGER NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (actor_id, idempotency_key, operation)
+      ) WITHOUT ROWID;
+
+      CREATE INDEX http_receipts_created_at ON http_receipts(created_at_ms);
+
+      CREATE TABLE usage_counters (
+        day_utc TEXT PRIMARY KEY,
+        incoming_frames INTEGER NOT NULL DEFAULT 0,
+        billed_request_estimate INTEGER NOT NULL DEFAULT 0,
+        rows_read_estimate INTEGER NOT NULL DEFAULT 0,
+        rows_written_estimate INTEGER NOT NULL DEFAULT 0,
+        r2_reads INTEGER NOT NULL DEFAULT 0,
+        r2_writes INTEGER NOT NULL DEFAULT 0,
+        r2_bytes INTEGER NOT NULL DEFAULT 0,
+        actions INTEGER NOT NULL DEFAULT 0,
+        snapshots INTEGER NOT NULL DEFAULT 0,
+        updated_at_ms INTEGER NOT NULL
+      ) WITHOUT ROWID;
+    `,
+  },
+  {
+    version: 3,
+    name: "action_compaction_lineage",
+    sql: `
+      ALTER TABLE history_entries ADD COLUMN action_id TEXT;
+      ALTER TABLE history_entries ADD COLUMN payload_json TEXT
+        CHECK (payload_json IS NULL OR json_valid(payload_json));
+
+      UPDATE history_entries
+      SET action_id = (
+        SELECT actions.action_id FROM actions
+        WHERE actions.seq = history_entries.normal_action_seq
+      ),
+      payload_json = (
+        SELECT actions.payload_json FROM actions
+        WHERE actions.seq = history_entries.normal_action_seq
+      );
+
+      CREATE UNIQUE INDEX history_entries_action_id ON history_entries(action_id)
+        WHERE action_id IS NOT NULL;
+
+      CREATE TABLE action_receipts (
+        command_id TEXT PRIMARY KEY,
+        action_id TEXT NOT NULL UNIQUE,
+        actor_id TEXT NOT NULL,
+        request_hash TEXT NOT NULL,
+        payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+        accepted_at_ms INTEGER NOT NULL
+      ) WITHOUT ROWID;
+
+      CREATE INDEX action_receipts_accepted_at
+        ON action_receipts(accepted_at_ms);
+    `,
+  },
+  {
+    version: 4,
+    name: "prospective_snapshot_accounting",
+    sql: `
+      ALTER TABLE board ADD COLUMN snapshot_live_item_count INTEGER NOT NULL DEFAULT -1
+        CHECK (snapshot_live_item_count >= -1);
+      ALTER TABLE board ADD COLUMN snapshot_live_item_bytes INTEGER NOT NULL DEFAULT -1
+        CHECK (snapshot_live_item_bytes >= -1);
+    `,
+  },
+  {
+    version: 5,
+    name: "checkpointed_usage_accounting",
+    sql: `
+      ALTER TABLE actions ADD COLUMN usage_incoming_frames INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE actions ADD COLUMN usage_rows_read_estimate INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE actions ADD COLUMN usage_rows_written_estimate INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE actions ADD COLUMN usage_r2_reads INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE actions ADD COLUMN usage_r2_writes INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE actions ADD COLUMN usage_r2_bytes INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE actions ADD COLUMN usage_snapshots INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE board ADD COLUMN usage_checkpoint_seq INTEGER NOT NULL DEFAULT 0;
+
+      -- Existing actions predate per-action accounting. Start the durable
+      -- checkpoint cursor at the current authority rather than presenting
+      -- invented zero-cost estimates for historical traffic.
+      UPDATE board SET usage_checkpoint_seq = latest_seq;
+    `,
+  },
+] as const;
+
+export function applyMigrations(
+  storage: DurableObjectStorage,
+  telemetry: DurableObjectTelemetryContext = {
+    environment: "unknown",
+    workerVersionId: "unknown",
+    durableObjectVersion: "unknown",
+  },
+): void {
+  const sql = storage.sql;
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS _sql_schema_migrations (
+      version INTEGER PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      applied_at_ms INTEGER NOT NULL
+    )
+  `);
+
+  const applied = new Map(
+    sql
+      .exec<{ version: number; name: string }>(
+        "SELECT version, name FROM _sql_schema_migrations ORDER BY version",
+      )
+      .toArray()
+      .map((row) => [row.version, row.name]),
+  );
+
+  for (const migration of SCHEMA_MIGRATIONS) {
+    const existingName = applied.get(migration.version);
+    if (existingName !== undefined && existingName !== migration.name) {
+      throw new Error(`Schema migration ${migration.version} has an unexpected name.`);
+    }
+    if (existingName !== undefined) continue;
+    storage.transactionSync(() => {
+      const raced = sql
+        .exec<{ name: string }>(
+          "SELECT name FROM _sql_schema_migrations WHERE version = ?",
+          migration.version,
+        )
+        .toArray()[0];
+      if (raced !== undefined) {
+        if (raced.name !== migration.name) throw new Error("Schema migration ledger conflict.");
+        return;
+      }
+      sql.exec(migration.sql);
+      sql.exec(
+        "INSERT INTO _sql_schema_migrations(version, name, applied_at_ms) VALUES (?, ?, ?)",
+        migration.version,
+        migration.name,
+        Date.now(),
+      );
+    });
+    safeLog("info", "schema.migrated", {
+      ...telemetry,
+      result: migration.name,
+      seq: migration.version,
+    });
+  }
+}

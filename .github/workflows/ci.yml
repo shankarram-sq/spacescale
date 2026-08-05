@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [development, main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run docs:env-check
+      - name: Validate observability queries, charts, and alert thresholds
+        run: npm run observability:check
+      - run: npm run lint
+      - name: Verify generated Worker binding types
+        run: |
+          npm run cf:types
+          git diff --exit-code -- apps/edge/worker-configuration.d.ts
+      - run: npm run typecheck
+      - name: Verify frozen prior-client protocol compatibility
+        run: npm run protocol:compat
+      - run: npm test
+      - run: npm run build:web
+      - run: npm run test:edge
+      - run: npm run build
+      - run: npm run security:scan
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: cp .dev.vars.example .dev.vars
+      - run: npx playwright install --with-deps
+      - run: npm run build:web
+      - run: npm run test:e2e

@@ -1,0 +1,360 @@
+import type { AccessMode, BoardSnapshot, Bootstrap, DrawingPolicy, Member, Role } from "../types";
+
+export type FragmentClaim = { type: "invite" | "recovery"; token: string };
+
+export type ManagedInvitation = {
+  id: string;
+  role: "viewer" | "editor";
+  label: string | null;
+  maxUses: number;
+  expiresAt: number;
+};
+
+export type CreatedInvitation = {
+  invitation: ManagedInvitation;
+  token: string;
+  url: string;
+  idempotentReplay: boolean;
+};
+
+export type RecoverySnapshot = {
+  seq: number;
+  sha256: string;
+  itemCount: number;
+  byteCount: number;
+  kind: "automatic" | "named" | "pre_clear";
+  label: string | null;
+  createdBy: string | null;
+  createdAt: number;
+};
+
+export class ApiError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly status: number,
+    readonly details?: unknown,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+export class ApiClient {
+  private csrfToken = "";
+  turnstile: { enabled: boolean; siteKey: string | null } = { enabled: false, siteKey: null };
+
+  async ensureSession(): Promise<void> {
+    const result = await this.request<Record<string, unknown>>(
+      "/api/v1/session",
+      { method: "POST" },
+      false,
+    );
+    const token = result.csrfToken ?? result.csrf;
+    if (typeof token !== "string" || token.length === 0) {
+      throw new ApiError(
+        "INVALID_RESPONSE",
+        "The server did not return a session token.",
+        500,
+        result,
+      );
+    }
+    this.csrfToken = token;
+    if (isRecord(result.turnstile)) {
+      this.turnstile = {
+        enabled: result.turnstile.enabled === true,
+        siteKey: typeof result.turnstile.siteKey === "string" ? result.turnstile.siteKey : null,
+      };
+    }
+  }
+
+  async bootstrap(boardId: string): Promise<Bootstrap> {
+    const result = await this.request<Bootstrap>(
+      `/api/v1/boards/${encodeURIComponent(boardId)}/bootstrap`,
+    );
+    if ("url" in result.snapshot) {
+      const snapshot = await this.request<BoardSnapshot>(result.snapshot.url);
+      return { ...result, snapshot };
+    }
+    return result;
+  }
+
+  async claim(
+    boardId: string,
+    claim: FragmentClaim,
+    confirmRecovery = false,
+    turnstileToken?: string,
+  ): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/boards/${encodeURIComponent(boardId)}/claims`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: claim.type,
+        token: claim.token,
+        ...(claim.type === "recovery" ? { confirmOwnershipTransfer: confirmRecovery } : {}),
+        ...(turnstileToken ? { turnstileToken } : {}),
+      }),
+    });
+  }
+
+  async createBoard(
+    title: string,
+    turnstileToken?: string,
+  ): Promise<{
+    board: { id: string; url: string; title: string; accessMode: AccessMode };
+    ownerRecoveryToken: string;
+    ownerRecoveryUrl: string;
+  }> {
+    return this.request("/api/v1/boards", {
+      method: "POST",
+      body: JSON.stringify({ title, ...(turnstileToken ? { turnstileToken } : {}) }),
+    });
+  }
+
+  async members(boardId: string): Promise<Member[]> {
+    const result = await this.request<unknown>(
+      `/api/v1/boards/${encodeURIComponent(boardId)}/members`,
+    );
+    const values = Array.isArray(result)
+      ? result
+      : isRecord(result) && Array.isArray(result.members)
+        ? result.members
+        : [];
+    return values.flatMap((value) => {
+      if (!isRecord(value)) return [];
+      const id =
+        typeof value.id === "string"
+          ? value.id
+          : typeof value.actorId === "string"
+            ? value.actorId
+            : null;
+      const displayName = typeof value.displayName === "string" ? value.displayName : null;
+      const role = value.role;
+      if (!id || !displayName || (role !== "viewer" && role !== "editor" && role !== "owner"))
+        return [];
+      return [{ id, displayName, role, connected: value.connected === true } satisfies Member];
+    });
+  }
+
+  async updateMember(
+    boardId: string,
+    actorId: string,
+    role: Exclude<Role, "owner">,
+    expectedAclVersion: number,
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      `/api/v1/boards/${encodeURIComponent(boardId)}/members/${encodeURIComponent(actorId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ role, expectedAclVersion }),
+      },
+    );
+  }
+
+  async revokeMember(
+    boardId: string,
+    actorId: string,
+    expectedAclVersion: number,
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      `/api/v1/boards/${encodeURIComponent(boardId)}/members/${encodeURIComponent(actorId)}`,
+      {
+        method: "DELETE",
+        body: JSON.stringify({ expectedAclVersion }),
+      },
+    );
+  }
+
+  async updateSettings(
+    boardId: string,
+    values: { title?: string; accessMode?: AccessMode; drawingPolicy?: DrawingPolicy },
+    expectedAclVersion: number,
+  ): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/boards/${encodeURIComponent(boardId)}/settings`, {
+      method: "PATCH",
+      body: JSON.stringify({ ...values, expectedAclVersion }),
+    });
+  }
+
+  async archiveBoard(
+    boardId: string,
+    expectedAclVersion: number,
+  ): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/boards/${encodeURIComponent(boardId)}/archive`, {
+      method: "POST",
+      body: JSON.stringify({ expectedAclVersion }),
+    });
+  }
+
+  async createInvitation(
+    boardId: string,
+    input: { role: "viewer" | "editor"; label?: string; maxUses: number; expiresAt: number },
+  ): Promise<CreatedInvitation> {
+    return this.request<CreatedInvitation>(
+      `/api/v1/boards/${encodeURIComponent(boardId)}/invitations`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": crypto.randomUUID() },
+        body: JSON.stringify({
+          role: input.role,
+          ...(input.label ? { label: input.label } : {}),
+          maxUses: input.maxUses,
+          expiresAtMs: input.expiresAt,
+        }),
+      },
+    );
+  }
+
+  async revokeInvitation(boardId: string, invitationId: string): Promise<void> {
+    await this.request(
+      `/api/v1/boards/${encodeURIComponent(boardId)}/invitations/${encodeURIComponent(invitationId)}`,
+      { method: "DELETE" },
+    );
+  }
+
+  async snapshots(boardId: string): Promise<RecoverySnapshot[]> {
+    const result = await this.request<{ snapshots?: unknown }>(
+      `/api/v1/boards/${encodeURIComponent(boardId)}/snapshots`,
+    );
+    if (!Array.isArray(result.snapshots)) return [];
+    return result.snapshots.flatMap((value) => parseRecoverySnapshot(value));
+  }
+
+  async createNamedSnapshot(boardId: string, label: string): Promise<RecoverySnapshot> {
+    const result = await this.request<{ snapshot?: unknown }>(
+      `/api/v1/boards/${encodeURIComponent(boardId)}/snapshots`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": crypto.randomUUID() },
+        body: JSON.stringify({ label }),
+      },
+    );
+    const snapshot = parseRecoverySnapshot(result.snapshot)[0];
+    if (snapshot === undefined) {
+      throw new ApiError("INVALID_RESPONSE", "The server returned invalid snapshot data.", 500);
+    }
+    return snapshot;
+  }
+
+  async restoreSnapshot(
+    boardId: string,
+    seq: number,
+    expectedBoardSeq: number,
+  ): Promise<{ restoredFromSeq: number; seq: number; requiresResync: boolean }> {
+    return this.request(
+      `/api/v1/boards/${encodeURIComponent(boardId)}/restore/${encodeURIComponent(String(seq))}`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": crypto.randomUUID() },
+        body: JSON.stringify({ expectedBoardSeq }),
+      },
+    );
+  }
+
+  async rotateRecovery(
+    boardId: string,
+    expectedAclVersion: number,
+  ): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/boards/${encodeURIComponent(boardId)}/owner-recovery/rotate`, {
+      method: "POST",
+      body: JSON.stringify({ expectedAclVersion }),
+    });
+  }
+
+  async transferOwnership(
+    boardId: string,
+    targetActorId: string,
+    expectedAclVersion: number,
+  ): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/boards/${encodeURIComponent(boardId)}/ownership-transfer`, {
+      method: "POST",
+      body: JSON.stringify({ targetActorId, expectedAclVersion }),
+    });
+  }
+
+  async request<T = Record<string, unknown>>(
+    path: string,
+    init: RequestInit = {},
+    includeCsrf = true,
+  ): Promise<T> {
+    const method = (init.method ?? "GET").toUpperCase();
+    const headers = new Headers(init.headers);
+    headers.set("Accept", "application/json");
+    if (init.body) headers.set("Content-Type", "application/json");
+    if (includeCsrf && method !== "GET" && method !== "HEAD" && this.csrfToken) {
+      headers.set("X-CSRF-Token", this.csrfToken);
+    }
+    const response = await fetch(path, {
+      ...init,
+      method,
+      headers,
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    if (response.status === 204) return undefined as T;
+
+    const contentType = response.headers.get("content-type") ?? "";
+    const payload: unknown = contentType.includes("application/json")
+      ? await response.json().catch(() => null)
+      : await response.text().catch(() => "");
+    if (!response.ok) {
+      const serverError = isRecord(payload) && isRecord(payload.error) ? payload.error : null;
+      throw new ApiError(
+        typeof serverError?.code === "string" ? serverError.code : `HTTP_${response.status}`,
+        typeof serverError?.message === "string"
+          ? serverError.message
+          : "The request could not be completed.",
+        response.status,
+        payload,
+      );
+    }
+    return payload as T;
+  }
+}
+
+export function takeFragmentClaim(locationValue: Location = window.location): FragmentClaim | null {
+  const parameters = new URLSearchParams(
+    locationValue.hash.startsWith("#") ? locationValue.hash.slice(1) : locationValue.hash,
+  );
+  const invite = parameters.get("invite");
+  const recovery = parameters.get("recovery");
+  if (!invite && !recovery) return null;
+
+  const clean = `${locationValue.pathname}${locationValue.search}`;
+  history.replaceState(history.state, "", clean);
+  if (recovery) return { type: "recovery", token: recovery };
+  return invite ? { type: "invite", token: invite } : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseRecoverySnapshot(value: unknown): RecoverySnapshot[] {
+  if (!isRecord(value)) return [];
+  if (
+    !Number.isSafeInteger(value.seq) ||
+    typeof value.sha256 !== "string" ||
+    !Number.isSafeInteger(value.itemCount) ||
+    !Number.isSafeInteger(value.byteCount) ||
+    (value.kind !== "automatic" && value.kind !== "named" && value.kind !== "pre_clear") ||
+    (value.label !== null && typeof value.label !== "string") ||
+    (value.createdBy !== null &&
+      value.createdBy !== undefined &&
+      typeof value.createdBy !== "string") ||
+    !Number.isSafeInteger(value.createdAt)
+  ) {
+    return [];
+  }
+  return [
+    {
+      seq: value.seq as number,
+      sha256: value.sha256,
+      itemCount: value.itemCount as number,
+      byteCount: value.byteCount as number,
+      kind: value.kind,
+      label: value.label,
+      createdBy: typeof value.createdBy === "string" ? value.createdBy : null,
+      createdAt: value.createdAt as number,
+    },
+  ];
+}

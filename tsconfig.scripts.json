@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "lib": ["ES2024", "DOM"],
+    "types": ["node"],
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "scripts/**/*.ts",
+    "tests/load/**/*.ts",
+    "tests/playwright/**/*.ts",
+    "vitest.config.ts",
+    "vitest.cloudflare.config.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}

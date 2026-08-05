@@ -1,0 +1,13 @@
+{
+  "name": "@collab/test-fixtures",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@collab/board-core": "*",
+    "@collab/protocol": "*"
+  }
+}

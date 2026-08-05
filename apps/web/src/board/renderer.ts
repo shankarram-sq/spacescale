@@ -1,0 +1,607 @@
+import type {
+  BoardItem,
+  BoxGeometry,
+  LineGeometry,
+  Matrix,
+  Point,
+  Presence,
+  RemotePreview,
+  StrokeStyle,
+  ToolName,
+} from "../types";
+import type { BoardModel, Bounds } from "./model";
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+export class BoardRenderer {
+  readonly svg: SVGSVGElement;
+  readonly viewport: CanvasViewport;
+
+  private readonly drawingArea: SVGGElement;
+  private readonly remoteLayer: SVGGElement;
+  private readonly localLayer: SVGGElement;
+  private readonly selectionLayer: SVGGElement;
+  private readonly cursorLayer: SVGGElement;
+  private readonly itemNodes = new Map<string, SVGGraphicsElement>();
+  private selectedIds = new Set<string>();
+
+  constructor(
+    container: HTMLElement,
+    private readonly model: BoardModel,
+  ) {
+    this.svg = svgElement("svg");
+    this.svg.id = "board-canvas";
+    this.svg.classList.add("board-canvas");
+    this.svg.tabIndex = 0;
+    this.svg.setAttribute("role", "application");
+    this.svg.setAttribute("aria-label", "Collaborative drawing canvas");
+    this.svg.setAttribute("aria-describedby", "canvas-help");
+
+    const defs = svgElement("defs");
+    const pattern = svgElement("pattern");
+    pattern.id = "dot-grid";
+    pattern.setAttribute("width", "24");
+    pattern.setAttribute("height", "24");
+    pattern.setAttribute("patternUnits", "userSpaceOnUse");
+    const dot = svgElement("circle");
+    dot.setAttribute("cx", "1");
+    dot.setAttribute("cy", "1");
+    dot.setAttribute("r", "0.85");
+    dot.setAttribute("fill", "#d7d4cc");
+    pattern.append(dot);
+    defs.append(pattern);
+
+    const background = svgElement("rect");
+    background.classList.add("canvas-background");
+    background.setAttribute("x", "-1000000");
+    background.setAttribute("y", "-1000000");
+    background.setAttribute("width", "2000000");
+    background.setAttribute("height", "2000000");
+    background.setAttribute("fill", "url(#dot-grid)");
+    background.setAttribute("pointer-events", "none");
+
+    this.drawingArea = layer("drawing-area", "Authoritative board content");
+    this.remoteLayer = layer("remote-preview-layer", "Collaborator previews");
+    this.localLayer = layer("local-preview-layer", "Your current gesture");
+    this.selectionLayer = layer("selection-layer", "Current selection");
+    this.cursorLayer = layer("cursor-layer", "Collaborator cursors");
+    this.svg.append(
+      defs,
+      background,
+      this.drawingArea,
+      this.remoteLayer,
+      this.localLayer,
+      this.selectionLayer,
+      this.cursorLayer,
+    );
+    container.append(this.svg);
+
+    this.viewport = new CanvasViewport(this.svg);
+    this.model.subscribe((ids) => this.render(ids));
+    this.render(null);
+  }
+
+  destroy(): void {
+    this.viewport.destroy();
+    this.svg.remove();
+  }
+
+  setCursor(tool: ToolName, temporaryPan = false): void {
+    this.svg.dataset.tool = temporaryPan ? "pan" : tool;
+  }
+
+  setSelection(ids: Iterable<string>, translated?: { x: number; y: number }): void {
+    this.selectedIds = new Set(ids);
+    this.selectionLayer.replaceChildren();
+    const bounds = this.model.boundsFor(this.selectedIds);
+    if (!bounds) return;
+    const x = translated?.x ?? 0;
+    const y = translated?.y ?? 0;
+    const outline = svgElement("rect");
+    outline.classList.add("selection-outline");
+    outline.setAttribute("x", String(bounds.minX + x));
+    outline.setAttribute("y", String(bounds.minY + y));
+    outline.setAttribute("width", String(Math.max(1, bounds.maxX - bounds.minX)));
+    outline.setAttribute("height", String(Math.max(1, bounds.maxY - bounds.minY)));
+    outline.setAttribute("rx", "3");
+    this.selectionLayer.append(outline);
+  }
+
+  showMarquee(bounds: Bounds | null): void {
+    this.selectionLayer.replaceChildren();
+    if (!bounds) {
+      this.setSelection(this.selectedIds);
+      return;
+    }
+    const marquee = svgElement("rect");
+    marquee.classList.add("selection-marquee");
+    marquee.setAttribute("x", String(bounds.minX));
+    marquee.setAttribute("y", String(bounds.minY));
+    marquee.setAttribute("width", String(bounds.maxX - bounds.minX));
+    marquee.setAttribute("height", String(bounds.maxY - bounds.minY));
+    this.selectionLayer.append(marquee);
+  }
+
+  showLocalPencil(points: readonly Point[], style: StrokeStyle): void {
+    this.localLayer.replaceChildren();
+    if (points.length === 0) return;
+    const path = svgElement("path");
+    path.classList.add("local-preview");
+    setStroke(path, style);
+    path.setAttribute("d", pencilPath(points));
+    this.localLayer.append(path);
+  }
+
+  showLocalShape(
+    kind: "line" | "rectangle" | "ellipse",
+    geometry: LineGeometry | BoxGeometry,
+    style: StrokeStyle,
+  ): void {
+    this.localLayer.replaceChildren();
+    const preview = shapeNode(kind, geometry, style);
+    preview.classList.add("local-preview");
+    this.localLayer.append(preview);
+  }
+
+  showLocalText(
+    point: Point,
+    value: string,
+    style: { color: string; fontSize: number; opacity: number },
+    transform: Matrix = [1, 0, 0, 1, 0, 0],
+  ): void {
+    this.localLayer.replaceChildren();
+    if (!value) return;
+    const text = svgElement("text");
+    text.classList.add("local-preview", "text-preview");
+    text.setAttribute("x", String(point[0]));
+    text.setAttribute("y", String(point[1]));
+    text.setAttribute("fill", style.color);
+    text.setAttribute("fill-opacity", String(style.opacity));
+    text.setAttribute("font-size", String(style.fontSize));
+    text.setAttribute("font-family", "Inter, ui-sans-serif, system-ui, sans-serif");
+    text.setAttribute("transform", matrixAttribute(transform));
+    value.split("\n").forEach((line, index) => {
+      const span = svgElement("tspan");
+      span.setAttribute("x", String(point[0]));
+      if (index > 0) span.setAttribute("dy", "1.2em");
+      span.textContent = line || " ";
+      text.append(span);
+    });
+    this.localLayer.append(text);
+  }
+
+  showMovePreview(ids: Iterable<string>, x: number, y: number): void {
+    this.localLayer.replaceChildren();
+    for (const id of ids) {
+      const item = this.model.getItem(id);
+      if (!item) continue;
+      const node = itemNode(item);
+      node.classList.add("local-preview", "move-preview");
+      node.setAttribute(
+        "transform",
+        matrixAttribute([
+          item.transform[0],
+          item.transform[1],
+          item.transform[2],
+          item.transform[3],
+          item.transform[4] + x,
+          item.transform[5] + y,
+        ]),
+      );
+      this.localLayer.append(node);
+    }
+    this.setSelection(ids, { x, y });
+  }
+
+  highlightForErase(ids: Iterable<string>): void {
+    const erased = new Set(ids);
+    for (const [id, node] of this.itemNodes) node.classList.toggle("erase-target", erased.has(id));
+  }
+
+  clearLocalPreview(): void {
+    this.localLayer.replaceChildren();
+    this.highlightForErase([]);
+    this.setSelection(this.selectedIds);
+  }
+
+  renderRemotePreviews(previews: Iterable<RemotePreview>): void {
+    this.remoteLayer.replaceChildren();
+    for (const preview of previews) {
+      const group = svgElement("g");
+      group.dataset.previewKey = preview.key;
+      group.classList.add("remote-preview");
+      const color = actorColor(preview.actorId);
+      const payload = preview.payload;
+
+      if (preview.kind === "pencil.start" || preview.kind === "pencil.segment") {
+        const points = asPoints(payload.points);
+        if (points.length >= 1) {
+          const path = svgElement("path");
+          setStroke(path, previewStyle(payload.style, color));
+          path.setAttribute("d", pencilPath(points));
+          group.append(path);
+        }
+      } else if (preview.kind === "shape.geometry") {
+        const kind = payload.itemKind ?? payload.shape ?? payload.kind;
+        const geometry = payload.geometry;
+        if ((kind === "line" || kind === "rectangle" || kind === "ellipse") && isRecord(geometry)) {
+          group.append(
+            shapeNode(
+              kind,
+              geometry as LineGeometry | BoxGeometry,
+              previewStyle(payload.style, color),
+            ),
+          );
+        }
+      } else if (preview.kind === "selection.transform") {
+        const ids = Array.isArray(payload.itemIds)
+          ? payload.itemIds.filter((id): id is string => typeof id === "string")
+          : [];
+        const translate = isRecord(payload.translate) ? payload.translate : payload;
+        const x = numberOr(translate.x, 0);
+        const y = numberOr(translate.y, 0);
+        for (const id of ids) {
+          const item = this.model.getItem(id);
+          if (!item) continue;
+          const node = itemNode(item);
+          node.setAttribute("stroke", color);
+          node.setAttribute("opacity", "0.45");
+          node.setAttribute(
+            "transform",
+            matrixAttribute([
+              item.transform[0],
+              item.transform[1],
+              item.transform[2],
+              item.transform[3],
+              item.transform[4] + x,
+              item.transform[5] + y,
+            ]),
+          );
+          group.append(node);
+        }
+      }
+      this.remoteLayer.append(group);
+    }
+  }
+
+  renderPresence(presences: Iterable<Presence>, ownActorId: string): void {
+    this.cursorLayer.replaceChildren();
+    for (const presence of presences) {
+      if (presence.id === ownActorId || !presence.cursor) continue;
+      const group = svgElement("g");
+      group.classList.add("participant-cursor");
+      group.setAttribute("transform", `translate(${presence.cursor.x} ${presence.cursor.y})`);
+      group.style.setProperty("--cursor-color", presence.color ?? actorColor(presence.id));
+
+      const pointer = svgElement("path");
+      pointer.setAttribute("d", "M 0 0 L 4.5 13 L 7.5 7.5 L 13 5 Z");
+      pointer.setAttribute("fill", "var(--cursor-color)");
+      pointer.setAttribute("stroke", "#fff");
+      pointer.setAttribute("stroke-width", "1.5");
+      pointer.setAttribute("vector-effect", "non-scaling-stroke");
+
+      const label = svgElement("text");
+      label.setAttribute("x", "11");
+      label.setAttribute("y", "20");
+      label.setAttribute("fill", "var(--cursor-color)");
+      label.setAttribute("paint-order", "stroke");
+      label.setAttribute("stroke", "#fff");
+      label.setAttribute("stroke-width", "4");
+      label.setAttribute("vector-effect", "non-scaling-stroke");
+      label.textContent = presence.displayName;
+      group.append(pointer, label);
+      this.cursorLayer.append(group);
+    }
+  }
+
+  private render(changedIds: ReadonlySet<string> | null): void {
+    const ids = changedIds ?? new Set([...this.itemNodes.keys(), ...this.model.items.keys()]);
+    for (const id of ids) {
+      const current = this.itemNodes.get(id);
+      const item = this.model.getItem(id);
+      if (!item) {
+        current?.remove();
+        this.itemNodes.delete(id);
+        continue;
+      }
+      const replacement = itemNode(item);
+      if (current) current.replaceWith(replacement);
+      this.itemNodes.set(id, replacement);
+      this.insertInPaintOrder(replacement, item.z);
+    }
+    this.setSelection([...this.selectedIds].filter((id) => this.model.getItem(id)));
+  }
+
+  private insertInPaintOrder(node: SVGGraphicsElement, z: number): void {
+    let before: ChildNode | null = null;
+    for (const child of this.drawingArea.children) {
+      if (child === node) continue;
+      const childZ = Number((child as SVGGraphicsElement).dataset.z ?? 0);
+      if (childZ > z) {
+        before = child;
+        break;
+      }
+    }
+    this.drawingArea.insertBefore(node, before);
+  }
+}
+
+export class CanvasViewport {
+  private x = 0;
+  private y = 0;
+  private width = 1;
+  private height = 1;
+  private zoomValue = 1;
+  private readonly resizeObserver: ResizeObserver;
+  private readonly listeners = new Set<(zoom: number) => void>();
+
+  constructor(private readonly svg: SVGSVGElement) {
+    this.resizeObserver = new ResizeObserver(() => this.resize());
+    this.resizeObserver.observe(svg);
+    this.resize();
+  }
+
+  get zoom(): number {
+    return this.zoomValue;
+  }
+
+  get viewBounds(): Bounds {
+    return {
+      minX: this.x,
+      minY: this.y,
+      maxX: this.x + this.width / this.zoomValue,
+      maxY: this.y + this.height / this.zoomValue,
+    };
+  }
+
+  subscribe(listener: (zoom: number) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  clientToBoard(clientX: number, clientY: number): Point {
+    const rect = this.svg.getBoundingClientRect();
+    return [
+      this.x + (clientX - rect.left) / this.zoomValue,
+      this.y + (clientY - rect.top) / this.zoomValue,
+    ];
+  }
+
+  boardToClient(point: Point): Point {
+    const rect = this.svg.getBoundingClientRect();
+    return [
+      rect.left + (point[0] - this.x) * this.zoomValue,
+      rect.top + (point[1] - this.y) * this.zoomValue,
+    ];
+  }
+
+  panByPixels(deltaX: number, deltaY: number): void {
+    this.x -= deltaX / this.zoomValue;
+    this.y -= deltaY / this.zoomValue;
+    this.update();
+  }
+
+  zoomAt(clientX: number, clientY: number, zoom: number): void {
+    const anchorBefore = this.clientToBoard(clientX, clientY);
+    this.zoomValue = Math.max(0.1, Math.min(8, zoom));
+    const anchorAfter = this.clientToBoard(clientX, clientY);
+    this.x += anchorBefore[0] - anchorAfter[0];
+    this.y += anchorBefore[1] - anchorAfter[1];
+    this.update();
+    for (const listener of this.listeners) listener(this.zoomValue);
+  }
+
+  reset(): void {
+    this.x = 0;
+    this.y = 0;
+    this.zoomValue = 1;
+    this.update();
+    for (const listener of this.listeners) listener(this.zoomValue);
+  }
+
+  fit(bounds: Bounds | undefined, padding = 80): void {
+    if (!bounds) {
+      this.reset();
+      return;
+    }
+    const contentWidth = Math.max(1, bounds.maxX - bounds.minX);
+    const contentHeight = Math.max(1, bounds.maxY - bounds.minY);
+    this.zoomValue = Math.max(
+      0.1,
+      Math.min(
+        4,
+        Math.min(
+          (this.width - padding * 2) / contentWidth,
+          (this.height - padding * 2) / contentHeight,
+        ),
+      ),
+    );
+    this.x = (bounds.minX + bounds.maxX) / 2 - this.width / this.zoomValue / 2;
+    this.y = (bounds.minY + bounds.maxY) / 2 - this.height / this.zoomValue / 2;
+    this.update();
+    for (const listener of this.listeners) listener(this.zoomValue);
+  }
+
+  destroy(): void {
+    this.resizeObserver.disconnect();
+    this.listeners.clear();
+  }
+
+  private resize(): void {
+    const rect = this.svg.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const oldCenterX = this.x + this.width / this.zoomValue / 2;
+    const oldCenterY = this.y + this.height / this.zoomValue / 2;
+    this.width = rect.width;
+    this.height = rect.height;
+    if (this.svg.dataset.ready === "true") {
+      this.x = oldCenterX - this.width / this.zoomValue / 2;
+      this.y = oldCenterY - this.height / this.zoomValue / 2;
+    }
+    this.svg.dataset.ready = "true";
+    this.update();
+  }
+
+  private update(): void {
+    this.svg.setAttribute(
+      "viewBox",
+      `${this.x} ${this.y} ${this.width / this.zoomValue} ${this.height / this.zoomValue}`,
+    );
+    this.svg.style.setProperty("--board-zoom", String(this.zoomValue));
+  }
+}
+
+function itemNode(item: BoardItem): SVGGraphicsElement {
+  let node: SVGGraphicsElement;
+  switch (item.kind) {
+    case "pencil": {
+      const path = svgElement("path");
+      path.setAttribute("d", pencilPath(item.geometry.points));
+      setStroke(path, item.style);
+      node = path;
+      break;
+    }
+    case "line":
+    case "rectangle":
+    case "ellipse":
+      node = shapeNode(item.kind, item.geometry, item.style);
+      break;
+    case "text": {
+      const text = svgElement("text");
+      text.setAttribute("x", String(item.geometry.x));
+      text.setAttribute("y", String(item.geometry.y));
+      text.setAttribute("fill", item.style.color);
+      text.setAttribute("fill-opacity", String(item.style.opacity));
+      text.setAttribute("font-size", String(item.style.fontSize));
+      text.setAttribute("font-family", "Inter, ui-sans-serif, system-ui, sans-serif");
+      text.setAttribute("xml:space", "preserve");
+      const lines = item.geometry.text.split("\n");
+      lines.forEach((line, index) => {
+        const span = svgElement("tspan");
+        span.setAttribute("x", String(item.geometry.x));
+        if (index > 0) span.setAttribute("dy", "1.2em");
+        span.textContent = line || " ";
+        text.append(span);
+      });
+      node = text;
+      break;
+    }
+  }
+  node.dataset.itemId = item.id;
+  node.dataset.z = String(item.z);
+  node.classList.add("board-item", `board-item-${item.kind}`);
+  node.setAttribute("transform", matrixAttribute(item.transform));
+  return node;
+}
+
+function shapeNode(
+  kind: "line" | "rectangle" | "ellipse",
+  geometry: LineGeometry | BoxGeometry,
+  style: StrokeStyle,
+): SVGGraphicsElement {
+  let node: SVGGraphicsElement;
+  if (kind === "line") {
+    const line = svgElement("line");
+    const value = geometry as LineGeometry;
+    line.setAttribute("x1", String(value.x1));
+    line.setAttribute("y1", String(value.y1));
+    line.setAttribute("x2", String(value.x2));
+    line.setAttribute("y2", String(value.y2));
+    node = line;
+  } else if (kind === "rectangle") {
+    const rect = svgElement("rect");
+    const value = geometry as BoxGeometry;
+    rect.setAttribute("x", String(value.x));
+    rect.setAttribute("y", String(value.y));
+    rect.setAttribute("width", String(value.width));
+    rect.setAttribute("height", String(value.height));
+    rect.setAttribute("rx", "2");
+    node = rect;
+  } else {
+    const ellipse = svgElement("ellipse");
+    const value = geometry as BoxGeometry;
+    ellipse.setAttribute("cx", String(value.x + value.width / 2));
+    ellipse.setAttribute("cy", String(value.y + value.height / 2));
+    ellipse.setAttribute("rx", String(value.width / 2));
+    ellipse.setAttribute("ry", String(value.height / 2));
+    node = ellipse;
+  }
+  setStroke(node, style);
+  return node;
+}
+
+function setStroke(node: SVGGraphicsElement, style: StrokeStyle): void {
+  node.setAttribute("fill", "none");
+  node.setAttribute("stroke", style.color);
+  node.setAttribute("stroke-width", String(style.width));
+  node.setAttribute("stroke-opacity", String(style.opacity));
+  node.setAttribute("stroke-linecap", "round");
+  node.setAttribute("stroke-linejoin", "round");
+}
+
+function pencilPath(points: readonly Point[]): string {
+  if (points.length === 0) return "";
+  if (points.length === 1) {
+    const point = points[0] as Point;
+    return `M ${point[0]} ${point[1]} l 0.01 0`;
+  }
+  return points
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${point[0]} ${point[1]}`)
+    .join(" ");
+}
+
+function matrixAttribute(matrix: Matrix): string {
+  return `matrix(${matrix.join(" ")})`;
+}
+
+function layer(id: string, label: string): SVGGElement {
+  const group = svgElement("g");
+  group.id = id;
+  group.setAttribute("aria-label", label);
+  return group;
+}
+
+function svgElement<K extends keyof SVGElementTagNameMap>(name: K): SVGElementTagNameMap[K] {
+  return document.createElementNS(SVG_NS, name);
+}
+
+function actorColor(actorId: string): string {
+  const palette = ["#e5484d", "#8e4ec6", "#3e63dd", "#0d9488", "#ca8a04", "#d946ef", "#ea580c"];
+  let hash = 0;
+  for (const char of actorId) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return palette[hash % palette.length] ?? (palette[0] as string);
+}
+
+function previewStyle(value: unknown, fallback: string): StrokeStyle {
+  if (isRecord(value)) {
+    return {
+      kind: "stroke",
+      color: typeof value.color === "string" ? value.color : fallback,
+      width: numberOr(value.width, 3),
+      opacity: numberOr(value.opacity, 0.7),
+    };
+  }
+  return { kind: "stroke", color: fallback, width: 3, opacity: 0.7 };
+}
+
+function asPoints(value: unknown): Point[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((point) => {
+    if (
+      !Array.isArray(point) ||
+      point.length !== 2 ||
+      typeof point[0] !== "number" ||
+      typeof point[1] !== "number"
+    )
+      return [];
+    return [[point[0], point[1]] as Point];
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function numberOr(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}

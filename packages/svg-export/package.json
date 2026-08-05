@@ -1,0 +1,13 @@
+{
+  "name": "@collab/svg-export",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@collab/geometry": "*",
+    "@collab/protocol": "*"
+  }
+}

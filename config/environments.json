@@ -1,0 +1,23 @@
+{
+  "development": {
+    "bucketName": "cloudflare-collab-canvas-dev-snapshots",
+    "jurisdiction": "default",
+    "hostname": "localhost",
+    "turnstileEnabled": false,
+    "boardCreationEnabled": true
+  },
+  "staging": {
+    "bucketName": "cloudflare-collab-canvas-staging-snapshots",
+    "jurisdiction": "default",
+    "hostname": "cloudflare-collab-canvas-staging.spacescale.workers.dev",
+    "turnstileEnabled": true,
+    "boardCreationEnabled": true
+  },
+  "production": {
+    "bucketName": "collab-canvas-snapshots",
+    "jurisdiction": "default",
+    "hostname": "spacescale.net",
+    "turnstileEnabled": true,
+    "boardCreationEnabled": true
+  }
+}

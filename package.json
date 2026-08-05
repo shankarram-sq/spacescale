@@ -1,0 +1,54 @@
+{
+  "name": "cloudflare-collab-canvas",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A secure, durable collaborative SVG whiteboard for Cloudflare Workers",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "overrides": {
+    "undici": "8.10.0"
+  },
+  "scripts": {
+    "dev": "npm run build:web && wrangler dev",
+    "dev:web": "vite --config apps/web/vite.config.ts",
+    "build": "npm run build:web && wrangler deploy --dry-run --env= --outdir dist/worker",
+    "build:web": "vite build --config apps/web/vite.config.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.scripts.json && tsc --noEmit -p apps/web/tsconfig.json && tsc --noEmit -p tsconfig.edge.json",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "test": "vitest run --config vitest.config.ts",
+    "test:watch": "vitest --config vitest.config.ts",
+    "test:edge": "vitest run --config vitest.cloudflare.config.ts",
+    "test:e2e": "playwright test --config tests/playwright/playwright.config.ts",
+    "load:smoke": "tsx tests/load/run.ts --smoke",
+    "load": "tsx tests/load/run.ts",
+    "check": "npm run docs:env-check && npm run observability:check && npm run lint && npm run typecheck && npm run protocol:compat && npm run test && npm run build && npm run test:edge && npm run security:scan",
+    "observability:check": "tsx scripts/check-observability.ts",
+    "observability:plan": "tsx scripts/check-observability.ts --plan",
+    "protocol:compat": "tsx scripts/check-protocol-compatibility.ts",
+    "security:scan": "tsx scripts/check-secret-leaks.ts",
+    "cf:check": "tsx scripts/check-cloudflare-access.ts",
+    "cf:bootstrap": "tsx scripts/bootstrap-cloudflare.ts",
+    "cf:types": "wrangler types apps/edge/worker-configuration.d.ts --include-runtime false --env-interface CloudflareBindings",
+    "docs:env-check": "tsx scripts/check-env-docs.ts"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.7",
+    "@cloudflare/vitest-pool-workers": "0.20.1",
+    "@cloudflare/workers-types": "5.20260804.1",
+    "@playwright/test": "1.62.1",
+    "@types/node": "24.0.0",
+    "fast-check": "4.9.0",
+    "tsx": "4.23.7",
+    "typescript": "7.0.2",
+    "vite": "8.2.0",
+    "vitest": "4.1.10",
+    "wrangler": "4.118.0"
+  }
+}

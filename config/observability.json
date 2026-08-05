@@ -1,0 +1,1251 @@
+{
+  "schemaVersion": 1,
+  "status": "dry-run-only",
+  "sourceSpec": {
+    "file": "cloudflare-collab-canvas.md",
+    "metricsSection": "20.2",
+    "alertsSection": "20.3"
+  },
+  "api": {
+    "baseUrl": "https://api.cloudflare.com/client/v4",
+    "saveQuery": {
+      "method": "POST",
+      "path": "/accounts/{account_id}/workers/observability/queries",
+      "permission": "Workers Observability Write"
+    },
+    "dataset": "cloudflare-workers"
+  },
+  "dashboard": {
+    "title": "Collab Canvas service health",
+    "audience": "on-call and service operators",
+    "defaultWindow": "1h",
+    "refreshInterval": "1m",
+    "filters": ["$metadata.service", "environment", "boardIdHash", "actionKind", "code"]
+  },
+  "coverage": {
+    "specMetricIds": [
+      "active_sockets_per_board",
+      "preview_and_commit_frames",
+      "accepted_rejected_commands_by_code",
+      "commit_latency",
+      "broadcast_fanout_and_send_failures",
+      "replay_size_and_resync_rate",
+      "sqlite_transaction_duration",
+      "snapshot_lag_actions_and_time",
+      "r2_snapshot_duration_and_failure",
+      "undo_redo_success_and_conflict_rate",
+      "board_item_count",
+      "quota_estimates"
+    ],
+    "platformMetricIds": ["worker_do_cpu_time", "handler_internal_error_rate"],
+    "alertIds": [
+      "rejected_commands_5pct_5m",
+      "internal_errors_1pct",
+      "snapshot_lag_1000_actions_or_30m",
+      "board_item_or_storage_80pct",
+      "daily_request_or_row_write_70pct",
+      "replay_resync_2pct",
+      "commit_p95_25ms"
+    ]
+  },
+  "runtimeContract": {
+    "structuredPayload": "object",
+    "commonFields": {
+      "event": "string",
+      "level": "string",
+      "at": "number",
+      "environment": "string",
+      "requestId": "string",
+      "boardIdHash": "string",
+      "workerVersionId": "string",
+      "durableObjectVersion": "string",
+      "protocolVersion": "number",
+      "actionCount": "number",
+      "frameBytes": "number",
+      "attempt": "number"
+    },
+    "builtInFields": {
+      "$metadata.service": "string",
+      "$metadata.type": "string",
+      "$workers.cpuTimeMs": "number",
+      "$workers.wallTimeMs": "number",
+      "$workers.outcome": "string",
+      "$workers.executionModel": "string",
+      "$workers.entrypoint": "string",
+      "$workers.durableObjectId": "string"
+    },
+    "events": [
+      {
+        "event": "board.metrics",
+        "cadence": "On gauge change, rate-limited to once per active board per minute; always emit zero active sockets after the final disconnect.",
+        "requiredFields": {
+          "environment": "string",
+          "boardIdHash": "string",
+          "activeSockets": "number",
+          "snapshotLagActions": "number",
+          "snapshotLagMs": "number",
+          "itemCount": "number",
+          "storageBytesEstimate": "number",
+          "itemLimitUtilization": "number",
+          "storageLimitUtilization": "number"
+        }
+      },
+      {
+        "event": "traffic.metrics",
+        "cadence": "Aggregate per board; never emit one event per preview or presence frame.",
+        "requiredFields": {
+          "environment": "string",
+          "boardIdHash": "string",
+          "previewFrames": "number",
+          "commitFrames": "number",
+          "sampleWindowMs": "number"
+        }
+      },
+      {
+        "event": "command.accepted",
+        "cadence": "Once per accepted durable command.",
+        "requiredFields": {
+          "environment": "string",
+          "boardIdHash": "string",
+          "protocolVersion": "number",
+          "actionKind": "string",
+          "result": "string",
+          "code": "string",
+          "seq": "number",
+          "durationMs": "number"
+        }
+      },
+      {
+        "event": "command.rejected",
+        "cadence": "Once per rejected durable command.",
+        "requiredFields": {
+          "environment": "string",
+          "boardIdHash": "string",
+          "protocolVersion": "number",
+          "actionKind": "string",
+          "result": "string",
+          "code": "string",
+          "durationMs": "number"
+        }
+      },
+      {
+        "event": "broadcast.completed",
+        "cadence": "Once per durable action broadcast, including zero failures.",
+        "requiredFields": {
+          "environment": "string",
+          "boardIdHash": "string",
+          "fanout": "number",
+          "sendFailures": "number"
+        }
+      },
+      {
+        "event": "replay.completed",
+        "cadence": "Exactly one replay outcome per accepted WebSocket connection, including zero-action replays.",
+        "requiredFields": {
+          "environment": "string",
+          "boardIdHash": "string",
+          "result": "string",
+          "code": "string",
+          "replayActions": "number",
+          "replayBytes": "number",
+          "resyncRequired": "boolean"
+        }
+      },
+      {
+        "event": "replay.unavailable",
+        "cadence": "Exactly one replay outcome for a connection forced to authoritative resync.",
+        "requiredFields": {
+          "environment": "string",
+          "boardIdHash": "string",
+          "result": "string",
+          "code": "string",
+          "replayActions": "number",
+          "replayBytes": "number",
+          "resyncRequired": "boolean"
+        }
+      },
+      {
+        "event": "storage.transaction_completed",
+        "cadence": "Once per durable command transaction, including typed rollbacks.",
+        "requiredFields": {
+          "environment": "string",
+          "boardIdHash": "string",
+          "result": "string",
+          "code": "string",
+          "durationMs": "number",
+          "sqliteRowsRead": "number",
+          "sqliteRowsWritten": "number"
+        }
+      },
+      {
+        "event": "snapshot.completed",
+        "cadence": "Once per completed named or automatic R2 snapshot.",
+        "requiredFields": {
+          "environment": "string",
+          "boardIdHash": "string",
+          "result": "string",
+          "code": "string",
+          "seq": "number",
+          "durationMs": "number",
+          "r2BytesWritten": "number"
+        }
+      },
+      {
+        "event": "snapshot.failed",
+        "cadence": "Once per failed R2 snapshot attempt.",
+        "requiredFields": {
+          "environment": "string",
+          "boardIdHash": "string",
+          "result": "string",
+          "code": "string",
+          "seq": "number",
+          "durationMs": "number",
+          "r2BytesWritten": "number"
+        }
+      },
+      {
+        "event": "quota.daily",
+        "cadence": "Persisted UTC-day cumulative sample for one board; never reset on eviction and never claim to aggregate an account.",
+        "requiredFields": {
+          "environment": "string",
+          "boardIdHash": "string",
+          "quotaDayUtc": "string",
+          "incomingFrames": "number",
+          "durableObjectRequestUnitsEstimate": "number",
+          "sqliteRowsRead": "number",
+          "sqliteRowsWritten": "number",
+          "r2Reads": "number",
+          "r2Writes": "number",
+          "r2BytesWritten": "number",
+          "actions": "number",
+          "snapshots": "number"
+        }
+      },
+      {
+        "event": "http.request_completed",
+        "cadence": "Exactly once per gateway invocation, after error mapping.",
+        "requiredFields": {
+          "environment": "string",
+          "executionComponent": "string",
+          "status": "number",
+          "internalError": "boolean",
+          "durationMs": "number"
+        }
+      },
+      {
+        "event": "room.http_completed",
+        "cadence": "Exactly once per Durable Object HTTP invocation, after error mapping.",
+        "requiredFields": {
+          "environment": "string",
+          "boardIdHash": "string",
+          "executionComponent": "string",
+          "status": "number",
+          "internalError": "boolean",
+          "durationMs": "number"
+        }
+      },
+      {
+        "event": "board.created",
+        "cadence": "Once per initialized board.",
+        "requiredFields": {
+          "environment": "string",
+          "boardIdHash": "string",
+          "result": "string"
+        }
+      },
+      {
+        "event": "socket.connected",
+        "cadence": "Once per accepted WebSocket connection.",
+        "requiredFields": {
+          "environment": "string",
+          "boardIdHash": "string",
+          "protocolVersion": "number",
+          "result": "string"
+        }
+      },
+      {
+        "event": "socket.disconnected",
+        "cadence": "Once per closed WebSocket connection.",
+        "requiredFields": {
+          "environment": "string",
+          "boardIdHash": "string",
+          "closeCode": "number",
+          "result": "string"
+        }
+      },
+      {
+        "event": "membership.changed",
+        "cadence": "Once per membership or invitation state change.",
+        "requiredFields": {
+          "environment": "string",
+          "boardIdHash": "string",
+          "result": "string"
+        }
+      },
+      {
+        "event": "rate_limit.triggered",
+        "cadence": "Sample repeated occurrences; do not emit one event per dropped preview/presence frame.",
+        "requiredFields": {
+          "environment": "string",
+          "boardIdHash": "string",
+          "code": "string",
+          "result": "string"
+        }
+      },
+      {
+        "event": "room.overloaded",
+        "cadence": "Once when an overload state begins and once when it materially changes.",
+        "requiredFields": {
+          "environment": "string",
+          "boardIdHash": "string",
+          "code": "string",
+          "result": "string"
+        }
+      },
+      {
+        "event": "schema.migrated",
+        "cadence": "Once per successfully applied schema migration.",
+        "requiredFields": {
+          "environment": "string",
+          "durableObjectVersion": "string",
+          "result": "string",
+          "seq": "number"
+        }
+      }
+    ],
+    "privacy": {
+      "boardIdentity": "Use a stable one-way SHA-256 digest in boardIdHash; never log the routable board ID.",
+      "forbiddenFields": [
+        "operation",
+        "operationJson",
+        "text",
+        "dataJson",
+        "cookie",
+        "authorization",
+        "inviteToken",
+        "recoveryToken",
+        "sessionSignature",
+        "rawBoardId",
+        "actorId",
+        "displayName",
+        "ip",
+        "userAgent"
+      ]
+    }
+  },
+  "savedQueries": [
+    {
+      "id": "active_sockets_per_board",
+      "metricIds": ["active_sockets_per_board"],
+      "saveRequest": {
+        "name": "[Collab Canvas] Active sockets per board",
+        "description": "Latest and peak active WebSocket gauges, split by environment and privacy-safe board hash.",
+        "parameters": {
+          "datasets": ["cloudflare-workers"],
+          "filterCombination": "and",
+          "filters": [
+            {
+              "kind": "filter",
+              "key": "$metadata.service",
+              "operation": "starts_with",
+              "type": "string",
+              "value": "cloudflare-collab-canvas"
+            },
+            {
+              "kind": "filter",
+              "key": "event",
+              "operation": "eq",
+              "type": "string",
+              "value": "board.metrics"
+            }
+          ],
+          "calculations": [
+            {
+              "operator": "max",
+              "alias": "max_active_sockets",
+              "key": "activeSockets",
+              "keyType": "number"
+            }
+          ],
+          "groupBys": [
+            { "type": "string", "value": "environment" },
+            { "type": "string", "value": "boardIdHash" }
+          ],
+          "limit": 100
+        }
+      },
+      "chart": {
+        "type": "time_series",
+        "unit": "connections",
+        "calculations": ["max_active_sockets"],
+        "splitBy": ["environment", "boardIdHash"],
+        "prominent": true
+      }
+    },
+    {
+      "id": "preview_and_commit_frames",
+      "metricIds": ["preview_and_commit_frames"],
+      "saveRequest": {
+        "name": "[Collab Canvas] Preview and commit frames",
+        "description": "Aggregated frame volume; preview and presence traffic is never logged per frame.",
+        "parameters": {
+          "datasets": ["cloudflare-workers"],
+          "filterCombination": "and",
+          "filters": [
+            {
+              "kind": "filter",
+              "key": "$metadata.service",
+              "operation": "starts_with",
+              "type": "string",
+              "value": "cloudflare-collab-canvas"
+            },
+            {
+              "kind": "filter",
+              "key": "event",
+              "operation": "eq",
+              "type": "string",
+              "value": "traffic.metrics"
+            }
+          ],
+          "calculations": [
+            {
+              "operator": "sum",
+              "alias": "preview_frames",
+              "key": "previewFrames",
+              "keyType": "number"
+            },
+            {
+              "operator": "sum",
+              "alias": "commit_frames",
+              "key": "commitFrames",
+              "keyType": "number"
+            }
+          ],
+          "groupBys": [{ "type": "string", "value": "environment" }],
+          "limit": 100
+        }
+      },
+      "chart": {
+        "type": "time_series",
+        "unit": "frames",
+        "calculations": ["preview_frames", "commit_frames"],
+        "splitBy": ["environment"],
+        "prominent": false
+      }
+    },
+    {
+      "id": "commands_by_result_code",
+      "metricIds": ["accepted_rejected_commands_by_code"],
+      "saveRequest": {
+        "name": "[Collab Canvas] Commands by result and code",
+        "description": "Accepted and rejected durable commands grouped by stable result code and action kind.",
+        "parameters": {
+          "datasets": ["cloudflare-workers"],
+          "filterCombination": "and",
+          "filters": [
+            {
+              "kind": "filter",
+              "key": "$metadata.service",
+              "operation": "starts_with",
+              "type": "string",
+              "value": "cloudflare-collab-canvas"
+            },
+            {
+              "kind": "filter",
+              "key": "event",
+              "operation": "in",
+              "type": "string",
+              "value": "command.accepted,command.rejected"
+            }
+          ],
+          "calculations": [{ "operator": "count", "alias": "events" }],
+          "groupBys": [
+            { "type": "string", "value": "environment" },
+            { "type": "string", "value": "event" },
+            { "type": "string", "value": "code" },
+            { "type": "string", "value": "actionKind" }
+          ],
+          "limit": 100
+        }
+      },
+      "chart": {
+        "type": "stacked_time_series",
+        "unit": "commands",
+        "calculations": ["events"],
+        "splitBy": ["environment", "event", "code", "actionKind"],
+        "prominent": true
+      }
+    },
+    {
+      "id": "commit_latency",
+      "metricIds": ["commit_latency"],
+      "saveRequest": {
+        "name": "[Collab Canvas] Commit handling latency",
+        "description": "Median, p95, and p99 accepted command handling time measured around the full durable handler.",
+        "parameters": {
+          "datasets": ["cloudflare-workers"],
+          "filterCombination": "and",
+          "filters": [
+            {
+              "kind": "filter",
+              "key": "$metadata.service",
+              "operation": "starts_with",
+              "type": "string",
+              "value": "cloudflare-collab-canvas"
+            },
+            {
+              "kind": "filter",
+              "key": "event",
+              "operation": "eq",
+              "type": "string",
+              "value": "command.accepted"
+            }
+          ],
+          "calculations": [
+            { "operator": "median", "alias": "p50_ms", "key": "durationMs", "keyType": "number" },
+            { "operator": "p95", "alias": "p95_ms", "key": "durationMs", "keyType": "number" },
+            { "operator": "p99", "alias": "p99_ms", "key": "durationMs", "keyType": "number" }
+          ],
+          "groupBys": [
+            { "type": "string", "value": "environment" },
+            { "type": "string", "value": "actionKind" }
+          ],
+          "limit": 100
+        }
+      },
+      "chart": {
+        "type": "time_series",
+        "unit": "milliseconds",
+        "calculations": ["p50_ms", "p95_ms", "p99_ms"],
+        "splitBy": ["environment", "actionKind"],
+        "prominent": true
+      }
+    },
+    {
+      "id": "broadcast_fanout_and_failures",
+      "metricIds": ["broadcast_fanout_and_send_failures"],
+      "saveRequest": {
+        "name": "[Collab Canvas] Broadcast fanout and failures",
+        "description": "Durable action broadcast recipients and failed WebSocket sends.",
+        "parameters": {
+          "datasets": ["cloudflare-workers"],
+          "filterCombination": "and",
+          "filters": [
+            {
+              "kind": "filter",
+              "key": "$metadata.service",
+              "operation": "starts_with",
+              "type": "string",
+              "value": "cloudflare-collab-canvas"
+            },
+            {
+              "kind": "filter",
+              "key": "event",
+              "operation": "eq",
+              "type": "string",
+              "value": "broadcast.completed"
+            }
+          ],
+          "calculations": [
+            { "operator": "sum", "alias": "fanout", "key": "fanout", "keyType": "number" },
+            {
+              "operator": "sum",
+              "alias": "send_failures",
+              "key": "sendFailures",
+              "keyType": "number"
+            },
+            { "operator": "p95", "alias": "p95_fanout", "key": "fanout", "keyType": "number" }
+          ],
+          "groupBys": [{ "type": "string", "value": "environment" }],
+          "limit": 100
+        }
+      },
+      "chart": {
+        "type": "time_series",
+        "unit": "sends",
+        "calculations": ["fanout", "send_failures", "p95_fanout"],
+        "splitBy": ["environment"],
+        "prominent": false
+      }
+    },
+    {
+      "id": "replay_size_and_resync",
+      "metricIds": ["replay_size_and_resync_rate"],
+      "saveRequest": {
+        "name": "[Collab Canvas] Replay size and resync outcomes",
+        "description": "One replay outcome per accepted connection, enabling an exact resync-to-connection ratio.",
+        "parameters": {
+          "datasets": ["cloudflare-workers"],
+          "filterCombination": "and",
+          "filters": [
+            {
+              "kind": "filter",
+              "key": "$metadata.service",
+              "operation": "starts_with",
+              "type": "string",
+              "value": "cloudflare-collab-canvas"
+            },
+            {
+              "kind": "filter",
+              "key": "event",
+              "operation": "in",
+              "type": "string",
+              "value": "replay.completed,replay.unavailable"
+            }
+          ],
+          "calculations": [
+            { "operator": "count", "alias": "connections" },
+            {
+              "operator": "p95",
+              "alias": "p95_replay_actions",
+              "key": "replayActions",
+              "keyType": "number"
+            },
+            {
+              "operator": "sum",
+              "alias": "replay_bytes",
+              "key": "replayBytes",
+              "keyType": "number"
+            }
+          ],
+          "groupBys": [
+            { "type": "string", "value": "environment" },
+            { "type": "string", "value": "event" },
+            { "type": "boolean", "value": "resyncRequired" }
+          ],
+          "limit": 100
+        }
+      },
+      "chart": {
+        "type": "stacked_time_series",
+        "unit": "connections",
+        "calculations": ["connections", "p95_replay_actions", "replay_bytes"],
+        "splitBy": ["environment", "event", "resyncRequired"],
+        "prominent": true
+      }
+    },
+    {
+      "id": "sqlite_transaction_duration",
+      "metricIds": ["sqlite_transaction_duration"],
+      "saveRequest": {
+        "name": "[Collab Canvas] SQLite transaction duration",
+        "description": "Durable command transaction latency and estimated SQLite row work, including typed rollbacks.",
+        "parameters": {
+          "datasets": ["cloudflare-workers"],
+          "filterCombination": "and",
+          "filters": [
+            {
+              "kind": "filter",
+              "key": "$metadata.service",
+              "operation": "starts_with",
+              "type": "string",
+              "value": "cloudflare-collab-canvas"
+            },
+            {
+              "kind": "filter",
+              "key": "event",
+              "operation": "eq",
+              "type": "string",
+              "value": "storage.transaction_completed"
+            }
+          ],
+          "calculations": [
+            { "operator": "median", "alias": "p50_ms", "key": "durationMs", "keyType": "number" },
+            { "operator": "p95", "alias": "p95_ms", "key": "durationMs", "keyType": "number" },
+            { "operator": "p99", "alias": "p99_ms", "key": "durationMs", "keyType": "number" },
+            {
+              "operator": "sum",
+              "alias": "rows_read",
+              "key": "sqliteRowsRead",
+              "keyType": "number"
+            },
+            {
+              "operator": "sum",
+              "alias": "rows_written",
+              "key": "sqliteRowsWritten",
+              "keyType": "number"
+            }
+          ],
+          "groupBys": [
+            { "type": "string", "value": "environment" },
+            { "type": "string", "value": "result" }
+          ],
+          "limit": 100
+        }
+      },
+      "chart": {
+        "type": "time_series",
+        "unit": "milliseconds",
+        "calculations": ["p50_ms", "p95_ms", "p99_ms", "rows_read", "rows_written"],
+        "splitBy": ["environment", "result"],
+        "prominent": false
+      }
+    },
+    {
+      "id": "snapshot_lag",
+      "metricIds": ["snapshot_lag_actions_and_time"],
+      "saveRequest": {
+        "name": "[Collab Canvas] Snapshot lag",
+        "description": "Maximum automatic snapshot lag in durable actions and elapsed milliseconds per board.",
+        "parameters": {
+          "datasets": ["cloudflare-workers"],
+          "filterCombination": "and",
+          "filters": [
+            {
+              "kind": "filter",
+              "key": "$metadata.service",
+              "operation": "starts_with",
+              "type": "string",
+              "value": "cloudflare-collab-canvas"
+            },
+            {
+              "kind": "filter",
+              "key": "event",
+              "operation": "eq",
+              "type": "string",
+              "value": "board.metrics"
+            }
+          ],
+          "calculations": [
+            {
+              "operator": "max",
+              "alias": "max_lag_actions",
+              "key": "snapshotLagActions",
+              "keyType": "number"
+            },
+            {
+              "operator": "max",
+              "alias": "max_lag_ms",
+              "key": "snapshotLagMs",
+              "keyType": "number"
+            }
+          ],
+          "groupBys": [
+            { "type": "string", "value": "environment" },
+            { "type": "string", "value": "boardIdHash" }
+          ],
+          "limit": 100
+        }
+      },
+      "chart": {
+        "type": "time_series",
+        "unit": "mixed",
+        "calculations": ["max_lag_actions", "max_lag_ms"],
+        "splitBy": ["environment", "boardIdHash"],
+        "prominent": true
+      }
+    },
+    {
+      "id": "r2_snapshot_health",
+      "metricIds": ["r2_snapshot_duration_and_failure"],
+      "saveRequest": {
+        "name": "[Collab Canvas] R2 snapshot duration and failures",
+        "description": "Completed and failed named/automatic R2 snapshots, including duration and bytes written.",
+        "parameters": {
+          "datasets": ["cloudflare-workers"],
+          "filterCombination": "and",
+          "filters": [
+            {
+              "kind": "filter",
+              "key": "$metadata.service",
+              "operation": "starts_with",
+              "type": "string",
+              "value": "cloudflare-collab-canvas"
+            },
+            {
+              "kind": "filter",
+              "key": "event",
+              "operation": "in",
+              "type": "string",
+              "value": "snapshot.completed,snapshot.failed"
+            }
+          ],
+          "calculations": [
+            { "operator": "count", "alias": "attempts" },
+            { "operator": "median", "alias": "p50_ms", "key": "durationMs", "keyType": "number" },
+            { "operator": "p95", "alias": "p95_ms", "key": "durationMs", "keyType": "number" },
+            {
+              "operator": "sum",
+              "alias": "bytes_written",
+              "key": "r2BytesWritten",
+              "keyType": "number"
+            }
+          ],
+          "groupBys": [
+            { "type": "string", "value": "environment" },
+            { "type": "string", "value": "event" },
+            { "type": "string", "value": "result" },
+            { "type": "string", "value": "code" }
+          ],
+          "limit": 100
+        }
+      },
+      "chart": {
+        "type": "stacked_time_series",
+        "unit": "attempts",
+        "calculations": ["attempts", "p50_ms", "p95_ms", "bytes_written"],
+        "splitBy": ["environment", "event", "result", "code"],
+        "prominent": true
+      }
+    },
+    {
+      "id": "undo_redo_outcomes",
+      "metricIds": ["undo_redo_success_and_conflict_rate"],
+      "saveRequest": {
+        "name": "[Collab Canvas] Undo and redo outcomes",
+        "description": "Undo/redo success, typed conflict, and rejection counts by action kind and stable code.",
+        "parameters": {
+          "datasets": ["cloudflare-workers"],
+          "filterCombination": "and",
+          "filters": [
+            {
+              "kind": "filter",
+              "key": "$metadata.service",
+              "operation": "starts_with",
+              "type": "string",
+              "value": "cloudflare-collab-canvas"
+            },
+            {
+              "kind": "filter",
+              "key": "event",
+              "operation": "in",
+              "type": "string",
+              "value": "command.accepted,command.rejected"
+            },
+            {
+              "kind": "filter",
+              "key": "actionKind",
+              "operation": "in",
+              "type": "string",
+              "value": "history.undo,history.redo"
+            }
+          ],
+          "calculations": [{ "operator": "count", "alias": "outcomes" }],
+          "groupBys": [
+            { "type": "string", "value": "environment" },
+            { "type": "string", "value": "actionKind" },
+            { "type": "string", "value": "result" },
+            { "type": "string", "value": "code" }
+          ],
+          "limit": 100
+        }
+      },
+      "chart": {
+        "type": "stacked_time_series",
+        "unit": "commands",
+        "calculations": ["outcomes"],
+        "splitBy": ["environment", "actionKind", "result", "code"],
+        "prominent": false
+      }
+    },
+    {
+      "id": "board_item_and_storage",
+      "metricIds": ["board_item_count"],
+      "saveRequest": {
+        "name": "[Collab Canvas] Board item and storage utilization",
+        "description": "Peak item count, estimated SQLite bytes, and utilization ratios per privacy-safe board hash.",
+        "parameters": {
+          "datasets": ["cloudflare-workers"],
+          "filterCombination": "and",
+          "filters": [
+            {
+              "kind": "filter",
+              "key": "$metadata.service",
+              "operation": "starts_with",
+              "type": "string",
+              "value": "cloudflare-collab-canvas"
+            },
+            {
+              "kind": "filter",
+              "key": "event",
+              "operation": "eq",
+              "type": "string",
+              "value": "board.metrics"
+            }
+          ],
+          "calculations": [
+            { "operator": "max", "alias": "items", "key": "itemCount", "keyType": "number" },
+            {
+              "operator": "max",
+              "alias": "storage_bytes",
+              "key": "storageBytesEstimate",
+              "keyType": "number"
+            },
+            {
+              "operator": "max",
+              "alias": "item_utilization",
+              "key": "itemLimitUtilization",
+              "keyType": "number"
+            },
+            {
+              "operator": "max",
+              "alias": "storage_utilization",
+              "key": "storageLimitUtilization",
+              "keyType": "number"
+            }
+          ],
+          "groupBys": [
+            { "type": "string", "value": "environment" },
+            { "type": "string", "value": "boardIdHash" }
+          ],
+          "limit": 100
+        }
+      },
+      "chart": {
+        "type": "table",
+        "unit": "mixed",
+        "calculations": ["items", "storage_bytes", "item_utilization", "storage_utilization"],
+        "splitBy": ["environment", "boardIdHash"],
+        "prominent": true
+      }
+    },
+    {
+      "id": "quota_estimates",
+      "metricIds": ["quota_estimates"],
+      "saveRequest": {
+        "name": "[Collab Canvas] UTC-day quota estimates",
+        "description": "Persisted per-board daily estimates for frames, Durable Object request units, SQLite, R2, actions, and snapshots; account usage comes from Cloudflare platform analytics.",
+        "parameters": {
+          "datasets": ["cloudflare-workers"],
+          "filterCombination": "and",
+          "filters": [
+            {
+              "kind": "filter",
+              "key": "$metadata.service",
+              "operation": "starts_with",
+              "type": "string",
+              "value": "cloudflare-collab-canvas"
+            },
+            {
+              "kind": "filter",
+              "key": "event",
+              "operation": "eq",
+              "type": "string",
+              "value": "quota.daily"
+            }
+          ],
+          "calculations": [
+            {
+              "operator": "max",
+              "alias": "incoming_frames",
+              "key": "incomingFrames",
+              "keyType": "number"
+            },
+            {
+              "operator": "max",
+              "alias": "do_request_units",
+              "key": "durableObjectRequestUnitsEstimate",
+              "keyType": "number"
+            },
+            {
+              "operator": "max",
+              "alias": "rows_read",
+              "key": "sqliteRowsRead",
+              "keyType": "number"
+            },
+            {
+              "operator": "max",
+              "alias": "rows_written",
+              "key": "sqliteRowsWritten",
+              "keyType": "number"
+            },
+            { "operator": "max", "alias": "r2_reads", "key": "r2Reads", "keyType": "number" },
+            { "operator": "max", "alias": "r2_writes", "key": "r2Writes", "keyType": "number" },
+            {
+              "operator": "max",
+              "alias": "r2_bytes_written",
+              "key": "r2BytesWritten",
+              "keyType": "number"
+            },
+            { "operator": "max", "alias": "actions", "key": "actions", "keyType": "number" },
+            { "operator": "max", "alias": "snapshots", "key": "snapshots", "keyType": "number" }
+          ],
+          "groupBys": [
+            { "type": "string", "value": "environment" },
+            { "type": "string", "value": "boardIdHash" },
+            { "type": "string", "value": "quotaDayUtc" }
+          ],
+          "limit": 100
+        }
+      },
+      "chart": {
+        "type": "table",
+        "unit": "mixed",
+        "calculations": [
+          "incoming_frames",
+          "do_request_units",
+          "rows_read",
+          "rows_written",
+          "r2_reads",
+          "r2_writes",
+          "r2_bytes_written",
+          "actions",
+          "snapshots"
+        ],
+        "splitBy": ["environment", "boardIdHash", "quotaDayUtc"],
+        "prominent": true
+      }
+    },
+    {
+      "id": "handler_internal_error_rate",
+      "metricIds": ["handler_internal_error_rate"],
+      "saveRequest": {
+        "name": "[Collab Canvas] Handler internal-error outcomes",
+        "description": "Exactly one normalized completion per gateway or Durable Object HTTP handler, split by internal-error classification.",
+        "parameters": {
+          "datasets": ["cloudflare-workers"],
+          "filterCombination": "and",
+          "filters": [
+            {
+              "kind": "filter",
+              "key": "$metadata.service",
+              "operation": "starts_with",
+              "type": "string",
+              "value": "cloudflare-collab-canvas"
+            },
+            {
+              "kind": "filter",
+              "key": "event",
+              "operation": "in",
+              "type": "string",
+              "value": "http.request_completed,room.http_completed"
+            }
+          ],
+          "calculations": [{ "operator": "count", "alias": "handlers" }],
+          "groupBys": [
+            { "type": "string", "value": "environment" },
+            { "type": "string", "value": "executionComponent" },
+            { "type": "boolean", "value": "internalError" }
+          ],
+          "limit": 100
+        }
+      },
+      "chart": {
+        "type": "stacked_time_series",
+        "unit": "handlers",
+        "calculations": ["handlers"],
+        "splitBy": ["environment", "executionComponent", "internalError"],
+        "prominent": true
+      }
+    },
+    {
+      "id": "worker_do_cpu_time",
+      "metricIds": ["worker_do_cpu_time"],
+      "saveRequest": {
+        "name": "[Collab Canvas] Worker and Durable Object CPU",
+        "description": "Built-in invocation CPU and wall-time quantiles split between stateless Worker and Durable Object entrypoints.",
+        "parameters": {
+          "datasets": ["cloudflare-workers"],
+          "filterCombination": "and",
+          "filters": [
+            {
+              "kind": "filter",
+              "key": "$metadata.service",
+              "operation": "starts_with",
+              "type": "string",
+              "value": "cloudflare-collab-canvas"
+            },
+            {
+              "kind": "filter",
+              "key": "$metadata.type",
+              "operation": "eq",
+              "type": "string",
+              "value": "cf-worker-event"
+            }
+          ],
+          "calculations": [
+            { "operator": "count", "alias": "invocations" },
+            {
+              "operator": "median",
+              "alias": "cpu_p50_ms",
+              "key": "$workers.cpuTimeMs",
+              "keyType": "number"
+            },
+            {
+              "operator": "p95",
+              "alias": "cpu_p95_ms",
+              "key": "$workers.cpuTimeMs",
+              "keyType": "number"
+            },
+            {
+              "operator": "p99",
+              "alias": "cpu_p99_ms",
+              "key": "$workers.cpuTimeMs",
+              "keyType": "number"
+            },
+            {
+              "operator": "p95",
+              "alias": "wall_p95_ms",
+              "key": "$workers.wallTimeMs",
+              "keyType": "number"
+            }
+          ],
+          "groupBys": [
+            { "type": "string", "value": "$metadata.service" },
+            { "type": "string", "value": "$workers.executionModel" },
+            { "type": "string", "value": "$workers.entrypoint" },
+            { "type": "string", "value": "$workers.outcome" }
+          ],
+          "limit": 100
+        }
+      },
+      "chart": {
+        "type": "time_series",
+        "unit": "milliseconds",
+        "calculations": ["cpu_p50_ms", "cpu_p95_ms", "cpu_p99_ms", "wall_p95_ms"],
+        "splitBy": [
+          "$metadata.service",
+          "$workers.executionModel",
+          "$workers.entrypoint",
+          "$workers.outcome"
+        ],
+        "prominent": true
+      }
+    }
+  ],
+  "alerts": [
+    {
+      "id": "rejected_commands_5pct_5m",
+      "queryId": "commands_by_result_code",
+      "severity": "page",
+      "window": "5m",
+      "holdFor": "5m",
+      "groupBy": ["environment"],
+      "condition": {
+        "kind": "ratio",
+        "numerator": "events where event=command.rejected",
+        "denominator": "all events",
+        "operator": "gt",
+        "threshold": 0.05
+      },
+      "runbook": "Inspect rejection codes before changing limits; INVALID_* spikes and RATE_LIMITED spikes have different owners."
+    },
+    {
+      "id": "internal_errors_1pct",
+      "queryId": "handler_internal_error_rate",
+      "severity": "page",
+      "window": "5m",
+      "holdFor": "0m",
+      "groupBy": ["environment", "executionComponent"],
+      "condition": {
+        "kind": "ratio",
+        "numerator": "handlers where internalError=true",
+        "denominator": "all handlers",
+        "operator": "gt",
+        "threshold": 0.01
+      },
+      "runbook": "Check built-in invocation outcomes and error logs, then isolate gateway versus BoardRoom."
+    },
+    {
+      "id": "snapshot_lag_1000_actions_or_30m",
+      "queryId": "snapshot_lag",
+      "severity": "page",
+      "window": "5m",
+      "holdFor": "0m",
+      "groupBy": ["environment", "boardIdHash"],
+      "condition": {
+        "kind": "any",
+        "operator": "gt",
+        "signals": [
+          { "calculation": "max_lag_actions", "threshold": 1000, "unit": "actions" },
+          { "calculation": "max_lag_ms", "threshold": 1800000, "unit": "milliseconds" }
+        ]
+      },
+      "runbook": "Inspect snapshot.failed and scheduled-alarm state; SQLite remains authoritative."
+    },
+    {
+      "id": "board_item_or_storage_80pct",
+      "queryId": "board_item_and_storage",
+      "severity": "warn",
+      "window": "5m",
+      "holdFor": "0m",
+      "groupBy": ["environment", "boardIdHash"],
+      "condition": {
+        "kind": "any",
+        "operator": "gt",
+        "signals": [
+          { "calculation": "item_utilization", "threshold": 0.8, "unit": "ratio" },
+          { "calculation": "storage_utilization", "threshold": 0.8, "unit": "ratio" }
+        ]
+      },
+      "runbook": "Identify the privacy-safe board hash, freeze new mutations if necessary, and follow the SQLite-full runbook."
+    },
+    {
+      "id": "daily_request_or_row_write_70pct",
+      "queryId": "quota_estimates",
+      "severity": "page",
+      "window": "15m",
+      "holdFor": "0m",
+      "groupBy": ["environment"],
+      "condition": {
+        "kind": "any",
+        "operator": "gt",
+        "signals": [
+          {
+            "source": "cloudflare_platform_analytics",
+            "calculation": "account_request_utilization",
+            "definition": "Maximum of UTC-day account Worker-request utilization and Durable Object billed-request utilization against their applicable plan allowances.",
+            "threshold": 0.7,
+            "unit": "ratio"
+          },
+          {
+            "source": "cloudflare_platform_analytics",
+            "calculation": "account_row_write_utilization",
+            "definition": "UTC-day account Durable Object SQLite rows written divided by the applicable plan allowance.",
+            "threshold": 0.7,
+            "unit": "ratio"
+          }
+        ]
+      },
+      "runbook": "Use account-wide Cloudflare request and SQLite usage for the threshold; use per-board quota.daily estimates only for drilldown. Disable new board creation before a hard free-plan limit while preserving existing read/reconnect/export paths."
+    },
+    {
+      "id": "replay_resync_2pct",
+      "queryId": "replay_size_and_resync",
+      "severity": "warn",
+      "window": "15m",
+      "holdFor": "0m",
+      "groupBy": ["environment"],
+      "condition": {
+        "kind": "ratio",
+        "numerator": "connections where resyncRequired=true",
+        "denominator": "all connections",
+        "operator": "gt",
+        "threshold": 0.02
+      },
+      "runbook": "Check replay retention/compaction boundaries and client prior-sequence distribution."
+    },
+    {
+      "id": "commit_p95_25ms",
+      "queryId": "commit_latency",
+      "severity": "warn",
+      "window": "5m",
+      "holdFor": "0m",
+      "groupBy": ["environment", "actionKind"],
+      "condition": {
+        "kind": "scalar",
+        "calculation": "p95_ms",
+        "operator": "gt",
+        "threshold": 25,
+        "unit": "milliseconds"
+      },
+      "runbook": "Compare action kinds, SQLite transaction duration, and built-in BoardRoom CPU before optimizing."
+    }
+  ],
+  "delivery": {
+    "provisioned": false,
+    "savedQueriesScheduleAlerts": false,
+    "evaluatorRequired": true,
+    "minimumEvaluationInterval": "1m",
+    "destinationKinds": ["email", "pagerduty", "webhook"],
+    "prerequisites": [
+      "Workers Logs is enabled for every deployed environment and field keys are verified with the telemetry keys endpoint.",
+      "A scheduler or external observability service runs the saved queries and evaluates the declarative conditions.",
+      "The quota evaluator reads account-wide Worker, Durable Object, duration, and SQLite usage from Cloudflare Metrics and Analytics rather than summing sampled custom logs.",
+      "At least one tested notification destination and an owned escalation path are configured.",
+      "The evaluator deduplicates incidents, records last success, and emits a stale-evaluator alert when queries stop running.",
+      "Cloudflare Notification destinations are checked for account-plan eligibility before selecting PagerDuty or webhooks."
+    ],
+    "optionalCloudflareNotificationPermission": "Notifications Write"
+  }
+}

@@ -1,0 +1,742 @@
+import { applyAuthoritativeOperation } from "@collab/board-core";
+import type {
+  AuthoritativeItemOperation,
+  AuthoritativeOperation,
+  CanonicalItemChange,
+  BoardItem as SharedBoardItem,
+} from "@collab/protocol";
+import { normalizeBoardItem } from "@collab/protocol";
+import type {
+  BatchItemOperation,
+  BoardItem,
+  BoardSnapshot,
+  BoxGeometry,
+  CommitFrame,
+  DurableOperation,
+  ItemPatch,
+  Matrix,
+  Point,
+  ServerAction,
+} from "../types";
+import { isBoardItem } from "../types";
+
+export type Bounds = { minX: number; minY: number; maxX: number; maxY: number };
+
+type ModelListener = (changedIds: ReadonlySet<string> | null) => void;
+type RebaseListener = (error: Error | null) => void;
+
+export class BoardModel {
+  private authoritative = new Map<string, BoardItem>();
+  private rendered = new Map<string, BoardItem>();
+  private readonly optimistic = new Map<string, CommitFrame>();
+  private readonly bounds = new Map<string, Bounds>();
+  private readonly listeners = new Set<ModelListener>();
+  private readonly rebaseListeners = new Set<RebaseListener>();
+  private readonly recentActions = new Map<number, string>();
+  private rebaseErrorValue: Error | null = null;
+
+  lastAppliedSeq = 0;
+
+  load(snapshot: BoardSnapshot, preserveOptimistic = false): void {
+    if (!Number.isSafeInteger(snapshot.seq) || snapshot.seq < 0 || !Array.isArray(snapshot.items)) {
+      throw new Error("The authoritative board snapshot is invalid.");
+    }
+    this.authoritative.clear();
+    for (const item of snapshot.items) {
+      const normalized = normalizeBoardItem(item) as unknown as BoardItem;
+      if (this.authoritative.has(normalized.id)) {
+        throw new Error("The authoritative board snapshot contains a duplicate item.");
+      }
+      this.authoritative.set(normalized.id, normalized);
+    }
+    if (!preserveOptimistic) this.optimistic.clear();
+    this.lastAppliedSeq = snapshot.seq;
+    this.recentActions.clear();
+    this.rebuildRendered(null);
+  }
+
+  subscribe(listener: ModelListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  subscribeRebase(listener: RebaseListener): () => void {
+    this.rebaseListeners.add(listener);
+    return () => this.rebaseListeners.delete(listener);
+  }
+
+  get items(): ReadonlyMap<string, BoardItem> {
+    return this.rendered;
+  }
+
+  get authoritativeItems(): ReadonlyMap<string, BoardItem> {
+    return this.authoritative;
+  }
+
+  get pendingCount(): number {
+    return this.optimistic.size;
+  }
+
+  get pendingCommands(): CommitFrame[] {
+    return [...this.optimistic.values()];
+  }
+
+  get rebaseError(): Error | null {
+    return this.rebaseErrorValue;
+  }
+
+  discardOptimistic(): CommitFrame[] {
+    const discarded = this.pendingCommands;
+    if (discarded.length === 0) return discarded;
+    const affected = new Set<string>();
+    for (const command of discarded) {
+      for (const id of operationIds(command.op)) affected.add(id);
+    }
+    this.optimistic.clear();
+    this.rebuildRendered(affected);
+    return discarded;
+  }
+
+  getItem(id: string): BoardItem | undefined {
+    return this.rendered.get(id);
+  }
+
+  getBounds(id: string): Bounds | undefined {
+    const cached = this.bounds.get(id);
+    if (cached) return cached;
+    const item = this.rendered.get(id);
+    if (!item) return undefined;
+    const computed = itemBounds(item);
+    this.bounds.set(id, computed);
+    return computed;
+  }
+
+  queue(command: CommitFrame, actorId: string): void {
+    this.optimistic.set(command.commandId, command);
+    this.rebuildRendered(operationIds(command.op));
+    // createdBy is only a display hint before the authoritative echo.
+    for (const id of operationIds(command.op)) {
+      const item = this.rendered.get(id);
+      if (item?.version === 0 && !item.createdBy) item.createdBy = actorId;
+    }
+  }
+
+  restoreQueued(command: CommitFrame, actorId: string): void {
+    if (this.optimistic.has(command.commandId)) return;
+    this.queue(command, actorId);
+  }
+
+  reject(commandId: string): boolean {
+    const command = this.optimistic.get(commandId);
+    if (!command) return false;
+    this.optimistic.delete(commandId);
+    this.rebuildRendered(operationIds(command.op));
+    return true;
+  }
+
+  hasSeenAction(seq: number, commandId: string): boolean {
+    return this.recentActions.get(seq) === commandId;
+  }
+
+  applyAction(action: ServerAction): { acknowledged: boolean; changedIds: Set<string> } {
+    if (action.seq !== this.lastAppliedSeq + 1) {
+      throw new SequenceError(this.lastAppliedSeq + 1, action.seq);
+    }
+
+    const changedIds = new Set<string>();
+    const authoritativeOperation = adaptAuthoritativeOperation(
+      action.op,
+      this.authoritative,
+      action.seq,
+    );
+    if (authoritativeOperation) {
+      this.authoritative = applyAuthoritativeOperation(
+        this.authoritative as unknown as ReadonlyMap<string, SharedBoardItem>,
+        authoritativeOperation,
+      ) as unknown as Map<string, BoardItem>;
+      for (const id of authoritativeOperationIds(authoritativeOperation)) changedIds.add(id);
+    } else {
+      // Restore actions are an edge-level extension that carry the same
+      // explicit replacement/removal delta. They intentionally remain at this
+      // adapter boundary until they join the shared protocol union.
+      applyOperation(this.authoritative, action.op, action.actor.id, action.seq, changedIds, true);
+    }
+    this.lastAppliedSeq = action.seq;
+    this.recentActions.set(action.seq, action.commandId);
+    while (this.recentActions.size > 1_000) {
+      const first = this.recentActions.keys().next().value as number | undefined;
+      if (first === undefined) break;
+      this.recentActions.delete(first);
+    }
+
+    const acknowledged = this.optimistic.delete(action.commandId);
+    this.rebuildRendered(changedIds);
+    return { acknowledged, changedIds };
+  }
+
+  toSnapshot(boardId?: string): BoardSnapshot {
+    return {
+      format: "cf-whiteboard-json",
+      version: 1,
+      boardId,
+      seq: this.lastAppliedSeq,
+      createdAt: Date.now(),
+      items: [...this.rendered.values()]
+        .sort((a, b) => a.z - b.z)
+        .map((item) => structuredClone(item)),
+    };
+  }
+
+  hitTest(point: Point, extra = 6): BoardItem | undefined {
+    const candidates = [...this.rendered.values()].sort((a, b) => b.z - a.z);
+    for (const item of candidates) {
+      const bounds = this.getBounds(item.id);
+      if (!bounds || !containsPoint(expandBounds(bounds, extra), point)) continue;
+      if (preciseHit(item, point, extra)) return item;
+    }
+    return undefined;
+  }
+
+  intersecting(area: Bounds): BoardItem[] {
+    return [...this.rendered.values()].filter((item) => {
+      const bounds = this.getBounds(item.id);
+      return bounds ? boundsIntersect(bounds, area) : false;
+    });
+  }
+
+  boundsFor(ids: Iterable<string>): Bounds | undefined {
+    let result: Bounds | undefined;
+    for (const id of ids) {
+      const next = this.getBounds(id);
+      if (!next) continue;
+      result = result ? unionBounds(result, next) : { ...next };
+    }
+    return result;
+  }
+
+  private rebuildRendered(changed: ReadonlySet<string> | null): void {
+    const previous = this.rendered;
+    let next = this.cloneAuthoritative();
+    let rebaseError: Error | null = null;
+
+    try {
+      let optimisticZ = Math.max(0, ...[...next.values()].map((item) => item.z)) + 1;
+      for (const command of this.optimistic.values()) {
+        applyOperation(next, command.op, "", 0, new Set(), false, () => optimisticZ++);
+      }
+    } catch (error) {
+      // Replaying may have partially mutated the candidate map before it
+      // failed. Re-clone canonical state while retaining the journal so the
+      // durable outbox can be recovered or explicitly discarded by the user.
+      next = this.cloneAuthoritative();
+      rebaseError = error instanceof Error ? error : new Error("Optimistic rebase failed.");
+    }
+
+    this.rendered = next;
+    const affected = changed ? new Set(changed) : new Set<string>();
+    if (!changed) {
+      for (const id of previous.keys()) affected.add(id);
+      for (const id of next.keys()) affected.add(id);
+    } else {
+      for (const command of this.optimistic.values()) {
+        for (const id of operationIds(command.op)) affected.add(id);
+      }
+    }
+    for (const id of affected) this.bounds.delete(id);
+    for (const listener of this.listeners) listener(changed ? affected : null);
+    this.setRebaseError(rebaseError);
+  }
+
+  private cloneAuthoritative(): Map<string, BoardItem> {
+    const result = new Map<string, BoardItem>();
+    for (const [id, item] of this.authoritative) result.set(id, structuredClone(item));
+    return result;
+  }
+
+  private setRebaseError(error: Error | null): void {
+    const wasFailed = this.rebaseErrorValue !== null;
+    const isFailed = error !== null;
+    this.rebaseErrorValue = error;
+    if (wasFailed === isFailed) return;
+    for (const listener of this.rebaseListeners) listener(error);
+  }
+}
+
+export class SequenceError extends Error {
+  constructor(
+    readonly expected: number,
+    readonly received: number,
+  ) {
+    super(`Expected board sequence ${expected}, received ${received}.`);
+    this.name = "SequenceError";
+  }
+}
+
+function adaptAuthoritativeOperation(
+  value: unknown,
+  current: ReadonlyMap<string, BoardItem>,
+  seq: number,
+): AuthoritativeOperation | null {
+  if (!value || typeof value !== "object")
+    throw new Error("The authoritative operation is invalid.");
+  const operation = value as Record<string, unknown>;
+  if (
+    operation.kind === "item.create" ||
+    operation.kind === "item.update" ||
+    operation.kind === "item.delete" ||
+    operation.kind === "item.copy"
+  ) {
+    return adaptAuthoritativeItem(operation, seq);
+  }
+  if (operation.kind === "items.batch") {
+    if (!Array.isArray(operation.operations))
+      throw new Error("The authoritative batch is invalid.");
+    return {
+      kind: "items.batch",
+      operations: operation.operations.map((child) => {
+        if (!child || typeof child !== "object")
+          throw new Error("The authoritative batch child is invalid.");
+        return adaptAuthoritativeItem(child as Record<string, unknown>, seq);
+      }),
+    };
+  }
+  if (operation.kind === "history.undo" || operation.kind === "history.redo") {
+    if (!Array.isArray(operation.changes) || typeof operation.targetActionId !== "string") {
+      throw new Error("The authoritative history operation is invalid.");
+    }
+    const changes: CanonicalItemChange[] = operation.changes.map((value) => {
+      if (!value || typeof value !== "object")
+        throw new Error("The authoritative history change is invalid.");
+      const change = value as Record<string, unknown>;
+      if ((change.kind === "item.replace" || change.item !== null) && isBoardItem(change.item)) {
+        return { kind: "item.replace", item: change.item as unknown as SharedBoardItem };
+      }
+      if (
+        typeof change.itemId === "string" &&
+        (change.kind === "item.remove" || change.item === null)
+      ) {
+        return {
+          kind: "item.remove",
+          itemId: change.itemId,
+          version: typeof change.version === "number" ? change.version : seq,
+        };
+      }
+      throw new Error("The authoritative history change is invalid.");
+    });
+    return { kind: operation.kind, targetActionId: operation.targetActionId, changes };
+  }
+  if (operation.kind === "board.clear") {
+    const rawRemoved = Array.isArray(operation.removed) ? operation.removed : [...current.keys()];
+    const removed = rawRemoved.map((value) => {
+      if (typeof value === "string") return { itemId: value, version: seq };
+      if (
+        value &&
+        typeof value === "object" &&
+        typeof (value as { itemId?: unknown }).itemId === "string"
+      ) {
+        const removal = value as { itemId: string; version?: unknown };
+        return {
+          itemId: removal.itemId,
+          version: typeof removal.version === "number" ? removal.version : seq,
+        };
+      }
+      throw new Error("The authoritative clear removal is invalid.");
+    });
+    return { kind: "board.clear", removed };
+  }
+  if (operation.kind === "board.restore") return null;
+  throw new Error("The authoritative operation kind is unsupported.");
+}
+
+function adaptAuthoritativeItem(
+  operation: Record<string, unknown>,
+  seq: number,
+): AuthoritativeItemOperation {
+  if (operation.kind === "item.create" && isBoardItem(operation.item)) {
+    return { kind: "item.create", item: operation.item as unknown as SharedBoardItem };
+  }
+  if (operation.kind === "item.update" && isBoardItem(operation.item)) {
+    return { kind: "item.update", item: operation.item as unknown as SharedBoardItem };
+  }
+  if (operation.kind === "item.delete" && typeof operation.itemId === "string") {
+    return {
+      kind: "item.delete",
+      itemId: operation.itemId,
+      version: typeof operation.version === "number" ? operation.version : seq,
+    };
+  }
+  if (
+    operation.kind === "item.copy" &&
+    typeof operation.sourceItemId === "string" &&
+    isBoardItem(operation.item)
+  ) {
+    return {
+      kind: "item.copy",
+      sourceItemId: operation.sourceItemId,
+      item: operation.item as unknown as SharedBoardItem,
+    };
+  }
+  throw new Error("The authoritative item operation is invalid.");
+}
+
+function authoritativeOperationIds(operation: AuthoritativeOperation): Set<string> {
+  const ids = new Set<string>();
+  const add = (itemOperation: AuthoritativeItemOperation): void => {
+    if (itemOperation.kind === "item.delete") ids.add(itemOperation.itemId);
+    else ids.add(itemOperation.item.id);
+  };
+  switch (operation.kind) {
+    case "item.create":
+    case "item.update":
+    case "item.delete":
+    case "item.copy":
+      add(operation);
+      break;
+    case "items.batch":
+      operation.operations.forEach(add);
+      break;
+    case "history.undo":
+    case "history.redo":
+      for (const change of operation.changes)
+        ids.add(change.kind === "item.replace" ? change.item.id : change.itemId);
+      break;
+    case "board.clear":
+      for (const removal of operation.removed) ids.add(removal.itemId);
+      break;
+  }
+  return ids;
+}
+
+function applyOperation(
+  target: Map<string, BoardItem>,
+  operation: DurableOperation & Record<string, unknown>,
+  actorId: string,
+  version: number,
+  changed: Set<string>,
+  canonical: boolean,
+  allocateZ: () => number = () => Math.max(0, ...[...target.values()].map((item) => item.z)) + 1,
+): void {
+  applyExplicitCanonicalDelta(target, operation, changed);
+
+  switch (operation.kind) {
+    case "item.create": {
+      const candidate = operation.item as unknown;
+      if (canonical && isBoardItem(candidate)) {
+        target.set(candidate.id, structuredClone(candidate));
+        changed.add(candidate.id);
+        return;
+      }
+      const raw = candidate as Omit<BoardItem, "z" | "version" | "createdBy">;
+      const item = {
+        ...structuredClone(raw),
+        z: allocateZ(),
+        version,
+        createdBy: actorId,
+      } as BoardItem;
+      target.set(item.id, item);
+      changed.add(item.id);
+      return;
+    }
+    case "item.update": {
+      const canonicalItem = operation.item as unknown;
+      if (canonical && isBoardItem(canonicalItem)) {
+        target.set(canonicalItem.id, structuredClone(canonicalItem));
+        changed.add(canonicalItem.id);
+        return;
+      }
+      const existing = target.get(operation.itemId);
+      if (!existing) throw new Error(`Cannot update missing item ${operation.itemId}.`);
+      const next = patchItem(existing, operation.patch, version);
+      target.set(existing.id, next);
+      changed.add(existing.id);
+      return;
+    }
+    case "item.delete": {
+      target.delete(operation.itemId);
+      changed.add(operation.itemId);
+      return;
+    }
+    case "item.copy": {
+      const canonicalItem = operation.item as unknown;
+      if (canonical && isBoardItem(canonicalItem)) {
+        target.set(canonicalItem.id, structuredClone(canonicalItem));
+        changed.add(canonicalItem.id);
+        return;
+      }
+      const source = target.get(operation.sourceItemId);
+      if (!source) throw new Error(`Cannot copy missing item ${operation.sourceItemId}.`);
+      const copy = structuredClone(source);
+      copy.id = operation.newItemId;
+      copy.z = allocateZ();
+      copy.version = version;
+      copy.createdBy = actorId;
+      copy.transform = translateMatrix(
+        copy.transform,
+        operation.translate.x,
+        operation.translate.y,
+      );
+      target.set(copy.id, copy);
+      changed.add(copy.id);
+      return;
+    }
+    case "items.batch": {
+      for (const child of operation.operations) {
+        applyOperation(
+          target,
+          child as BatchItemOperation & Record<string, unknown>,
+          actorId,
+          version,
+          changed,
+          canonical,
+          allocateZ,
+        );
+      }
+      return;
+    }
+    case "board.clear":
+      for (const id of target.keys()) changed.add(id);
+      target.clear();
+      return;
+    case "history.undo":
+    case "history.redo":
+      return;
+  }
+}
+
+function applyExplicitCanonicalDelta(
+  target: Map<string, BoardItem>,
+  operation: Record<string, unknown>,
+  changed: Set<string>,
+): void {
+  const replacements = [operation.items, operation.replacements, operation.upserts]
+    .filter(Array.isArray)
+    .flat() as unknown[];
+  for (const item of replacements) {
+    if (!isBoardItem(item)) continue;
+    target.set(item.id, structuredClone(item));
+    changed.add(item.id);
+  }
+  const removed = [
+    operation.removedItemIds,
+    operation.removals,
+    operation.deletedItemIds,
+    operation.removed,
+  ]
+    .filter(Array.isArray)
+    .flat() as unknown[];
+  for (const value of removed) {
+    const id =
+      typeof value === "string"
+        ? value
+        : value &&
+            typeof value === "object" &&
+            typeof (value as { itemId?: unknown }).itemId === "string"
+          ? (value as { itemId: string }).itemId
+          : null;
+    if (!id) continue;
+    target.delete(id);
+    changed.add(id);
+  }
+  if (Array.isArray(operation.changes)) {
+    for (const value of operation.changes) {
+      if (!value || typeof value !== "object") continue;
+      const change = value as { kind?: unknown; itemId?: unknown; item?: unknown };
+      if (isBoardItem(change.item)) {
+        target.set(change.item.id, structuredClone(change.item));
+        changed.add(change.item.id);
+        continue;
+      }
+      if (
+        typeof change.itemId === "string" &&
+        (change.item === null || change.kind === "item.remove")
+      ) {
+        target.delete(change.itemId);
+        changed.add(change.itemId);
+      }
+    }
+  }
+}
+
+function patchItem(item: BoardItem, patch: ItemPatch, version: number): BoardItem {
+  const next = structuredClone(item) as BoardItem;
+  if (patch.transform) next.transform = [...patch.transform] as Matrix;
+  if (patch.style) (next as { style: typeof patch.style }).style = structuredClone(patch.style);
+  if (patch.geometry) {
+    (next as { geometry: typeof patch.geometry }).geometry = structuredClone(patch.geometry);
+  }
+  next.version = version;
+  return next;
+}
+
+export function operationIds(operation: DurableOperation): Set<string> {
+  const ids = new Set<string>();
+  const collect = (op: DurableOperation | BatchItemOperation): void => {
+    switch (op.kind) {
+      case "item.create":
+        ids.add(op.item.id);
+        break;
+      case "item.update":
+      case "item.delete":
+        ids.add(op.itemId);
+        break;
+      case "item.copy":
+        ids.add(op.sourceItemId);
+        ids.add(op.newItemId);
+        break;
+      case "items.batch":
+        op.operations.forEach(collect);
+        break;
+      default:
+        break;
+    }
+  };
+  collect(operation);
+  return ids;
+}
+
+export function translateMatrix(matrix: Matrix, x: number, y: number): Matrix {
+  return [matrix[0], matrix[1], matrix[2], matrix[3], matrix[4] + x, matrix[5] + y];
+}
+
+export function itemBounds(item: BoardItem): Bounds {
+  const raw = geometryBounds(item);
+  const corners: Point[] = [
+    [raw.minX, raw.minY],
+    [raw.maxX, raw.minY],
+    [raw.maxX, raw.maxY],
+    [raw.minX, raw.maxY],
+  ];
+  const transformed = corners.map((point) => transformPoint(point, item.transform));
+  const minX = Math.min(...transformed.map((point) => point[0]));
+  const minY = Math.min(...transformed.map((point) => point[1]));
+  const maxX = Math.max(...transformed.map((point) => point[0]));
+  const maxY = Math.max(...transformed.map((point) => point[1]));
+  const padding = item.kind === "text" ? 2 : item.style.width / 2;
+  return { minX: minX - padding, minY: minY - padding, maxX: maxX + padding, maxY: maxY + padding };
+}
+
+function geometryBounds(item: BoardItem): Bounds {
+  switch (item.kind) {
+    case "pencil": {
+      const xs = item.geometry.points.map((point) => point[0]);
+      const ys = item.geometry.points.map((point) => point[1]);
+      return {
+        minX: Math.min(...xs),
+        minY: Math.min(...ys),
+        maxX: Math.max(...xs),
+        maxY: Math.max(...ys),
+      };
+    }
+    case "line":
+      return {
+        minX: Math.min(item.geometry.x1, item.geometry.x2),
+        minY: Math.min(item.geometry.y1, item.geometry.y2),
+        maxX: Math.max(item.geometry.x1, item.geometry.x2),
+        maxY: Math.max(item.geometry.y1, item.geometry.y2),
+      };
+    case "rectangle":
+    case "ellipse":
+      return boxBounds(item.geometry);
+    case "text": {
+      const lines = item.geometry.text.split("\n");
+      const width =
+        Math.max(1, ...lines.map((line) => [...line].length)) * item.style.fontSize * 0.61;
+      const height = Math.max(1, lines.length) * item.style.fontSize * 1.2;
+      return {
+        minX: item.geometry.x,
+        minY: item.geometry.y - item.style.fontSize,
+        maxX: item.geometry.x + width,
+        maxY: item.geometry.y - item.style.fontSize + height,
+      };
+    }
+  }
+}
+
+function boxBounds(box: BoxGeometry): Bounds {
+  return { minX: box.x, minY: box.y, maxX: box.x + box.width, maxY: box.y + box.height };
+}
+
+function preciseHit(item: BoardItem, point: Point, extra: number): boolean {
+  const local = inverseTransformPoint(point, item.transform);
+  if (!local) return true;
+  if (item.kind === "line") {
+    return (
+      distanceToSegment(
+        local,
+        [item.geometry.x1, item.geometry.y1],
+        [item.geometry.x2, item.geometry.y2],
+      ) <=
+      item.style.width / 2 + extra
+    );
+  }
+  if (item.kind === "pencil") {
+    for (let index = 1; index < item.geometry.points.length; index += 1) {
+      const start = item.geometry.points[index - 1];
+      const end = item.geometry.points[index];
+      if (start && end && distanceToSegment(local, start, end) <= item.style.width / 2 + extra)
+        return true;
+    }
+    return false;
+  }
+  return true;
+}
+
+function distanceToSegment(point: Point, start: Point, end: Point): number {
+  const dx = end[0] - start[0];
+  const dy = end[1] - start[1];
+  if (dx === 0 && dy === 0) return Math.hypot(point[0] - start[0], point[1] - start[1]);
+  const amount = Math.max(
+    0,
+    Math.min(1, ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / (dx * dx + dy * dy)),
+  );
+  return Math.hypot(point[0] - (start[0] + amount * dx), point[1] - (start[1] + amount * dy));
+}
+
+function transformPoint(point: Point, matrix: Matrix): Point {
+  return [
+    matrix[0] * point[0] + matrix[2] * point[1] + matrix[4],
+    matrix[1] * point[0] + matrix[3] * point[1] + matrix[5],
+  ];
+}
+
+function inverseTransformPoint(point: Point, matrix: Matrix): Point | null {
+  const determinant = matrix[0] * matrix[3] - matrix[1] * matrix[2];
+  if (Math.abs(determinant) < Number.EPSILON) return null;
+  const x = point[0] - matrix[4];
+  const y = point[1] - matrix[5];
+  return [
+    (matrix[3] * x - matrix[2] * y) / determinant,
+    (-matrix[1] * x + matrix[0] * y) / determinant,
+  ];
+}
+
+function containsPoint(bounds: Bounds, point: Point): boolean {
+  return (
+    point[0] >= bounds.minX &&
+    point[0] <= bounds.maxX &&
+    point[1] >= bounds.minY &&
+    point[1] <= bounds.maxY
+  );
+}
+
+function expandBounds(bounds: Bounds, amount: number): Bounds {
+  return {
+    minX: bounds.minX - amount,
+    minY: bounds.minY - amount,
+    maxX: bounds.maxX + amount,
+    maxY: bounds.maxY + amount,
+  };
+}
+
+function boundsIntersect(a: Bounds, b: Bounds): boolean {
+  return a.minX <= b.maxX && a.maxX >= b.minX && a.minY <= b.maxY && a.maxY >= b.minY;
+}
+
+function unionBounds(a: Bounds, b: Bounds): Bounds {
+  return {
+    minX: Math.min(a.minX, b.minX),
+    minY: Math.min(a.minY, b.minY),
+    maxX: Math.max(a.maxX, b.maxX),
+    maxY: Math.max(a.maxY, b.maxY),
+  };
+}

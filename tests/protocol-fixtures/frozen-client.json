@@ -1,0 +1,228 @@
+{
+  "fixtureFormat": "collab-canvas-client-protocol",
+  "fixtureFormatVersion": 1,
+  "role": "initial-v1-baseline",
+  "protocolVersion": 1,
+  "frames": [
+    {
+      "name": "commit.item-create",
+      "frame": {
+        "v": 1,
+        "t": "client.commit",
+        "commandId": "018f0000-0000-7000-8000-000000000c01",
+        "actionId": "018f0000-0000-7000-8000-000000000a01",
+        "baseSeq": 0,
+        "op": {
+          "kind": "item.create",
+          "item": {
+            "id": "018f0000-0000-7000-8000-000000000001",
+            "kind": "rectangle",
+            "style": { "kind": "stroke", "color": "#336699", "width": 4, "opacity": 0.8 },
+            "transform": [1, 0, 0, 1, 0, 0],
+            "geometry": { "x": 10, "y": 20, "width": 100, "height": 60 }
+          }
+        }
+      }
+    },
+    {
+      "name": "commit.item-update",
+      "frame": {
+        "v": 1,
+        "t": "client.commit",
+        "commandId": "018f0000-0000-7000-8000-000000000c02",
+        "actionId": "018f0000-0000-7000-8000-000000000a02",
+        "baseSeq": 1,
+        "op": {
+          "kind": "item.update",
+          "itemId": "018f0000-0000-7000-8000-000000000001",
+          "expectedVersion": 1,
+          "patch": { "transform": [1, 0, 0, 1, 12, -8] }
+        }
+      }
+    },
+    {
+      "name": "commit.item-delete",
+      "frame": {
+        "v": 1,
+        "t": "client.commit",
+        "commandId": "018f0000-0000-7000-8000-000000000c03",
+        "actionId": "018f0000-0000-7000-8000-000000000a03",
+        "baseSeq": 2,
+        "op": {
+          "kind": "item.delete",
+          "itemId": "018f0000-0000-7000-8000-000000000001",
+          "expectedVersion": 2
+        }
+      }
+    },
+    {
+      "name": "commit.item-copy",
+      "frame": {
+        "v": 1,
+        "t": "client.commit",
+        "commandId": "018f0000-0000-7000-8000-000000000c04",
+        "actionId": "018f0000-0000-7000-8000-000000000a04",
+        "baseSeq": 3,
+        "op": {
+          "kind": "item.copy",
+          "sourceItemId": "018f0000-0000-7000-8000-000000000001",
+          "expectedVersion": 2,
+          "newItemId": "018f0000-0000-7000-8000-000000000002",
+          "translate": { "x": 15, "y": 10 }
+        }
+      }
+    },
+    {
+      "name": "commit.items-batch",
+      "frame": {
+        "v": 1,
+        "t": "client.commit",
+        "commandId": "018f0000-0000-7000-8000-000000000c05",
+        "actionId": "018f0000-0000-7000-8000-000000000a05",
+        "baseSeq": 4,
+        "op": {
+          "kind": "items.batch",
+          "operations": [
+            {
+              "kind": "item.create",
+              "item": {
+                "id": "018f0000-0000-7000-8000-000000000003",
+                "kind": "text",
+                "style": { "kind": "text", "color": "#112233", "fontSize": 24, "opacity": 1 },
+                "transform": [1, 0, 0, 1, 0, 0],
+                "geometry": { "x": 25, "y": 40, "text": "Frozen v1 fixture" }
+              }
+            },
+            {
+              "kind": "item.update",
+              "itemId": "018f0000-0000-7000-8000-000000000001",
+              "expectedVersion": 2,
+              "patch": {
+                "style": { "kind": "stroke", "color": "#224466", "width": 6, "opacity": 0.7 }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "commit.history-undo",
+      "frame": {
+        "v": 1,
+        "t": "client.commit",
+        "commandId": "018f0000-0000-7000-8000-000000000c06",
+        "actionId": "018f0000-0000-7000-8000-000000000a06",
+        "baseSeq": 5,
+        "op": { "kind": "history.undo", "expectedHistoryVersion": 5 }
+      }
+    },
+    {
+      "name": "commit.history-redo",
+      "frame": {
+        "v": 1,
+        "t": "client.commit",
+        "commandId": "018f0000-0000-7000-8000-000000000c07",
+        "actionId": "018f0000-0000-7000-8000-000000000a07",
+        "baseSeq": 6,
+        "op": { "kind": "history.redo", "expectedHistoryVersion": 6 }
+      }
+    },
+    {
+      "name": "commit.board-clear",
+      "frame": {
+        "v": 1,
+        "t": "client.commit",
+        "commandId": "018f0000-0000-7000-8000-000000000c08",
+        "actionId": "018f0000-0000-7000-8000-000000000a08",
+        "baseSeq": 7,
+        "op": { "kind": "board.clear", "expectedBoardSeq": 7 }
+      }
+    },
+    {
+      "name": "preview.pencil-start",
+      "frame": {
+        "v": 1,
+        "t": "client.preview",
+        "gestureId": "018f0000-0000-7000-8000-000000000a11",
+        "previewSeq": 0,
+        "kind": "pencil.start",
+        "payload": {
+          "itemId": "018f0000-0000-7000-8000-000000000004",
+          "point": [1, 2],
+          "style": { "kind": "stroke", "color": "#336699", "width": 3, "opacity": 0.8 }
+        }
+      }
+    },
+    {
+      "name": "preview.pencil-segment",
+      "frame": {
+        "v": 1,
+        "t": "client.preview",
+        "gestureId": "018f0000-0000-7000-8000-000000000a11",
+        "previewSeq": 1,
+        "kind": "pencil.segment",
+        "payload": {
+          "itemId": "018f0000-0000-7000-8000-000000000004",
+          "points": [[1, 2], [3, 4], [5, 8]]
+        }
+      }
+    },
+    {
+      "name": "preview.shape-geometry",
+      "frame": {
+        "v": 1,
+        "t": "client.preview",
+        "gestureId": "018f0000-0000-7000-8000-000000000a12",
+        "previewSeq": 0,
+        "kind": "shape.geometry",
+        "payload": {
+          "itemId": "018f0000-0000-7000-8000-000000000005",
+          "itemKind": "line",
+          "geometry": { "x1": 0, "y1": 0, "x2": 40, "y2": 20 },
+          "style": { "kind": "stroke", "color": "#336699", "width": 2, "opacity": 1 }
+        }
+      }
+    },
+    {
+      "name": "preview.selection-transform",
+      "frame": {
+        "v": 1,
+        "t": "client.preview",
+        "gestureId": "018f0000-0000-7000-8000-000000000a13",
+        "previewSeq": 0,
+        "kind": "selection.transform",
+        "payload": {
+          "itemIds": [
+            "018f0000-0000-7000-8000-000000000001",
+            "018f0000-0000-7000-8000-000000000002"
+          ],
+          "translate": { "x": 9, "y": -3 }
+        }
+      }
+    },
+    {
+      "name": "preview.gesture-cancel",
+      "frame": {
+        "v": 1,
+        "t": "client.preview",
+        "gestureId": "018f0000-0000-7000-8000-000000000a13",
+        "previewSeq": 1,
+        "kind": "gesture.cancel",
+        "payload": {}
+      }
+    },
+    {
+      "name": "presence",
+      "frame": {
+        "v": 1,
+        "t": "client.presence",
+        "cursor": { "x": 12.5, "y": -4.25 },
+        "activeTool": "select"
+      }
+    },
+    {
+      "name": "sync-check",
+      "frame": { "v": 1, "t": "client.sync_check", "latestSeq": 7 }
+    }
+  ]
+}

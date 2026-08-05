@@ -1,0 +1,1825 @@
+/// <reference types="@cloudflare/vitest-pool-workers/types" />
+
+import { evictDurableObject, reset, runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
+import { canonicalSnapshotByteLengthFromParts } from "@collab/board-core";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { sha256, sha256Base64Url } from "./crypto";
+import {
+  backfillSnapshotAccounting,
+  captureSnapshot,
+  serializeSnapshot,
+  snapshotAccountingForItems,
+} from "./storage";
+import { boardIdHash } from "./telemetry";
+import type { BoardRow, Env } from "./types";
+
+const boardId = "b_AAAAAAAAAAAAAAAAAAAAAA";
+const actorId = "a_AAAAAAAAAAAAAAAAAAAAAA";
+const editorId = "a_BBBBBBBBBBBBBBBBBBBBBA";
+
+afterEach(() => vi.restoreAllMocks());
+
+function internalRequest(path: string, init: RequestInit = {}): Request {
+  const headers = new Headers(init.headers);
+  headers.set("x-whiteboard-internal-actor", actorId);
+  headers.set("x-whiteboard-internal-session-expiry", String(Date.now() + 60_000));
+  headers.set("x-whiteboard-internal-request-id", crypto.randomUUID());
+  return new Request(`https://board.test${path}`, { ...init, headers });
+}
+
+function internalActorRequest(actor: string, path: string, init: RequestInit = {}): Request {
+  const request = internalRequest(path, init);
+  request.headers.set("x-whiteboard-internal-actor", actor);
+  return request;
+}
+
+async function initializeBoard(stub: DurableObjectStub): Promise<void> {
+  const body = JSON.stringify({
+    publicId: boardId,
+    title: "Test board",
+    accessMode: "link_view",
+    ownerActorId: actorId,
+    ownerDisplayName: "Owner 1",
+    ownerRecoveryHash: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  });
+  const response = await stub.fetch(
+    internalRequest("/__internal/initialize", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    }),
+  );
+  expect(response.status).toBe(201);
+  await response.arrayBuffer();
+}
+
+async function addEditor(stub: DurableObjectStub): Promise<void> {
+  await runInDurableObject(stub, (_instance, durableState) => {
+    const now = Date.now();
+    durableState.storage.transactionSync(() => {
+      durableState.storage.sql.exec(
+        `INSERT INTO members(actor_id, role, display_name, created_at_ms, updated_at_ms)
+         VALUES (?, 'editor', 'Editor', ?, ?)`,
+        editorId,
+        now,
+        now,
+      );
+      durableState.storage.sql.exec("UPDATE board SET acl_version = 2");
+    });
+  });
+}
+
+function socketRequest(actor: string, since = 0): Request {
+  const request = internalRequest(
+    `/api/v1/boards/${boardId}/socket?since=${since}&client=018f0000-0000-7000-8000-000000000099`,
+    { method: "GET", headers: { Upgrade: "websocket" } },
+  );
+  request.headers.set("x-whiteboard-internal-actor", actor);
+  return request;
+}
+
+interface TestSocket {
+  socket: WebSocket;
+  received: Record<string, unknown>[];
+  closed: Promise<CloseEvent>;
+  next: (
+    predicate: (frame: Record<string, unknown>) => boolean,
+  ) => Promise<Record<string, unknown>>;
+}
+
+async function openSocket(stub: DurableObjectStub, actor: string, since = 0): Promise<TestSocket> {
+  const response = await stub.fetch(socketRequest(actor, since));
+  expect(response.status).toBe(101);
+  const socket = response.webSocket;
+  if (socket === null) throw new Error("Upgrade did not return a WebSocket.");
+  const queued: Record<string, unknown>[] = [];
+  const received: Record<string, unknown>[] = [];
+  const waiters: Array<{
+    predicate: (frame: Record<string, unknown>) => boolean;
+    resolve: (frame: Record<string, unknown>) => void;
+  }> = [];
+  socket.addEventListener("message", (event) => {
+    const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
+    received.push(frame);
+    const waiterIndex = waiters.findIndex((waiter) => waiter.predicate(frame));
+    if (waiterIndex < 0) queued.push(frame);
+    else waiters.splice(waiterIndex, 1)[0]?.resolve(frame);
+  });
+  const closed = new Promise<CloseEvent>((resolve) => {
+    socket.addEventListener("close", resolve, { once: true });
+  });
+  socket.accept();
+  const next = async (
+    predicate: (frame: Record<string, unknown>) => boolean,
+  ): Promise<Record<string, unknown>> => {
+    const queuedIndex = queued.findIndex(predicate);
+    if (queuedIndex >= 0) return queued.splice(queuedIndex, 1)[0] ?? {};
+    return new Promise((resolve, reject) => {
+      const waiter = { predicate, resolve };
+      waiters.push(waiter);
+      setTimeout(() => {
+        const index = waiters.indexOf(waiter);
+        if (index >= 0) waiters.splice(index, 1);
+        reject(new Error("Timed out waiting for a WebSocket frame."));
+      }, 3_000);
+    });
+  };
+  return { socket, received, closed, next };
+}
+
+async function connect(stub: DurableObjectStub, actor: string, since = 0): Promise<TestSocket> {
+  const connected = await openSocket(stub, actor, since);
+  await connected.next((frame) => frame.t === "server.ready");
+  return connected;
+}
+
+function createCommit(commandId: string, actionId: string, itemId: string) {
+  return {
+    v: 1,
+    t: "client.commit",
+    commandId,
+    actionId,
+    baseSeq: 0,
+    op: {
+      kind: "item.create",
+      item: {
+        id: itemId,
+        kind: "rectangle",
+        style: { kind: "stroke", color: "#112233", width: 2, opacity: 1 },
+        transform: [1, 0, 0, 1, 0, 0],
+        geometry: { x: 1, y: 2, width: 3, height: 4 },
+      },
+    },
+  };
+}
+
+function seedActionRows(
+  sql: SqlStorage,
+  count: number,
+  acceptedAt: number,
+  firstSequence = 1,
+): void {
+  const payload = JSON.stringify({
+    publicResult: {
+      v: 1,
+      t: "server.action",
+      seq: 1,
+      acceptedAt,
+      actor: { id: actorId, displayName: "Owner 1" },
+      commandId: "seed-command",
+      actionId: "seed-action",
+      op: { kind: "board.clear", removed: [] },
+    },
+    effects: [],
+  });
+  const batchSize = 1_000;
+  const lastSequence = firstSequence + count - 1;
+  for (let start = firstSequence; start <= lastSequence; start += batchSize) {
+    const end = Math.min(lastSequence, start + batchSize - 1);
+    sql.exec(
+      `WITH RECURSIVE sequence(seq) AS (
+         VALUES (?)
+         UNION ALL
+         SELECT seq + 1 FROM sequence WHERE seq < ?
+       )
+       INSERT INTO actions(
+         seq, action_id, command_id, request_hash, actor_id, kind, payload_json,
+         affected_item_ids_json, undoable, accepted_at_ms
+       )
+       SELECT seq, printf('seed-action-%d', seq), printf('seed-command-%d', seq),
+         printf('seed-hash-%d', seq), ?, 'seed', ?, '[]', 0, ?
+       FROM sequence`,
+      start,
+      end,
+      actorId,
+      payload,
+      acceptedAt,
+    );
+  }
+}
+
+function readSnapshotAccounting(sql: SqlStorage) {
+  const board = sql.exec<BoardRow>("SELECT * FROM board WHERE singleton = 1").one();
+  const snapshot = captureSnapshot(sql, board);
+  const actual = snapshotAccountingForItems(snapshot.items);
+  return {
+    stored: {
+      itemCount: board.snapshot_live_item_count,
+      itemBytes: board.snapshot_live_item_bytes,
+    },
+    actual,
+    decomposedBytes: canonicalSnapshotByteLengthFromParts({
+      boardId: board.public_id,
+      seq: snapshot.seq,
+      createdAt: snapshot.createdAt,
+      settings: snapshot.settings,
+      ...actual,
+    }),
+    serializedBytes: new TextEncoder().encode(serializeSnapshot(snapshot)).byteLength,
+  };
+}
+
+describe("BoardRoom initialization", () => {
+  afterEach(async () => reset());
+
+  it("applies the forward schema once and initializes idempotently", async () => {
+    const binding = (env as unknown as Env).BOARD_ROOMS;
+    const stub = binding.getByName(boardId);
+    const body = JSON.stringify({
+      publicId: boardId,
+      title: "Test board",
+      accessMode: "link_view",
+      ownerActorId: actorId,
+      ownerDisplayName: "Owner 1",
+      ownerRecoveryHash: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    });
+    const first = await stub.fetch(
+      internalRequest("/__internal/initialize", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      }),
+    );
+    expect(first.status).toBe(201);
+    await first.arrayBuffer();
+    const second = await stub.fetch(
+      internalRequest("/__internal/initialize", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      }),
+    );
+    expect(second.status).toBe(200);
+    await second.arrayBuffer();
+
+    const state = await runInDurableObject(stub, (_instance, durableState) => ({
+      migrations: durableState.storage.sql
+        .exec<{ version: number }>("SELECT version FROM _sql_schema_migrations ORDER BY version")
+        .toArray()
+        .map((row) => row.version),
+      boards: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM board")
+        .one().count,
+      owners: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM members WHERE role = 'owner'")
+        .one().count,
+      accounting: durableState.storage.sql
+        .exec<{ item_count: number; item_bytes: number }>(
+          `SELECT snapshot_live_item_count AS item_count,
+            snapshot_live_item_bytes AS item_bytes FROM board`,
+        )
+        .one(),
+    }));
+    expect(state).toEqual({
+      migrations: [1, 2, 3, 4, 5],
+      boards: 1,
+      owners: 1,
+      accounting: { item_count: 0, item_bytes: 0 },
+    });
+
+    const bootstrap = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/bootstrap`, { method: "GET" }),
+    );
+    expect(bootstrap.status).toBe(200);
+    const value = (await bootstrap.json()) as Record<string, unknown>;
+    expect(value).toMatchObject({ protocolVersion: 1 });
+  });
+
+  it("emits privacy-safe normalized room, replay, commit, storage, and broadcast events", async () => {
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    output.mockClear();
+
+    const bootstrap = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/bootstrap`, { method: "GET" }),
+    );
+    await bootstrap.arrayBuffer();
+    const completion = loggedEvents(output, "room.http_completed");
+    expect(completion).toHaveLength(1);
+    expect(completion[0]).toMatchObject({
+      environment: "development",
+      boardIdHash: await boardIdHash(boardId),
+      durableObjectVersion: expect.any(String),
+      executionComponent: "BoardRoom",
+      status: 200,
+      internalError: false,
+      durationMs: expect.any(Number),
+    });
+
+    output.mockClear();
+    const connected = await connect(stub, actorId);
+    expect(loggedEvents(output, "socket.connected")).toHaveLength(1);
+    expect(loggedEvents(output, "replay.completed")).toEqual([
+      expect.objectContaining({ replayActions: 0, replayBytes: 0, resyncRequired: false }),
+    ]);
+
+    output.mockClear();
+    connected.socket.send(
+      JSON.stringify(
+        createCommit(
+          "018f0000-0000-7000-8000-0000000000a0",
+          "018f0000-0000-7000-8000-0000000000a1",
+          "018f0000-0000-7000-8000-0000000000a2",
+        ),
+      ),
+    );
+    await connected.next((frame) => frame.t === "server.action" && frame.seq === 1);
+    expect(loggedEvents(output, "command.accepted")).toEqual([
+      expect.objectContaining({
+        actionKind: "item.create",
+        code: "OK",
+        result: "committed",
+        protocolVersion: 1,
+        seq: 1,
+        durationMs: expect.any(Number),
+      }),
+    ]);
+    expect(loggedEvents(output, "storage.transaction_completed")).toEqual([
+      expect.objectContaining({
+        result: "committed",
+        sqliteRowsRead: expect.any(Number),
+        sqliteRowsWritten: expect.any(Number),
+      }),
+    ]);
+    expect(loggedEvents(output, "broadcast.completed")).toEqual([
+      expect.objectContaining({ fanout: 1, sendFailures: 0 }),
+    ]);
+    expect(JSON.stringify(output.mock.calls)).not.toContain(boardId);
+    connected.socket.close(1000, "test complete");
+  });
+
+  it("backfills 10,000 Unicode items with one exact SQLite byte aggregation", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const dataJson = JSON.stringify({
+      id: "fixture",
+      kind: "text",
+      z: 1,
+      version: 1,
+      createdBy: actorId,
+      style: { kind: "text", color: "#112233", fontSize: 16, opacity: 1 },
+      transform: [1, 0, 0, 1, 0, 0],
+      geometry: { x: 1, y: 2, text: "雪🙂e\u0301" },
+    });
+    const bytesPerItem = new TextEncoder().encode(dataJson).byteLength;
+    expect(bytesPerItem).toBeGreaterThan(dataJson.length);
+
+    const result = await runInDurableObject(stub, (_instance, durableState) => {
+      const sql = durableState.storage.sql;
+      for (let start = 1; start <= 10_000; start += 1_000) {
+        const end = start + 999;
+        sql.exec(
+          `WITH RECURSIVE sequence(value) AS (
+             VALUES (?)
+             UNION ALL SELECT value + 1 FROM sequence WHERE value < ?
+           )
+           INSERT INTO items(
+             item_id, kind, z_order, version_seq, state_token, created_by, deleted, data_json
+           )
+           SELECT printf('fixture-%d', value), 'text', value, 1,
+             printf('token-%d', value), ?, 0, ? FROM sequence`,
+          start,
+          end,
+          actorId,
+          dataJson,
+        );
+      }
+      sql.exec(
+        `UPDATE board SET snapshot_live_item_count = -1,
+          snapshot_live_item_bytes = -1 WHERE singleton = 1`,
+      );
+      const startedAt = performance.now();
+      backfillSnapshotAccounting(durableState.storage);
+      const elapsedMs = performance.now() - startedAt;
+      return {
+        elapsedMs,
+        accounting: sql
+          .exec<{ item_count: number; item_bytes: number }>(
+            `SELECT snapshot_live_item_count AS item_count,
+              snapshot_live_item_bytes AS item_bytes FROM board`,
+          )
+          .one(),
+      };
+    });
+    expect(result.accounting).toEqual({
+      item_count: 10_000,
+      item_bytes: 10_000 * bytesPerItem,
+    });
+    expect(result.elapsedMs).toBeLessThan(2_000);
+  });
+
+  it("writes a snapshot job only on first dirtiness and the 250-action threshold", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const base = Date.now() + 120_000;
+    const result = await runInDurableObject(stub, async (instance, durableState) => {
+      const sql = durableState.storage.sql;
+      sql.exec("CREATE TABLE snapshot_job_audit(kind TEXT NOT NULL)");
+      sql.exec(
+        `CREATE TRIGGER snapshot_job_insert_audit AFTER INSERT ON scheduled_jobs
+         BEGIN INSERT INTO snapshot_job_audit(kind) VALUES ('insert'); END`,
+      );
+      sql.exec(
+        `CREATE TRIGGER snapshot_job_update_audit AFTER UPDATE ON scheduled_jobs
+         BEGIN INSERT INTO snapshot_job_audit(kind) VALUES ('update'); END`,
+      );
+      const room = instance as unknown as {
+        upsertSnapshotJob(seq: number, acceptedAt: number, latestSnapshotSeq: number): boolean;
+        scheduleNextAlarm(): Promise<void>;
+      };
+      const changed: number[] = [];
+      for (let seq = 1; seq <= 300; seq += 1) {
+        if (room.upsertSnapshotJob(seq, base + seq - 1, 0)) changed.push(seq);
+      }
+      const audit = sql
+        .exec<{ kind: string; count: number }>(
+          "SELECT kind, COUNT(*) AS count FROM snapshot_job_audit GROUP BY kind ORDER BY kind",
+        )
+        .toArray();
+      const dueAt = sql
+        .exec<{ due_at_ms: number }>(
+          "SELECT due_at_ms FROM scheduled_jobs WHERE job_name = 'snapshot'",
+        )
+        .one().due_at_ms;
+
+      await durableState.storage.setAlarm(base + 200);
+      await room.scheduleNextAlarm();
+      const unchangedLaterAlarm = await durableState.storage.getAlarm();
+      sql.exec("UPDATE scheduled_jobs SET due_at_ms = ? WHERE job_name = 'snapshot'", base + 100);
+      await room.scheduleNextAlarm();
+      const movedEarlierAlarm = await durableState.storage.getAlarm();
+      return { changed, audit, dueAt, unchangedLaterAlarm, movedEarlierAlarm };
+    });
+    expect(result).toEqual({
+      changed: [1, 250],
+      audit: [
+        { kind: "insert", count: 1 },
+        { kind: "update", count: 1 },
+      ],
+      dueAt: base + 249,
+      unchangedLaterAlarm: base + 200,
+      movedEarlierAlarm: base + 100,
+    });
+  });
+
+  it("checkpoints authoritative action usage after eviction without per-action usage writes", async () => {
+    const typedEnv = env as unknown as Env;
+    const stub = typedEnv.BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const connected = await connect(stub, actorId);
+    connected.socket.send(
+      JSON.stringify(
+        createCommit(
+          "018f0000-0000-7000-8000-000000000710",
+          "018f0000-0000-7000-8000-000000000711",
+          "018f0000-0000-7000-8000-000000000712",
+        ),
+      ),
+    );
+    await connected.next((frame) => frame.t === "server.action" && frame.seq === 1);
+    connected.socket.send(
+      JSON.stringify(
+        createCommit(
+          "018f0000-0000-7000-8000-000000000713",
+          "018f0000-0000-7000-8000-000000000714",
+          "018f0000-0000-7000-8000-000000000715",
+        ),
+      ),
+    );
+    await connected.next((frame) => frame.t === "server.action" && frame.seq === 2);
+    const beforeCheckpoint = await runInDurableObject(stub, (_instance, durableState) => ({
+      usageRows: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM usage_counters")
+        .one().count,
+      actionUsage: durableState.storage.sql
+        .exec<{
+          seq: number;
+          frames: number;
+          reads: number;
+          writes: number;
+        }>(
+          `SELECT seq, usage_incoming_frames AS frames,
+            usage_rows_read_estimate AS reads,
+            usage_rows_written_estimate AS writes FROM actions ORDER BY seq`,
+        )
+        .toArray(),
+    }));
+    expect(beforeCheckpoint).toEqual({
+      usageRows: 0,
+      actionUsage: [
+        { seq: 1, frames: 1, reads: 8, writes: 14 },
+        { seq: 2, frames: 1, reads: 8, writes: 12 },
+      ],
+    });
+
+    await evictDurableObject(stub, { webSockets: "hibernate" });
+    const named = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/snapshots`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "usage-checkpoint-after-eviction-0001",
+        },
+        body: JSON.stringify({ label: "Usage checkpoint" }),
+      }),
+    );
+    expect(named.status).toBe(201);
+    await named.arrayBuffer();
+
+    const usage = await runInDurableObject(stub, (_instance, durableState) =>
+      durableState.storage.sql
+        .exec<{
+          incoming_frames: number;
+          billed_request_estimate: number;
+          rows_read_estimate: number;
+          rows_written_estimate: number;
+          r2_reads: number;
+          r2_writes: number;
+          actions: number;
+          snapshots: number;
+        }>("SELECT * FROM usage_counters")
+        .one(),
+    );
+    expect(usage).toMatchObject({
+      incoming_frames: 2,
+      billed_request_estimate: 1,
+      rows_read_estimate: 23,
+      rows_written_estimate: 32,
+      r2_reads: 1,
+      r2_writes: 1,
+      actions: 2,
+      snapshots: 1,
+    });
+    connected.socket.close(1000, "done");
+  });
+
+  it("rejects title and item growth whose prospective canonical snapshot exceeds 20 MiB", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await runInDurableObject(stub, (_instance, durableState) => {
+      const sql = durableState.storage.sql;
+      const board = sql.exec<BoardRow>("SELECT * FROM board").one();
+      const envelope = canonicalSnapshotByteLengthFromParts({
+        boardId: board.public_id,
+        seq: board.latest_seq,
+        createdAt: board.created_at_ms,
+        settings: { title: board.title },
+        itemCount: 1,
+        itemBytes: 0,
+      });
+      sql.exec(
+        `UPDATE board SET snapshot_live_item_count = 1,
+          snapshot_live_item_bytes = ? WHERE singleton = 1`,
+        20 * 1024 * 1024 - envelope,
+      );
+    });
+    const response = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: "x".repeat(120), expectedAclVersion: 1 }),
+      }),
+    );
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({ error: { code: "BOARD_LIMIT_REACHED" } });
+    const board = await runInDurableObject(stub, (_instance, durableState) =>
+      durableState.storage.sql
+        .exec<{ title: string; acl_version: number }>("SELECT title, acl_version FROM board")
+        .one(),
+    );
+    expect(board).toEqual({ title: "Test board", acl_version: 1 });
+
+    const connected = await connect(stub, actorId);
+    connected.socket.send(
+      JSON.stringify(
+        createCommit(
+          "018f0000-0000-7000-8000-000000000600",
+          "018f0000-0000-7000-8000-000000000601",
+          "018f0000-0000-7000-8000-000000000602",
+        ),
+      ),
+    );
+    const rejected = await connected.next((frame) => frame.t === "server.rejected");
+    expect(rejected).toMatchObject({ code: "BOARD_LIMIT_REACHED", latestSeq: 0 });
+    const writes = await runInDurableObject(stub, (_instance, durableState) => ({
+      actions: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM actions")
+        .one().count,
+      items: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM items")
+        .one().count,
+    }));
+    expect(writes).toEqual({ actions: 0, items: 0 });
+    connected.socket.close(1000, "done");
+  });
+
+  it("commits contiguously, deduplicates retries, rejects stale writes, and replays", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const connected = await connect(stub, actorId);
+    const command = createCommit(
+      "018f0000-0000-7000-8000-000000000010",
+      "018f0000-0000-7000-8000-000000000011",
+      "018f0000-0000-7000-8000-000000000012",
+    );
+    connected.socket.send(JSON.stringify(command));
+    const accepted = await connected.next((frame) => frame.t === "server.action");
+    expect(accepted.seq).toBe(1);
+
+    connected.socket.send(JSON.stringify(command));
+    const duplicate = await connected.next((frame) => frame.t === "server.action");
+    expect(duplicate).toEqual(accepted);
+
+    connected.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000020",
+        actionId: "018f0000-0000-7000-8000-000000000021",
+        baseSeq: 0,
+        op: {
+          kind: "item.update",
+          itemId: "018f0000-0000-7000-8000-000000000012",
+          expectedVersion: 0,
+          patch: { transform: [1, 0, 0, 1, 20, 20] },
+        },
+      }),
+    );
+    const rejected = await connected.next((frame) => frame.t === "server.rejected");
+    expect(rejected).toMatchObject({ code: "STALE_ITEM", latestSeq: 1 });
+    const counts = await runInDurableObject(stub, (_instance, durableState) => ({
+      latestSeq: durableState.storage.sql
+        .exec<{ latest_seq: number }>("SELECT latest_seq FROM board")
+        .one().latest_seq,
+      actions: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM actions")
+        .one().count,
+      accounting: readSnapshotAccounting(durableState.storage.sql),
+    }));
+    expect(counts).toMatchObject({ latestSeq: 1, actions: 1 });
+    expect(counts.accounting.stored).toEqual(counts.accounting.actual);
+    expect(counts.accounting.decomposedBytes).toBe(counts.accounting.serializedBytes);
+    const backfilled = await runInDurableObject(stub, (_instance, durableState) => {
+      durableState.storage.sql.exec(
+        `UPDATE board SET snapshot_live_item_count = -1,
+          snapshot_live_item_bytes = -1 WHERE singleton = 1`,
+      );
+      backfillSnapshotAccounting(durableState.storage);
+      return readSnapshotAccounting(durableState.storage.sql);
+    });
+    expect(backfilled.stored).toEqual(backfilled.actual);
+
+    connected.socket.close(1000, "reconnect test");
+    const replayed = await connect(stub, actorId, 0);
+    await replayed.next((frame) => frame.t === "server.presence_state");
+    expect(replayed.received.slice(0, 4).map((frame) => frame.t)).toEqual([
+      "server.welcome",
+      "server.replay",
+      "server.ready",
+      "server.presence_state",
+    ]);
+    const replay = await replayed.next((frame) => frame.t === "server.replay");
+    expect(replay).toMatchObject({ fromExclusive: 0, toInclusive: 1 });
+    expect((replay.actions as unknown[]).length).toBe(1);
+    replayed.socket.close(1000, "done");
+  });
+
+  it("keeps exact snapshot accounting through undo, redo, and clear", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const connected = await connect(stub, actorId);
+    const originalActionId = "018f0000-0000-7000-8000-000000000401";
+    connected.socket.send(
+      JSON.stringify(
+        createCommit(
+          "018f0000-0000-7000-8000-000000000400",
+          originalActionId,
+          "018f0000-0000-7000-8000-000000000402",
+        ),
+      ),
+    );
+    await connected.next((frame) => frame.t === "server.action" && frame.seq === 1);
+
+    connected.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000410",
+        actionId: "018f0000-0000-7000-8000-000000000411",
+        baseSeq: 1,
+        op: {
+          kind: "history.undo",
+          expectedHistoryVersion: 1,
+          targetActionId: originalActionId,
+        },
+      }),
+    );
+    await connected.next((frame) => frame.t === "server.action" && frame.seq === 2);
+    const afterUndo = await runInDurableObject(stub, (_instance, state) =>
+      readSnapshotAccounting(state.storage.sql),
+    );
+    expect(afterUndo.stored).toEqual({ itemCount: 0, itemBytes: 0 });
+    expect(afterUndo.decomposedBytes).toBe(afterUndo.serializedBytes);
+
+    connected.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000420",
+        actionId: "018f0000-0000-7000-8000-000000000421",
+        baseSeq: 2,
+        op: {
+          kind: "history.redo",
+          expectedHistoryVersion: 2,
+          targetActionId: originalActionId,
+        },
+      }),
+    );
+    await connected.next((frame) => frame.t === "server.action" && frame.seq === 3);
+    const afterRedo = await runInDurableObject(stub, (_instance, state) =>
+      readSnapshotAccounting(state.storage.sql),
+    );
+    expect(afterRedo.stored).toEqual(afterRedo.actual);
+    expect(afterRedo.actual.itemCount).toBe(1);
+    expect(afterRedo.decomposedBytes).toBe(afterRedo.serializedBytes);
+
+    connected.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000430",
+        actionId: "018f0000-0000-7000-8000-000000000431",
+        baseSeq: 3,
+        op: { kind: "board.clear", expectedBoardSeq: 3 },
+      }),
+    );
+    await connected.next((frame) => frame.t === "server.action" && frame.seq === 4);
+    const afterClear = await runInDurableObject(stub, (_instance, state) =>
+      readSnapshotAccounting(state.storage.sql),
+    );
+    expect(afterClear.stored).toEqual({ itemCount: 0, itemBytes: 0 });
+    expect(afterClear.decomposedBytes).toBe(afterClear.serializedBytes);
+    connected.socket.close(1000, "done");
+  });
+
+  it("reconstructs hibernated socket attachments after forced Durable Object eviction", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const response = await stub.fetch(socketRequest(actorId));
+    expect(response.status).toBe(101);
+    const socket = response.webSocket;
+    if (socket === null) throw new Error("Upgrade did not return a WebSocket.");
+    socket.accept();
+
+    await evictDurableObject(stub, { webSockets: "hibernate" });
+    const actionReceived = new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Timed out waiting for action.")), 3_000);
+      socket.addEventListener("message", (event) => {
+        const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
+        if (frame.t !== "server.action") return;
+        clearTimeout(timeout);
+        resolve(frame);
+      });
+    });
+    socket.send(
+      JSON.stringify(
+        createCommit(
+          "018f0000-0000-7000-8000-000000000310",
+          "018f0000-0000-7000-8000-000000000311",
+          "018f0000-0000-7000-8000-000000000312",
+        ),
+      ),
+    );
+
+    const action = await actionReceived;
+    expect(action).toMatchObject({
+      seq: 1,
+      commandId: "018f0000-0000-7000-8000-000000000310",
+    });
+    const state = await runInDurableObject(stub, (_instance, durableState) => ({
+      latestSeq: durableState.storage.sql
+        .exec<{ latest_seq: number }>("SELECT latest_seq FROM board")
+        .one().latest_seq,
+      sockets: durableState.getWebSockets().length,
+      taggedSockets: durableState.getWebSockets(`actor:${actorId}`).length,
+    }));
+    expect(state).toEqual({ latestSeq: 1, sockets: 1, taggedSockets: 1 });
+    socket.close(1000, "done");
+  }, 45_000);
+
+  it("caps one actor's sockets without consuming the board-wide capacity", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const ownerSockets = await Promise.all(Array.from({ length: 5 }, () => connect(stub, actorId)));
+
+    const rejected = await stub.fetch(socketRequest(actorId));
+    expect(rejected.status).toBe(429);
+    expect(await rejected.json()).toMatchObject({ error: { code: "RATE_LIMITED" } });
+
+    await addEditor(stub);
+    const editor = await connect(stub, editorId);
+    const counts = await runInDurableObject(stub, (_instance, durableState) => ({
+      total: durableState.getWebSockets().length,
+      owner: durableState.getWebSockets(`actor:${actorId}`).length,
+      editor: durableState.getWebSockets(`actor:${editorId}`).length,
+    }));
+    expect(counts).toEqual({ total: 6, owner: 5, editor: 1 });
+
+    for (const connection of [...ownerSockets, editor]) connection.socket.close(1000, "done");
+  });
+
+  it("drops board-saturated previews without closing sockets or blocking durable ACKs", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const actors = [
+      actorId,
+      ...Array.from(
+        { length: 8 },
+        (_, index) => `a_${String.fromCharCode("B".charCodeAt(0) + index)}${"A".repeat(21)}`,
+      ),
+    ];
+    await runInDurableObject(stub, (_instance, durableState) => {
+      const now = Date.now();
+      for (const actor of actors.slice(1)) {
+        durableState.storage.sql.exec(
+          `INSERT INTO members(actor_id, role, display_name, created_at_ms, updated_at_ms)
+           VALUES (?, 'editor', 'Load editor', ?, ?)`,
+          actor,
+          now,
+          now,
+        );
+      }
+      durableState.storage.sql.exec("UPDATE board SET acl_version = 2");
+    });
+    const connections = await Promise.all(actors.map((actor) => connect(stub, actor)));
+    const observer = connections[0];
+    const target = connections.at(-1);
+    if (observer === undefined || target === undefined) throw new Error("Missing test socket.");
+
+    const previewFrame = (gestureId: string, previewSeq: number) => ({
+      v: 1,
+      t: "client.preview",
+      gestureId,
+      previewSeq,
+      kind: "pencil.start",
+      payload: {
+        itemId: "018f0000-0000-7000-8000-000000000611",
+        point: [1, 2],
+        style: { kind: "stroke", color: "#112233", width: 2, opacity: 1 },
+      },
+    });
+
+    const helperGestures = connections.slice(0, -1).map((connection, index) => {
+      const gestureId = `018f0000-0000-7000-8000-${String(index + 1).padStart(12, "0")}`;
+      for (let previewSeq = 0; previewSeq < 30; previewSeq += 1) {
+        connection.socket.send(JSON.stringify(previewFrame(gestureId, previewSeq)));
+      }
+      return gestureId;
+    });
+    await Promise.all(
+      helperGestures.map((gestureId) =>
+        target.next((frame) => frame.t === "server.preview" && frame.gestureId === gestureId),
+      ),
+    );
+
+    const targetGesture = "018f0000-0000-7000-8000-000000000610";
+    for (let previewSeq = 0; previewSeq < 100; previewSeq += 1) {
+      target.socket.send(JSON.stringify(previewFrame(targetGesture, previewSeq)));
+    }
+    const commandId = "018f0000-0000-7000-8000-000000000620";
+    target.socket.send(
+      JSON.stringify(
+        createCommit(
+          commandId,
+          "018f0000-0000-7000-8000-000000000621",
+          "018f0000-0000-7000-8000-000000000622",
+        ),
+      ),
+    );
+    const senderAction = await target.next(
+      (frame) =>
+        (frame.t === "server.action" && frame.commandId === commandId) ||
+        frame.t === "server.rejected",
+    );
+    if (senderAction.t === "server.rejected") {
+      throw new Error(`Durable command was rejected: ${JSON.stringify(senderAction)}`);
+    }
+    expect(senderAction).toMatchObject({ seq: 1, commandId });
+    const peerAction = await observer.next(
+      (frame) => frame.t === "server.action" && frame.commandId === commandId,
+    );
+    expect(peerAction).toMatchObject({ seq: 1, commandId });
+    const relayedTargetPreviews = observer.received.filter(
+      (frame) => frame.t === "server.preview" && frame.gestureId === targetGesture,
+    ).length;
+    expect(relayedTargetPreviews).toBeGreaterThan(0);
+    expect(relayedTargetPreviews).toBeLessThan(100);
+    const state = await runInDurableObject(stub, (_instance, durableState) => ({
+      latestSeq: durableState.storage.sql
+        .exec<{ latest_seq: number }>("SELECT latest_seq FROM board")
+        .one().latest_seq,
+      sockets: durableState.getWebSockets().length,
+    }));
+    expect(state).toEqual({ latestSeq: 1, sockets: connections.length });
+    for (const connection of connections) connection.socket.close(1000, "done");
+  }, 15_000);
+
+  it("closes with resync_required instead of rejecting when a sync replay has a gap", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const connected = await connect(stub, actorId);
+    connected.socket.send(
+      JSON.stringify(
+        createCommit(
+          "018f0000-0000-7000-8000-000000000110",
+          "018f0000-0000-7000-8000-000000000111",
+          "018f0000-0000-7000-8000-000000000112",
+        ),
+      ),
+    );
+    await connected.next((frame) => frame.t === "server.action");
+    await runInDurableObject(stub, (_instance, durableState) => {
+      durableState.storage.sql.exec("DELETE FROM actions WHERE seq = 1");
+    });
+    const closed = new Promise<CloseEvent>((resolve) => {
+      connected.socket.addEventListener("close", resolve, { once: true });
+    });
+    connected.socket.send(JSON.stringify({ v: 1, t: "client.sync_check", latestSeq: 0 }));
+    const resync = await connected.next((frame) => frame.t === "server.resync_required");
+    expect(resync).toMatchObject({ code: "REPLAY_UNAVAILABLE", latestSeq: 1 });
+    expect((await closed).code).toBe(4009);
+    expect(connected.received.some((frame) => frame.t === "server.rejected")).toBe(false);
+  });
+
+  it("resynchronizes a stale live sync check without replaying an already delivered action", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const connected = await connect(stub, actorId);
+    connected.socket.send(
+      JSON.stringify(
+        createCommit(
+          "018f0000-0000-7000-8000-000000000320",
+          "018f0000-0000-7000-8000-000000000321",
+          "018f0000-0000-7000-8000-000000000322",
+        ),
+      ),
+    );
+    await connected.next((frame) => frame.t === "server.action" && frame.seq === 1);
+    const closed = new Promise<CloseEvent>((resolve) => {
+      connected.socket.addEventListener("close", resolve, { once: true });
+    });
+
+    connected.socket.send(JSON.stringify({ v: 1, t: "client.sync_check", latestSeq: 0 }));
+    await connected.next((frame) => frame.t === "server.resync_required");
+
+    expect((await closed).code).toBe(4009);
+    expect(connected.received.some((frame) => frame.t === "server.replay")).toBe(false);
+  });
+
+  it("returns an accepted startup socket and closes 4009 when initial replay has a gap", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await runInDurableObject(stub, (_instance, durableState) => {
+      durableState.storage.sql.exec(
+        `INSERT INTO actions(
+           seq, action_id, command_id, request_hash, actor_id, kind, payload_json,
+           affected_item_ids_json, undoable, accepted_at_ms
+         ) VALUES (2, 'gap-action', 'gap-command', 'hash', ?, 'test', '{}', '[]', 0, ?)`,
+        actorId,
+        Date.now(),
+      );
+      durableState.storage.sql.exec(
+        "UPDATE board SET latest_seq = 2, min_replay_seq = 0 WHERE singleton = 1",
+      );
+    });
+    const socket = await openSocket(stub, actorId, 0);
+    const resync = await socket.next((frame) => frame.t === "server.resync_required");
+    expect(resync).toMatchObject({ code: "REPLAY_UNAVAILABLE", latestSeq: 2 });
+    expect((await socket.closed).code).toBe(4009);
+    expect(socket.received.map((frame) => frame.t)).toEqual([
+      "server.welcome",
+      "server.resync_required",
+    ]);
+  });
+
+  it("closes a socket that exceeds the invalid-frame bucket", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const connected = await connect(stub, actorId);
+    const closed = new Promise<CloseEvent>((resolve) => {
+      connected.socket.addEventListener("close", resolve, { once: true });
+    });
+    for (let index = 0; index < 6; index += 1) connected.socket.send("{}");
+    expect((await closed).code).toBe(1008);
+  });
+
+  it("rejects and closes an unsupported protocol version immediately", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const connected = await connect(stub, actorId);
+    const closed = new Promise<CloseEvent>((resolve) => {
+      connected.socket.addEventListener("close", resolve, { once: true });
+    });
+
+    connected.socket.send(JSON.stringify({ v: 2, t: "client.sync_check", latestSeq: 0 }));
+
+    expect(await connected.next((frame) => frame.t === "server.rejected")).toMatchObject({
+      code: "UNSUPPORTED_VERSION",
+      reloadRequired: true,
+    });
+    expect((await closed).code).toBe(1002);
+  });
+
+  it("shares durable command capacity across an actor's sockets", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const first = await connect(stub, actorId);
+    const second = await connect(stub, actorId);
+    const sendCommit = (target: TestSocket, index: number) => {
+      const suffix = String(100_000_000_000 + index);
+      target.socket.send(
+        JSON.stringify(
+          createCommit(
+            `018f0000-0000-7000-8000-${suffix}`,
+            `018f0000-0000-7001-8000-${suffix}`,
+            `018f0000-0000-7002-8000-${suffix}`,
+          ),
+        ),
+      );
+    };
+    for (let index = 0; index < 10; index += 1) {
+      sendCommit(index % 2 === 0 ? first : second, index);
+    }
+    const tenth = await first.next(
+      (frame) => (frame.t === "server.action" && frame.seq === 10) || frame.t === "server.rejected",
+    );
+    expect(tenth).toMatchObject({ t: "server.action", seq: 10 });
+    sendCommit(first, 10);
+    sendCommit(second, 11);
+    const rejected = await Promise.all([
+      first.next((frame) => frame.t === "server.rejected"),
+      second.next((frame) => frame.t === "server.rejected"),
+    ]);
+    expect(rejected).toEqual([
+      expect.objectContaining({ code: "RATE_LIMITED", latestSeq: 10 }),
+      expect.objectContaining({ code: "RATE_LIMITED", latestSeq: 10 }),
+    ]);
+    first.socket.close(1000, "done");
+    second.socket.close(1000, "done");
+  });
+
+  it("throttles application-level sync checks", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const connected = await connect(stub, actorId);
+    for (let index = 0; index < 4; index += 1) {
+      connected.socket.send(JSON.stringify({ v: 1, t: "client.sync_check", latestSeq: 0 }));
+    }
+    for (let index = 0; index < 3; index += 1) {
+      await connected.next((frame) => frame.t === "server.in_sync");
+    }
+    expect(await connected.next((frame) => frame.t === "server.rejected")).toMatchObject({
+      code: "RATE_LIMITED",
+      latestSeq: 0,
+    });
+    connected.socket.close(1000, "done");
+  });
+
+  it("downgrades an existing editor socket before accepting its next commit", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    const editor = await connect(stub, editorId);
+    const downgrade = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/members/${editorId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ role: "viewer", expectedAclVersion: 2 }),
+      }),
+    );
+    expect(downgrade.status).toBe(200);
+    const changed = await editor.next((frame) => frame.t === "access.changed");
+    expect(changed).toMatchObject({ role: "viewer", aclVersion: 3 });
+
+    editor.socket.send(
+      JSON.stringify(
+        createCommit(
+          "018f0000-0000-7000-8000-000000000030",
+          "018f0000-0000-7000-8000-000000000031",
+          "018f0000-0000-7000-8000-000000000032",
+        ),
+      ),
+    );
+    const rejected = await editor.next((frame) => frame.t === "server.rejected");
+    expect(rejected).toMatchObject({ code: "FORBIDDEN", latestSeq: 0 });
+    editor.socket.close(1000, "done");
+  });
+
+  it("archives only at the current owner ACL, closes live sockets, and preserves private 404s", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    await runInDurableObject(stub, (_instance, durableState) => {
+      durableState.storage.sql.exec("UPDATE board SET access_mode = 'private' WHERE singleton = 1");
+    });
+    const owner = await connect(stub, actorId);
+    const editor = await connect(stub, editorId);
+    const archivePath = `/api/v1/boards/${boardId}/archive`;
+    const archiveRequest = (actor: string, expectedAclVersion: number) =>
+      internalActorRequest(actor, archivePath, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ expectedAclVersion }),
+      });
+
+    const stale = await stub.fetch(archiveRequest(actorId, 1));
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({
+      error: { code: "STALE_ACL", details: { currentAclVersion: 2 } },
+    });
+
+    const nonOwner = await stub.fetch(archiveRequest(editorId, 2));
+    expect(nonOwner.status).toBe(403);
+    expect(await nonOwner.json()).toMatchObject({ error: { code: "FORBIDDEN" } });
+
+    const archived = await stub.fetch(archiveRequest(actorId, 2));
+    expect(archived.status).toBe(200);
+    const result = (await archived.json()) as Record<string, unknown>;
+    expect(result).toMatchObject({ archived: true, aclVersion: 3 });
+    expect(result.archivedAt).toEqual(expect.any(Number));
+
+    const [ownerClose, editorClose] = await Promise.all([owner.closed, editor.closed]);
+    expect([ownerClose, editorClose]).toEqual([
+      expect.objectContaining({ code: 4011, reason: "Board archived" }),
+      expect.objectContaining({ code: 4011, reason: "Board archived" }),
+    ]);
+    const stored = await runInDurableObject(stub, (_instance, durableState) =>
+      durableState.storage.sql
+        .exec<{ archived_at_ms: number | null; acl_version: number }>(
+          "SELECT archived_at_ms, acl_version FROM board WHERE singleton = 1",
+        )
+        .one(),
+    );
+    expect(stored).toEqual({ archived_at_ms: result.archivedAt, acl_version: 3 });
+
+    const ownerRoutes = await Promise.all([
+      stub.fetch(internalRequest(`/api/v1/boards/${boardId}/bootstrap`)),
+      stub.fetch(internalRequest(`/api/v1/boards/${boardId}/export.json`)),
+      stub.fetch(socketRequest(actorId)),
+      stub.fetch(archiveRequest(actorId, 3)),
+    ]);
+    for (const response of ownerRoutes) {
+      expect(response.status).toBe(410);
+      expect(await response.json()).toMatchObject({
+        error: { code: "FORBIDDEN", message: "This board is archived." },
+      });
+    }
+
+    const outsiderId = `a_${"C".repeat(22)}`;
+    const privateResponse = await stub.fetch(
+      internalActorRequest(outsiderId, `/api/v1/boards/${boardId}/bootstrap`),
+    );
+    expect(privateResponse.status).toBe(404);
+    expect(await privateResponse.json()).toMatchObject({
+      error: { code: "NOT_FOUND", message: "Board not found." },
+    });
+  });
+
+  it("observes a Data Studio archive on a live socket's next inbound frame", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const connected = await connect(stub, actorId);
+    await runInDurableObject(stub, (_instance, durableState) => {
+      durableState.storage.transactionSync(() => {
+        const now = Date.now();
+        durableState.storage.sql.exec(
+          `UPDATE board SET archived_at_ms = ?, acl_version = acl_version + 1,
+           updated_at_ms = ? WHERE singleton = 1`,
+          now,
+          now,
+        );
+        durableState.storage.sql.exec(
+          `INSERT INTO scheduled_jobs(job_name, due_at_ms, attempt, payload_json, updated_at_ms)
+           VALUES ('snapshot', 0, 0, '{}', ?)`,
+          now,
+        );
+      });
+    });
+    await runInDurableObject(stub, async (instance) => {
+      await (instance as unknown as { alarm(): Promise<void> }).alarm();
+    });
+    const alarmState = await runInDurableObject(stub, (_instance, durableState) => ({
+      snapshots: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM snapshots")
+        .one().count,
+      scheduledJobs: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM scheduled_jobs")
+        .one().count,
+    }));
+    expect(alarmState).toEqual({ snapshots: 0, scheduledJobs: 1 });
+
+    connected.socket.send(JSON.stringify({ v: 1, t: "client.sync_check", latestSeq: 0 }));
+    await expect(connected.closed).resolves.toMatchObject({
+      code: 4011,
+      reason: "Board archived",
+    });
+  });
+
+  it("delivers a transferred owner's recovery token to exactly one target socket", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    const firstEditorSocket = await connect(stub, editorId);
+    const secondEditorSocket = await connect(stub, editorId);
+    const recoveryFrames: Record<string, unknown>[] = [];
+    for (const connection of [firstEditorSocket, secondEditorSocket]) {
+      connection.socket.addEventListener("message", (event) => {
+        const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
+        if (frame.t === "server.owner_recovery") recoveryFrames.push(frame);
+      });
+    }
+
+    const response = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/ownership-transfer`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ targetActorId: editorId, expectedAclVersion: 2 }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    const confirmation = (await response.json()) as Record<string, unknown>;
+    expect(confirmation).toEqual({
+      ownerActorId: editorId,
+      aclVersion: 3,
+      recoveryTokenDelivered: true,
+    });
+    expect(confirmation).not.toHaveProperty("ownerRecoveryToken");
+
+    const accessFrames = await Promise.all([
+      firstEditorSocket.next((frame) => frame.t === "access.changed"),
+      secondEditorSocket.next((frame) => frame.t === "access.changed"),
+    ]);
+    expect(accessFrames).toEqual([
+      expect.objectContaining({ role: "owner", aclVersion: 3 }),
+      expect.objectContaining({ role: "owner", aclVersion: 3 }),
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(recoveryFrames).toHaveLength(1);
+    expect(recoveryFrames[0]).toMatchObject({ aclVersion: 3 });
+    expect(recoveryFrames[0]?.ownerRecoveryToken).toEqual(
+      expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
+    );
+
+    const state = await runInDurableObject(stub, (_instance, durableState) => ({
+      ownerActorId: durableState.storage.sql
+        .exec<{ owner_actor_id: string }>("SELECT owner_actor_id FROM board")
+        .one().owner_actor_id,
+      activeOwners: durableState.storage.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM members WHERE role = 'owner' AND revoked_at_ms IS NULL",
+        )
+        .one().count,
+    }));
+    expect(state).toEqual({ ownerActorId: editorId, activeOwners: 1 });
+    firstEditorSocket.socket.close(1000, "done");
+    secondEditorSocket.socket.close(1000, "done");
+  });
+
+  it("rejects ownership transfer to an offline editor without changing ownership", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+
+    const response = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/ownership-transfer`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ targetActorId: editorId, expectedAclVersion: 2 }),
+      }),
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "CONFLICT" } });
+
+    const state = await runInDurableObject(stub, (_instance, durableState) => ({
+      ownerActorId: durableState.storage.sql
+        .exec<{ owner_actor_id: string }>("SELECT owner_actor_id FROM board")
+        .one().owner_actor_id,
+      aclVersion: durableState.storage.sql
+        .exec<{ acl_version: number }>("SELECT acl_version FROM board")
+        .one().acl_version,
+      roles: durableState.storage.sql
+        .exec<{ actor_id: string; role: string }>(
+          "SELECT actor_id, role FROM members ORDER BY actor_id",
+        )
+        .toArray(),
+    }));
+    expect(state).toEqual({
+      ownerActorId: actorId,
+      aclVersion: 2,
+      roles: [
+        { actor_id: actorId, role: "owner" },
+        { actor_id: editorId, role: "editor" },
+      ],
+    });
+  });
+
+  it("rejects an invitation claim by the active owner without consuming it or changing roles", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const token = "owner-invite-token-abcdefghijklmnopqrstuvwxyz0123456789";
+    const tokenHash = await sha256(token);
+    await runInDurableObject(stub, (_instance, durableState) => {
+      const now = Date.now();
+      durableState.storage.sql.exec(
+        `INSERT INTO invitations(
+           invitation_id, token_hash, role, max_uses, use_count,
+           expires_at_ms, created_by, created_at_ms
+         ) VALUES (?, ?, 'editor', 1, 0, ?, ?, ?)`,
+        "invite_owner_regression",
+        tokenHash,
+        now + 60_000,
+        actorId,
+        now,
+      );
+    });
+
+    const response = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/claims`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "invite", token, displayName: "Owner changed" }),
+      }),
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "CONFLICT" } });
+
+    const state = await runInDurableObject(stub, (_instance, durableState) => ({
+      ownerActorId: durableState.storage.sql
+        .exec<{ owner_actor_id: string }>("SELECT owner_actor_id FROM board")
+        .one().owner_actor_id,
+      owner: durableState.storage.sql
+        .exec<{ role: string; display_name: string }>(
+          "SELECT role, display_name FROM members WHERE actor_id = ?",
+          actorId,
+        )
+        .one(),
+      activeOwners: durableState.storage.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM members WHERE role = 'owner' AND revoked_at_ms IS NULL",
+        )
+        .one().count,
+      invitationUses: durableState.storage.sql
+        .exec<{ use_count: number }>(
+          "SELECT use_count FROM invitations WHERE invitation_id = 'invite_owner_regression'",
+        )
+        .one().use_count,
+      aclVersion: durableState.storage.sql
+        .exec<{ acl_version: number }>("SELECT acl_version FROM board")
+        .one().acl_version,
+    }));
+    expect(state).toEqual({
+      ownerActorId: actorId,
+      owner: { role: "owner", display_name: "Owner 1" },
+      activeOwners: 1,
+      invitationUses: 0,
+      aclVersion: 1,
+    });
+  });
+
+  it("promotes same-sequence automatic metadata to a named snapshot without rewriting R2", async () => {
+    const typedEnv = env as unknown as Env;
+    const stub = typedEnv.BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const create = (label: string, idempotencyKey: string) =>
+      stub.fetch(
+        internalRequest(`/api/v1/boards/${boardId}/snapshots`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": idempotencyKey,
+          },
+          body: JSON.stringify({ label }),
+        }),
+      );
+    expect((await create("Initial label", "named-snapshot-initial-0001")).status).toBe(201);
+    const key = await runInDurableObject(stub, (_instance, durableState) => {
+      const row = durableState.storage.sql
+        .exec<{ r2_json_key: string }>("SELECT r2_json_key FROM snapshots WHERE seq = 0")
+        .one();
+      durableState.storage.sql.exec(
+        "UPDATE snapshots SET kind = 'automatic', label = NULL, created_by = NULL WHERE seq = 0",
+      );
+      return row.r2_json_key;
+    });
+    const before = await typedEnv.BOARD_SNAPSHOTS.head(key);
+    if (before === null) throw new Error("Expected the immutable snapshot object.");
+
+    const promoted = await create("Promoted label", "named-snapshot-promote-0002");
+    expect(promoted.status).toBe(201);
+    expect(await promoted.json()).toMatchObject({
+      snapshot: { seq: 0, kind: "named", label: "Promoted label" },
+    });
+    const metadata = await runInDurableObject(stub, (_instance, durableState) => ({
+      row: durableState.storage.sql
+        .exec<{ kind: string; label: string; created_by: string }>(
+          "SELECT kind, label, created_by FROM snapshots WHERE seq = 0",
+        )
+        .one(),
+      count: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM snapshots")
+        .one().count,
+    }));
+    expect(metadata).toEqual({
+      row: { kind: "named", label: "Promoted label", created_by: actorId },
+      count: 1,
+    });
+    const after = await typedEnv.BOARD_SNAPSHOTS.head(key);
+    expect(after?.version).toBe(before.version);
+  });
+
+  it("recomputes exact accounting for a restored snapshot's new item versions", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const connected = await connect(stub, actorId);
+    const itemId = "018f0000-0000-7000-8000-000000000502";
+    connected.socket.send(
+      JSON.stringify(
+        createCommit(
+          "018f0000-0000-7000-8000-000000000500",
+          "018f0000-0000-7000-8000-000000000501",
+          itemId,
+        ),
+      ),
+    );
+    await connected.next((frame) => frame.t === "server.action" && frame.seq === 1);
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        `UPDATE board SET snapshot_live_item_count = 0,
+          snapshot_live_item_bytes = 0 WHERE singleton = 1`,
+      );
+    });
+
+    const named = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/snapshots`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "restore-accounting-named-0001",
+        },
+        body: JSON.stringify({ label: "Before edit" }),
+      }),
+    );
+    expect(named.status).toBe(201);
+    await named.arrayBuffer();
+    const reconciled = await runInDurableObject(stub, (_instance, state) =>
+      readSnapshotAccounting(state.storage.sql),
+    );
+    expect(reconciled.stored).toEqual(reconciled.actual);
+
+    connected.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000510",
+        actionId: "018f0000-0000-7000-8000-000000000511",
+        baseSeq: 1,
+        op: {
+          kind: "item.update",
+          itemId,
+          expectedVersion: 1,
+          patch: { geometry: { x: 1, y: 2, width: 300, height: 400 } },
+        },
+      }),
+    );
+    await connected.next((frame) => frame.t === "server.action" && frame.seq === 2);
+
+    const restored = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/restore/1`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "restore-accounting-apply-0002",
+        },
+        body: JSON.stringify({ expectedBoardSeq: 2 }),
+      }),
+    );
+    expect(restored.status).toBe(200);
+    expect(await restored.json()).toMatchObject({ restoredFromSeq: 1, seq: 3 });
+    const accounting = await runInDurableObject(stub, (_instance, state) =>
+      readSnapshotAccounting(state.storage.sql),
+    );
+    expect(accounting.stored).toEqual(accounting.actual);
+    expect(accounting.actual.itemCount).toBe(1);
+    expect(accounting.decomposedBytes).toBe(accounting.serializedBytes);
+    connected.socket.close(1000, "done");
+  });
+
+  it("prunes expired receipts and automatic snapshots beyond the latest twenty", async () => {
+    const typedEnv = env as unknown as Env;
+    const stub = typedEnv.BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const now = Date.now();
+    const objects = Array.from({ length: 22 }, (_, index) => ({
+      seq: index + 1,
+      key: `tests/retention/${index + 1}.json`,
+    }));
+    await Promise.all(objects.map(({ key }) => typedEnv.BOARD_SNAPSHOTS.put(key, "{}")));
+    await runInDurableObject(stub, async (_instance, durableState) => {
+      for (const { seq, key } of objects) {
+        durableState.storage.sql.exec(
+          `INSERT INTO snapshots(
+             seq, r2_json_key, sha256, item_count, byte_count, kind, created_at_ms
+           ) VALUES (?, ?, 'digest', 0, 2, 'automatic', ?)`,
+          seq,
+          key,
+          now,
+        );
+      }
+      durableState.storage.sql.exec(
+        `INSERT INTO http_receipts(
+           actor_id, idempotency_key, operation, request_hash, response_json, status, created_at_ms
+         ) VALUES (?, 'expired-receipt-key', 'test', 'hash', '{}', 200, ?)`,
+        actorId,
+        now - 24 * 60 * 60 * 1_000 - 1,
+      );
+      durableState.storage.sql.exec(
+        "UPDATE board SET latest_seq = 22, latest_snapshot_seq = 22 WHERE singleton = 1",
+      );
+      durableState.storage.sql.exec(
+        `INSERT INTO scheduled_jobs(job_name, due_at_ms, attempt, payload_json, updated_at_ms)
+         VALUES ('snapshot', ?, 0, '{}', ?)`,
+        now - 1,
+        now,
+      );
+    });
+    await runInDurableObject(stub, async (instance) => {
+      await (instance as unknown as { alarm(): Promise<void> }).alarm();
+    });
+    const retained = await runInDurableObject(stub, (_instance, durableState) => ({
+      snapshots: durableState.storage.sql
+        .exec<{ seq: number }>("SELECT seq FROM snapshots ORDER BY seq")
+        .toArray()
+        .map((row) => row.seq),
+      receipts: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM http_receipts")
+        .one().count,
+    }));
+    expect(retained.snapshots).toEqual(Array.from({ length: 20 }, (_, index) => index + 3));
+    expect(retained.receipts).toBe(0);
+    expect(await typedEnv.BOARD_SNAPSHOTS.head(objects[0]?.key ?? "missing")).toBeNull();
+    expect(await typedEnv.BOARD_SNAPSHOTS.head(objects[2]?.key ?? "missing")).not.toBeNull();
+  });
+
+  it("compacts a snapshot-covered prefix while preserving replay, history, and retry receipts", async () => {
+    const typedEnv = env as unknown as Env;
+    const stub = typedEnv.BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const now = Date.now();
+    const expiredAt = now - 24 * 60 * 60 * 1_000 - 1;
+    const snapshotKey = "tests/compaction/25000.json";
+    await typedEnv.BOARD_SNAPSHOTS.put(snapshotKey, "{}", {
+      customMetadata: { sha256: "compaction-digest" },
+    });
+    const retryCommandId = "018f0000-0000-7000-8000-000000000220";
+    const retryActionId = "018f0000-0000-7000-8000-000000000221";
+    const retryPayload = JSON.stringify({
+      publicResult: {
+        v: 1,
+        t: "server.action",
+        seq: 5_000,
+        acceptedAt: now,
+        actor: { id: actorId, displayName: "Owner 1" },
+        commandId: retryCommandId,
+        actionId: retryActionId,
+        op: { kind: "board.clear", removed: [] },
+      },
+      effects: [{ privateDataThatReceiptsMustDrop: true }],
+    });
+
+    await runInDurableObject(stub, (_instance, durableState) => {
+      const sql = durableState.storage.sql;
+      seedActionRows(sql, 25_000, expiredAt);
+      sql.exec(
+        `INSERT INTO history_entries(
+           normal_action_seq, actor_id, state, last_transition_seq, action_id, payload_json
+         )
+         SELECT seq, actor_id, 'active', seq, action_id, payload_json
+         FROM actions WHERE seq <= 1001`,
+      );
+      sql.exec(
+        `INSERT INTO history_entries(
+           normal_action_seq, actor_id, state, last_transition_seq, action_id, payload_json
+         )
+         SELECT seq, actor_id, 'invalidated', seq, action_id, payload_json
+         FROM actions WHERE seq = 1002`,
+      );
+      sql.exec(
+        `UPDATE actions SET command_id = ?, action_id = ?, request_hash = 'retry-hash',
+          payload_json = ?, accepted_at_ms = ? WHERE seq = 5000`,
+        retryCommandId,
+        retryActionId,
+        retryPayload,
+        now,
+      );
+      sql.exec(
+        `INSERT INTO snapshots(
+           seq, r2_json_key, sha256, item_count, byte_count, kind, created_at_ms
+         ) VALUES (25000, ?, 'compaction-digest', 0, 2, 'automatic', ?)`,
+        snapshotKey,
+        now,
+      );
+      sql.exec(
+        `UPDATE board SET latest_seq = 25000, latest_snapshot_seq = 25000,
+          dirty_since_seq = 1, dirty_since_at_ms = ? WHERE singleton = 1`,
+        now,
+      );
+      sql.exec(
+        `INSERT INTO scheduled_jobs(job_name, due_at_ms, attempt, payload_json, updated_at_ms)
+         VALUES ('snapshot', ?, 0, '{}', ?)`,
+        now - 1,
+        now,
+      );
+    });
+
+    await runInDurableObject(stub, async (instance) => {
+      await (instance as unknown as { alarm(): Promise<void> }).alarm();
+    });
+
+    const state = await runInDurableObject(stub, (instance, durableState) => {
+      const sql = durableState.storage.sql;
+      const duplicate = (
+        instance as unknown as {
+          findDuplicateAction(commandId: string, actor: string, hash: string): unknown;
+        }
+      ).findDuplicateAction(retryCommandId, actorId, "retry-hash");
+      return {
+        actionCount: sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM actions").one()
+          .count,
+        firstAction: sql.exec<{ seq: number }>("SELECT MIN(seq) AS seq FROM actions").one().seq,
+        minReplaySeq: sql.exec<{ min_replay_seq: number }>("SELECT min_replay_seq FROM board").one()
+          .min_replay_seq,
+        activeHistory: sql
+          .exec<{ count: number }>(
+            "SELECT COUNT(*) AS count FROM history_entries WHERE state = 'active'",
+          )
+          .one().count,
+        invalidatedHistory: sql
+          .exec<{ count: number }>(
+            "SELECT COUNT(*) AS count FROM history_entries WHERE state = 'invalidated'",
+          )
+          .one().count,
+        receipt: sql
+          .exec<{ payload_json: string }>(
+            "SELECT payload_json FROM action_receipts WHERE command_id = ?",
+            retryCommandId,
+          )
+          .one().payload_json,
+        duplicate,
+      };
+    });
+    expect(state).toMatchObject({
+      actionCount: 19_000,
+      firstAction: 6_001,
+      minReplaySeq: 6_000,
+      activeHistory: 1_001,
+      invalidatedHistory: 0,
+      duplicate: { seq: 5_000, commandId: retryCommandId, actionId: retryActionId },
+    });
+    expect(JSON.parse(state.receipt)).toMatchObject({ effects: [] });
+  });
+
+  it("continues through the compaction trigger during R2 outage, then enforces an emergency cap", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const connected = await connect(stub, actorId);
+    await runInDurableObject(stub, (_instance, durableState) => {
+      seedActionRows(durableState.storage.sql, 20_000, Date.now());
+      durableState.storage.sql.exec(
+        "UPDATE board SET latest_seq = 20000, latest_snapshot_seq = 20000 WHERE singleton = 1",
+      );
+    });
+    connected.socket.send(
+      JSON.stringify(
+        createCommit(
+          "018f0000-0000-7000-8000-000000000210",
+          "018f0000-0000-7000-8000-000000000211",
+          "018f0000-0000-7000-8000-000000000212",
+        ),
+      ),
+    );
+    const accepted = await connected.next((frame) => frame.t === "server.action");
+    expect(accepted).toMatchObject({ seq: 20_001 });
+    const degraded = await runInDurableObject(stub, (_instance, durableState) => {
+      const sql = durableState.storage.sql;
+      return {
+        actions: sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM actions").one().count,
+        snapshotJob: sql
+          .exec<{ count: number }>(
+            "SELECT COUNT(*) AS count FROM scheduled_jobs WHERE job_name = 'snapshot'",
+          )
+          .one().count,
+      };
+    });
+    expect(degraded).toEqual({ actions: 20_001, snapshotJob: 1 });
+
+    await runInDurableObject(stub, (_instance, durableState) => {
+      seedActionRows(durableState.storage.sql, 79_999, Date.now(), 20_002);
+      durableState.storage.sql.exec("UPDATE board SET latest_seq = 100000 WHERE singleton = 1");
+    });
+    connected.socket.send(
+      JSON.stringify(
+        createCommit(
+          "018f0000-0000-7000-8000-000000000214",
+          "018f0000-0000-7000-8000-000000000215",
+          "018f0000-0000-7000-8000-000000000216",
+        ),
+      ),
+    );
+    const rejected = await connected.next((frame) => frame.t === "server.rejected");
+    expect(rejected).toMatchObject({ code: "BOARD_LIMIT_REACHED", latestSeq: 100_000 });
+    connected.socket.close(1000, "done");
+  });
+
+  it.each(["sqlite", "object"] as const)(
+    "rejects a snapshot restore when the %s digest does not match, before board writes",
+    async (mismatch) => {
+      const typedEnv = env as unknown as Env;
+      const stub = typedEnv.BOARD_ROOMS.getByName(boardId);
+      await initializeBoard(stub);
+      const snapshotBytes = new TextEncoder().encode(
+        JSON.stringify({
+          format: "cf-whiteboard-json",
+          version: 1,
+          boardId,
+          seq: 0,
+          createdAt: Date.now(),
+          settings: { title: "Test board" },
+          items: [],
+        }),
+      );
+      const digest = await sha256Base64Url(snapshotBytes);
+      const wrongDigest = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+      const key = `tests/${mismatch}/snapshot.json`;
+      await typedEnv.BOARD_SNAPSHOTS.put(key, snapshotBytes, {
+        customMetadata: { sha256: mismatch === "object" ? wrongDigest : digest },
+      });
+      await runInDurableObject(stub, (_instance, durableState) => {
+        durableState.storage.sql.exec(
+          `INSERT INTO snapshots(
+             seq, r2_json_key, sha256, item_count, byte_count, kind, label,
+             created_by, created_at_ms
+           ) VALUES (0, ?, ?, 0, ?, 'named', 'Integrity test', ?, ?)`,
+          key,
+          mismatch === "sqlite" ? wrongDigest : digest,
+          snapshotBytes.byteLength,
+          actorId,
+          Date.now(),
+        );
+      });
+
+      const response = await stub.fetch(
+        internalRequest(`/api/v1/boards/${boardId}/restore/0`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": `snapshot-integrity-${mismatch}`,
+          },
+          body: JSON.stringify({ expectedBoardSeq: 0 }),
+        }),
+      );
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({
+        error: { code: "TEMPORARILY_UNAVAILABLE" },
+      });
+
+      const state = await runInDurableObject(stub, (_instance, durableState) => ({
+        latestSeq: durableState.storage.sql
+          .exec<{ latest_seq: number }>("SELECT latest_seq FROM board")
+          .one().latest_seq,
+        actions: durableState.storage.sql
+          .exec<{ count: number }>("SELECT COUNT(*) AS count FROM actions")
+          .one().count,
+        receipts: durableState.storage.sql
+          .exec<{ count: number }>("SELECT COUNT(*) AS count FROM http_receipts")
+          .one().count,
+      }));
+      expect(state).toEqual({ latestSeq: 0, actions: 0, receipts: 0 });
+    },
+  );
+});
+
+function loggedEvents(
+  output: { mock: { calls: unknown[][] } },
+  event: string,
+): Array<Record<string, unknown>> {
+  return output.mock.calls
+    .map((call) => call[0])
+    .filter(
+      (value): value is Record<string, unknown> =>
+        typeof value === "object" &&
+        value !== null &&
+        (value as Record<string, unknown>).event === event,
+    );
+}
