@@ -19,6 +19,7 @@ describe("local development configuration", () => {
     const manifest = JSON.parse(readFileSync("package.json", "utf8")) as PackageManifest;
     const playwright = readFileSync("tests/playwright/playwright.config.ts", "utf8");
     const classroomTest = readFileSync("tests/playwright/classroom-embed.spec.ts", "utf8");
+    const edgeTestConfig = readFileSync("vitest.cloudflare.config.ts", "utf8");
     const localOnlyCommand = "wrangler dev --env development --local --env-file .dev.vars.example";
 
     expect(manifest.scripts?.dev).toContain(localOnlyCommand);
@@ -27,6 +28,8 @@ describe("local development configuration", () => {
     expect(manifest.scripts?.["test:e2e"]).toContain("npm run build:web");
     expect(classroomTest).toContain('".dev.vars.example"');
     expect(classroomTest).not.toContain('readFileSync(".dev.vars"');
+    expect(edgeTestConfig).toContain("miniflare: { bindings: localBindings }");
+    expect(edgeTestConfig).toContain('"./.dev.vars.example"');
   });
 
   it("uses local test values without requiring Cloudflare credentials", () => {
