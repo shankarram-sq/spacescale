@@ -661,46 +661,61 @@ jobs:
           verify_traffic 100
 
           promotion_ready=false
-          for attempt in $(seq 1 12); do
+          candidate_streak=0
+          required_candidate_streak=10
+          max_semantic_attempts=30
+          promotion_health=""
+          for attempt in $(seq 1 "$max_semantic_attempts"); do
             promotion_health="$RUNNER_TEMP/production-promotion-health-${attempt}.json"
-            curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
-              --retry 3 --retry-all-errors --max-time 15 \
+            # This outer loop is the retry budget. Bound each sample so the
+            # production job always retains ample time for automatic rollback.
+            if curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+              --connect-timeout 5 --max-time 10 \
               -o "$promotion_health" \
               "$PRODUCTION_URL/healthz?promotion-ready=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${attempt}"
-            if jq -e --arg version "$CANDIDATE_VERSION" '
-                .ok == true and
-                .service == "cloudflare-collab-canvas-edge" and
-                .versionId == $version
-              ' "$promotion_health" >/dev/null
             then
-              promotion_ready=true
-              break
+              if ! jq -e '
+                  .ok == true and
+                  .service == "cloudflare-collab-canvas-edge" and
+                  (.versionId | type == "string")
+                ' "$promotion_health" >/dev/null
+              then
+                echo "Unsafe production application identity during candidate convergence" >&2
+                jq -c '{ok, service, versionId}' "$promotion_health" >&2 || true
+                exit 1
+              fi
+
+              observed_version="$(jq -er '.versionId' "$promotion_health")"
+              case "$observed_version" in
+                "$CANDIDATE_VERSION")
+                  candidate_streak=$((candidate_streak + 1))
+                  echo "Candidate convergence sample ${candidate_streak}/${required_candidate_streak} (attempt $attempt/$max_semantic_attempts)"
+                  if ((candidate_streak >= required_candidate_streak)); then
+                    promotion_ready=true
+                    break
+                  fi
+                  ;;
+                "$PREVIOUS_VERSION")
+                  candidate_streak=0
+                  echo "Waiting through safe retained-version propagation (attempt $attempt/$max_semantic_attempts)"
+                  ;;
+                *)
+                  echo "Unsafe unknown production version: $observed_version" >&2
+                  exit 1
+                  ;;
+              esac
+            else
+              candidate_streak=0
+              echo "Production health transport failure; candidate streak reset (attempt $attempt/$max_semantic_attempts)"
             fi
 
-            observed_version="$(jq -r '.versionId // "unavailable"' "$promotion_health" 2>/dev/null || echo invalid-response)"
-            echo "Waiting for production version $CANDIDATE_VERSION (attempt $attempt/12; observed $observed_version)"
-            if ((attempt < 12)); then
-              sleep 5
-            fi
+            if ((attempt < max_semantic_attempts)); then sleep 2; fi
           done
           test "$promotion_ready" = true || {
-            echo "Production did not converge to version $CANDIDATE_VERSION" >&2
-            jq -c '{ok, service, versionId}' "$promotion_health" >&2 || true
+            echo "Production did not achieve ${required_candidate_streak} consecutive candidate samples" >&2
+            jq -c '{ok, service, versionId}' "$promotion_health" >&2 2>/dev/null || true
             exit 1
           }
-
-          for ordinal in $(seq 1 10); do
-            live_health="$RUNNER_TEMP/production-live-health-${ordinal}.json"
-            curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
-              --retry 3 --retry-all-errors --max-time 15 \
-              -o "$live_health" \
-              "$PRODUCTION_URL/healthz?promotion=${GITHUB_RUN_ID}-${ordinal}"
-            jq -e --arg version "$CANDIDATE_VERSION" '
-              .ok == true and
-              .service == "cloudflare-collab-canvas-edge" and
-              .versionId == $version
-            ' "$live_health" >/dev/null
-          done
 
           live_index="$RUNNER_TEMP/production-live-index.html"
           live_assets="$RUNNER_TEMP/production-live-assets.txt"

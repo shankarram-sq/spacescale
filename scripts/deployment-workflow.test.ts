@@ -98,7 +98,7 @@ describe("deployment workflow safety", () => {
     expect(emittedOutput).toBeGreaterThan(verification);
   });
 
-  it("waits for the promoted production version before repeated live probes", () => {
+  it("requires stable candidate observations before live static probes", () => {
     const rolloutStart = workflow.indexOf(
       "Attach candidate at 0%, override-smoke it, then promote atomically",
     );
@@ -108,17 +108,32 @@ describe("deployment workflow safety", () => {
     );
     const rollout = workflow.slice(rolloutStart, rolloutEnd);
     const convergenceStart = rollout.indexOf("promotion_ready=false");
-    const repeatedChecksStart = rollout.indexOf("for ordinal in $(seq 1 10)");
+    const liveStaticStart = rollout.indexOf("live_index=", convergenceStart);
+    const convergence = rollout.slice(convergenceStart, liveStaticStart);
+    const identityCheck = convergence.indexOf('.service == "cloudflare-collab-canvas-edge"');
+    const versionSwitch = convergence.indexOf('case "$observed_version" in');
 
     expect(convergenceStart).toBeGreaterThan(-1);
-    expect(repeatedChecksStart).toBeGreaterThan(convergenceStart);
-    expect(rollout).toContain("for attempt in $(seq 1 12)");
-    expect(rollout).toContain(
+    expect(liveStaticStart).toBeGreaterThan(convergenceStart);
+    expect(convergence).toContain("required_candidate_streak=10");
+    expect(convergence).toContain("max_semantic_attempts=30");
+    expect(convergence).toContain('for attempt in $(seq 1 "$max_semantic_attempts")');
+    expect(convergence).toContain("--connect-timeout 5 --max-time 10");
+    expect(convergence).not.toContain("--retry");
+    expect(convergence).toContain(
       "healthz?promotion-ready=$" + "{GITHUB_RUN_ID}-$" + "{GITHUB_RUN_ATTEMPT}-$" + "{attempt}",
     );
-    expect(rollout).toContain(".versionId == $version");
-    expect(rollout).toContain('test "$promotion_ready" = true');
-    expect(rollout).toContain("Production did not converge to version $CANDIDATE_VERSION");
+    expect(convergence.match(/candidate_streak=0/g)).toHaveLength(3);
+    expect(convergence).toContain("candidate_streak=$((candidate_streak + 1))");
+    expect(convergence).toContain('(.versionId | type == "string")');
+    expect(identityCheck).toBeGreaterThan(-1);
+    expect(versionSwitch).toBeGreaterThan(identityCheck);
+    expect(convergence).toContain('"$CANDIDATE_VERSION")');
+    expect(convergence).toContain('"$PREVIOUS_VERSION")');
+    expect(convergence).toContain("Unsafe unknown production version");
+    expect(convergence).toContain("if ((attempt < max_semantic_attempts)); then sleep 2; fi");
+    expect(convergence).toContain('test "$promotion_ready" = true');
+    expect(rollout).not.toContain("for ordinal in $(seq 1 10)");
   });
 
   it("retries only safe predecessor traffic states before semantic health checks", () => {
