@@ -547,30 +547,75 @@ jobs:
 
           verify_traffic() {
             local candidate_percentage="$1"
-            local status="$RUNNER_TEMP/production-traffic-${candidate_percentage}.json"
-            npx --no-install wrangler deployments status --env="" --json > "$status"
-            jq -e \
-              --arg previous "$PREVIOUS_VERSION" \
-              --arg candidate "$CANDIDATE_VERSION" \
-              --argjson candidatePercentage "$candidate_percentage" '
-                .versions as $versions |
-                if $candidatePercentage == 100 then
-                  ($versions | length) == 1 and
-                  any($versions[]; .version_id == $candidate and .percentage == 100)
+            local status=""
+            for attempt in $(seq 1 12); do
+              status="$RUNNER_TEMP/production-traffic-${candidate_percentage}-${attempt}.json"
+              if npx --no-install wrangler deployments status --env="" --json > "$status"; then
+                if jq -e \
+                    --arg previous "$PREVIOUS_VERSION" \
+                    --arg candidate "$CANDIDATE_VERSION" \
+                    --argjson candidatePercentage "$candidate_percentage" '
+                      .versions as $versions |
+                      if $candidatePercentage == 100 then
+                        ($versions | length) == 1 and
+                        any($versions[]; .version_id == $candidate and .percentage == 100)
+                      else
+                        ($versions | length) == 2 and
+                        any($versions[]; .version_id == $candidate and .percentage == $candidatePercentage) and
+                        any($versions[]; .version_id == $previous and .percentage == (100 - $candidatePercentage))
+                      end
+                    ' "$status" >/dev/null
+                then
+                  return 0
+                fi
+
+                if jq -e '.versions | type == "array"' "$status" >/dev/null; then
+                  if jq -e \
+                      --arg previous "$PREVIOUS_VERSION" \
+                      --arg candidate "$CANDIDATE_VERSION" \
+                      --argjson candidatePercentage "$candidate_percentage" '
+                        .versions as $versions |
+                        def previous_only:
+                          ($versions | length) == 1 and
+                          any($versions[]; .version_id == $previous and .percentage == 100);
+                        def attached_zero:
+                          ($versions | length) == 2 and
+                          any($versions[]; .version_id == $previous and .percentage == 100) and
+                          any($versions[]; .version_id == $candidate and .percentage == 0);
+                        if $candidatePercentage == 0 then
+                          previous_only
+                        else
+                          previous_only or attached_zero
+                        end
+                      ' "$status" >/dev/null
+                  then
+                    echo "Waiting for exact production traffic state (candidate ${candidate_percentage}%; attempt $attempt/12; observed safe predecessor)"
+                    jq -c '{versions: [.versions[]? | {version_id, percentage}]}' "$status"
+                  else
+                    echo "Unsafe production traffic state while targeting candidate ${candidate_percentage}%" >&2
+                    jq -c '{versions: [.versions[]? | {version_id, percentage}]}' "$status" >&2
+                    return 1
+                  fi
                 else
-                  ($versions | length) == 2 and
-                  any($versions[]; .version_id == $candidate and .percentage == $candidatePercentage) and
-                  any($versions[]; .version_id == $previous and .percentage == (100 - $candidatePercentage))
-                end
-              ' "$status" >/dev/null
+                  echo "Waiting for a valid production traffic status response (attempt $attempt/12)"
+                fi
+              else
+                echo "Unable to read production traffic status (attempt $attempt/12)"
+              fi
+
+              if ((attempt < 12)); then sleep 5; fi
+            done
+            echo "Production traffic did not converge to candidate ${candidate_percentage}%" >&2
+            jq -c '{versions: [.versions[]? | {version_id, percentage}]}' "$status" >&2 2>/dev/null || true
+            return 1
           }
 
           override_value="cloudflare-collab-canvas=\"${CANDIDATE_VERSION}\""
+          echo "traffic_changed=true" >> "$GITHUB_OUTPUT"
           npx --no-install wrangler versions deploy \
             --env="" \
             "${PREVIOUS_VERSION}@100" "${CANDIDATE_VERSION}@0" --yes \
             --message "${VALIDATED_SHA} candidate attached at 0%"
-          echo "traffic_changed=true" >> "$GITHUB_OUTPUT"
           verify_traffic 0
 
           override_health="$RUNNER_TEMP/production-override-health.json"

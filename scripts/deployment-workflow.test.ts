@@ -121,6 +121,53 @@ describe("deployment workflow safety", () => {
     expect(rollout).toContain("Production did not converge to version $CANDIDATE_VERSION");
   });
 
+  it("retries only safe predecessor traffic states before semantic health checks", () => {
+    const rolloutStart = workflow.indexOf(
+      "Attach candidate at 0%, override-smoke it, then promote atomically",
+    );
+    const rolloutEnd = workflow.indexOf(
+      "Automatically restore the retained version after a rollout failure",
+      rolloutStart,
+    );
+    const rollout = workflow.slice(rolloutStart, rolloutEnd);
+    const verifierStart = rollout.indexOf("verify_traffic() {");
+    const verifierEnd = rollout.indexOf("override_value=", verifierStart);
+    const verifier = rollout.slice(verifierStart, verifierEnd);
+    const initialAttach = rollout.indexOf(
+      '"$' + '{PREVIOUS_VERSION}@100" "$' + '{CANDIDATE_VERSION}@0"',
+    );
+    const rollbackArmed = rollout.indexOf('echo "traffic_changed=true" >> "$GITHUB_OUTPUT"');
+    const initialTrafficVerification = rollout.indexOf("verify_traffic 0", initialAttach);
+    const promotion = rollout.indexOf('"$' + '{CANDIDATE_VERSION}@100"');
+    const trafficVerification = rollout.indexOf("verify_traffic 100", promotion);
+    const semanticHealth = rollout.indexOf("promotion_ready=false", trafficVerification);
+
+    expect(verifier).toContain("for attempt in $(seq 1 12)");
+    expect(verifier).toContain(
+      "production-traffic-$" + "{candidate_percentage}-$" + "{attempt}.json",
+    );
+    expect(verifier).toContain("if jq -e \\");
+    expect(verifier).toContain("def previous_only:");
+    expect(verifier).toContain("def attached_zero:");
+    expect(verifier).toContain("previous_only or attached_zero");
+    expect(verifier).toContain("Unsafe production traffic state");
+    expect(verifier).toContain("return 0");
+    expect(verifier).toContain("if ((attempt < 12)); then sleep 5; fi");
+    expect(verifier).toContain("Production traffic did not converge to candidate");
+    expect(verifier).toContain("return 1");
+    expect(verifier).toContain("($versions | length) == 1");
+    expect(verifier).toContain("($versions | length) == 2");
+    expect(initialAttach).toBeGreaterThan(-1);
+    expect(rollbackArmed).toBeGreaterThan(verifierEnd);
+    expect(initialAttach).toBeGreaterThan(rollbackArmed);
+    expect(initialTrafficVerification).toBeGreaterThan(initialAttach);
+    expect(trafficVerification).toBeGreaterThan(promotion);
+    expect(semanticHealth).toBeGreaterThan(trafficVerification);
+    expect(workflow).toContain(
+      "if: $" + "{{ failure() && steps.rollout.outputs.traffic_changed == 'true' }}",
+    );
+  });
+
   it("verifies rollback traffic and health converge to the retained version", () => {
     const rollbackStart = workflow.indexOf(
       "Automatically restore the retained version after a rollout failure",
