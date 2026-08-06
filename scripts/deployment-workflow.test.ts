@@ -143,6 +143,50 @@ describe("deployment workflow safety", () => {
     expect(rollout).not.toContain("for ordinal in $(seq 1 10)");
   });
 
+  it("waits for stable candidate override propagation before candidate static smoke", () => {
+    const rolloutStart = workflow.indexOf(
+      "Attach candidate at 0%, override-smoke it, then promote atomically",
+    );
+    const rolloutEnd = workflow.indexOf(
+      "Automatically restore the retained version after a rollout failure",
+      rolloutStart,
+    );
+    const rollout = workflow.slice(rolloutStart, rolloutEnd);
+    const convergenceStart = rollout.indexOf("override_ready=false");
+    const staticStart = rollout.indexOf("override_index=", convergenceStart);
+    const convergence = rollout.slice(convergenceStart, staticStart);
+    const identityCheck = convergence.indexOf('.service == "cloudflare-collab-canvas-edge"');
+    const versionSwitch = convergence.indexOf('case "$observed_override_version" in');
+    const readiness = rollout.indexOf('test "$override_ready" = true');
+    const promotion = rollout.indexOf('"$' + '{CANDIDATE_VERSION}@100"');
+
+    expect(rollout).toContain("timeout-minutes: 13");
+    expect(convergenceStart).toBeGreaterThan(-1);
+    expect(staticStart).toBeGreaterThan(convergenceStart);
+    expect(convergence).toContain("required_override_streak=3");
+    expect(convergence).toContain("max_override_attempts=12");
+    expect(convergence).toContain('for attempt in $(seq 1 "$max_override_attempts")');
+    expect(convergence).toContain("--connect-timeout 5 --max-time 10");
+    expect(convergence).not.toContain("--retry");
+    expect(convergence).toContain(
+      "healthz?candidate-ready=$" + "{GITHUB_RUN_ID}-$" + "{GITHUB_RUN_ATTEMPT}-$" + "{attempt}",
+    );
+    expect(convergence.match(/override_streak=0/g)).toHaveLength(3);
+    expect(convergence).toContain("override_streak=$((override_streak + 1))");
+    expect(convergence).toContain('(.versionId | type == "string")');
+    expect(identityCheck).toBeGreaterThan(-1);
+    expect(versionSwitch).toBeGreaterThan(identityCheck);
+    expect(convergence).toContain('"$CANDIDATE_VERSION")');
+    expect(convergence).toContain('"$PREVIOUS_VERSION")');
+    expect(convergence).toContain("Unsafe unknown production override version");
+    expect(convergence).toContain("Candidate override response is missing nosniff");
+    expect(convergence).toContain("Candidate override response is missing Content-Security-Policy");
+    expect(convergence).toContain("if ((attempt < max_override_attempts)); then sleep 2; fi");
+    expect(readiness).toBeGreaterThan(convergenceStart);
+    expect(staticStart).toBeGreaterThan(readiness);
+    expect(promotion).toBeGreaterThan(staticStart);
+  });
+
   it("retries only safe predecessor traffic states before semantic health checks", () => {
     const rolloutStart = workflow.indexOf(
       "Attach candidate at 0%, override-smoke it, then promote atomically",

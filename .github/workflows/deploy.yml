@@ -539,6 +539,7 @@ jobs:
       # fail-closed until an external affinity mechanism is configured and tested.
       - name: Attach candidate at 0%, override-smoke it, then promote atomically
         id: rollout
+        timeout-minutes: 13
         shell: bash
         env:
           PREVIOUS_VERSION: ${{ steps.stable.outputs.previous_version }}
@@ -619,23 +620,78 @@ jobs:
             --message "${VALIDATED_SHA} candidate attached at 0%"
           verify_traffic 0
 
-          override_health="$RUNNER_TEMP/production-override-health.json"
-          override_headers="$RUNNER_TEMP/production-override-headers.txt"
+          override_ready=false
+          override_streak=0
+          required_override_streak=3
+          max_override_attempts=12
+          override_health=""
+          override_headers=""
+          for attempt in $(seq 1 "$max_override_attempts"); do
+            override_health="$RUNNER_TEMP/production-override-health-${attempt}.json"
+            override_headers="$RUNNER_TEMP/production-override-headers-${attempt}.txt"
+            if curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+              --connect-timeout 5 --max-time 10 \
+              -H "Cloudflare-Workers-Version-Overrides: $override_value" \
+              -D "$override_headers" -o "$override_health" \
+              "$PRODUCTION_URL/healthz?candidate-ready=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${attempt}"
+            then
+              if ! jq -e '
+                  .ok == true and
+                  .service == "cloudflare-collab-canvas-edge" and
+                  (.versionId | type == "string")
+                ' "$override_health" >/dev/null
+              then
+                echo "Unsafe production application identity during override convergence" >&2
+                jq -c '{ok, service, versionId}' "$override_health" >&2 || true
+                exit 1
+              fi
+
+              observed_override_version="$(jq -er '.versionId' "$override_health")"
+              case "$observed_override_version" in
+                "$CANDIDATE_VERSION")
+                  if ! tr -d '\r' < "$override_headers" |
+                    grep -Eiq '^x-content-type-options:[[:space:]]*nosniff[[:space:]]*$'
+                  then
+                    echo "Candidate override response is missing nosniff" >&2
+                    exit 1
+                  fi
+                  if ! tr -d '\r' < "$override_headers" |
+                    grep -Eiq '^content-security-policy:'
+                  then
+                    echo "Candidate override response is missing Content-Security-Policy" >&2
+                    exit 1
+                  fi
+                  override_streak=$((override_streak + 1))
+                  echo "Candidate override sample ${override_streak}/${required_override_streak} (attempt $attempt/$max_override_attempts)"
+                  if ((override_streak >= required_override_streak)); then
+                    override_ready=true
+                    break
+                  fi
+                  ;;
+                "$PREVIOUS_VERSION")
+                  override_streak=0
+                  echo "Waiting through safe retained-version override propagation (attempt $attempt/$max_override_attempts)"
+                  ;;
+                *)
+                  echo "Unsafe unknown production override version: $observed_override_version" >&2
+                  exit 1
+                  ;;
+              esac
+            else
+              override_streak=0
+              echo "Production override health transport failure; candidate streak reset (attempt $attempt/$max_override_attempts)"
+            fi
+
+            if ((attempt < max_override_attempts)); then sleep 2; fi
+          done
+          test "$override_ready" = true || {
+            echo "Production override did not achieve ${required_override_streak} consecutive candidate samples" >&2
+            jq -c '{ok, service, versionId}' "$override_health" >&2 2>/dev/null || true
+            exit 1
+          }
+
           override_index="$RUNNER_TEMP/production-override-index.html"
           override_assets="$RUNNER_TEMP/production-override-assets.txt"
-          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
-            --retry 5 --retry-all-errors --max-time 20 \
-            -H "Cloudflare-Workers-Version-Overrides: $override_value" \
-            -D "$override_headers" -o "$override_health" \
-            "$PRODUCTION_URL/healthz?candidate=${GITHUB_RUN_ID}"
-          jq -e --arg version "$CANDIDATE_VERSION" '
-            .ok == true and
-            .service == "cloudflare-collab-canvas-edge" and
-            .versionId == $version
-          ' "$override_health" >/dev/null
-          tr -d '\r' < "$override_headers" | grep -Eiq '^x-content-type-options:[[:space:]]*nosniff[[:space:]]*$'
-          tr -d '\r' < "$override_headers" | grep -Eiq '^content-security-policy:'
-
           curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
             --retry 3 --retry-all-errors --max-time 20 \
             -H "Cloudflare-Workers-Version-Overrides: $override_value" \
