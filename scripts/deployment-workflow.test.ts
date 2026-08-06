@@ -30,15 +30,27 @@ describe("deployment workflow safety", () => {
     );
   });
 
-  it("verifies staging attestation provenance through immutable Actions records", () => {
+  it("retries GitHub reads while preserving exact staging provenance checks", () => {
+    const gateStart = workflow.indexOf("Require successful staging delivery for this exact commit");
+    const gateEnd = workflow.indexOf("  production:", gateStart);
+    const gate = workflow.slice(gateStart, gateEnd);
+
     expect(workflow).toContain("actions: read");
-    expect(workflow).toContain("repos/$GITHUB_REPOSITORY/actions/runs/$attested_run_id");
-    expect(workflow).toContain("repos/$GITHUB_REPOSITORY/actions/runs/$attested_run_id/jobs");
-    expect(workflow).toContain('.path == ".github/workflows/deploy.yml"');
-    expect(workflow).toContain('.event == "workflow_run"');
-    expect(workflow).toContain(".head_sha == $sha");
-    expect(workflow).toContain('.name == "Staging deploy and 20-client smoke"');
-    expect(workflow).not.toContain('.creator.login == "github-actions[bot]"');
+    expect(gate.match(/\bgithub_api_get\b/g)).toHaveLength(5);
+    expect(gate).toContain("--fail --silent --show-error");
+    expect(gate).toContain("--retry 5 --retry-all-errors");
+    expect(gate).toContain("--retry-max-time 45");
+    expect(gate).toContain('-H "Authorization: Bearer $GH_TOKEN"');
+    expect(gate).toContain("commits/staging");
+    expect(gate).toContain("commits/$VALIDATED_SHA/status?per_page=100");
+    expect(gate).toContain("actions/runs/$attested_run_id");
+    expect(gate).toContain("actions/runs/$attested_run_id/jobs?per_page=100");
+    expect(gate).not.toContain("gh api");
+    expect(gate).toContain('.path == ".github/workflows/deploy.yml"');
+    expect(gate).toContain('.event == "workflow_run"');
+    expect(gate).toContain(".head_sha == $sha");
+    expect(gate).toContain('.name == "Staging deploy and 20-client smoke"');
+    expect(gate).not.toContain('.creator.login == "github-actions[bot]"');
   });
 
   it("keeps staging strict while making the top-level production target explicit", () => {
@@ -84,6 +96,29 @@ describe("deployment workflow safety", () => {
     const emittedOutput = workflow.indexOf('echo "candidate_version=$version"');
     expect(verification).toBeGreaterThan(-1);
     expect(emittedOutput).toBeGreaterThan(verification);
+  });
+
+  it("waits for the promoted production version before repeated live probes", () => {
+    const rolloutStart = workflow.indexOf(
+      "Attach candidate at 0%, override-smoke it, then promote atomically",
+    );
+    const rolloutEnd = workflow.indexOf(
+      "Automatically restore the retained version after a rollout failure",
+      rolloutStart,
+    );
+    const rollout = workflow.slice(rolloutStart, rolloutEnd);
+    const convergenceStart = rollout.indexOf("promotion_ready=false");
+    const repeatedChecksStart = rollout.indexOf("for ordinal in $(seq 1 10)");
+
+    expect(convergenceStart).toBeGreaterThan(-1);
+    expect(repeatedChecksStart).toBeGreaterThan(convergenceStart);
+    expect(rollout).toContain("for attempt in $(seq 1 12)");
+    expect(rollout).toContain(
+      "healthz?promotion-ready=$" + "{GITHUB_RUN_ID}-$" + "{GITHUB_RUN_ATTEMPT}-$" + "{attempt}",
+    );
+    expect(rollout).toContain(".versionId == $version");
+    expect(rollout).toContain('test "$promotion_ready" = true');
+    expect(rollout).toContain("Production did not converge to version $CANDIDATE_VERSION");
   });
 
   it("verifies rollback traffic and health converge to the retained version", () => {

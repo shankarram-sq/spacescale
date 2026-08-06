@@ -252,16 +252,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          current_staging="$(gh api \
-            "repos/$GITHUB_REPOSITORY/commits/staging" --jq '.sha')"
+
+          github_api_get() {
+            local path="$1"
+            curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+              --retry 5 --retry-all-errors --retry-delay 2 --retry-max-time 45 \
+              --connect-timeout 10 --max-time 20 \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/$path"
+          }
+
+          current_staging="$(github_api_get "commits/staging" | jq -er '.sha')"
           test "$current_staging" = "$VALIDATED_SHA" || {
             echo "main must contain the current, successfully staged commit" >&2
             exit 1
           }
 
-          status_json="$(gh api --method GET \
-            "repos/$GITHUB_REPOSITORY/commits/$VALIDATED_SHA/status" \
-            -f per_page=100
+          status_json="$(github_api_get \
+            "commits/$VALIDATED_SHA/status?per_page=100"
           )"
           attestation="$(jq -cer '
               [.statuses[] | select(.context == "cloudflare/staging")] |
@@ -284,12 +294,11 @@ jobs:
             exit 1
           }
 
-          run_json="$(gh api \
-            "repos/$GITHUB_REPOSITORY/actions/runs/$attested_run_id"
+          run_json="$(github_api_get \
+            "actions/runs/$attested_run_id"
           )"
-          jobs_json="$(gh api --method GET \
-            "repos/$GITHUB_REPOSITORY/actions/runs/$attested_run_id/jobs" \
-            -f per_page=100
+          jobs_json="$(github_api_get \
+            "actions/runs/$attested_run_id/jobs?per_page=100"
           )"
           jq -e \
             --arg sha "$VALIDATED_SHA" \
@@ -605,6 +614,36 @@ jobs:
             "${CANDIDATE_VERSION}@100" --yes \
             --message "${VALIDATED_SHA} promoted after 0% override smoke"
           verify_traffic 100
+
+          promotion_ready=false
+          for attempt in $(seq 1 12); do
+            promotion_health="$RUNNER_TEMP/production-promotion-health-${attempt}.json"
+            curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+              --retry 3 --retry-all-errors --max-time 15 \
+              -o "$promotion_health" \
+              "$PRODUCTION_URL/healthz?promotion-ready=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${attempt}"
+            if jq -e --arg version "$CANDIDATE_VERSION" '
+                .ok == true and
+                .service == "cloudflare-collab-canvas-edge" and
+                .versionId == $version
+              ' "$promotion_health" >/dev/null
+            then
+              promotion_ready=true
+              break
+            fi
+
+            observed_version="$(jq -r '.versionId // "unavailable"' "$promotion_health" 2>/dev/null || echo invalid-response)"
+            echo "Waiting for production version $CANDIDATE_VERSION (attempt $attempt/12; observed $observed_version)"
+            if ((attempt < 12)); then
+              sleep 5
+            fi
+          done
+          test "$promotion_ready" = true || {
+            echo "Production did not converge to version $CANDIDATE_VERSION" >&2
+            jq -c '{ok, service, versionId}' "$promotion_health" >&2 || true
+            exit 1
+          }
+
           for ordinal in $(seq 1 10); do
             live_health="$RUNNER_TEMP/production-live-health-${ordinal}.json"
             curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
