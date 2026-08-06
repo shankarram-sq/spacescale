@@ -392,7 +392,7 @@ jobs:
         run: |
           set -euo pipefail
           status="$RUNNER_TEMP/production-before.json"
-          npx --no-install wrangler deployments status --json > "$status"
+          npx --no-install wrangler deployments status --env="" --json > "$status"
           previous="$(jq -er '
             .versions as $versions |
             if (($versions | length) == 1 and ($versions[0].percentage == 100))
@@ -406,13 +406,15 @@ jobs:
 
       - name: Upload candidate without production traffic
         id: candidate
+        env:
+          PREVIOUS_VERSION: ${{ steps.stable.outputs.previous_version }}
         shell: bash
         run: |
           set -euo pipefail
           output="$RUNNER_TEMP/wrangler-production-upload.jsonl"
           rm -f "$output"
           WRANGLER_OUTPUT_FILE_PATH="$output" npx --no-install wrangler versions upload \
-            --strict \
+            --env="" \
             --tag "main-${VALIDATED_SHA:0:12}" \
             --message "validated main ${VALIDATED_SHA}" \
             --var "APP_HOSTNAME:spacescale.net" \
@@ -428,7 +430,79 @@ jobs:
             select(type == "string" and
               test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"; "i"))
           ' <<< "$entry")"
-          test "$version" != "${{ steps.stable.outputs.previous_version }}"
+          test "$version" != "$PREVIOUS_VERSION"
+
+          candidate="$RUNNER_TEMP/production-candidate-version.json"
+          retained="$RUNNER_TEMP/production-retained-version.json"
+          npx --no-install wrangler versions view "$version" --env="" --json > "$candidate"
+          npx --no-install wrangler versions view "$PREVIOUS_VERSION" --env="" --json > "$retained"
+
+          retained_namespace="$(jq -er '
+            [.resources.bindings[] |
+              select(.name == "BOARD_ROOMS" and .type == "durable_object_namespace") |
+              .namespace_id] |
+            if length == 1 then .[0]
+            else error("retained version must have exactly one BOARD_ROOMS namespace")
+            end |
+            select(type == "string" and length > 0)
+          ' "$retained")"
+
+          retained_secrets="$(jq -cer '
+            [.resources.bindings[] | select(.type == "secret_text") | .name] |
+            sort |
+            if length > 0 then .
+            else error("retained version must have secret bindings")
+            end
+          ' "$retained")"
+          jq -e \
+            --arg version "$version" \
+            --arg allowedOrigins "$ALLOWED_ORIGINS" \
+            --arg turnstileSiteKey "$TURNSTILE_SITE_KEY" \
+            --arg namespace "$retained_namespace" \
+            --argjson retainedSecrets "$retained_secrets" '
+              . as $candidate |
+              $candidate.resources.bindings as $bindings |
+              def binding($name):
+                [$bindings[] | select(.name == $name)] |
+                if length == 1 then .[0]
+                else error("candidate must have exactly one " + $name + " binding")
+                end;
+              ([
+                { name: "ALLOWED_ORIGINS", type: "plain_text" },
+                { name: "APP_HOSTNAME", type: "plain_text" },
+                { name: "ASSETS", type: "assets" },
+                { name: "BOARD_CREATION_ENABLED", type: "plain_text" },
+                { name: "BOARD_ROOMS", type: "durable_object_namespace" },
+                { name: "BOARD_SNAPSHOTS", type: "r2_bucket" },
+                { name: "CLASSROOM_INTEGRATION_KEY", type: "secret_text" },
+                { name: "ENVIRONMENT", type: "plain_text" },
+                { name: "SESSION_SIGNING_KEY_CURRENT", type: "secret_text" },
+                { name: "TURNSTILE_ENABLED", type: "plain_text" },
+                { name: "TURNSTILE_SECRET_KEY", type: "secret_text" },
+                { name: "TURNSTILE_SITE_KEY", type: "plain_text" },
+                { name: "WORKER_VERSION", type: "version_metadata" }
+              ] +
+              (if any($bindings[]; .name == "SESSION_SIGNING_KEY_PREVIOUS")
+               then [{ name: "SESSION_SIGNING_KEY_PREVIOUS", type: "secret_text" }]
+               else []
+               end) | sort_by(.name)) as $expectedBindings |
+              $candidate.id == $version and
+              ($bindings | map({ name, type }) | sort_by(.name)) == $expectedBindings and
+              ($retainedSecrets -
+                [$bindings[] | select(.type == "secret_text") | .name]) == [] and
+              (binding("ALLOWED_ORIGINS").text == $allowedOrigins) and
+              (binding("APP_HOSTNAME").text == "spacescale.net") and
+              (binding("BOARD_CREATION_ENABLED").text == "true") and
+              (binding("ENVIRONMENT").text == "production") and
+              (binding("TURNSTILE_ENABLED").text == "true") and
+              (binding("TURNSTILE_SITE_KEY").text == $turnstileSiteKey) and
+              (binding("BOARD_SNAPSHOTS").bucket_name == "collab-canvas-snapshots") and
+              (binding("BOARD_ROOMS").class_name == "BoardRoom") and
+              (binding("BOARD_ROOMS").namespace_id == $namespace) and
+              $candidate.resources.script_runtime.compatibility_date == "2026-08-04" and
+              $candidate.resources.script_runtime.compatibility_flags == ["nodejs_compat"]
+            ' "$candidate" >/dev/null
+
           echo "candidate_version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Record the exact rollback target
@@ -445,7 +519,7 @@ jobs:
               previousVersion: $previous,
               candidateVersion: $candidate,
               workflowRun: $run,
-              rollbackCommand: ("npx --no-install wrangler versions deploy " + $previous + "@100 --yes")
+              rollbackCommand: ("npx --no-install wrangler versions deploy " + $previous + "@100 --env= --yes")
             }' > rollback-manifest.json
 
       # Static Asset HTML and content-hashed asset requests have no repository-
@@ -465,7 +539,7 @@ jobs:
           verify_traffic() {
             local candidate_percentage="$1"
             local status="$RUNNER_TEMP/production-traffic-${candidate_percentage}.json"
-            npx --no-install wrangler deployments status --json > "$status"
+            npx --no-install wrangler deployments status --env="" --json > "$status"
             jq -e \
               --arg previous "$PREVIOUS_VERSION" \
               --arg candidate "$CANDIDATE_VERSION" \
@@ -484,6 +558,7 @@ jobs:
 
           override_value="cloudflare-collab-canvas=\"${CANDIDATE_VERSION}\""
           npx --no-install wrangler versions deploy \
+            --env="" \
             "${PREVIOUS_VERSION}@100" "${CANDIDATE_VERSION}@0" --yes \
             --message "${VALIDATED_SHA} candidate attached at 0%"
           echo "traffic_changed=true" >> "$GITHUB_OUTPUT"
@@ -526,6 +601,7 @@ jobs:
           done < "$override_assets"
 
           npx --no-install wrangler versions deploy \
+            --env="" \
             "${CANDIDATE_VERSION}@100" --yes \
             --message "${VALIDATED_SHA} promoted after 0% override smoke"
           verify_traffic 100
@@ -560,12 +636,45 @@ jobs:
       - name: Automatically restore the retained version after a rollout failure
         if: ${{ failure() && steps.rollout.outputs.traffic_changed == 'true' }}
         continue-on-error: true
+        env:
+          PREVIOUS_VERSION: ${{ steps.stable.outputs.previous_version }}
         shell: bash
         run: |
           set -euo pipefail
           npx --no-install wrangler versions deploy \
-            "${{ steps.stable.outputs.previous_version }}@100" --yes \
+            --env="" \
+            "${PREVIOUS_VERSION}@100" --yes \
             --message "automatic rollback of ${VALIDATED_SHA} from run ${GITHUB_RUN_ID}"
+
+          rollback_ready=false
+          for attempt in $(seq 1 12); do
+            status="$RUNNER_TEMP/production-rollback-status-${attempt}.json"
+            health="$RUNNER_TEMP/production-rollback-health-${attempt}.json"
+            traffic_restored=false
+            if npx --no-install wrangler deployments status --env="" --json > "$status"; then
+              jq -e --arg version "$PREVIOUS_VERSION" '
+                (.versions | length) == 1 and
+                .versions[0].version_id == $version and
+                .versions[0].percentage == 100
+              ' "$status" >/dev/null && traffic_restored=true
+            fi
+            if [[ "$traffic_restored" == true ]] &&
+              curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+                --retry 2 --retry-all-errors --max-time 20 \
+                -o "$health" \
+                "$PRODUCTION_URL/healthz?rollback=${GITHUB_RUN_ID}-${attempt}" &&
+              jq -e --arg version "$PREVIOUS_VERSION" '
+                .ok == true and
+                .service == "cloudflare-collab-canvas-edge" and
+                .versionId == $version
+              ' "$health" >/dev/null
+            then
+              rollback_ready=true
+              break
+            fi
+            if ((attempt < 12)); then sleep 5; fi
+          done
+          test "$rollback_ready" = true
 
       - name: Write deployment summary
         if: ${{ always() && steps.stable.outputs.previous_version != '' }}
@@ -583,7 +692,7 @@ jobs:
             echo 'Manual rollback (only while the retained code remains schema-compatible):'
             echo
             echo '\`\`\`sh'
-            echo "npx --no-install wrangler versions deploy ${{ steps.stable.outputs.previous_version }}@100 --yes"
+            echo "npx --no-install wrangler versions deploy ${{ steps.stable.outputs.previous_version }}@100 --env= --yes"
             echo '\`\`\`'
           } >> "$GITHUB_STEP_SUMMARY"
 

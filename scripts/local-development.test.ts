@@ -6,6 +6,10 @@ type PackageManifest = {
 };
 
 type WranglerConfiguration = {
+  r2_buckets?: Array<{
+    binding?: string;
+    preview_bucket_name?: string;
+  }>;
   env?: {
     development?: {
       routes?: unknown[];
@@ -48,5 +52,8 @@ describe("local development configuration", () => {
     expect(localSecrets).toContain("CLASSROOM_INTEGRATION_KEY=");
     expect(localSecrets).not.toContain("CLOUDFLARE_ACCOUNT_ID");
     expect(localSecrets).not.toContain("CLOUDFLARE_API_TOKEN");
+    expect(
+      wrangler.r2_buckets?.find((binding) => binding.binding === "BOARD_SNAPSHOTS"),
+    ).not.toHaveProperty("preview_bucket_name");
   });
 });

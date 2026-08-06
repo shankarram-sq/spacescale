@@ -30,8 +30,7 @@
   "r2_buckets": [
     {
       "binding": "BOARD_SNAPSHOTS",
-      "bucket_name": "collab-canvas-snapshots",
-      "preview_bucket_name": "cloudflare-collab-canvas-dev-snapshots"
+      "bucket_name": "collab-canvas-snapshots"
     }
   ],
   "vars": {

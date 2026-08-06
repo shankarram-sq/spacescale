@@ -46,9 +46,16 @@ permits every parent. The committed `keep_vars` setting prevents Wrangler from
 deleting dashboard-managed plain variables. Encrypted Worker secrets survive
 Wrangler deployments independently of `keep_vars`.
 
-The native deploy commands intentionally omit `--strict` while plain runtime
-variables are dashboard-owned; those remote-only values otherwise appear as
-configuration drift. Use strict mode only after testing that ownership model.
+Production uploads intentionally omit `--strict` while plain runtime variables
+are supplied outside `wrangler.jsonc` and Custom Domain API records contain
+remote-only metadata. Wrangler compares the file-based configuration before it
+merges the environment-scoped command-line variables, so those safe differences
+appear as destructive drift. The protected workflow instead uploads without
+traffic, reads the new version back from Cloudflare, and verifies its exact
+bindings, public values, compatibility settings, R2 bucket, and retained
+Durable Object namespace before attaching it at 0%. Use strict mode only after
+moving all configuration ownership into Wrangler and testing that ownership
+model.
 
 A plain `wrangler deploy` immediately moves live traffic to the new version.
 Cloudflare-native builds do not reproduce the protected workflow's exact-commit
