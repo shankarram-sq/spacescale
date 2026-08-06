@@ -48,8 +48,15 @@ describe("deployment workflow safety", () => {
     expect(gate).not.toContain("gh api");
     expect(gate).toContain('.path == ".github/workflows/deploy.yml"');
     expect(gate).toContain('.event == "workflow_run"');
-    expect(gate).toContain(".head_sha == $sha");
-    expect(gate).toContain('.name == "Staging deploy and 20-client smoke"');
+    expect(gate).not.toContain(".head_sha == $sha");
+    expect(workflow).toContain(
+      "name: Staging deploy and 20-client smoke ($" + "{{ github.event.workflow_run.head_sha }})",
+    );
+    expect(gate).toContain(
+      'staging_job_name="Staging deploy and 20-client smoke ($VALIDATED_SHA)"',
+    );
+    expect(gate).toContain('--arg job_name "$staging_job_name"');
+    expect(gate).toContain(".name == $job_name");
     expect(gate).not.toContain('.creator.login == "github-actions[bot]"');
   });
 
