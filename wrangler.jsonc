@@ -18,10 +18,6 @@
       {
         "name": "BOARD_ROOMS",
         "class_name": "BoardRoom"
-      },
-      {
-        "name": "ORGANISATION_ROOMS",
-        "class_name": "OrganisationRoom"
       }
     ]
   },
@@ -128,10 +124,6 @@
           {
             "name": "BOARD_ROOMS",
             "class_name": "BoardRoom"
-          },
-          {
-            "name": "ORGANISATION_ROOMS",
-            "class_name": "OrganisationRoom"
           }
         ]
       },
