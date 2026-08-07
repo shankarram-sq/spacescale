@@ -110,6 +110,23 @@ function table(id = RECTANGLE_ID) {
   };
 }
 
+function zone(id = RECTANGLE_ID) {
+  return {
+    id,
+    kind: "zone" as const,
+    style: {
+      kind: "zone" as const,
+      borderColor: "#a8a59d",
+      fill: "#e8edff",
+      textColor: "#4f5b75",
+      fontSize: 18,
+      opacity: 0.18,
+    },
+    transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+    geometry: { x: 10, y: 20, width: 520, height: 320, title: "Evidence" },
+  };
+}
+
 function corruptImageEffect(
   effects: readonly ItemEffect[],
   stateKey: "before" | "after",
@@ -631,6 +648,123 @@ describe("normal board reductions", () => {
         { seq: 2, actorId: ALICE },
       ),
     ).toThrowError(expect.objectContaining({ code: "INVALID_FRAME" }));
+    expect(() =>
+      applyDurableOperation(
+        created.state,
+        {
+          kind: "item.update",
+          itemId: RECTANGLE_ID,
+          expectedVersion: 1,
+          patch: { geometry: { x: 0, y: 0, width: 100, height: 100 } },
+        },
+        { seq: 2, actorId: ALICE },
+      ),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_FRAME" }));
+  });
+
+  it("persists zone titles through copy, history, delete, and canonical snapshots", () => {
+    const created = applyDurableOperation(
+      createBoardState(),
+      { kind: "item.create", item: zone() },
+      { seq: 1, actorId: ALICE },
+    );
+    const updated = applyDurableOperation(
+      created.state,
+      {
+        kind: "item.update",
+        itemId: RECTANGLE_ID,
+        expectedVersion: 1,
+        patch: {
+          style: { ...zone().style, opacity: 0.25 },
+          geometry: { ...zone().geometry, title: "Finished examples" },
+        },
+      },
+      { seq: 2, actorId: ALICE },
+    );
+    expect(updated.state.items.get(RECTANGLE_ID)?.item).toMatchObject({
+      kind: "zone",
+      version: 2,
+      style: { kind: "zone", opacity: 0.25 },
+      geometry: { title: "Finished examples" },
+    });
+    const stored = updated.state.items.get(RECTANGLE_ID)?.item;
+    if (stored?.kind !== "zone") throw new Error("Expected stored zone fixture");
+    const cloned = cloneBoardItem(stored);
+    if (cloned.kind !== "zone") throw new Error("Expected cloned zone fixture");
+    cloned.geometry.title = "Changed clone";
+    cloned.style.fill = "#ffffff";
+    expect(updated.state.items.get(RECTANGLE_ID)?.item).toMatchObject({
+      style: { fill: "#e8edff" },
+      geometry: { title: "Finished examples" },
+    });
+
+    const copied = applyDurableOperation(
+      updated.state,
+      {
+        kind: "item.copy",
+        sourceItemId: RECTANGLE_ID,
+        expectedVersion: 2,
+        newItemId: COPY_ID,
+        translate: { x: 40, y: -15 },
+      },
+      { seq: 3, actorId: BOB },
+    );
+    expect(copied.state.items.get(COPY_ID)?.item).toMatchObject({
+      kind: "zone",
+      createdBy: BOB,
+      transform: [1, 0, 0, 1, 40, -15],
+      geometry: { title: "Finished examples" },
+    });
+    const deleted = applyDurableOperation(
+      copied.state,
+      { kind: "item.delete", itemId: COPY_ID, expectedVersion: 3 },
+      { seq: 4, actorId: BOB },
+    );
+    expect(deleted.state.items.get(COPY_ID)?.exists).toBe(false);
+    const undoneDelete = applyUndoEffects(deleted.state, deleted.effects, {
+      seq: 5,
+      targetActionId: ACTION_2,
+    });
+    expect(undoneDelete.state.items.get(COPY_ID)).toMatchObject({
+      exists: true,
+      item: { kind: "zone", version: 5, geometry: { title: "Finished examples" } },
+    });
+    const redoneDelete = applyRedoEffects(undoneDelete.state, deleted.effects, {
+      seq: 6,
+      targetActionId: ACTION_2,
+    });
+    expect(redoneDelete.state.items.get(COPY_ID)?.exists).toBe(false);
+
+    const snapshot = JSON.parse(
+      serializeCanonicalSnapshot({
+        boardId: "018f0000-0000-7000-8000-0000000000ff",
+        seq: 2,
+        createdAt: 1_785_840_000_000,
+        settings: { title: "Group work" },
+        items: liveItemsInPaintOrder(updated.state),
+      }),
+    ) as { items: unknown[] };
+    expect(snapshot.items).toEqual([
+      expect.objectContaining({
+        kind: "zone",
+        style: {
+          kind: "zone",
+          borderColor: "#a8a59d",
+          fill: "#e8edff",
+          textColor: "#4f5b75",
+          fontSize: 18,
+          opacity: 0.25,
+        },
+        geometry: {
+          x: 10,
+          y: 20,
+          width: 520,
+          height: 320,
+          title: "Finished examples",
+        },
+      }),
+    ]);
+
     expect(() =>
       applyDurableOperation(
         created.state,

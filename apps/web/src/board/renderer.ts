@@ -1,3 +1,4 @@
+import { ZONE_TITLE_PADDING, zoneTitleBandHeight } from "@collab/geometry";
 import { STAMP_SVG_PATHS } from "@collab/svg-export";
 import { summarizeBoardVotes, type VoteSummary } from "../activities/voting";
 import type {
@@ -21,6 +22,8 @@ import type {
   TableItem,
   TableStyle,
   ToolName,
+  ZoneGeometry,
+  ZoneStyle,
 } from "../types";
 import type { BoardModel, Bounds } from "./model";
 
@@ -210,6 +213,19 @@ export class BoardRenderer {
     sticky.classList.add("local-preview", "sticky-preview");
     sticky.setAttribute("transform", matrixAttribute(transform));
     this.localLayer.append(sticky);
+  }
+
+  showLocalZone(
+    geometry: ZoneGeometry,
+    style: ZoneStyle,
+    transform: Matrix = [1, 0, 0, 1, 0, 0],
+  ): void {
+    this.localLayer.replaceChildren();
+    const zone = zoneNode("local-zone-preview", geometry, style);
+    zone.classList.add("local-preview", "zone-preview");
+    zone.setAttribute("aria-hidden", "true");
+    zone.setAttribute("transform", matrixAttribute(transform));
+    this.localLayer.append(zone);
   }
 
   showMovePreview(ids: Iterable<string>, x: number, y: number): void {
@@ -736,11 +752,75 @@ function itemNode(
     case "table":
       node = tableNode(item.id, item.geometry, item.style);
       break;
+    case "zone":
+      node = zoneNode(item.id, item.geometry, item.style);
+      break;
   }
   node.dataset.itemId = item.id;
   node.dataset.z = String(item.z);
   node.classList.add("board-item", `board-item-${item.kind}`);
   node.setAttribute("transform", matrixAttribute(item.transform));
+  return node;
+}
+
+export function zoneNode(itemId: string, geometry: ZoneGeometry, style: ZoneStyle): SVGGElement {
+  const node = svgElement("g");
+  node.classList.add("zone-item");
+  node.dataset.zoneTitle = geometry.title;
+  node.setAttribute("role", "group");
+  node.setAttribute("aria-label", `Zone: ${geometry.title}`);
+
+  const safeId = itemId.replace(/[^A-Za-z0-9_-]/gu, "-");
+  const titleClipId = `zone-title-clip-${safeId}`;
+  const titleBandHeight = Math.min(geometry.height, zoneTitleBandHeight(style.fontSize));
+  const accessibleTitle = svgElement("title");
+  accessibleTitle.textContent = geometry.title;
+  const definitions = svgElement("defs");
+  const clip = svgElement("clipPath");
+  clip.id = titleClipId;
+  const clipRect = svgElement("rect");
+  clipRect.setAttribute("x", String(geometry.x + ZONE_TITLE_PADDING));
+  clipRect.setAttribute("y", String(geometry.y));
+  clipRect.setAttribute("width", String(Math.max(0, geometry.width - ZONE_TITLE_PADDING * 2)));
+  clipRect.setAttribute("height", String(Math.max(0, titleBandHeight - ZONE_TITLE_PADDING)));
+  clip.append(clipRect);
+  definitions.append(clip);
+
+  const fill = svgElement("rect");
+  fill.classList.add("zone-fill");
+  fill.setAttribute("x", String(geometry.x));
+  fill.setAttribute("y", String(geometry.y));
+  fill.setAttribute("width", String(geometry.width));
+  fill.setAttribute("height", String(geometry.height));
+  fill.setAttribute("rx", "12");
+  fill.setAttribute("fill", style.fill);
+  fill.setAttribute("fill-opacity", String(style.opacity));
+
+  const border = svgElement("rect");
+  border.classList.add("zone-border");
+  border.setAttribute("x", String(geometry.x));
+  border.setAttribute("y", String(geometry.y));
+  border.setAttribute("width", String(geometry.width));
+  border.setAttribute("height", String(geometry.height));
+  border.setAttribute("rx", "12");
+  border.setAttribute("fill", "none");
+  border.setAttribute("stroke", style.borderColor);
+  border.setAttribute("stroke-width", "1.5");
+  border.setAttribute("vector-effect", "non-scaling-stroke");
+
+  const title = svgElement("text");
+  title.classList.add("zone-title");
+  title.setAttribute("x", String(geometry.x + ZONE_TITLE_PADDING));
+  title.setAttribute("y", String(geometry.y + ZONE_TITLE_PADDING + style.fontSize));
+  title.setAttribute("fill", style.textColor);
+  title.setAttribute("font-size", String(style.fontSize));
+  title.setAttribute("font-family", "Inter, ui-sans-serif, system-ui, sans-serif");
+  title.setAttribute("font-weight", "700");
+  title.setAttribute("clip-path", `url(#${titleClipId})`);
+  title.setAttribute("xml:space", "preserve");
+  title.textContent = geometry.title.replace(/\r\n?|\n/gu, " ");
+
+  node.append(accessibleTitle, definitions, fill, border, title);
   return node;
 }
 

@@ -76,6 +76,26 @@ function image(version = 1): BoardItem {
   };
 }
 
+function zone(version = 1): BoardItem {
+  return {
+    id: "018f47a1-7a2b-7c3d-8e4f-123456789ac1",
+    kind: "zone",
+    z: 3,
+    version,
+    createdBy: ACTOR_ID,
+    style: {
+      kind: "zone",
+      borderColor: "#a8a59d",
+      fill: "#e8edff",
+      textColor: "#4f5b75",
+      fontSize: 18,
+      opacity: 0.18,
+    },
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: { x: 0, y: 0, width: 520, height: 320, title: "Evidence" },
+  };
+}
+
 function snapshot(items: BoardItem[] = [], seq = 0): BoardSnapshot {
   return { format: "cf-whiteboard-json", version: 1, seq, items };
 }
@@ -213,6 +233,33 @@ describe("BoardModel", () => {
     expect(model.getItem(ITEM_ID)).toEqual(item);
     expect(model.hitTest([56, 41], 0)?.kind).toBe("image");
     expect(model.hitTest([54, 39], 0)).toBeUndefined();
+  });
+
+  it("selects a zone only by its title or border so inner items remain reachable", () => {
+    const inner = rectangle();
+    const frame = zone();
+    expect(itemBounds(frame)).toEqual({ minX: 0, minY: 0, maxX: 520, maxY: 320 });
+
+    const model = new BoardModel();
+    model.load(snapshot([inner, frame], 6));
+
+    expect(model.hitTest([300, 20], 0)?.kind).toBe("zone");
+    expect(model.hitTest([2, 180], 0)?.kind).toBe("zone");
+    expect(model.hitTest([50, 60], 0)?.kind).toBe("rectangle");
+    expect(model.hitTest([300, 180], 0)).toBeUndefined();
+  });
+
+  it("requires a marquee to fully contain a zone", () => {
+    const frame = zone();
+    const model = new BoardModel();
+    model.load(snapshot([frame], 7));
+
+    expect(
+      model.intersecting({ minX: 0, minY: 0, maxX: 519, maxY: 320 }).map((item) => item.id),
+    ).not.toContain(frame.id);
+    expect(
+      model.intersecting({ minX: -1, minY: -1, maxX: 521, maxY: 321 }).map((item) => item.id),
+    ).toContain(frame.id);
   });
 
   it("retains the optimistic journal when a remote action makes rebase unsafe", () => {

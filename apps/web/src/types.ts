@@ -16,6 +16,7 @@ export type ToolName =
   | "stamp"
   | "image"
   | "table"
+  | "zone"
   | "eraser"
   | "pan";
 
@@ -68,13 +69,23 @@ export type TableStyle = {
   opacity: number;
 };
 
+export type ZoneStyle = {
+  kind: "zone";
+  borderColor: string;
+  fill: string;
+  textColor: string;
+  fontSize: number;
+  opacity: number;
+};
+
 export type ItemStyle =
   | StrokeStyle
   | TextStyle
   | StickyStyle
   | StampStyle
   | ImageStyle
-  | TableStyle;
+  | TableStyle
+  | ZoneStyle;
 export type PencilGeometry = { points: Point[] };
 export type LineGeometry = { x1: number; y1: number; x2: number; y2: number };
 export type BoxGeometry = { x: number; y: number; width: number; height: number };
@@ -108,6 +119,8 @@ export type TableGeometry = {
   cells: string[][];
   headerRow?: boolean;
 };
+
+export type ZoneGeometry = BoxGeometry & { title: string };
 
 type ItemBase = {
   id: string;
@@ -162,6 +175,11 @@ export type TableItem = ItemBase & {
   style: TableStyle;
   geometry: TableGeometry;
 };
+export type ZoneItem = ItemBase & {
+  kind: "zone";
+  style: ZoneStyle;
+  geometry: ZoneGeometry;
+};
 export type BoardItem =
   | PencilItem
   | LineItem
@@ -171,7 +189,8 @@ export type BoardItem =
   | StickyItem
   | StampItem
   | ImageItem
-  | TableItem;
+  | TableItem
+  | ZoneItem;
 
 type WithoutServerFields<T> = T extends BoardItem ? Omit<T, "z" | "version" | "createdBy"> : never;
 export type NewBoardItem = WithoutServerFields<BoardItem>;
@@ -186,7 +205,8 @@ export type ItemPatch = {
     | StickyGeometry
     | StampGeometry
     | ImageGeometry
-    | TableGeometry;
+    | TableGeometry
+    | ZoneGeometry;
 };
 
 export type BatchItemOperation =
@@ -376,6 +396,7 @@ export function isBoardItem(value: unknown): value is BoardItem {
       "stamp",
       "image",
       "table",
+      "zone",
     ].includes(item.kind) &&
     typeof item.z === "number" &&
     typeof item.version === "number" &&

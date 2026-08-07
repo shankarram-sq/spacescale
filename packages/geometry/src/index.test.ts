@@ -14,9 +14,12 @@ import {
   normalizeStickyGeometry,
   normalizeTableGeometry,
   normalizeTransform,
+  normalizeZoneGeometry,
   tableGeometryContainsPoint,
   transformBounds,
   translateTransform,
+  zoneGeometryContainsPoint,
+  zoneTitleBandHeight,
 } from "./index.js";
 
 const ASSET_ID = "asset_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -66,6 +69,21 @@ describe("geometry normalization", () => {
     );
     expect(() =>
       normalizeStickyGeometry({ x: 0, y: 0, width: 10, height: 10, text: "", extra: true }),
+    ).toThrow(/Unknown field/);
+  });
+
+  it("canonicalizes positive, exact-key zone geometry while preserving its title", () => {
+    expect(
+      normalizeZoneGeometry({ x: 10, y: 20, width: -400.125, height: -240.555, title: "Evidence" }),
+    ).toEqual({ x: -390.13, y: -220.56, width: 400.13, height: 240.56, title: "Evidence" });
+    expect(() =>
+      normalizeZoneGeometry({ x: 0, y: 0, width: 0, height: 10, title: "Zone" }),
+    ).toThrow(/greater than 0/);
+    expect(() =>
+      normalizeZoneGeometry({ x: 0, y: 0, width: 10, height: 0, title: "Zone" }),
+    ).toThrow(/greater than 0/);
+    expect(() =>
+      normalizeZoneGeometry({ x: 0, y: 0, width: 10, height: 10, title: "Zone", text: "no" }),
     ).toThrow(/Unknown field/);
   });
 
@@ -301,6 +319,26 @@ describe("bounds and transforms", () => {
         style: { kind: "sticky", fontSize: 16 },
       }),
     ).toEqual({ minX: 7, minY: 10, maxX: 27, maxY: 20 });
+  });
+
+  it("uses full zone bounds while only its title band and border are interactive", () => {
+    const geometry = { x: 10, y: 20, width: 300, height: 200, title: "Questions" };
+    expect(
+      itemBounds({
+        kind: "zone",
+        geometry,
+        transform: [0, 1, -1, 0, 500, 0],
+        style: { kind: "zone", fontSize: 18 },
+      }),
+    ).toEqual({ minX: 280, minY: 10, maxX: 480, maxY: 310 });
+    expect(zoneTitleBandHeight(18)).toBeCloseTo(45.6);
+    expect(zoneGeometryContainsPoint(geometry, [150, 35], 18)).toBe(true);
+    expect(zoneGeometryContainsPoint(geometry, [12, 130], 18)).toBe(true);
+    expect(zoneGeometryContainsPoint(geometry, [150, 130], 18)).toBe(false);
+    expect(zoneGeometryContainsPoint(geometry, [315, 130], 18, 5)).toBe(true);
+    expect(zoneGeometryContainsPoint(geometry, [400, 130], 18, 5)).toBe(false);
+    expect(() => zoneGeometryContainsPoint(geometry, [20, 20], 18, -1)).toThrow(/padding/);
+    expect(() => zoneTitleBandHeight(Number.NaN)).toThrow(/font size/);
   });
 
   it("uses the transformed square centered on the stamp anchor", () => {

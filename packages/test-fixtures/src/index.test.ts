@@ -11,6 +11,7 @@ import {
   newStampItem,
   newStickyItem,
   newTableItem,
+  newZoneItem,
   serverCreateAction,
 } from "./index.js";
 
@@ -29,6 +30,9 @@ describe("deterministic shared fixtures", () => {
     );
     expect(validateClientFrame(createCommitFrame(newTableItem()))).toEqual(
       createCommitFrame(newTableItem()),
+    );
+    expect(validateClientFrame(createCommitFrame(newZoneItem()))).toEqual(
+      createCommitFrame(newZoneItem()),
     );
   });
 

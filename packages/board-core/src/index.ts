@@ -257,6 +257,7 @@ function geometryMatchesKind(item: BoardItem, geometry: ItemGeometry): boolean {
       return (
         "width" in geometry &&
         !("text" in geometry) &&
+        !("title" in geometry) &&
         !("assetId" in geometry) &&
         !("cells" in geometry)
       );
@@ -266,6 +267,7 @@ function geometryMatchesKind(item: BoardItem, geometry: ItemGeometry): boolean {
       return (
         "width" in geometry &&
         "text" in geometry &&
+        !("title" in geometry) &&
         !("assetId" in geometry) &&
         !("cells" in geometry)
       );
@@ -275,6 +277,14 @@ function geometryMatchesKind(item: BoardItem, geometry: ItemGeometry): boolean {
       return "stamp" in geometry;
     case "table":
       return "cells" in geometry;
+    case "zone":
+      return (
+        "width" in geometry &&
+        "title" in geometry &&
+        !("text" in geometry) &&
+        !("assetId" in geometry) &&
+        !("cells" in geometry)
+      );
   }
 }
 
@@ -291,7 +301,9 @@ function validatePatchForItem(item: BoardItem, patch: ItemPatch): void {
               ? "stamp"
               : item.kind === "table"
                 ? "table"
-                : "stroke";
+                : item.kind === "zone"
+                  ? "zone"
+                  : "stroke";
     if (patch.style.kind !== expectedKind) {
       coreFail("INVALID_FRAME", `The patch style does not match the stored ${item.kind} item.`);
     }
@@ -991,15 +1003,24 @@ function canonicalItem(item: BoardItem): BoardItem {
                   color: normalized.style.color,
                   opacity: normalized.style.opacity,
                 }
-              : {
-                  kind: "table" as const,
-                  borderColor: normalized.style.borderColor,
-                  fill: normalized.style.fill,
-                  headerFill: normalized.style.headerFill,
-                  textColor: normalized.style.textColor,
-                  fontSize: normalized.style.fontSize,
-                  opacity: normalized.style.opacity,
-                };
+              : normalized.style.kind === "table"
+                ? {
+                    kind: "table" as const,
+                    borderColor: normalized.style.borderColor,
+                    fill: normalized.style.fill,
+                    headerFill: normalized.style.headerFill,
+                    textColor: normalized.style.textColor,
+                    fontSize: normalized.style.fontSize,
+                    opacity: normalized.style.opacity,
+                  }
+                : {
+                    kind: "zone" as const,
+                    borderColor: normalized.style.borderColor,
+                    fill: normalized.style.fill,
+                    textColor: normalized.style.textColor,
+                    fontSize: normalized.style.fontSize,
+                    opacity: normalized.style.opacity,
+                  };
   const geometry =
     normalized.kind === "pencil"
       ? { points: normalized.geometry.points.map(([x, y]) => [x, y] as [number, number]) }
@@ -1041,23 +1062,31 @@ function canonicalItem(item: BoardItem): BoardItem {
                     size: normalized.geometry.size,
                     stamp: normalized.geometry.stamp,
                   }
-                : normalized.kind === "table"
+                : normalized.kind === "zone"
                   ? {
-                      x: normalized.geometry.x,
-                      y: normalized.geometry.y,
-                      columnWidths: [...normalized.geometry.columnWidths],
-                      rowHeights: [...normalized.geometry.rowHeights],
-                      cells: normalized.geometry.cells.map((row) => [...row]),
-                      ...(normalized.geometry.headerRow === undefined
-                        ? {}
-                        : { headerRow: normalized.geometry.headerRow }),
-                    }
-                  : {
                       x: normalized.geometry.x,
                       y: normalized.geometry.y,
                       width: normalized.geometry.width,
                       height: normalized.geometry.height,
-                    };
+                      title: normalized.geometry.title,
+                    }
+                  : normalized.kind === "table"
+                    ? {
+                        x: normalized.geometry.x,
+                        y: normalized.geometry.y,
+                        columnWidths: [...normalized.geometry.columnWidths],
+                        rowHeights: [...normalized.geometry.rowHeights],
+                        cells: normalized.geometry.cells.map((row) => [...row]),
+                        ...(normalized.geometry.headerRow === undefined
+                          ? {}
+                          : { headerRow: normalized.geometry.headerRow }),
+                      }
+                    : {
+                        x: normalized.geometry.x,
+                        y: normalized.geometry.y,
+                        width: normalized.geometry.width,
+                        height: normalized.geometry.height,
+                      };
   return {
     id: normalized.id,
     kind: normalized.kind,

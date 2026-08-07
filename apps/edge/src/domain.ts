@@ -427,7 +427,8 @@ function itemKind(value: unknown): BoardItemKind {
     value === "text" ||
     value === "sticky" ||
     value === "stamp" ||
-    value === "table"
+    value === "table" ||
+    value === "zone"
   ) {
     return value;
   }

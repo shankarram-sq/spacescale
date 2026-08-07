@@ -8,6 +8,7 @@ import {
   buildStampCreateOperation,
   buildStickyCreateOperation,
   buildTableCreateOperation,
+  buildZoneCreateOperation,
   type CapturedMoveItem,
   defaultImageCardSize,
   stickyTapMoveThreshold,
@@ -46,6 +47,8 @@ describe("captured gesture operations", () => {
     expect(toolFromShortcut("I", true)).toBe("image");
     expect(toolFromShortcut("g", false)).toBeUndefined();
     expect(toolFromShortcut("G", true)).toBe("table");
+    expect(toolFromShortcut("z", false)).toBeUndefined();
+    expect(toolFromShortcut("Z", true)).toBe("zone");
     expect(toolFromShortcut("v", false)).toBe("select");
     expect(toolFromShortcut("h", false)).toBe("pan");
   });
@@ -248,5 +251,25 @@ describe("captured gesture operations", () => {
 
     expect(tableCellAtPoint(item, [220, 170])).toEqual({ row: 1, column: 1 });
     expect(tableCellAtPoint(item, [400, 170])).toBeNull();
+  });
+
+  it("creates a centered classroom zone with a readable default title", () => {
+    expect(buildZoneCreateOperation(ITEM_ID, [400, 300])).toEqual({
+      kind: "item.create",
+      item: {
+        id: ITEM_ID,
+        kind: "zone",
+        style: {
+          kind: "zone",
+          borderColor: "#a8a59d",
+          fill: "#e8edff",
+          textColor: "#4f5b75",
+          fontSize: 18,
+          opacity: 0.18,
+        },
+        transform: [1, 0, 0, 1, 0, 0],
+        geometry: { x: 140, y: 140, width: 520, height: 320, title: "Zone" },
+      },
+    });
   });
 });

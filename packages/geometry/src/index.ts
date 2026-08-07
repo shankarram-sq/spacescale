@@ -10,6 +10,8 @@ export const MAX_IMAGE_INTRINSIC_DIMENSION = 4_096;
 export const MAX_IMAGE_INTRINSIC_PIXELS = 16_000_000;
 export const MAX_TABLE_COLUMNS = 6;
 export const MAX_TABLE_ROWS = 8;
+export const ZONE_TITLE_PADDING = 12;
+export const ZONE_BORDER_HIT_WIDTH = 6;
 
 const IMAGE_ASSET_ID_PATTERN = /^asset_[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u;
 
@@ -42,6 +44,10 @@ export interface TextGeometry {
 
 export interface StickyGeometry extends BoxGeometry {
   text: string;
+}
+
+export interface ZoneGeometry extends BoxGeometry {
+  title: string;
 }
 
 export type ImageMimeType = (typeof IMAGE_MIME_TYPES)[number];
@@ -79,6 +85,7 @@ export type ItemGeometry =
   | BoxGeometry
   | TextGeometry
   | StickyGeometry
+  | ZoneGeometry
   | ImageGeometry
   | StampGeometry
   | TableGeometry;
@@ -90,6 +97,7 @@ export type GeometryKind =
   | "ellipse"
   | "text"
   | "sticky"
+  | "zone"
   | "image"
   | "stamp"
   | "table";
@@ -109,6 +117,7 @@ export interface BoundsItem {
     | { kind: "stroke"; width: number }
     | { kind: "text"; fontSize: number }
     | { kind: "sticky"; fontSize: number }
+    | { kind: "zone"; fontSize: number }
     | { kind: "image" }
     | { kind: "stamp" }
     | { kind: "table"; fontSize: number };
@@ -339,6 +348,25 @@ export function normalizeStickyGeometry(value: unknown, path = "$geometry"): Sti
     throw new GeometryValidationError("Sticky height must be greater than 0", `${path}.height`);
   }
   return { ...box, text: object.text };
+}
+
+export function normalizeZoneGeometry(value: unknown, path = "$geometry"): ZoneGeometry {
+  const object = expectRecord(value, path);
+  expectOnlyKeys(object, ["x", "y", "width", "height", "title"], path);
+  if (typeof object.title !== "string") {
+    throw new GeometryValidationError("Expected zone title to be a string", `${path}.title`);
+  }
+  const box = normalizeBoxGeometry(
+    { x: object.x, y: object.y, width: object.width, height: object.height },
+    path,
+  );
+  if (box.width === 0) {
+    throw new GeometryValidationError("Zone width must be greater than 0", `${path}.width`);
+  }
+  if (box.height === 0) {
+    throw new GeometryValidationError("Zone height must be greater than 0", `${path}.height`);
+  }
+  return { ...box, title: object.title };
 }
 
 export function isCanonicalImageAssetId(value: unknown): value is string {
@@ -621,6 +649,7 @@ export function normalizeGeometry(
 ): BoxGeometry;
 export function normalizeGeometry(kind: "text", value: unknown, path?: string): TextGeometry;
 export function normalizeGeometry(kind: "sticky", value: unknown, path?: string): StickyGeometry;
+export function normalizeGeometry(kind: "zone", value: unknown, path?: string): ZoneGeometry;
 export function normalizeGeometry(kind: "image", value: unknown, path?: string): ImageGeometry;
 export function normalizeGeometry(kind: "stamp", value: unknown, path?: string): StampGeometry;
 export function normalizeGeometry(kind: "table", value: unknown, path?: string): TableGeometry;
@@ -642,6 +671,8 @@ export function normalizeGeometry(
       return normalizeTextGeometry(value, path);
     case "sticky":
       return normalizeStickyGeometry(value, path);
+    case "zone":
+      return normalizeZoneGeometry(value, path);
     case "image":
       return normalizeImageGeometry(value, path);
     case "stamp":
@@ -658,6 +689,7 @@ export function inferAndNormalizeGeometry(value: unknown, path = "$geometry"): I
   if (own.call(object, "stamp")) return normalizeStampGeometry(object, path);
   if (own.call(object, "assetId")) return normalizeImageGeometry(object, path);
   if (own.call(object, "cells")) return normalizeTableGeometry(object, path);
+  if (own.call(object, "title")) return normalizeZoneGeometry(object, path);
   if (own.call(object, "width") && own.call(object, "text")) {
     return normalizeStickyGeometry(object, path);
   }
@@ -730,6 +762,7 @@ export function geometryBounds(
     case "rectangle":
     case "ellipse":
     case "sticky":
+    case "zone":
     case "image":
     case "table": {
       const box =
@@ -809,6 +842,51 @@ export function tableGeometryContainsPoint(
     point[1] >= geometry.y - padding &&
     point[1] <= geometry.y + height + padding
   );
+}
+
+export function zoneTitleBandHeight(fontSize: number): number {
+  if (!Number.isFinite(fontSize) || fontSize <= 0) {
+    throw new GeometryValidationError(
+      "Zone title font size must be a finite positive number",
+      "$fontSize",
+    );
+  }
+  return canonicalNumber(fontSize * 1.2 + ZONE_TITLE_PADDING * 2, 2);
+}
+
+export function zoneGeometryContainsPoint(
+  geometry: ZoneGeometry,
+  point: Point,
+  fontSize: number,
+  padding = 0,
+): boolean {
+  if (!Number.isFinite(padding) || padding < 0) {
+    throw new GeometryValidationError(
+      "Zone hit-test padding must be a finite non-negative number",
+      "$padding",
+    );
+  }
+  const [pointX, pointY] = point;
+  const outerLeft = geometry.x - padding;
+  const outerTop = geometry.y - padding;
+  const outerRight = geometry.x + geometry.width + padding;
+  const outerBottom = geometry.y + geometry.height + padding;
+  if (pointX < outerLeft || pointX > outerRight || pointY < outerTop || pointY > outerBottom) {
+    return false;
+  }
+
+  const titleBottom = Math.min(
+    geometry.y + geometry.height,
+    geometry.y + zoneTitleBandHeight(fontSize),
+  );
+  const inTitle = pointY <= titleBottom + padding;
+  const borderWidth = ZONE_BORDER_HIT_WIDTH + padding;
+  const inInterior =
+    pointX > geometry.x + borderWidth &&
+    pointX < geometry.x + geometry.width - borderWidth &&
+    pointY > geometry.y + borderWidth &&
+    pointY < geometry.y + geometry.height - borderWidth;
+  return inTitle || !inInterior;
 }
 
 function maximumLinearScale(transform: Transform): number {

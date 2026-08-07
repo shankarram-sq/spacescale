@@ -113,6 +113,32 @@ function tableItem(id: string): Extract<BoardItem, { kind: "table" }> {
   };
 }
 
+function zoneItem(id: string): Extract<BoardItem, { kind: "zone" }> {
+  return {
+    id,
+    kind: "zone",
+    z: 8,
+    version: 1,
+    createdBy: ACTOR,
+    style: {
+      kind: "zone",
+      borderColor: "#a8a59d",
+      fill: "#e8edff",
+      textColor: "#4f5b75",
+      fontSize: 18,
+      opacity: 0.18,
+    },
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: {
+      x: 10,
+      y: 20,
+      width: 520,
+      height: 320,
+      title: "Evidence <&>\n</text><script>alert(1)</script>",
+    },
+  };
+}
+
 describe("safe SVG serialization", () => {
   it("escapes text, title, attributes, and never emits user markup", () => {
     const text: BoardItem = {
@@ -317,6 +343,25 @@ describe("safe SVG serialization", () => {
       'aria-label="safe &lt;/text&gt;&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;"',
     );
     expect(first.svg).toContain("&lt;/text&gt;&lt;script");
+    expect(first.svg).not.toContain("<script>");
+    expect(first.svg).not.toContain("foreignObject");
+  });
+
+  it("renders a deterministic muted zone with clipped, escaped title text", () => {
+    const item = zoneItem("018f0000-0000-7000-8000-00000000000b");
+    const first = createSvgExport({ boardId: BOARD, seq: 12, padding: 0, items: [item] });
+    const second = createSvgExport({ boardId: BOARD, seq: 12, padding: 0, items: [item] });
+
+    expect(first.svg).toBe(second.svg);
+    expect(first.viewBox).toEqual({ minX: 10, minY: 20, maxX: 530, maxY: 340 });
+    expect(first.svg).toContain('fill="#e8edff" fill-opacity="0.18"');
+    expect(first.svg).toContain('fill="none" stroke="#a8a59d" stroke-width="1.5"');
+    expect(first.svg).toContain(
+      '<clipPath id="zone-title-clip-018f0000-0000-7000-8000-00000000000b" clipPathUnits="userSpaceOnUse"><rect x="22" y="20" width="496" height="33.6" /></clipPath>',
+    );
+    expect(first.svg).toContain(
+      "Evidence &lt;&amp;&gt; &lt;/text&gt;&lt;script&gt;alert(1)&lt;/script&gt;",
+    );
     expect(first.svg).not.toContain("<script>");
     expect(first.svg).not.toContain("foreignObject");
   });

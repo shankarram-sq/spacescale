@@ -62,6 +62,11 @@ Vote totals are derived live from each participant's latest stamp in the vote
 table and are not stored in board history or exports. Only owners receive the
 bulk **Clear votes** action; the underlying stamps remain ordinary board items.
 
+Choose **Zone** or press `Z` to add a labelled 520 × 320 work area. Its title
+and border are selectable while the interior remains transparent to items
+inside it. Multi-selection also offers atomic **Arrange** actions to align or
+distribute items and tidy selected sticky notes into a deterministic grid.
+
 ## Local development
 
 Requirements: Node.js 22.19 or newer. Local development uses Miniflare-backed

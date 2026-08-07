@@ -9,6 +9,7 @@ import type {
   ImageGeometry,
   LineGeometry,
   Matrix,
+  NewBoardItem,
   Point,
   StampKind,
   StampStyle,
@@ -44,6 +45,8 @@ export const DEFAULT_TABLE_COLUMNS = 3;
 export const DEFAULT_TABLE_ROWS = 3;
 export const DEFAULT_TABLE_COLUMN_WIDTH = 120;
 export const DEFAULT_TABLE_ROW_HEIGHT = 48;
+export const DEFAULT_ZONE_WIDTH = 520;
+export const DEFAULT_ZONE_HEIGHT = 320;
 
 const TOOL_SHORTCUTS: Partial<Record<string, ToolName>> = {
   v: "select",
@@ -56,6 +59,7 @@ const TOOL_SHORTCUTS: Partial<Record<string, ToolName>> = {
   k: "stamp",
   i: "image",
   g: "table",
+  z: "zone",
   e: "eraser",
   h: "pan",
 };
@@ -70,6 +74,7 @@ const SHORTCUT_DRAW_TOOLS = new Set<ToolName>([
   "stamp",
   "image",
   "table",
+  "zone",
   "eraser",
 ]);
 
@@ -284,6 +289,40 @@ export function buildTableCreateOperation(
   };
 }
 
+type ZoneCreateOperation = Extract<BatchItemOperation, { kind: "item.create" }> & {
+  item: Extract<NewBoardItem, { kind: "zone" }>;
+};
+
+export function buildZoneCreateOperation(
+  itemId: string,
+  center: Point,
+  title = "Zone",
+): ZoneCreateOperation {
+  return {
+    kind: "item.create",
+    item: {
+      id: itemId,
+      kind: "zone",
+      style: {
+        kind: "zone",
+        borderColor: "#a8a59d",
+        fill: "#e8edff",
+        textColor: "#4f5b75",
+        fontSize: 18,
+        opacity: 0.18,
+      },
+      transform: identityMatrix(),
+      geometry: {
+        x: roundBoard(center[0] - DEFAULT_ZONE_WIDTH / 2),
+        y: roundBoard(center[1] - DEFAULT_ZONE_HEIGHT / 2),
+        width: DEFAULT_ZONE_WIDTH,
+        height: DEFAULT_ZONE_HEIGHT,
+        title,
+      },
+    },
+  };
+}
+
 export type ToolControllerOptions = {
   model: BoardModel;
   renderer: BoardRenderer;
@@ -306,6 +345,8 @@ export type ToolControllerOptions = {
   editText: (point: Point, item?: BoardItem) => void;
   editImageAlt: (item: Extract<BoardItem, { kind: "image" }>) => void;
   editTableCell: (item: Extract<BoardItem, { kind: "table" }>, row: number, column: number) => void;
+  editZoneTitle: (item: Extract<BoardItem, { kind: "zone" }>) => void;
+  onZoneCreated: (itemId: string) => void;
   onToolChanged: (tool: ToolName) => void;
   onToolReactivated: (tool: ToolName) => void;
   onSelectionChanged: (ids: ReadonlySet<string>) => void;
@@ -379,6 +420,14 @@ type Gesture =
       start: Point;
       current: Point;
       operation: BatchItemOperation;
+    }
+  | {
+      kind: "zone";
+      pointerId: number;
+      pointerType: string;
+      start: Point;
+      current: Point;
+      operation: ZoneCreateOperation;
     };
 
 type PinchState = {
@@ -403,6 +452,7 @@ export class ToolController {
     column: number;
     at: number;
   } | null = null;
+  private lastZoneTap: { itemId: string; at: number } | null = null;
 
   constructor(private readonly options: ToolControllerOptions) {
     const { svg } = options.renderer;
@@ -435,6 +485,7 @@ export class ToolController {
     this.cancelGesture();
     this.lastStickyTap = null;
     this.lastTableTap = null;
+    this.lastZoneTap = null;
     this.toolValue = tool;
     this.options.renderer.setCursor(tool, this.spaceHeld);
     this.options.onToolChanged(tool);
@@ -689,6 +740,25 @@ export class ToolController {
       event.preventDefault();
       return;
     }
+
+    if (this.toolValue === "zone") {
+      const operation = buildZoneCreateOperation(createId(), point);
+      if (event.pointerType === "touch") {
+        this.gesture = {
+          kind: "zone",
+          pointerId: event.pointerId,
+          pointerType: event.pointerType,
+          start: point,
+          current: point,
+          operation,
+        };
+        this.options.renderer.showLocalZone(operation.item.geometry, operation.item.style);
+      } else {
+        void this.commitZone(operation);
+      }
+      event.preventDefault();
+      return;
+    }
   };
 
   private readonly onPointerMove = (event: PointerEvent): void => {
@@ -775,7 +845,12 @@ export class ToolController {
       this.options.renderer.showMarquee(pointsBounds(gesture.start, gesture.current));
     } else if (gesture.kind === "eraser") {
       this.collectEraser(boardPoint(event, this.options.renderer), gesture);
-    } else if (gesture.kind === "sticky" || gesture.kind === "stamp" || gesture.kind === "table") {
+    } else if (
+      gesture.kind === "sticky" ||
+      gesture.kind === "stamp" ||
+      gesture.kind === "table" ||
+      gesture.kind === "zone"
+    ) {
       gesture.current = boardPoint(event, this.options.renderer);
     }
     event.preventDefault();
@@ -816,6 +891,8 @@ export class ToolController {
     else this.lastStickyTap = null;
     if (tappedItem?.kind === "table") this.handleTableTap(tappedItem, tapPoint);
     else this.lastTableTap = null;
+    if (tappedItem?.kind === "zone") this.handleZoneTap(tappedItem);
+    else this.lastZoneTap = null;
     event.preventDefault();
   };
 
@@ -887,6 +964,11 @@ export class ToolController {
         this.options.editTableCell(item, 0, 0);
         return;
       }
+      if (item?.kind === "zone" && this.options.canDraw()) {
+        event.preventDefault();
+        this.openZoneTitleEditor(item);
+        return;
+      }
     }
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     const shortcutKey = event.key.toLowerCase();
@@ -911,6 +993,7 @@ export class ToolController {
     const hit = this.options.model.hitTest(point, 5 / this.options.renderer.viewport.zoom);
     if (hit?.kind !== "sticky") this.lastStickyTap = null;
     if (hit?.kind !== "table") this.lastTableTap = null;
+    if (hit?.kind !== "zone") this.lastZoneTap = null;
     if (hit) {
       if (!this.selected.has(hit.id))
         this.selectOnly(event.shiftKey ? [...this.selected, hit.id] : [hit.id]);
@@ -1010,6 +1093,17 @@ export class ToolController {
       if (point === gesture.start) await this.options.commit(gesture.operation);
       return;
     }
+    if (gesture.kind === "zone") {
+      const point = tapAdjustedMovePoint(
+        gesture.start,
+        gesture.current,
+        gesture.pointerType,
+        this.options.renderer.viewport.zoom,
+      );
+      this.options.renderer.clearLocalPreview();
+      if (point === gesture.start) await this.commitZone(gesture.operation);
+      return;
+    }
     if (gesture.kind === "pan") return;
     if (gesture.kind === "pencil") {
       if (gesture.animationFrame !== null) cancelAnimationFrame(gesture.animationFrame);
@@ -1097,7 +1191,8 @@ export class ToolController {
       gesture.kind === "marquee" ||
       gesture.kind === "sticky" ||
       gesture.kind === "stamp" ||
-      gesture.kind === "table"
+      gesture.kind === "table" ||
+      gesture.kind === "zone"
     ) {
       this.options.renderer.clearLocalPreview();
       return;
@@ -1140,6 +1235,29 @@ export class ToolController {
       return;
     }
     this.lastTableTap = { itemId: item.id, ...cell, at: now };
+  }
+
+  private handleZoneTap(item: Extract<BoardItem, { kind: "zone" }>): void {
+    const now = performance.now();
+    if (this.lastZoneTap?.itemId === item.id && now - this.lastZoneTap.at <= 450) {
+      this.openZoneTitleEditor(item);
+      return;
+    }
+    this.lastZoneTap = { itemId: item.id, at: now };
+  }
+
+  private openZoneTitleEditor(item: Extract<BoardItem, { kind: "zone" }>): void {
+    this.lastZoneTap = null;
+    if (!this.options.canDraw()) return;
+    if (item.version <= 0) {
+      this.options.notify("Wait for the zone to finish saving before renaming it.", "info");
+      return;
+    }
+    this.options.editZoneTitle(item);
+  }
+
+  private async commitZone(operation: ZoneCreateOperation): Promise<void> {
+    if (await this.options.commit(operation)) this.options.onZoneCreated(operation.item.id);
   }
 }
 

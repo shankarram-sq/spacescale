@@ -20,6 +20,7 @@ import {
   type TableGeometry,
   type TextGeometry,
   type Transform,
+  type ZoneGeometry,
 } from "@collab/geometry";
 
 export type {
@@ -38,6 +39,7 @@ export type {
   TableGeometry,
   TextGeometry,
   Transform,
+  ZoneGeometry,
 } from "@collab/geometry";
 export {
   IMAGE_MIME_TYPES,
@@ -47,6 +49,10 @@ export {
   MAX_TABLE_COLUMNS,
   MAX_TABLE_ROWS,
   STAMP_KINDS,
+  ZONE_BORDER_HIT_WIDTH,
+  ZONE_TITLE_PADDING,
+  zoneGeometryContainsPoint,
+  zoneTitleBandHeight,
 } from "@collab/geometry";
 
 export const PROTOCOL_VERSION = 1 as const;
@@ -63,6 +69,7 @@ export const MAX_SNAPSHOT_BYTES = 20 * 1024 * 1024;
 export const MAX_IMAGE_RADIUS = 256;
 export const MAX_TABLE_CELL_TEXT_CODE_POINTS = 500;
 export const MAX_TABLE_TEXT_CODE_POINTS = 8_000;
+export const MAX_ZONE_TITLE_CODE_POINTS = 120;
 
 export const ITEM_KINDS = [
   "pencil",
@@ -74,6 +81,7 @@ export const ITEM_KINDS = [
   "image",
   "stamp",
   "table",
+  "zone",
 ] as const;
 export const BOARD_ROLES = ["viewer", "editor", "owner"] as const;
 export const DRAWING_POLICIES = ["editors_enabled", "owner_only", "locked"] as const;
@@ -144,13 +152,23 @@ export interface TableStyle {
   opacity: number;
 }
 
+export interface ZoneStyle {
+  kind: "zone";
+  borderColor: string;
+  fill: string;
+  textColor: string;
+  fontSize: number;
+  opacity: number;
+}
+
 export type ItemStyle =
   | StrokeStyle
   | TextStyle
   | StickyStyle
   | ImageStyle
   | StampStyle
-  | TableStyle;
+  | TableStyle
+  | ZoneStyle;
 
 interface BoardItemBase {
   id: string;
@@ -214,6 +232,12 @@ export interface TableItem extends BoardItemBase {
   geometry: TableGeometry;
 }
 
+export interface ZoneItem extends BoardItemBase {
+  kind: "zone";
+  style: ZoneStyle;
+  geometry: ZoneGeometry;
+}
+
 export type BoardItem =
   | PencilItem
   | LineItem
@@ -223,7 +247,8 @@ export type BoardItem =
   | StickyItem
   | ImageItem
   | StampItem
-  | TableItem;
+  | TableItem
+  | ZoneItem;
 
 type WithoutServerFields<T> = T extends BoardItem ? Omit<T, "z" | "version" | "createdBy"> : never;
 
@@ -436,6 +461,7 @@ export const ACTIVE_TOOLS = [
   "image",
   "stamp",
   "table",
+  "zone",
   "eraser",
   "select",
   "pan",
@@ -808,6 +834,32 @@ export function normalizeTableStyle(value: unknown, path = "$style"): TableStyle
   };
 }
 
+export function normalizeZoneStyle(value: unknown, path = "$style"): ZoneStyle {
+  const object = expectRecord(value, path);
+  if (object.kind !== "zone") fail('Expected style kind "zone"', `${path}.kind`);
+  expectExactKeys(
+    object,
+    ["kind", "borderColor", "fill", "textColor", "fontSize", "opacity"],
+    [],
+    path,
+  );
+  if (typeof object.fontSize !== "number" || !Number.isFinite(object.fontSize)) {
+    fail("Font size must be a finite number", `${path}.fontSize`);
+  }
+  const fontSize = canonicalNumber(object.fontSize, 2);
+  if (fontSize < 8 || fontSize > 256) {
+    fail("Font size must be between 8 and 256", `${path}.fontSize`);
+  }
+  return {
+    kind: "zone",
+    borderColor: normalizeColor(object.borderColor, `${path}.borderColor`),
+    fill: normalizeColor(object.fill, `${path}.fill`),
+    textColor: normalizeColor(object.textColor, `${path}.textColor`),
+    fontSize,
+    opacity: normalizeOpacity(object.opacity, `${path}.opacity`),
+  };
+}
+
 export function normalizeItemStyle(value: unknown, path = "$style"): ItemStyle {
   const object = expectRecord(value, path);
   if (object.kind === "stroke") return normalizeStrokeStyle(object, path);
@@ -816,8 +868,9 @@ export function normalizeItemStyle(value: unknown, path = "$style"): ItemStyle {
   if (object.kind === "image") return normalizeImageStyle(object, path);
   if (object.kind === "stamp") return normalizeStampStyle(object, path);
   if (object.kind === "table") return normalizeTableStyle(object, path);
+  if (object.kind === "zone") return normalizeZoneStyle(object, path);
   fail(
-    'Style kind must be "stroke", "text", "sticky", "image", "stamp", or "table"',
+    'Style kind must be "stroke", "text", "sticky", "image", "stamp", "table", or "zone"',
     `${path}.kind`,
   );
 }
@@ -878,6 +931,10 @@ export function validateTableCellText(value: unknown, path = "$cell"): string {
   return validateText(value, path, MAX_TABLE_CELL_TEXT_CODE_POINTS, true, "Table cell text");
 }
 
+export function validateZoneTitle(value: unknown, path = "$title"): string {
+  return validateText(value, path, MAX_ZONE_TITLE_CODE_POINTS, false, "Zone title");
+}
+
 export function validateTableCells(value: unknown, path = "$cells"): string[][] {
   if (!Array.isArray(value) || value.length < 1 || value.length > MAX_TABLE_ROWS) {
     fail(`Table cells must contain between 1 and ${MAX_TABLE_ROWS} rows`, path);
@@ -933,6 +990,10 @@ function normalizeGeometryForItem(kind: ItemKind, value: unknown, path: string):
     const table = geometry as TableGeometry;
     return { ...table, cells: validateTableCells(table.cells, `${path}.cells`) };
   }
+  if (kind === "zone") {
+    const zone = geometry as ZoneGeometry;
+    return { ...zone, title: validateZoneTitle(zone.title, `${path}.title`) };
+  }
   return geometry;
 }
 
@@ -942,6 +1003,7 @@ function normalizeStyleForKind(kind: ItemKind, value: unknown, path: string): It
   if (kind === "image") return normalizeImageStyle(value, path);
   if (kind === "stamp") return normalizeStampStyle(value, path);
   if (kind === "table") return normalizeTableStyle(value, path);
+  if (kind === "zone") return normalizeZoneStyle(value, path);
   return normalizeStrokeStyle(value, path);
 }
 
@@ -1010,6 +1072,12 @@ export function normalizeItemPatch(value: unknown, path = "$patch"): ItemPatch {
       patch.geometry = {
         ...patch.geometry,
         cells: validateTableCells(patch.geometry.cells, `${path}.geometry.cells`),
+      };
+    }
+    if ("title" in patch.geometry) {
+      patch.geometry = {
+        ...patch.geometry,
+        title: validateZoneTitle(patch.geometry.title, `${path}.geometry.title`),
       };
     }
   }

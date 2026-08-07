@@ -511,7 +511,13 @@ button:disabled {
   font-size: 21px;
 }
 
-.tool-rail button[aria-pressed="true"] .tool-glyph-table {
+.tool-glyph-zone {
+  color: #6e56cf;
+  font-size: 22px;
+}
+
+.tool-rail button[aria-pressed="true"] .tool-glyph-table,
+.tool-rail button[aria-pressed="true"] .tool-glyph-zone {
   color: #fff;
 }
 
@@ -676,6 +682,15 @@ button:disabled {
 
 .board-item-table .table-cell-background {
   shape-rendering: crispEdges;
+}
+
+.board-item-zone .zone-title {
+  pointer-events: none;
+  user-select: none;
+}
+
+.board-item-zone .zone-fill {
+  filter: drop-shadow(0 2px 3px rgb(62 72 106 / 7%));
 }
 
 .board-item.erase-target {
@@ -850,6 +865,55 @@ button:disabled {
 
 .selection-actions button[data-selection-delete] {
   color: #c33d36;
+}
+
+.selection-arrange-wrap {
+  position: relative;
+}
+
+.arrange-menu {
+  position: absolute;
+  z-index: 60;
+  top: 39px;
+  left: 50%;
+  width: 224px;
+  display: grid;
+  gap: 2px;
+  padding: 7px;
+  translate: -50% 0;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+
+.arrange-menu[hidden] {
+  display: none;
+}
+
+.selection-actions .arrange-menu button {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0 9px;
+  text-align: left;
+  font-size: 11px;
+}
+
+.selection-actions .arrange-menu button:hover:not(:disabled),
+.selection-actions .arrange-menu button:focus-visible {
+  background: #f0eee8;
+}
+
+.arrange-menu-label {
+  padding: 7px 9px 3px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
 }
 
 .zoom-controls {
@@ -1845,6 +1909,19 @@ button:disabled {
   box-shadow: 0 8px 24px rgb(41 50 91 / 18%);
 }
 
+.canvas-zone-title-editor {
+  position: fixed;
+  z-index: 90;
+  min-width: 0;
+  padding: 4px 10px;
+  border: 2px solid var(--blue);
+  border-radius: 9px;
+  background: rgb(255 255 255 / 96%);
+  font-weight: 700;
+  line-height: 1.15;
+  box-shadow: 0 8px 24px rgb(41 50 91 / 18%);
+}
+
 .claim-dialog {
   width: min(490px, calc(100vw - 28px));
   padding: 30px;
@@ -2296,6 +2373,10 @@ button:disabled {
     width: min(240px, calc(100% - 16px));
   }
 
+  .arrange-menu {
+    width: min(224px, calc(100vw - 16px));
+  }
+
   .zoom-controls {
     right: 8px;
     bottom: max(8px, env(safe-area-inset-bottom));
@@ -2349,6 +2430,11 @@ button:disabled {
 
   .selection-actions {
     left: 8px;
+    translate: 0;
+  }
+
+  .selection-actions .arrange-menu {
+    left: 0;
     translate: 0;
   }
 

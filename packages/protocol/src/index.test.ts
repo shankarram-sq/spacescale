@@ -12,6 +12,7 @@ import {
   validateDurableOperation,
   validatePlainText,
   validateTableCellText,
+  validateZoneTitle,
 } from "./index.js";
 
 const ID_1 = "018f0000-0000-7000-8000-000000000001";
@@ -101,6 +102,23 @@ function table(id = ID_1) {
       ],
       headerRow: true,
     },
+  };
+}
+
+function zone(id = ID_1) {
+  return {
+    id,
+    kind: "zone",
+    style: {
+      kind: "zone",
+      borderColor: "#a8a59d",
+      fill: "#e8edff",
+      textColor: "#4f5b75",
+      fontSize: 18.125,
+      opacity: 0.175,
+    },
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: { x: 10.125, y: 20.555, width: 520.125, height: 320, title: "Evidence" },
   };
 }
 
@@ -434,6 +452,66 @@ describe("durable operation validation", () => {
         },
       }),
     ).toThrow(/at most 8000/);
+  });
+
+  it("normalizes durable zones and whole-title geometry patches", () => {
+    expect(validateDurableOperation({ kind: "item.create", item: zone() })).toEqual({
+      kind: "item.create",
+      item: {
+        id: ID_1,
+        kind: "zone",
+        style: {
+          kind: "zone",
+          borderColor: "#a8a59d",
+          fill: "#e8edff",
+          textColor: "#4f5b75",
+          fontSize: 18.13,
+          opacity: 0.18,
+        },
+        transform: [1, 0, 0, 1, 0, 0],
+        geometry: {
+          x: 10.13,
+          y: 20.56,
+          width: 520.13,
+          height: 320,
+          title: "Evidence",
+        },
+      },
+    });
+    expect(ACTIVE_TOOLS).toContain("zone");
+    expect(validateZoneTitle("Questions")).toBe("Questions");
+    expect(
+      validateDurableOperation({
+        kind: "item.update",
+        itemId: ID_1,
+        expectedVersion: 4,
+        patch: { geometry: { ...zone().geometry, title: "Finished examples" } },
+      }),
+    ).toMatchObject({ patch: { geometry: { title: "Finished examples" } } });
+  });
+
+  it("rejects unsafe zone titles, dimensions, styles, and kind confusion", () => {
+    const base = zone();
+    const cases = [
+      { ...base, geometry: { ...base.geometry, title: "" } },
+      { ...base, geometry: { ...base.geometry, title: "😀".repeat(121) } },
+      { ...base, geometry: { ...base.geometry, title: "bad\u0000title" } },
+      { ...base, geometry: { ...base.geometry, title: "bad\ud800title" } },
+      { ...base, geometry: { ...base.geometry, width: 0 } },
+      { ...base, geometry: { ...base.geometry, text: "not a zone" } },
+      { ...base, style: { ...base.style, fill: "#E8EDFF" } },
+      { ...base, style: { ...base.style, opacity: 0.09 } },
+      { ...base, style: { ...base.style, fontSize: 257 } },
+      {
+        ...base,
+        style: { kind: "stroke", color: "#a8a59d", width: 2, opacity: 1 },
+      },
+    ];
+    for (const item of cases) {
+      expect(() => validateDurableOperation({ kind: "item.create", item })).toThrow(
+        ProtocolValidationError,
+      );
+    }
   });
 
   it("requires imagesEnabled in canonical authoritative board policy", () => {

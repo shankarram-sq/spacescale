@@ -7,6 +7,7 @@ import type {
   StrokeStyle,
   TableStyle,
   TextStyle,
+  ZoneStyle,
 } from "@collab/protocol";
 
 export const FIXTURE_IDS = {
@@ -27,6 +28,7 @@ export const FIXTURE_IDS = {
   stamp: "018f0000-0000-7000-8000-000000000008",
   image: "018f0000-0000-7000-8000-000000000009",
   table: "018f0000-0000-7000-8000-00000000000a",
+  zone: "018f0000-0000-7000-8000-00000000000b",
   asset: "asset_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 } as const;
 
@@ -61,6 +63,18 @@ export function tableStyle(overrides: Partial<TableStyle> = {}): TableStyle {
     textColor: "#0f172a",
     fontSize: 16,
     opacity: 1,
+    ...overrides,
+  };
+}
+
+export function zoneStyle(overrides: Partial<ZoneStyle> = {}): ZoneStyle {
+  return {
+    kind: "zone",
+    borderColor: "#a8a59d",
+    fill: "#e8edff",
+    textColor: "#4f5b75",
+    fontSize: 18,
+    opacity: 0.18,
     ...overrides,
   };
 }
@@ -171,6 +185,17 @@ export function newTableItem(overrides: Partial<NewBoardItem> = {}): NewBoardIte
       ],
       headerRow: true,
     },
+    ...overrides,
+  } as NewBoardItem;
+}
+
+export function newZoneItem(overrides: Partial<NewBoardItem> = {}): NewBoardItem {
+  return {
+    id: FIXTURE_IDS.zone,
+    kind: "zone",
+    style: zoneStyle(),
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: { x: 10, y: 20, width: 520, height: 320, title: "Fixture zone" },
     ...overrides,
   } as NewBoardItem;
 }

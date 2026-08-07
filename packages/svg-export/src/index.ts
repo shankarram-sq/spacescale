@@ -5,6 +5,8 @@ import {
   boundsWidth,
   expandBounds,
   formatCanonicalNumber,
+  ZONE_TITLE_PADDING,
+  zoneTitleBandHeight,
 } from "@collab/geometry";
 import {
   assertCanonicalId,
@@ -39,6 +41,7 @@ type StickyBoardItem = Extract<BoardItem, { kind: "sticky" }>;
 type ImageBoardItem = Extract<BoardItem, { kind: "image" }>;
 type StampBoardItem = Extract<BoardItem, { kind: "stamp" }>;
 type TableBoardItem = Extract<BoardItem, { kind: "table" }>;
+type ZoneBoardItem = Extract<BoardItem, { kind: "zone" }>;
 
 export interface SvgExportInput {
   boardId: string;
@@ -407,6 +410,27 @@ function renderTable(item: TableBoardItem): string {
   return `<g ${attributes}>${definitions}${content.join("")}</g>`;
 }
 
+function renderZone(item: ZoneBoardItem): string {
+  const { x, y, width, height, title } = item.geometry;
+  const clipId = `zone-title-clip-${item.id}`;
+  const titleBandHeight = Math.min(height, zoneTitleBandHeight(item.style.fontSize));
+  const contentX = x + ZONE_TITLE_PADDING;
+  const contentWidth = Math.max(0, width - ZONE_TITLE_PADDING * 2);
+  const contentHeight = Math.max(0, titleBandHeight - ZONE_TITLE_PADDING);
+  const visibleTitle = title.replace(/\r\n?|\n/gu, " ");
+  const attributes = [
+    `transform="${transformAttribute(item)}"`,
+    `data-item-id="${escapeXmlAttribute(item.id)}"`,
+    `role="group"`,
+    `aria-label="Zone: ${escapeXmlAttribute(title)}"`,
+  ].join(" ");
+  const clip = `<defs><clipPath id="${escapeXmlAttribute(clipId)}" clipPathUnits="userSpaceOnUse"><rect x="${number(contentX)}" y="${number(y)}" width="${number(contentWidth)}" height="${number(contentHeight)}" /></clipPath></defs>`;
+  const fill = `<rect x="${number(x)}" y="${number(y)}" width="${number(width)}" height="${number(height)}" rx="12" fill="${escapeXmlAttribute(item.style.fill)}" fill-opacity="${number(item.style.opacity)}" />`;
+  const border = `<rect x="${number(x)}" y="${number(y)}" width="${number(width)}" height="${number(height)}" rx="12" fill="none" stroke="${escapeXmlAttribute(item.style.borderColor)}" stroke-width="1.5" vector-effect="non-scaling-stroke" />`;
+  const renderedTitle = `<text x="${number(contentX)}" y="${number(y + ZONE_TITLE_PADDING + item.style.fontSize)}" fill="${escapeXmlAttribute(item.style.textColor)}" font-size="${number(item.style.fontSize)}" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-weight="700" xml:space="preserve" clip-path="url(#${escapeXmlAttribute(clipId)})">${escapeXmlText(visibleTitle)}</text>`;
+  return `<g ${attributes}><title>${escapeXmlText(title)}</title>${clip}${fill}${border}${renderedTitle}</g>`;
+}
+
 function renderText(item: Extract<BoardItem, { kind: "text" }>): string {
   const lines = item.geometry.text.split(/\r\n?|\n/u);
   const attributes = [
@@ -458,6 +482,8 @@ export function renderSvgItem(item: BoardItem): string {
       return renderStamp(item);
     case "table":
       return renderTable(item);
+    case "zone":
+      return renderZone(item);
   }
 }
 

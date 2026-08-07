@@ -115,6 +115,33 @@ function createTableFrame() {
   };
 }
 
+function createZoneFrame(title = "Evidence") {
+  return {
+    v: 1,
+    t: "client.commit",
+    commandId: "018f0000-0000-7000-8000-000000000010",
+    actionId: "018f0000-0000-7000-8000-000000000011",
+    baseSeq: 0,
+    op: {
+      kind: "item.create",
+      item: {
+        id: itemId,
+        kind: "zone",
+        style: {
+          kind: "zone",
+          borderColor: "#a8a59d",
+          fill: "#e8edff",
+          textColor: "#4f5b75",
+          fontSize: 18,
+          opacity: 0.18,
+        },
+        transform: [1, 0, 0, 1, 0, 0],
+        geometry: { x: 10, y: 20, width: 520, height: 320, title },
+      },
+    },
+  };
+}
+
 describe("edge domain admission", () => {
   it("normalizes and prepares a canonical create with private lineage", () => {
     const parsed = parseCommitFrame(createFrame());
@@ -243,6 +270,29 @@ describe("edge domain admission", () => {
     tooManyRows.op.item.geometry.rowHeights = Array.from({ length: 9 }, () => 48);
     tooManyRows.op.item.geometry.cells = Array.from({ length: 9 }, () => ["", "", ""]);
     expect(() => parseCommitFrame(tooManyRows)).toThrow(BoardDomainError);
+  });
+
+  it("admits, bounds, and round-trips a canonical zone", () => {
+    const parsed = parseCommitFrame(createZoneFrame());
+    if (parsed.op.kind !== "item.create") throw new Error("unexpected operation");
+    const prepared = prepareItemOperation(parsed.op, new Map(), {
+      seq: 1,
+      actorId,
+      nextZ: 1,
+      liveCount: 0,
+      tokenFactory: () => "zone-state",
+    });
+    const write = prepared.writes.get(itemId);
+    expect(write?.item).toMatchObject({
+      kind: "zone",
+      z: 1,
+      version: 1,
+      createdBy: actorId,
+      geometry: { x: 10, y: 20, width: 520, height: 320, title: "Evidence" },
+    });
+    expect(write?.bounds).toEqual({ minX: 10, minY: 20, maxX: 530, maxY: 340 });
+    expect(canonicalItemFromUnknown(JSON.parse(JSON.stringify(write?.item)))).toEqual(write?.item);
+    expect(() => parseCommitFrame(createZoneFrame("🙂".repeat(121)))).toThrow(BoardDomainError);
   });
 
   it("rejects sticky content beyond its classroom-safe limit", () => {

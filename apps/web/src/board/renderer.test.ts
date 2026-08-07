@@ -2,7 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MAX_RENDERED_VOTE_TABLES, VOTE_TABLE_STYLE } from "../activities/voting";
 import type { BoardItem, TableItem } from "../types";
-import { CanvasViewport, renderVoteCounts, wrapStickyText, wrapTableCellText } from "./renderer";
+import {
+  CanvasViewport,
+  renderVoteCounts,
+  wrapStickyText,
+  wrapTableCellText,
+  zoneNode,
+} from "./renderer";
 
 describe("sticky note text wrapping", () => {
   it("wraps words within the default note and preserves blank paragraphs", () => {
@@ -83,6 +89,44 @@ function fakeSvgNode(name: string): FakeSvgNode {
   };
   return node;
 }
+
+describe("zone rendering", () => {
+  beforeEach(() => {
+    vi.stubGlobal("document", {
+      createElementNS: (_namespace: string, name: string) => fakeSvgNode(name),
+    });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("renders a named, accessible zone with fill-only opacity", () => {
+    const node = zoneNode(
+      "zone/unsafe",
+      { x: 20, y: 30, width: 520, height: 320, title: "Evidence <script>" },
+      {
+        kind: "zone",
+        borderColor: "#a8a59d",
+        fill: "#e8edff",
+        textColor: "#4f5b75",
+        fontSize: 18,
+        opacity: 0.18,
+      },
+    ) as unknown as FakeSvgNode;
+
+    expect(node.attributes.get("role")).toBe("group");
+    expect(node.attributes.get("aria-label")).toBe("Zone: Evidence <script>");
+    expect(node.dataset.zoneTitle).toBe("Evidence <script>");
+    const fill = node.children.find((child) => child.classList.values.has("zone-fill"));
+    const border = node.children.find((child) => child.classList.values.has("zone-border"));
+    const title = node.children.find((child) => child.classList.values.has("zone-title"));
+    expect(fill?.attributes.get("fill-opacity")).toBe("0.18");
+    expect(border?.attributes.get("stroke")).toBe("#a8a59d");
+    expect(border?.attributes.has("opacity")).toBe(false);
+    expect(title?.textContent).toBe("Evidence <script>");
+    expect(title?.children).toHaveLength(0);
+    expect(title?.attributes.get("clip-path")).toBe("url(#zone-title-clip-zone-unsafe)");
+  });
+});
 
 describe("derived vote counts", () => {
   beforeEach(() => {

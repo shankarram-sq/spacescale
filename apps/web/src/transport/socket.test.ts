@@ -208,6 +208,19 @@ describe("protocol rollout handling", () => {
       [expect.objectContaining({ activeTool: "stamp", cursor: { x: 44, y: 55 } })],
       false,
     );
+
+    socket.emitMessage({
+      v: 1,
+      t: "server.presence",
+      actor: { id: "a_1234567890123456789012", displayName: "Student" },
+      cursor: { x: 90, y: 120 },
+      activeTool: "zone",
+    });
+
+    expect(socketHooks.onPresence).toHaveBeenLastCalledWith(
+      [expect.objectContaining({ activeTool: "zone", cursor: { x: 90, y: 120 } })],
+      false,
+    );
   });
 
   it("sends active and stopped spotlight frames only after the socket is ready", () => {

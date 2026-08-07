@@ -1,4 +1,5 @@
 import { applyAuthoritativeOperation } from "@collab/board-core";
+import { zoneGeometryContainsPoint } from "@collab/geometry";
 import type {
   AuthoritativeItemOperation,
   AuthoritativeOperation,
@@ -201,7 +202,8 @@ export class BoardModel {
   intersecting(area: Bounds): BoardItem[] {
     return [...this.rendered.values()].filter((item) => {
       const bounds = this.getBounds(item.id);
-      return bounds ? boundsIntersect(bounds, area) : false;
+      if (!bounds) return false;
+      return item.kind === "zone" ? boundsContains(area, bounds) : boundsIntersect(bounds, area);
     });
   }
 
@@ -618,7 +620,8 @@ export function itemBounds(item: BoardItem): Bounds {
       : item.kind === "sticky" ||
           item.kind === "stamp" ||
           item.kind === "image" ||
-          item.kind === "table"
+          item.kind === "table" ||
+          item.kind === "zone"
         ? 0
         : item.style.width / 2;
   return { minX: minX - padding, minY: minY - padding, maxX: maxX + padding, maxY: maxY + padding };
@@ -647,6 +650,7 @@ function geometryBounds(item: BoardItem): Bounds {
     case "ellipse":
     case "sticky":
     case "image":
+    case "zone":
       return boxBounds(item.geometry);
     case "table":
       return tableBounds(item.geometry);
@@ -721,6 +725,14 @@ function preciseHit(item: BoardItem, point: Point, extra: number): boolean {
   if (item.kind === "table") {
     return containsPoint(expandBounds(tableBounds(item.geometry), extra), local);
   }
+  if (item.kind === "zone") {
+    return zoneGeometryContainsPoint(
+      item.geometry,
+      [local[0], local[1]],
+      item.style.fontSize,
+      extra,
+    );
+  }
   if (item.kind === "stamp") {
     return containsPoint(expandBounds(stampBounds(item.geometry), extra), local);
   }
@@ -776,6 +788,15 @@ function expandBounds(bounds: Bounds, amount: number): Bounds {
 
 function boundsIntersect(a: Bounds, b: Bounds): boolean {
   return a.minX <= b.maxX && a.maxX >= b.minX && a.minY <= b.maxY && a.maxY >= b.minY;
+}
+
+function boundsContains(outer: Bounds, inner: Bounds): boolean {
+  return (
+    outer.minX <= inner.minX &&
+    outer.minY <= inner.minY &&
+    outer.maxX >= inner.maxX &&
+    outer.maxY >= inner.maxY
+  );
 }
 
 function unionBounds(a: Bounds, b: Bounds): Bounds {

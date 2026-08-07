@@ -596,6 +596,9 @@ function asPresence(value: unknown): Presence | null {
         "text",
         "sticky",
         "stamp",
+        "image",
+        "table",
+        "zone",
         "eraser",
         "pan",
       ].includes(activeTool)

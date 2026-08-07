@@ -117,7 +117,16 @@ export type TableStyle = {
   opacity: number;
 };
 
-export type ItemStyle = StrokeStyle | TextStyle | StickyStyle | StampStyle | TableStyle;
+export type ZoneStyle = {
+  kind: "zone";
+  borderColor: string;
+  fill: string;
+  textColor: string;
+  fontSize: number;
+  opacity: number;
+};
+
+export type ItemStyle = StrokeStyle | TextStyle | StickyStyle | StampStyle | TableStyle | ZoneStyle;
 export type Matrix = [number, number, number, number, number, number];
 
 export type PencilGeometry = { points: Array<[number, number]> };
@@ -140,6 +149,7 @@ export type TableGeometry = {
   cells: string[][];
   headerRow?: boolean;
 };
+export type ZoneGeometry = BoxGeometry & { title: string };
 export type ItemGeometry =
   | PencilGeometry
   | LineGeometry
@@ -147,7 +157,8 @@ export type ItemGeometry =
   | TextGeometry
   | StickyGeometry
   | StampGeometry
-  | TableGeometry;
+  | TableGeometry
+  | ZoneGeometry;
 export type BoardItemKind =
   | "pencil"
   | "line"
@@ -156,7 +167,8 @@ export type BoardItemKind =
   | "text"
   | "sticky"
   | "stamp"
-  | "table";
+  | "table"
+  | "zone";
 
 export interface BoardItem {
   id: string;

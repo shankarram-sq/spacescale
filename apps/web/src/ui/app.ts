@@ -1,9 +1,10 @@
-import { boundsForItems } from "@collab/geometry";
+import { boundsForItems, ZONE_TITLE_PADDING, zoneTitleBandHeight } from "@collab/geometry";
 import {
   MAX_IMAGE_INTRINSIC_DIMENSION,
   MAX_IMAGE_INTRINSIC_PIXELS,
   MAX_STICKY_TEXT_CODE_POINTS,
   MAX_TABLE_CELL_TEXT_CODE_POINTS,
+  MAX_ZONE_TITLE_CODE_POINTS,
   normalizeBoardItem,
   validateClientFrame,
   validateDurableOperation,
@@ -18,6 +19,7 @@ import { buildClearVoteDeletes, isVoteTable, summarizeVotes } from "../activitie
 import { BoardModel, SequenceError } from "../board/model";
 import { BoardRenderer, STICKY_PADDING } from "../board/renderer";
 import { DurableOutbox, type OutboxEntry, OutboxLimitError } from "../persistence/outbox";
+import { type ArrangeKind, buildArrangeUpdates } from "../tools/arrange";
 import {
   buildCapturedTextUpdate,
   buildImageCreateOperation,
@@ -72,6 +74,7 @@ const TOOL_DEFINITIONS: Array<{ name: ToolName; label: string; shortcut: string;
     { name: "stamp", label: "Stamp", shortcut: "K", glyph: "★" },
     { name: "image", label: "Add image", shortcut: "I", glyph: "▧" },
     { name: "table", label: "Table", shortcut: "G", glyph: "▦" },
+    { name: "zone", label: "Zone", shortcut: "Z", glyph: "▭" },
     { name: "eraser", label: "Eraser", shortcut: "E", glyph: "◇" },
     { name: "pan", label: "Pan canvas", shortcut: "H", glyph: "✋" },
   ];
@@ -86,6 +89,7 @@ const DRAW_TOOLS = new Set<ToolName>([
   "stamp",
   "image",
   "table",
+  "zone",
   "eraser",
 ]);
 
@@ -161,6 +165,19 @@ type TableCellDraftRecovery = {
   selectionEnd: number;
 };
 
+type ZoneTitleEdit = {
+  itemId: string;
+  expectedVersion: number;
+  geometry: Extract<BoardItem, { kind: "zone" }>["geometry"];
+};
+
+type ZoneTitleDraftRecovery = {
+  itemId: string;
+  title: string;
+  selectionStart: number;
+  selectionEnd: number;
+};
+
 export function imageUploadIssue(image: Pick<Blob, "size" | "type">): string | null {
   if (!IMAGE_UPLOAD_MIME_TYPES.includes(image.type as (typeof IMAGE_UPLOAD_MIME_TYPES)[number])) {
     return "Choose a PNG, JPEG, WebP, or GIF image.";
@@ -222,6 +239,10 @@ export function clampImageAlt(value: string): string {
 
 export function clampTableCellText(value: string): string {
   return [...value].slice(0, MAX_TABLE_CELL_TEXT_CODE_POINTS).join("");
+}
+
+export function clampZoneTitle(value: string): string {
+  return [...value].slice(0, MAX_ZONE_TITLE_CODE_POINTS).join("");
 }
 
 export const STICKY_COLORS = [
@@ -290,10 +311,15 @@ export class BoardApp {
   private imageAltEdit: ImageAltEdit | null = null;
   private tableCellEditor: HTMLTextAreaElement | null = null;
   private tableCellEdit: TableCellEdit | null = null;
+  private zoneTitleEditor: HTMLInputElement | null = null;
+  private zoneTitleEdit: ZoneTitleEdit | null = null;
   private readonly pendingStickyDrafts = new Map<string, StickyDraftRecovery>();
   private readonly rejectedStickyDrafts: StickyDraftRecovery[] = [];
   private readonly pendingTableCellDrafts = new Map<string, TableCellDraftRecovery>();
   private readonly rejectedTableCellDrafts: TableCellDraftRecovery[] = [];
+  private readonly pendingZoneTitleDrafts = new Map<string, ZoneTitleDraftRecovery>();
+  private readonly rejectedZoneTitleDrafts: ZoneTitleDraftRecovery[] = [];
+  private readonly pendingNewZoneTitles = new Set<string>();
   private accessMembers: Member[] = [];
   private managedInvitations: ManagedInvitation[];
   private recoverySnapshots: RecoverySnapshot[] = [];
@@ -318,6 +344,8 @@ export class BoardApp {
   private readonly stylePopover: HTMLElement;
   private readonly exportMenu: HTMLElement;
   private readonly selectionActions: HTMLElement;
+  private readonly arrangeButton: HTMLButtonElement;
+  private readonly arrangeMenu: HTMLElement;
   private readonly imageInput: HTMLInputElement;
   private readonly imageAltDialog: HTMLDialogElement;
   private readonly imageAltInput: HTMLTextAreaElement;
@@ -375,6 +403,12 @@ export class BoardApp {
     this.stylePopover = query(this.root, "[data-testid='style-popover']", HTMLElement);
     this.exportMenu = query(this.root, "[data-testid='export-menu']", HTMLElement);
     this.selectionActions = query(this.root, "[data-testid='selection-actions']", HTMLElement);
+    this.arrangeButton = query(
+      this.selectionActions,
+      "[data-selection-arrange]",
+      HTMLButtonElement,
+    );
+    this.arrangeMenu = query(this.selectionActions, "[data-testid='arrange-menu']", HTMLElement);
     this.imageInput = query(this.root, "[data-image-input]", HTMLInputElement);
     this.imageAltDialog = query(this.root, "[data-testid='image-alt-dialog']", HTMLDialogElement);
     this.imageAltInput = query(this.imageAltDialog, "[data-image-alt-input]", HTMLTextAreaElement);
@@ -413,6 +447,13 @@ export class BoardApp {
       editText: (point, item) => this.openTextEditor(point, item),
       editImageAlt: (item) => this.openImageAltEditor(item),
       editTableCell: (item, row, column) => this.openTableCellEditor(item, row, column),
+      editZoneTitle: (item) => this.openZoneTitleEditor(item),
+      onZoneCreated: (itemId) => {
+        this.pendingNewZoneTitles.add(itemId);
+        this.tools.setTool("select");
+        this.tools.selectOnly([itemId]);
+        this.syncNewZoneTitleEditor();
+      },
       onToolChanged: (tool) => {
         this.setActiveToolButton(tool);
         if (tool === "stamp") this.setStylePopoverOpen(true);
@@ -474,6 +515,7 @@ export class BoardApp {
     this.model.subscribe(() => {
       this.updateStatus();
       this.updateSelectionActions(this.tools.selection);
+      this.syncNewZoneTitleEditor();
     });
     this.model.subscribeRebase((error) => this.handleRebaseState(error));
     this.presences.set(bootstrap.actor.id, {
@@ -503,11 +545,15 @@ export class BoardApp {
     this.rejectedStickyDrafts.length = 0;
     this.pendingTableCellDrafts.clear();
     this.rejectedTableCellDrafts.length = 0;
+    this.pendingZoneTitleDrafts.clear();
+    this.rejectedZoneTitleDrafts.length = 0;
+    this.pendingNewZoneTitles.clear();
     document.removeEventListener("paste", this.onImagePaste);
     this.renderer.svg.removeEventListener("dragover", this.onImageDragOver);
     this.renderer.svg.removeEventListener("drop", this.onImageDrop);
     this.closeImageAltEditor();
     void this.closeTableCellEditor(false);
+    void this.closeZoneTitleEditor(false);
     void this.closeTextEditor(false);
     this.socket.destroy();
     this.tools.destroy();
@@ -600,6 +646,20 @@ export class BoardApp {
             <div class="selection-actions" data-testid="selection-actions" hidden>
               <button type="button" data-selection-alt aria-label="Edit image alt text" hidden>Edit alt text</button>
               <button type="button" data-selection-copy aria-label="Copy selected items">Copy</button>
+              <div class="selection-arrange-wrap">
+                <button type="button" data-selection-arrange aria-label="Arrange selected items" aria-haspopup="menu" aria-controls="arrange-menu" aria-expanded="false">Arrange</button>
+                <div class="arrange-menu" data-testid="arrange-menu" id="arrange-menu" role="menu" aria-label="Arrange selected items" hidden>
+                  <span class="arrange-menu-label">Align</span>
+                  <button type="button" role="menuitem" data-arrange="align-left">Align left</button>
+                  <button type="button" role="menuitem" data-arrange="align-top">Align top</button>
+                  <button type="button" role="menuitem" data-arrange="align-horizontal-center">Center horizontally</button>
+                  <span class="arrange-menu-label">Distribute</span>
+                  <button type="button" role="menuitem" data-arrange="distribute-horizontal">Space horizontally</button>
+                  <button type="button" role="menuitem" data-arrange="distribute-vertical">Space vertically</button>
+                  <span class="arrange-menu-label">Tidy</span>
+                  <button type="button" role="menuitem" data-arrange="tidy-stickies">Tidy stickies into grid</button>
+                </div>
+              </div>
               <button type="button" data-selection-clear-votes aria-label="Clear votes from selected activity" hidden>Clear votes</button>
               <button type="button" data-selection-delete aria-label="Delete selected items">Delete</button>
             </div>
@@ -828,6 +888,39 @@ export class BoardApp {
     );
   }
 
+  private async arrangeSelection(kind: ArrangeKind): Promise<void> {
+    if (!this.canCommit()) return;
+    const selectedIds = [...this.tools.selection];
+    const participantIds =
+      kind === "tidy-stickies"
+        ? selectedIds.filter((id) => this.model.getItem(id)?.kind === "sticky")
+        : selectedIds;
+    const minimum = kind.startsWith("distribute-") ? 3 : 2;
+    if (participantIds.length < minimum) return;
+    const limit = Math.max(1, Math.min(100, Math.floor(this.bootstrap.limits.maxBatchItems)));
+    if (participantIds.length > limit) {
+      this.notify(`Arrange ${limit} items or fewer at a time.`, "warning");
+      return;
+    }
+    const items = participantIds.flatMap((id) => {
+      const item = this.model.authoritativeItems.get(id);
+      return item ? [item] : [];
+    });
+    if (items.length !== participantIds.length) {
+      this.notify("Wait for every selected item to finish saving before arranging.", "info");
+      return;
+    }
+    const operations = buildArrangeUpdates(kind, items);
+    this.setArrangeMenuOpen(false);
+    this.arrangeButton.focus();
+    if (operations.length === 0) {
+      this.notify("Those items are already arranged that way.", "info");
+      return;
+    }
+    const accepted = await this.commit({ kind: "items.batch", operations });
+    if (accepted) this.notify(arrangeSuccessMessage(kind), "info");
+  }
+
   private bindShellEvents(): void {
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("button[data-tool]")) {
       button.addEventListener("click", () => this.activateTool(button.dataset.tool as ToolName));
@@ -916,6 +1009,43 @@ export class BoardApp {
       "click",
       () => void this.clearSelectedVotes(),
     );
+    this.arrangeButton.addEventListener("click", () => {
+      if (this.arrangeButton.disabled) return;
+      const opening = this.arrangeMenu.hidden !== false;
+      this.setArrangeMenuOpen(opening);
+      if (opening) this.arrangeMenu.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
+    });
+    for (const button of this.arrangeMenu.querySelectorAll<HTMLButtonElement>("[data-arrange]")) {
+      button.addEventListener("click", () => {
+        void this.arrangeSelection(button.dataset.arrange as ArrangeKind);
+      });
+    }
+    this.arrangeMenu.addEventListener("keydown", (event) => {
+      const items = [
+        ...this.arrangeMenu.querySelectorAll<HTMLButtonElement>("[role='menuitem']"),
+      ].filter((button) => !button.disabled);
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        this.setArrangeMenuOpen(false);
+        this.arrangeButton.focus();
+        return;
+      }
+      if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) || items.length === 0) {
+        return;
+      }
+      event.preventDefault();
+      const current = items.indexOf(document.activeElement as HTMLButtonElement);
+      const next =
+        event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? items.length - 1
+            : event.key === "ArrowUp"
+              ? (current - 1 + items.length) % items.length
+              : (current + 1) % items.length;
+      items[next]?.focus();
+    });
 
     query(this.root, "[data-selection-alt]", HTMLButtonElement).addEventListener("click", () => {
       const [selectedId] = this.tools.selection;
@@ -1086,6 +1216,13 @@ export class BoardApp {
       ) {
         this.closeActivitiesMenu();
       }
+      if (
+        !this.arrangeMenu.hidden &&
+        !this.arrangeMenu.contains(target) &&
+        !this.arrangeButton.contains(target)
+      ) {
+        this.setArrangeMenuOpen(false);
+      }
     });
   }
 
@@ -1204,6 +1341,7 @@ export class BoardApp {
       return;
     }
     void this.closeTableCellEditor(false);
+    void this.closeZoneTitleEditor(false);
     this.imageAltEdit = {
       itemId: item.id,
       expectedVersion: item.version,
@@ -1263,6 +1401,7 @@ export class BoardApp {
     const bounds = tableCellLocalBounds(item.geometry, row, column);
     if (!bounds) return;
     void this.closeTextEditor(false);
+    void this.closeZoneTitleEditor(false);
     void this.closeTableCellEditor(false);
     this.tableCellEdit = {
       itemId: item.id,
@@ -1374,6 +1513,123 @@ export class BoardApp {
       (commandId) => this.pendingTableCellDrafts.set(commandId, draft),
     );
     if (!accepted) this.recoverTableCellDraft(draft);
+    else this.scheduleRejectedDraftRestore();
+  }
+
+  private openZoneTitleEditor(
+    item: Extract<BoardItem, { kind: "zone" }>,
+    recovery?: ZoneTitleDraftRecovery,
+  ): void {
+    if (!this.canCommit()) {
+      this.notify("Drawing is read only.", "warning");
+      return;
+    }
+    if (item.version <= 0) {
+      this.notify("Wait for the zone to finish saving before renaming it.", "info");
+      return;
+    }
+    void this.closeTextEditor(false);
+    void this.closeTableCellEditor(false);
+    void this.closeZoneTitleEditor(false);
+    this.closeImageAltEditor();
+    this.zoneTitleEdit = {
+      itemId: item.id,
+      expectedVersion: item.version,
+      geometry: structuredClone(item.geometry),
+    };
+
+    const titleHeight = zoneTitleBandHeight(item.style.fontSize);
+    const corners: Point[] = [
+      [item.geometry.x + ZONE_TITLE_PADDING, item.geometry.y],
+      [item.geometry.x + item.geometry.width - ZONE_TITLE_PADDING, item.geometry.y],
+      [item.geometry.x + item.geometry.width - ZONE_TITLE_PADDING, item.geometry.y + titleHeight],
+      [item.geometry.x + ZONE_TITLE_PADDING, item.geometry.y + titleHeight],
+    ];
+    const clientCorners = corners.map((point) =>
+      this.renderer.viewport.boardToClient(transformPoint(point, item.transform)),
+    );
+    const left = Math.min(...clientCorners.map((point) => point[0]));
+    const top = Math.min(...clientCorners.map((point) => point[1]));
+    const right = Math.max(...clientCorners.map((point) => point[0]));
+    const width = Math.min(Math.max(180, window.innerWidth - 16), Math.max(180, right - left));
+    const height = Math.max(36, Math.min(52, titleHeight * this.renderer.viewport.zoom));
+
+    const editor = document.createElement("input");
+    editor.type = "text";
+    editor.className = "canvas-zone-title-editor";
+    editor.dataset.testid = "zone-title-editor";
+    editor.setAttribute("aria-label", "Edit zone title");
+    editor.maxLength = MAX_ZONE_TITLE_CODE_POINTS * 2;
+    editor.value = recovery?.title ?? item.geometry.title;
+    editor.placeholder = "Zone title";
+    editor.style.left = `${Math.max(8, Math.min(window.innerWidth - width - 8, left))}px`;
+    editor.style.top = `${Math.max(60, Math.min(window.innerHeight - height - 8, top))}px`;
+    editor.style.width = `${width}px`;
+    editor.style.height = `${height}px`;
+    editor.style.fontSize = `${Math.max(14, Math.min(32, item.style.fontSize * this.renderer.viewport.zoom))}px`;
+    editor.style.color = item.style.textColor;
+    document.body.append(editor);
+    this.zoneTitleEditor = editor;
+
+    editor.addEventListener("input", () => {
+      const value = clampZoneTitle(editor.value.replace(/[\r\n]/gu, " "));
+      if (value === editor.value) return;
+      const cursor = Math.min(value.length, editor.selectionStart ?? value.length);
+      editor.value = value;
+      editor.setSelectionRange(cursor, cursor);
+    });
+    editor.addEventListener("blur", () => void this.closeZoneTitleEditor(true));
+    editor.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        void this.closeZoneTitleEditor(false);
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        void this.closeZoneTitleEditor(true);
+      }
+    });
+    editor.focus();
+    editor.setSelectionRange(
+      recovery?.selectionStart ?? 0,
+      recovery?.selectionEnd ?? editor.value.length,
+    );
+  }
+
+  private async closeZoneTitleEditor(save: boolean): Promise<void> {
+    const editor = this.zoneTitleEditor;
+    const edit = this.zoneTitleEdit;
+    if (!editor) return;
+    const title = clampZoneTitle(editor.value.replace(/[\r\n]/gu, " ")).trim() || "Zone";
+    const draft: ZoneTitleDraftRecovery | null = edit
+      ? {
+          itemId: edit.itemId,
+          title,
+          selectionStart: editor.selectionStart ?? title.length,
+          selectionEnd: editor.selectionEnd ?? title.length,
+        }
+      : null;
+    this.zoneTitleEditor = null;
+    this.zoneTitleEdit = null;
+    editor.remove();
+    if (!save || !edit || !draft || title === edit.geometry.title) {
+      this.scheduleRejectedDraftRestore();
+      return;
+    }
+    if (!this.canCommit()) {
+      this.recoverZoneTitleDraft(draft);
+      return;
+    }
+    const accepted = await this.commit(
+      {
+        kind: "item.update",
+        itemId: edit.itemId,
+        expectedVersion: edit.expectedVersion,
+        patch: { geometry: { ...edit.geometry, title } },
+      },
+      createId(),
+      (commandId) => this.pendingZoneTitleDrafts.set(commandId, draft),
+    );
+    if (!accepted) this.recoverZoneTitleDraft(draft);
     else this.scheduleRejectedDraftRestore();
   }
 
@@ -1519,6 +1775,7 @@ export class BoardApp {
       if (pending) {
         this.pendingStickyDrafts.delete(action.commandId);
         this.pendingTableCellDrafts.delete(action.commandId);
+        this.pendingZoneTitleDrafts.delete(action.commandId);
         this.model.reject(action.commandId);
         void this.outbox.remove(this.bootstrap.board.id, this.bootstrap.actor.id, action.commandId);
         this.updateStatus();
@@ -1534,6 +1791,7 @@ export class BoardApp {
       if (result.acknowledged) {
         this.pendingStickyDrafts.delete(action.commandId);
         this.pendingTableCellDrafts.delete(action.commandId);
+        this.pendingZoneTitleDrafts.delete(action.commandId);
         void this.outbox.remove(this.bootstrap.board.id, this.bootstrap.actor.id, action.commandId);
       }
       if (!replay && action.actor.id !== this.bootstrap.actor.id) {
@@ -1555,6 +1813,7 @@ export class BoardApp {
     const code = typeof frame.code === "string" ? frame.code : "REJECTED";
     let stickyDraft: StickyDraftRecovery | undefined;
     let tableCellDraft: TableCellDraftRecovery | undefined;
+    let zoneTitleDraft: ZoneTitleDraftRecovery | undefined;
     if (commandId) {
       const pendingCommand = this.model.pendingCommands.find(
         (command) => command.commandId === commandId,
@@ -1567,13 +1826,20 @@ export class BoardApp {
         (pendingCommand
           ? tableCellDraftFromOperation(pendingCommand.op, this.model.authoritativeItems)
           : undefined);
+      zoneTitleDraft =
+        this.pendingZoneTitleDrafts.get(commandId) ??
+        (pendingCommand
+          ? zoneTitleDraftFromOperation(pendingCommand.op, this.model.authoritativeItems)
+          : undefined);
       this.pendingStickyDrafts.delete(commandId);
       this.pendingTableCellDrafts.delete(commandId);
+      this.pendingZoneTitleDrafts.delete(commandId);
       this.model.reject(commandId);
       void this.outbox.remove(this.bootstrap.board.id, this.bootstrap.actor.id, commandId);
     }
     if (stickyDraft) this.recoverStickyDraft(stickyDraft);
     if (tableCellDraft) this.recoverTableCellDraft(tableCellDraft);
+    if (zoneTitleDraft) this.recoverZoneTitleDraft(zoneTitleDraft);
     if (code === "STALE_HISTORY" && typeof frame.historyVersion === "number") {
       this.history = {
         historyVersion: frame.historyVersion,
@@ -1600,7 +1866,13 @@ export class BoardApp {
     const message =
       friendly[code] ??
       (typeof frame.message === "string" ? frame.message : "The edit was not saved.");
-    const retainedDraft = stickyDraft ? "sticky draft" : tableCellDraft ? "table cell draft" : null;
+    const retainedDraft = stickyDraft
+      ? "sticky draft"
+      : tableCellDraft
+        ? "table cell draft"
+        : zoneTitleDraft
+          ? "zone title draft"
+          : null;
     this.notify(
       retainedDraft
         ? `${message} Your ${retainedDraft} was retained${this.canCommit() ? " and reopened" : " until editing is available"}.`
@@ -1907,6 +2179,7 @@ export class BoardApp {
   private openTextEditor(point: Point, item?: BoardItem, recovery?: StickyDraftRecovery): void {
     if (!this.canCommit()) return;
     void this.closeTableCellEditor(false);
+    void this.closeZoneTitleEditor(false);
     void this.closeTextEditor(false);
     const style = this.style;
     const textItem = item?.kind === "text" ? item : undefined;
@@ -2186,11 +2459,72 @@ export class BoardApp {
     this.openTableCellEditor(latest, draft.row, draft.column, draft);
   }
 
+  private recoverZoneTitleDraft(draft: ZoneTitleDraftRecovery): void {
+    this.rejectedZoneTitleDrafts.push(draft);
+    this.scheduleRejectedDraftRestore();
+  }
+
+  private restoreNextZoneTitleDraft(): void {
+    if (
+      this.textEditor ||
+      this.tableCellEditor ||
+      this.zoneTitleEditor ||
+      this.imageAltDialog.open ||
+      !this.canCommit()
+    ) {
+      return;
+    }
+    const draft = this.rejectedZoneTitleDrafts[0];
+    if (!draft) return;
+    const latest = this.model.getItem(draft.itemId);
+    if (latest?.kind !== "zone" || latest.version <= 0) return;
+    this.rejectedZoneTitleDrafts.shift();
+    this.openZoneTitleEditor(latest, draft);
+  }
+
+  private syncNewZoneTitleEditor(): void {
+    if (this.pendingNewZoneTitles.size === 0) return;
+    for (const itemId of this.pendingNewZoneTitles) {
+      const item = this.model.getItem(itemId);
+      if (item?.kind !== "zone") {
+        this.pendingNewZoneTitles.delete(itemId);
+        continue;
+      }
+      if (item.version <= 0) continue;
+      if (
+        this.textEditor ||
+        this.tableCellEditor ||
+        this.zoneTitleEditor ||
+        this.imageAltDialog.open ||
+        !this.canCommit()
+      ) {
+        return;
+      }
+      this.pendingNewZoneTitles.delete(itemId);
+      this.openZoneTitleEditor(item, {
+        itemId,
+        title: item.geometry.title,
+        selectionStart: 0,
+        selectionEnd: item.geometry.title.length,
+      });
+      return;
+    }
+  }
+
   private scheduleRejectedDraftRestore(): void {
-    if (this.rejectedStickyDrafts.length === 0 && this.rejectedTableCellDrafts.length === 0) return;
+    if (
+      this.rejectedStickyDrafts.length === 0 &&
+      this.rejectedTableCellDrafts.length === 0 &&
+      this.rejectedZoneTitleDrafts.length === 0 &&
+      this.pendingNewZoneTitles.size === 0
+    ) {
+      return;
+    }
     queueMicrotask(() => {
       this.restoreNextStickyDraft();
       this.restoreNextTableCellDraft();
+      this.restoreNextZoneTitleDraft();
+      this.syncNewZoneTitleEditor();
     });
   }
 
@@ -2939,6 +3273,7 @@ export class BoardApp {
     this.clearFollowingSpotlight();
     void this.closeTextEditor(false);
     void this.closeTableCellEditor(false);
+    void this.closeZoneTitleEditor(false);
     this.tools.setTool("select");
     this.remotePreviews.clear();
     this.renderer.renderRemotePreviews(this.remotePreviews.values());
@@ -3021,6 +3356,7 @@ export class BoardApp {
     this.imageInput.disabled = !this.canUploadImages();
     if (!canEdit) this.closeImageAltEditor();
     if (!canEdit) void this.closeTableCellEditor(false);
+    if (!canEdit) void this.closeZoneTitleEditor(true);
     this.updateSelectionActions(this.tools.selection);
     if (canEdit && !this.textEditor && !this.tableCellEditor) {
       this.scheduleRejectedDraftRestore();
@@ -3145,6 +3481,30 @@ export class BoardApp {
     const label = ids.size === 1 ? "1 selected" : `${ids.size} selected`;
     this.selectionActions.setAttribute("aria-label", label);
     const canEdit = this.canCommit();
+    const maxBatchItems = Math.max(
+      1,
+      Math.min(100, Math.floor(this.bootstrap.limits.maxBatchItems)),
+    );
+    const selectedIds = [...ids];
+    let enabledArrangeActions = 0;
+    for (const button of this.arrangeMenu.querySelectorAll<HTMLButtonElement>("[data-arrange]")) {
+      const kind = button.dataset.arrange as ArrangeKind;
+      const participantIds =
+        kind === "tidy-stickies"
+          ? selectedIds.filter((id) => this.model.getItem(id)?.kind === "sticky")
+          : selectedIds;
+      const minimum = kind.startsWith("distribute-") ? 3 : 2;
+      const allAuthoritative = participantIds.every((id) => this.model.authoritativeItems.has(id));
+      button.disabled =
+        !canEdit ||
+        participantIds.length < minimum ||
+        participantIds.length > maxBatchItems ||
+        !allAuthoritative;
+      if (!button.disabled) enabledArrangeActions += 1;
+    }
+    this.arrangeButton.hidden = ids.size < 2;
+    this.arrangeButton.disabled = enabledArrangeActions === 0;
+    if (this.arrangeButton.hidden || this.arrangeButton.disabled) this.setArrangeMenuOpen(false);
     query(this.selectionActions, "[data-selection-copy]", HTMLButtonElement).disabled = !canEdit;
     query(this.selectionActions, "[data-selection-delete]", HTMLButtonElement).disabled = !canEdit;
     const alt = query(this.selectionActions, "[data-selection-alt]", HTMLButtonElement);
@@ -3212,6 +3572,12 @@ export class BoardApp {
   private closeActivitiesMenu(): void {
     this.activitiesMenu.hidden = true;
     this.activitiesButton.setAttribute("aria-expanded", "false");
+  }
+
+  private setArrangeMenuOpen(open: boolean): void {
+    const next = open && !this.arrangeButton.disabled && !this.arrangeButton.hidden;
+    this.arrangeMenu.hidden = !next;
+    this.arrangeButton.setAttribute("aria-expanded", String(next));
   }
 
   private togglePopover(popover: HTMLElement, trigger: HTMLButtonElement): void {
@@ -3642,6 +4008,39 @@ export function tableCellDraftFromOperation(
     selectionStart: cell.text.length,
     selectionEnd: cell.text.length,
   };
+}
+
+export function zoneTitleDraftFromOperation(
+  operation: DurableOperation,
+  authoritativeItems: ReadonlyMap<string, BoardItem>,
+): ZoneTitleDraftRecovery | undefined {
+  if (operation.kind !== "item.update") return undefined;
+  const geometry = operation.patch.geometry;
+  const current = authoritativeItems.get(operation.itemId);
+  if (!geometry || !("title" in geometry) || current?.kind !== "zone") return undefined;
+  return {
+    itemId: operation.itemId,
+    title: geometry.title,
+    selectionStart: geometry.title.length,
+    selectionEnd: geometry.title.length,
+  };
+}
+
+function arrangeSuccessMessage(kind: ArrangeKind): string {
+  switch (kind) {
+    case "align-left":
+      return "Selection aligned left.";
+    case "align-top":
+      return "Selection aligned to the top.";
+    case "align-horizontal-center":
+      return "Selection centered horizontally.";
+    case "distribute-horizontal":
+      return "Selection spaced horizontally.";
+    case "distribute-vertical":
+      return "Selection spaced vertically.";
+    case "tidy-stickies":
+      return "Selected stickies tidied into a grid.";
+  }
 }
 
 function downloadBlob(filename: string, type: string, content: string): void {
