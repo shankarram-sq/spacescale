@@ -11,6 +11,11 @@ import {
 } from "@collab/protocol";
 import { renderSvgItem } from "@collab/svg-export";
 import {
+  buildOrganisationTemplateBatch,
+  OrganisationTemplateError,
+  organisationTemplateSelectionIssue,
+} from "../activities/organisation-templates";
+import {
   ACTIVITY_TEMPLATES,
   type ActivityTemplateId,
   buildActivityBatch,
@@ -38,9 +43,10 @@ import {
 import {
   type ApiClient,
   ApiError,
-  type AttributedBoardExport,
+  type AttributedDataExport,
   type FragmentClaim,
   type ManagedInvitation,
+  type OrganisationTemplate,
   type RecoverySnapshot,
 } from "../transport/api";
 import { BoardSocket } from "../transport/socket";
@@ -371,6 +377,13 @@ export function actorFromAccessChanged(frame: ServerFrame): Actor | null {
   return { id: actor.id, displayName: actor.displayName };
 }
 
+export function organisationTemplateManagementForRole(
+  organisationId: string | null,
+  role: Role,
+): boolean | null {
+  return organisationId === null ? null : role === "owner";
+}
+
 export const STAMP_CHOICES: ReadonlyArray<{ kind: StampKind; name: string; glyph: string }> = [
   { kind: "star", name: "Star", glyph: "★" },
   { kind: "check", name: "Check", glyph: "✓" },
@@ -446,6 +459,15 @@ export class BoardApp {
   private optimisticRecovery = false;
   private archivePending = false;
   private activityInsertPending = false;
+  private organisationId: string | null = null;
+  private organisationTemplates: OrganisationTemplate[] = [];
+  private organisationTemplatesCanManage = false;
+  private organisationTemplatesLoaded = false;
+  private organisationTemplatesLoading = false;
+  private organisationTemplatesError: string | null = null;
+  private organisationTemplateSavePending = false;
+  private organisationTemplateItemsToSave: BoardItem[] = [];
+  private readonly organisationTemplateDeletesPending = new Set<string>();
   private readonly titleInput: HTMLInputElement;
   private readonly saveStatus: HTMLElement;
   private readonly saveStatusText: HTMLElement;
@@ -470,6 +492,9 @@ export class BoardApp {
   private readonly imageInput: HTMLInputElement;
   private readonly imageAltDialog: HTMLDialogElement;
   private readonly imageAltInput: HTMLTextAreaElement;
+  private readonly organisationTemplateDialog: HTMLDialogElement;
+  private readonly organisationTemplateName: HTMLInputElement;
+  private readonly organisationTemplateDescription: HTMLTextAreaElement;
   private readonly undoButton: HTMLButtonElement;
   private readonly redoButton: HTMLButtonElement;
   private readonly archivedBanner: HTMLElement;
@@ -546,6 +571,21 @@ export class BoardApp {
     this.imageInput = query(this.root, "[data-image-input]", HTMLInputElement);
     this.imageAltDialog = query(this.root, "[data-testid='image-alt-dialog']", HTMLDialogElement);
     this.imageAltInput = query(this.imageAltDialog, "[data-image-alt-input]", HTMLTextAreaElement);
+    this.organisationTemplateDialog = query(
+      this.root,
+      "[data-testid='organisation-template-dialog']",
+      HTMLDialogElement,
+    );
+    this.organisationTemplateName = query(
+      this.organisationTemplateDialog,
+      "[data-organisation-template-name]",
+      HTMLInputElement,
+    );
+    this.organisationTemplateDescription = query(
+      this.organisationTemplateDialog,
+      "[data-organisation-template-description]",
+      HTMLTextAreaElement,
+    );
     this.undoButton = query(this.root, "[data-testid='undo-button']", HTMLButtonElement);
     this.redoButton = query(this.root, "[data-testid='redo-button']", HTMLButtonElement);
     this.archivedBanner = query(this.root, "[data-testid='archived-banner']", HTMLElement);
@@ -668,6 +708,7 @@ export class BoardApp {
     const app = new BoardApp(root, api, bootstrap);
     await app.restoreOutbox();
     app.updateAll();
+    void app.loadOrganisationTemplates();
     app.socket.connect();
     return app;
   }
@@ -690,6 +731,7 @@ export class BoardApp {
     this.renderer.svg.removeEventListener("dragover", this.onImageDragOver);
     this.renderer.svg.removeEventListener("drop", this.onImageDrop);
     this.closeImageAltEditor();
+    this.organisationTemplateDialog.close();
     void this.closeTableCellEditor(false);
     void this.closeZoneTitleEditor(false);
     void this.closeTextEditor(false);
@@ -721,14 +763,22 @@ export class BoardApp {
               <span data-save-status-text>Connecting…</span>
             </div>
             <div class="menu-wrap activities-wrap">
-              <button class="topbar-button activities-button" type="button" data-testid="activities-button" aria-label="Add classroom template" aria-haspopup="menu" aria-controls="activities-menu" aria-expanded="false" hidden>
+              <button class="topbar-button activities-button" type="button" data-testid="activities-button" aria-label="Add a template" aria-haspopup="menu" aria-controls="activities-menu" aria-expanded="false" hidden>
                 <span class="activities-button-mark" aria-hidden="true">＋</span>
                 <span class="activities-button-label">Templates</span>
               </button>
-              <div class="floating-menu activities-menu" data-testid="activities-menu" id="activities-menu" role="menu" aria-label="Classroom templates" hidden>
-                <p class="menu-eyebrow">Add a template</p>
+              <div class="floating-menu activities-menu" data-testid="activities-menu" id="activities-menu" role="menu" aria-label="Space templates" hidden>
+                <p class="menu-eyebrow">Built-in templates</p>
                 <p class="activities-menu-note">Starter layouts made from ordinary board items.</p>
                 <div class="activities-template-list" data-activities-template-list></div>
+                <section class="organisation-templates-section" data-organisation-templates-section hidden>
+                  <div class="activities-menu-divider" aria-hidden="true"></div>
+                  <p class="menu-eyebrow">Organisation templates</p>
+                  <p class="activities-menu-note" data-organisation-templates-note>Reusable layouts shared across every Space in this organisation.</p>
+                  <div class="activities-template-list organisation-template-list" data-organisation-template-list></div>
+                  <p class="activities-template-status" data-organisation-template-status role="status"></p>
+                  <button class="organisation-template-save" type="button" role="menuitem" data-save-organisation-template hidden>Save selected objects as template</button>
+                </section>
               </div>
             </div>
             <button class="topbar-button spotlight-toggle" type="button" data-testid="spotlight-toggle" aria-label="Start Follow me" aria-pressed="false" hidden>
@@ -745,7 +795,7 @@ export class BoardApp {
               <button class="icon-button" type="button" data-testid="export-button" aria-label="Export board" aria-controls="export-menu" aria-expanded="false" title="Export">↓</button>
               <div class="floating-menu export-menu" data-testid="export-menu" id="export-menu" hidden>
                 <p class="menu-eyebrow">Download current board</p>
-                <button type="button" data-export-attributed-json${classroomDataDownloadAllowed(this.bootstrap.actor.role) ? "" : " hidden"}>Classroom data JSON <span>people + text attribution</span></button>
+                <button type="button" data-export-attributed-json${attributedDataDownloadAllowed(this.bootstrap.actor.role) ? "" : " hidden"}>Attributed data JSON <span>people + text attribution</span></button>
                 <a data-export-svg download href="/api/v1/boards/${encodeURIComponent(this.bootstrap.board.id)}/export.svg">SVG image <span>authoritative</span></a>
                 <a data-export-json download href="/api/v1/boards/${encodeURIComponent(this.bootstrap.board.id)}/export.json">Canonical JSON <span>authoritative</span></a>
                 <button type="button" data-local-svg>Local SVG <span>includes pending edits</span></button>
@@ -842,7 +892,7 @@ export class BoardApp {
         </div>
 
         <aside class="side-drawer participant-drawer" id="participant-drawer" data-testid="participant-drawer" aria-label="Participants" hidden>
-          <div class="drawer-heading"><div><span class="eyebrow">Live room</span><h2>Participants</h2></div><button type="button" data-close-drawer aria-label="Close participants">×</button></div>
+          <div class="drawer-heading"><div><span class="eyebrow">Live Space</span><h2>Participants</h2></div><button type="button" data-close-drawer aria-label="Close participants">×</button></div>
           <div class="participant-list" data-participant-list></div>
         </aside>
 
@@ -850,13 +900,27 @@ export class BoardApp {
           <div class="drawer-heading"><div><span class="eyebrow">Owner controls</span><h2>Share & access</h2></div><button type="button" data-close-drawer aria-label="Close access panel">×</button></div>
           <div data-access-body></div>
         </aside>
-
+        <dialog class="claim-dialog organisation-template-dialog" data-testid="organisation-template-dialog" aria-labelledby="organisation-template-title">
+          <form data-organisation-template-form>
+            <span class="eyebrow">Organisation template</span>
+            <h2 id="organisation-template-title">Save selected objects</h2>
+            <p>This template will be available in every Space in your organisation.</p>
+            <label><span>Name</span><input data-organisation-template-name maxlength="100" autocomplete="off" required /></label>
+            <label><span>Description <i>optional</i></span><textarea data-organisation-template-description maxlength="500" rows="3"></textarea></label>
+            <small data-organisation-template-count></small>
+            <p class="inline-error" data-organisation-template-error role="alert" hidden></p>
+            <div class="dialog-actions">
+              <button type="button" data-organisation-template-cancel>Cancel</button>
+              <button class="primary-button" type="submit" data-organisation-template-submit>Save template</button>
+            </div>
+          </form>
+        </dialog>
 
         <dialog class="claim-dialog image-alt-dialog" data-testid="image-alt-dialog" aria-labelledby="image-alt-title">
           <form data-image-alt-form>
             <span class="eyebrow">Accessibility</span>
             <h2 id="image-alt-title">Describe this image</h2>
-            <p>Alt text helps participants using screen readers understand what this card shows.</p>
+            <p>Alt text helps people using screen readers understand what this card shows.</p>
             <label><span>Alt text <i>optional</i></span><textarea data-image-alt-input rows="4" placeholder="Describe the important visual information"></textarea></label>
             <small><output data-image-alt-count>0</output> / ${MAX_IMAGE_ALT_CODE_POINTS}</small>
             <div class="dialog-actions">
@@ -1013,6 +1077,280 @@ export class BoardApp {
       this.activityInsertPending = false;
       this.updatePermissions();
     }
+  }
+
+  private async loadOrganisationTemplates(): Promise<void> {
+    if (this.organisationTemplatesLoading) return;
+    this.organisationTemplatesLoading = true;
+    this.organisationTemplatesError = null;
+    this.renderOrganisationTemplates();
+    try {
+      const collection = await this.api.organisationTemplates(this.bootstrap.board.id);
+      this.organisationId = collection.organisationId;
+      this.organisationTemplatesCanManage = collection.canManage;
+      this.organisationTemplates = collection.templates;
+    } catch (error) {
+      this.organisationTemplatesError =
+        error instanceof ApiError ? error.message : "Organisation templates could not be loaded.";
+    } finally {
+      this.organisationTemplatesLoading = false;
+      this.organisationTemplatesLoaded = true;
+      this.renderOrganisationTemplates();
+      this.updateOrganisationTemplateSaveButton();
+    }
+  }
+
+  private renderOrganisationTemplates(): void {
+    const section = query(
+      this.activitiesMenu,
+      "[data-organisation-templates-section]",
+      HTMLElement,
+    );
+    const list = query(section, "[data-organisation-template-list]", HTMLElement);
+    const status = query(section, "[data-organisation-template-status]", HTMLElement);
+    section.hidden = this.organisationId === null;
+    list.replaceChildren();
+    status.textContent = "";
+    if (section.hidden) return;
+
+    for (const template of this.organisationTemplates) {
+      const row = document.createElement("div");
+      row.className = "organisation-template-row";
+      const add = document.createElement("button");
+      add.type = "button";
+      add.dataset.organisationTemplate = template.id;
+      add.dataset.testid = `organisation-template-${template.id}`;
+      add.setAttribute("role", "menuitem");
+      add.setAttribute("aria-label", `Add ${template.name} organisation template`);
+      const label = document.createElement("strong");
+      label.textContent = template.name;
+      const description = document.createElement("span");
+      description.textContent = template.description ?? `${template.items.length} objects`;
+      add.append(label, description);
+      add.addEventListener("click", () => void this.insertOrganisationTemplate(template));
+      row.append(add);
+
+      if (this.organisationTemplatesCanManage && this.bootstrap.actor.role === "owner") {
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "organisation-template-delete";
+        remove.dataset.deleteOrganisationTemplate = template.id;
+        remove.setAttribute("role", "menuitem");
+        remove.setAttribute("aria-label", `Delete ${template.name} organisation template`);
+        remove.title = "Delete organisation template";
+        remove.textContent = "×";
+        remove.disabled = this.organisationTemplateDeletesPending.has(template.id);
+        remove.addEventListener("click", () => void this.deleteOrganisationTemplate(template));
+        row.append(remove);
+      }
+      list.append(row);
+    }
+
+    if (this.organisationTemplatesLoading && !this.organisationTemplatesLoaded) {
+      status.textContent = "Loading organisation templates…";
+    } else if (this.organisationTemplatesError) {
+      status.textContent = this.organisationTemplatesError;
+    } else if (this.organisationTemplates.length === 0) {
+      status.textContent = "No organisation templates yet.";
+    }
+    this.updateOrganisationTemplateSaveButton();
+  }
+
+  private async insertOrganisationTemplate(template: OrganisationTemplate): Promise<void> {
+    if (!this.canCommit() || this.activityInsertPending) return;
+    const maxBatchItems = Math.max(
+      1,
+      Math.min(100, Math.floor(this.bootstrap.limits.maxBatchItems)),
+    );
+    if (template.items.length > maxBatchItems) {
+      this.notify(`This template exceeds the ${maxBatchItems}-object Space limit.`, "warning");
+      return;
+    }
+    this.activityInsertPending = true;
+    this.updatePermissions();
+    this.activitiesButton.focus();
+    try {
+      const view = this.renderer.viewport.viewState;
+      const batch = buildOrganisationTemplateBatch(
+        template,
+        [view.center.x, view.center.y],
+        createId,
+      );
+      const accepted = await this.commit(batch.operation);
+      if (!accepted) return;
+      this.closeActivitiesMenu();
+      this.tools.setTool("select");
+      this.tools.selectOnly(batch.itemIds);
+      this.renderer.viewport.fit(this.model.boundsFor(batch.itemIds));
+      this.notify(`${template.name} added.`, "info");
+    } catch (error) {
+      this.notify(
+        error instanceof OrganisationTemplateError
+          ? error.message
+          : "This organisation template could not be added.",
+        "error",
+      );
+    } finally {
+      this.activityInsertPending = false;
+      this.updatePermissions();
+    }
+  }
+
+  private openOrganisationTemplateDialog(): void {
+    if (
+      this.bootstrap.actor.role !== "owner" ||
+      !this.organisationTemplatesCanManage ||
+      this.organisationId === null
+    ) {
+      return;
+    }
+    const selectedIds = [...this.tools.selection];
+    const items = savedAuthoritativeItems(
+      selectedIds,
+      this.model.items,
+      this.model.authoritativeItems,
+    );
+    const maxItems = Math.max(1, Math.min(100, Math.floor(this.bootstrap.limits.maxBatchItems)));
+    const issue = items
+      ? organisationTemplateSelectionIssue(items, maxItems)
+      : "Wait for the selected objects to finish saving.";
+    if (issue || !items) {
+      this.notify(issue ?? "Select saved objects first.", "warning");
+      return;
+    }
+    this.organisationTemplateItemsToSave = items.map((item) => structuredClone(item));
+    this.organisationTemplateName.value = "";
+    this.organisationTemplateDescription.value = "";
+    query(
+      this.organisationTemplateDialog,
+      "[data-organisation-template-count]",
+      HTMLElement,
+    ).textContent = `${items.length} selected object${items.length === 1 ? "" : "s"}`;
+    const error = query(
+      this.organisationTemplateDialog,
+      "[data-organisation-template-error]",
+      HTMLElement,
+    );
+    error.hidden = true;
+    error.textContent = "";
+    this.closeActivitiesMenu();
+    this.organisationTemplateDialog.showModal();
+    this.organisationTemplateName.focus();
+  }
+
+  private async saveOrganisationTemplate(): Promise<void> {
+    if (this.organisationTemplateSavePending) return;
+    const name = this.organisationTemplateName.value.trim();
+    const description = this.organisationTemplateDescription.value.trim();
+    const error = query(
+      this.organisationTemplateDialog,
+      "[data-organisation-template-error]",
+      HTMLElement,
+    );
+    if (!name) {
+      error.textContent = "Enter a template name.";
+      error.hidden = false;
+      this.organisationTemplateName.focus();
+      return;
+    }
+    const issue = organisationTemplateSelectionIssue(
+      this.organisationTemplateItemsToSave,
+      this.bootstrap.limits.maxBatchItems,
+    );
+    if (issue) {
+      error.textContent = issue;
+      error.hidden = false;
+      return;
+    }
+    this.organisationTemplateSavePending = true;
+    query(
+      this.organisationTemplateDialog,
+      "[data-organisation-template-submit]",
+      HTMLButtonElement,
+    ).disabled = true;
+    try {
+      const created = await this.api.createOrganisationTemplate(this.bootstrap.board.id, {
+        name,
+        ...(description ? { description } : {}),
+        items: this.organisationTemplateItemsToSave,
+      });
+      this.organisationTemplates = [
+        ...this.organisationTemplates.filter((template) => template.id !== created.id),
+        created,
+      ].sort((left, right) => left.name.localeCompare(right.name));
+      this.organisationTemplateDialog.close();
+      this.renderOrganisationTemplates();
+      this.notify(`${created.name} saved for this organisation.`, "info");
+    } catch (cause) {
+      error.textContent =
+        cause instanceof ApiError
+          ? cause.message
+          : "This organisation template could not be saved.";
+      error.hidden = false;
+    } finally {
+      this.organisationTemplateSavePending = false;
+      query(
+        this.organisationTemplateDialog,
+        "[data-organisation-template-submit]",
+        HTMLButtonElement,
+      ).disabled = false;
+    }
+  }
+
+  private async deleteOrganisationTemplate(template: OrganisationTemplate): Promise<void> {
+    if (
+      this.bootstrap.actor.role !== "owner" ||
+      !this.organisationTemplatesCanManage ||
+      this.organisationTemplateDeletesPending.has(template.id) ||
+      !confirm(
+        `Delete “${template.name}” for every Space in this organisation? Existing board objects will not change.`,
+      )
+    ) {
+      return;
+    }
+    this.organisationTemplateDeletesPending.add(template.id);
+    this.renderOrganisationTemplates();
+    try {
+      await this.api.deleteOrganisationTemplate(this.bootstrap.board.id, template.id);
+      this.organisationTemplates = this.organisationTemplates.filter(
+        (candidate) => candidate.id !== template.id,
+      );
+      this.notify(`${template.name} deleted from organisation templates.`, "info");
+    } catch (error) {
+      this.notify(
+        error instanceof ApiError
+          ? error.message
+          : "This organisation template could not be deleted.",
+        "error",
+      );
+    } finally {
+      this.organisationTemplateDeletesPending.delete(template.id);
+      this.renderOrganisationTemplates();
+    }
+  }
+
+  private updateOrganisationTemplateSaveButton(): void {
+    const button = this.activitiesMenu.querySelector<HTMLButtonElement>(
+      "[data-save-organisation-template]",
+    );
+    if (!button) return;
+    const canManage =
+      this.organisationId !== null &&
+      this.organisationTemplatesCanManage &&
+      this.bootstrap.actor.role === "owner";
+    button.hidden = !canManage;
+    if (!canManage) return;
+    const selectedIds = [...this.tools.selection];
+    const selected = savedAuthoritativeItems(
+      selectedIds,
+      this.model.items,
+      this.model.authoritativeItems,
+    );
+    const issue = selected
+      ? organisationTemplateSelectionIssue(selected, this.bootstrap.limits.maxBatchItems)
+      : "Wait for the selected objects to finish saving.";
+    button.disabled = !this.canCommit() || this.activityInsertPending || issue !== null;
+    button.title = issue ?? "Save these objects for every Space in this organisation.";
   }
 
   private async clearSelectedVotes(): Promise<void> {
@@ -1310,8 +1648,33 @@ export class BoardApp {
       const opening = this.activitiesMenu.hidden;
       this.togglePopover(this.activitiesMenu, this.activitiesButton);
       if (opening) {
+        void this.loadOrganisationTemplates();
         this.activitiesMenu.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
       }
+    });
+    query(
+      this.activitiesMenu,
+      "[data-save-organisation-template]",
+      HTMLButtonElement,
+    ).addEventListener("click", () => this.openOrganisationTemplateDialog());
+    query(
+      this.organisationTemplateDialog,
+      "[data-organisation-template-form]",
+      HTMLFormElement,
+    ).addEventListener("submit", (event) => {
+      event.preventDefault();
+      void this.saveOrganisationTemplate();
+    });
+    query(
+      this.organisationTemplateDialog,
+      "[data-organisation-template-cancel]",
+      HTMLButtonElement,
+    ).addEventListener("click", () => this.organisationTemplateDialog.close());
+    this.organisationTemplateDialog.addEventListener("cancel", () => {
+      this.organisationTemplateItemsToSave = [];
+    });
+    this.organisationTemplateDialog.addEventListener("close", () => {
+      this.organisationTemplateItemsToSave = [];
     });
     this.activitiesMenu.addEventListener("keydown", (event) => {
       const items = [
@@ -2158,6 +2521,14 @@ export class BoardApp {
     if (access.accessMode === "private" || access.accessMode === "link_view")
       this.bootstrap.board.accessMode = access.accessMode;
     if (typeof access.aclVersion === "number") this.bootstrap.board.aclVersion = access.aclVersion;
+    const organisationTemplatesCanManage = organisationTemplateManagementForRole(
+      this.organisationId,
+      this.bootstrap.actor.role,
+    );
+    if (organisationTemplatesCanManage !== null) {
+      this.organisationTemplatesCanManage = organisationTemplatesCanManage;
+      this.renderOrganisationTemplates();
+    }
     if (!canRoleDraw(this.bootstrap.actor.role, this.bootstrap.board.drawingPolicy))
       this.tools.setTool("select");
     if (!this.bootstrap.board.imagesEnabled && this.tools.tool === "image")
@@ -3596,6 +3967,22 @@ export class BoardApp {
     )) {
       button.disabled = !canEdit || this.activityInsertPending;
     }
+    for (const button of this.activitiesMenu.querySelectorAll<HTMLButtonElement>(
+      "[data-organisation-template]",
+    )) {
+      button.disabled = !canEdit || this.activityInsertPending;
+    }
+    for (const button of this.activitiesMenu.querySelectorAll<HTMLButtonElement>(
+      "[data-delete-organisation-template]",
+    )) {
+      const templateId = button.dataset.deleteOrganisationTemplate;
+      button.disabled =
+        archived ||
+        this.bootstrap.actor.role !== "owner" ||
+        !this.organisationTemplatesCanManage ||
+        (templateId !== undefined && this.organisationTemplateDeletesPending.has(templateId));
+    }
+    this.updateOrganisationTemplateSaveButton();
     if (this.activitiesButton.disabled || this.activitiesButton.hidden) {
       this.closeActivitiesMenu();
     }
@@ -3621,7 +4008,7 @@ export class BoardApp {
     this.accessButton.hidden = this.bootstrap.actor.role !== "owner" || archived;
     this.accessButton.disabled = archived || this.archivePending;
     query(this.root, "[data-export-attributed-json]", HTMLButtonElement).hidden =
-      !classroomDataDownloadAllowed(this.bootstrap.actor.role);
+      !attributedDataDownloadAllowed(this.bootstrap.actor.role);
     this.titleInput.readOnly = this.bootstrap.actor.role !== "owner" || archived;
     this.titleInput.disabled = archived || this.archivePending;
     this.titleInput.classList.toggle(
@@ -3894,6 +4281,7 @@ export class BoardApp {
     clearVotes.title = voteSummary
       ? voteSummary.options.map((option) => `${option.label}: ${option.count}`).join(" · ")
       : "";
+    this.updateOrganisationTemplateSaveButton();
   }
 
   private zoomBy(factor: number): void {
@@ -4016,18 +4404,18 @@ export class BoardApp {
   private async downloadAttributedJson(button: HTMLButtonElement): Promise<void> {
     button.disabled = true;
     try {
-      const data = await this.api.attributedBoardExport(this.bootstrap.board.id);
+      const data = await this.api.attributedDataExport(this.bootstrap.board.id);
       downloadBlob(
-        classroomDataFilename(this.bootstrap.board.title),
+        attributedDataFilename(this.bootstrap.board.title),
         "application/json",
-        serializeClassroomData(data),
+        serializeAttributedData(data),
       );
       this.exportMenu.hidden = true;
       query(this.root, "[data-testid='export-button']", HTMLButtonElement).setAttribute(
         "aria-expanded",
         "false",
       );
-      this.notify("Classroom data JSON downloaded.");
+      this.notify("Attributed data JSON downloaded.");
     } catch (error) {
       this.apiError(error);
     } finally {
@@ -4313,15 +4701,15 @@ export function localSvg(snapshot: BoardSnapshot, title: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" role="img" aria-label="${escapeXml(title)}"><metadata>{&quot;format&quot;:&quot;cf-whiteboard-json&quot;,&quot;seq&quot;:${snapshot.seq}}</metadata><rect x="-1000000" y="-1000000" width="2000000" height="2000000" fill="#ffffff"/>${content}</svg>`;
 }
 
-export function classroomDataFilename(boardTitle: string): string {
-  return `${safeFilename(boardTitle)}-classroom-data.json`;
+export function attributedDataFilename(boardTitle: string): string {
+  return `${safeFilename(boardTitle)}-attributed-data.json`;
 }
 
-export function classroomDataDownloadAllowed(role: Role): boolean {
+export function attributedDataDownloadAllowed(role: Role): boolean {
   return role === "owner";
 }
 
-export function serializeClassroomData(data: AttributedBoardExport): string {
+export function serializeAttributedData(data: AttributedDataExport): string {
   return `${JSON.stringify(data, null, 2)}\n`;
 }
 

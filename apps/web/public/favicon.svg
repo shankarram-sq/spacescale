@@ -1,4 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none">
+  <title>SpaceScale</title>
   <rect x="2" y="2" width="60" height="60" rx="18" fill="#20201E"/>
   <path d="M44.5 17.5H29c-6.63 0-12 4.25-12 9.5s5.37 9.5 12 9.5h6c6.63 0 12 4.25 12 9.5s-5.37 9.5-12 9.5H19.5" stroke="#FBFAF6" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
   <circle cx="47" cy="17.5" r="4" fill="#6E86F7" stroke="#20201E" stroke-width="2"/>

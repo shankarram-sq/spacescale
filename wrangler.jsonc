@@ -18,11 +18,19 @@
       {
         "name": "BOARD_ROOMS",
         "class_name": "BoardRoom"
+      },
+      {
+        "name": "ORGANISATION_ROOMS",
+        "class_name": "OrganisationRoom"
       }
     ]
   },
   "exports": {
     "BoardRoom": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
+    "OrganisationRoom": {
       "type": "durable-object",
       "storage": "sqlite"
     }
@@ -66,11 +74,19 @@
           {
             "name": "BOARD_ROOMS",
             "class_name": "BoardRoom"
+          },
+          {
+            "name": "ORGANISATION_ROOMS",
+            "class_name": "OrganisationRoom"
           }
         ]
       },
       "exports": {
         "BoardRoom": {
+          "type": "durable-object",
+          "storage": "sqlite"
+        },
+        "OrganisationRoom": {
           "type": "durable-object",
           "storage": "sqlite"
         }
@@ -112,11 +128,19 @@
           {
             "name": "BOARD_ROOMS",
             "class_name": "BoardRoom"
+          },
+          {
+            "name": "ORGANISATION_ROOMS",
+            "class_name": "OrganisationRoom"
           }
         ]
       },
       "exports": {
         "BoardRoom": {
+          "type": "durable-object",
+          "storage": "sqlite"
+        },
+        "OrganisationRoom": {
           "type": "durable-object",
           "storage": "sqlite"
         }

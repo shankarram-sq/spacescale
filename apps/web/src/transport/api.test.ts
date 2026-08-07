@@ -147,11 +147,11 @@ describe("board archive API", () => {
   });
 });
 
-describe("classroom embed session", () => {
+describe("embedded Space session", () => {
   it("exchanges a launch token before storing and using the bearer", async () => {
     const requests: CapturedRequest[] = [];
     const historyValue = {
-      state: { source: "classroom" } as unknown,
+      state: { source: "parent-application" } as unknown,
       replaceState: vi.fn((state: unknown) => {
         historyValue.state = state;
       }),
@@ -214,7 +214,7 @@ describe("classroom embed session", () => {
     );
     expect(new Headers(requests[2]?.init.headers).get("x-csrf-token")).toBe("embed-csrf");
     expect(historyValue.state).toEqual({
-      source: "classroom",
+      source: "parent-application",
       "cf-collab-canvas.embed-bearer": "es1.session.signature",
     });
   });
@@ -302,11 +302,11 @@ describe("classroom embed session", () => {
   });
 });
 
-describe("attributed classroom export", () => {
-  it("fetches the classroom-data API with the stored embed bearer", async () => {
+describe("attributed data export", () => {
+  it("fetches attributed data with the stored embed bearer", async () => {
     vi.stubGlobal("history", {
       state: {
-        "cf-collab-canvas.embed-bearer": "es1.classroom.signature",
+        "cf-collab-canvas.embed-bearer": "es1.embedded.signature",
       },
       replaceState: vi.fn(),
     });
@@ -337,7 +337,7 @@ describe("attributed classroom export", () => {
       }),
     );
 
-    const exported = await new ApiClient(true).attributedBoardExport("b_1234567890123456789012");
+    const exported = await new ApiClient(true).attributedDataExport("b_1234567890123456789012");
 
     expect(exported).toMatchObject({
       format: "cf-whiteboard-attributed-json",
@@ -354,8 +354,103 @@ describe("attributed classroom export", () => {
     });
     const headers = new Headers(requests[0]?.init.headers);
     expect(headers.get("accept")).toBe("application/json");
-    expect(headers.get("authorization")).toBe("Bearer es1.classroom.signature");
-    expect(requests[0]?.path).not.toContain("es1.classroom.signature");
+    expect(headers.get("authorization")).toBe("Bearer es1.embedded.signature");
+    expect(requests[0]?.path).not.toContain("es1.embedded.signature");
+  });
+});
+
+describe("organisation template APIs", () => {
+  const templateItem = {
+    id: "018f0000-0000-7000-8000-000000000001",
+    kind: "sticky",
+    z: 1,
+    version: 3,
+    createdBy: `a_${"A".repeat(22)}`,
+    transform: [1, 0, 0, 1, 0, 0],
+    style: {
+      kind: "sticky",
+      fill: "#fde68a",
+      textColor: "#20201e",
+      fontSize: 20,
+      opacity: 1,
+    },
+    geometry: { x: 10, y: 20, width: 180, height: 120, text: "Reflect" },
+  };
+  const template = {
+    id: `tpl_${"T".repeat(22)}`,
+    name: "Weekly reflection",
+    description: "A reusable check-in",
+    items: [templateItem],
+    createdBy: `a_${"A".repeat(22)}`,
+    createdAt: 1_900_000_000_000,
+    updatedAt: 1_900_000_000_100,
+  };
+
+  it("loads, creates, and deletes templates on the board organisation route", async () => {
+    const requests: CapturedRequest[] = [];
+    const responses: Array<Response> = [
+      Response.json({
+        organisationId: `o_${"O".repeat(22)}`,
+        canManage: true,
+        templates: [template],
+      }),
+      Response.json(template, { status: 201 }),
+      new Response(null, { status: 204 }),
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+        requests.push({ path: String(input), init });
+        const response = responses.shift();
+        if (!response) throw new Error("Unexpected request.");
+        return response;
+      }),
+    );
+    vi.stubGlobal("crypto", { ...crypto, randomUUID: () => "idempotency-key" });
+
+    const api = new ApiClient(false);
+    const collection = await api.organisationTemplates("b_1234567890123456789012");
+    const created = await api.createOrganisationTemplate("b_1234567890123456789012", {
+      name: template.name,
+      description: template.description,
+      items: collection.templates[0]?.items ?? [],
+    });
+    await api.deleteOrganisationTemplate("b_1234567890123456789012", created.id);
+
+    expect(collection).toMatchObject({
+      organisationId: `o_${"O".repeat(22)}`,
+      canManage: true,
+      templates: [{ name: "Weekly reflection", items: [{ kind: "sticky" }] }],
+    });
+    expect(requests.map((request) => request.path)).toEqual([
+      "/api/v1/boards/b_1234567890123456789012/organisation/templates",
+      "/api/v1/boards/b_1234567890123456789012/organisation/templates",
+      `/api/v1/boards/b_1234567890123456789012/organisation/templates/${template.id}`,
+    ]);
+    expect(requests.map((request) => request.init.method)).toEqual(["GET", "POST", "DELETE"]);
+    expect(new Headers(requests[1]?.init.headers).get("idempotency-key")).toBe("idempotency-key");
+    expect(JSON.parse(String(requests[1]?.init.body))).toMatchObject({
+      name: "Weekly reflection",
+      description: "A reusable check-in",
+      items: [{ id: templateItem.id, version: 3, createdBy: templateItem.createdBy }],
+    });
+  });
+
+  it("rejects malformed template objects instead of exposing partial server data", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          organisationId: null,
+          canManage: false,
+          templates: [{ ...template, items: [{ ...templateItem, version: "three" }] }],
+        }),
+      ),
+    );
+
+    await expect(
+      new ApiClient(false).organisationTemplates("b_1234567890123456789012"),
+    ).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
   });
 });
 

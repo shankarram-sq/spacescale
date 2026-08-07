@@ -21,6 +21,7 @@ const editorId = "a_BBBBBBBBBBBBBBBBBBBBBA";
 const coOwnerId = `a_${"C".repeat(22)}`;
 const studentId = `a_${"D".repeat(22)}`;
 const placeholderOwnerId = `a_${"P".repeat(22)}`;
+const organisationId = `o_${"O".repeat(21)}A`;
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -67,22 +68,30 @@ async function launchClassroom(
   ownerRecoveryHash = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
   importSnapshot?: string,
   publicId = boardId,
+  organisation?: string,
 ): Promise<Response> {
   return stub.fetch(
-    internalActorRequest(actor, "/__internal/classroom-launch", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        publicId,
-        title: "Classroom board",
-        role,
-        displayName,
-        launchIssuedAtMs,
-        placeholderOwnerActorId: placeholderOwnerId,
-        ownerRecoveryHash,
-        ...(importSnapshot === undefined ? {} : { importSnapshot }),
-      }),
-    }),
+    internalActorRequest(
+      actor,
+      organisation === undefined
+        ? "/__internal/classroom-launch"
+        : "/__internal/organisation-launch",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          publicId,
+          ...(organisation === undefined ? {} : { organisationId: organisation }),
+          title: "Classroom board",
+          role,
+          displayName,
+          launchIssuedAtMs,
+          placeholderOwnerActorId: placeholderOwnerId,
+          ownerRecoveryHash,
+          ...(importSnapshot === undefined ? {} : { importSnapshot }),
+        }),
+      },
+    ),
   );
 }
 async function addEditor(stub: DurableObjectStub): Promise<void> {
@@ -441,6 +450,11 @@ describe("BoardRoom initialization", () => {
       classroomMode: durableState.storage.sql
         .exec<{ classroom_mode: number }>("SELECT classroom_mode FROM board")
         .one().classroom_mode,
+      organisation: durableState.storage.sql
+        .exec<{ organisation_mode: number; organisation_id: string | null }>(
+          "SELECT organisation_mode, organisation_id FROM board",
+        )
+        .one(),
       accounting: durableState.storage.sql
         .exec<{ item_count: number; item_bytes: number }>(
           `SELECT snapshot_live_item_count AS item_count,
@@ -449,10 +463,11 @@ describe("BoardRoom initialization", () => {
         .one(),
     }));
     expect(state).toEqual({
-      migrations: [1, 2, 3, 4, 5, 6, 7, 8, 9],
+      migrations: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
       boards: 1,
       owners: 1,
       classroomMode: 0,
+      organisation: { organisation_mode: 0, organisation_id: null },
       accounting: { item_count: 0, item_bytes: 0 },
     });
 
@@ -717,6 +732,183 @@ describe("BoardRoom initialization", () => {
         expect.objectContaining({ actorId: coOwnerId, role: "owner", primaryOwner: false }),
         expect.objectContaining({ actorId: studentId, role: "viewer", primaryOwner: false }),
       ]),
+    });
+  });
+
+  it("shares bounded templates across organisation boards and authorizes every live owner", async () => {
+    const binding = (env as unknown as Env).BOARD_ROOMS;
+    const stub = binding.getByName(boardId);
+    const issuedAt = Date.now() - 10_000;
+    const ownerLaunch = await launchClassroom(
+      stub,
+      actorId,
+      "owner",
+      issuedAt,
+      "Coach one",
+      undefined,
+      undefined,
+      boardId,
+      organisationId,
+    );
+    expect(ownerLaunch.status).toBe(201);
+    await ownerLaunch.arrayBuffer();
+    const viewerLaunch = await launchClassroom(
+      stub,
+      studentId,
+      "viewer",
+      issuedAt + 1,
+      "Student",
+      undefined,
+      undefined,
+      boardId,
+      organisationId,
+    );
+    expect(viewerLaunch.status).toBe(200);
+    await viewerLaunch.arrayBuffer();
+    const coOwnerLaunch = await launchClassroom(
+      stub,
+      coOwnerId,
+      "owner",
+      issuedAt + 2,
+      "Coach two",
+      undefined,
+      undefined,
+      boardId,
+      organisationId,
+    );
+    expect(coOwnerLaunch.status).toBe(200);
+    await coOwnerLaunch.arrayBuffer();
+
+    const route = `/api/v1/boards/${boardId}/organisation/templates`;
+    const viewerList = await stub.fetch(internalActorRequest(studentId, route));
+    expect(viewerList.status).toBe(200);
+    expect(await viewerList.json()).toEqual({
+      organisationId,
+      canManage: false,
+      templates: [],
+    });
+
+    const source = createStickyCommit(
+      "018f0000-0000-7000-8000-000000000211",
+      "018f0000-0000-7000-8000-000000000212",
+      "018f0000-0000-7000-8000-000000000213",
+    ).op.item;
+    const item = { ...source, z: 1, version: 1, createdBy: actorId };
+    const createBody = JSON.stringify({
+      name: "  Exit reflection  ",
+      description: "  End-of-lesson prompts  ",
+      items: [item],
+    });
+    const rejected = await stub.fetch(
+      internalActorRequest(studentId, route, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: createBody,
+      }),
+    );
+    expect(rejected.status).toBe(403);
+
+    const createdResponse = await stub.fetch(
+      internalActorRequest(actorId, route, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: createBody,
+      }),
+    );
+    expect(createdResponse.status).toBe(201);
+    const created = (await createdResponse.json()) as {
+      id: string;
+      name: string;
+      description: string | null;
+      items: unknown[];
+      createdBy: string;
+      createdAt: number;
+      updatedAt: number;
+    };
+    expect(created).toMatchObject({
+      id: expect.stringMatching(/^tpl_[A-Za-z0-9_-]{22}$/u),
+      name: "Exit reflection",
+      description: "End-of-lesson prompts",
+      items: [item],
+      createdBy: actorId,
+      createdAt: expect.any(Number),
+      updatedAt: expect.any(Number),
+    });
+
+    const coOwnerList = await stub.fetch(internalActorRequest(coOwnerId, route));
+    expect(coOwnerList.status).toBe(200);
+    expect(await coOwnerList.json()).toMatchObject({
+      organisationId,
+      canManage: true,
+      templates: [created],
+    });
+
+    const siblingBoardId = `b_${"R".repeat(21)}A`;
+    const siblingStub = binding.getByName(siblingBoardId);
+    const siblingLaunch = await launchClassroom(
+      siblingStub,
+      actorId,
+      "owner",
+      issuedAt + 3,
+      "Coach one",
+      undefined,
+      undefined,
+      siblingBoardId,
+      organisationId,
+    );
+    expect(siblingLaunch.status).toBe(201);
+    await siblingLaunch.arrayBuffer();
+    const siblingList = await siblingStub.fetch(
+      internalActorRequest(actorId, `/api/v1/boards/${siblingBoardId}/organisation/templates`),
+    );
+    expect(siblingList.status).toBe(200);
+    expect(await siblingList.json()).toMatchObject({
+      organisationId,
+      canManage: true,
+      templates: [created],
+    });
+
+    const deleted = await stub.fetch(
+      internalActorRequest(coOwnerId, `${route}/${created.id}`, { method: "DELETE" }),
+    );
+    expect(deleted.status).toBe(204);
+    expect(await deleted.text()).toBe("");
+
+    const mismatch = await launchClassroom(
+      stub,
+      actorId,
+      "owner",
+      issuedAt + 4,
+      "Coach one",
+      undefined,
+      undefined,
+      boardId,
+      `o_${"Q".repeat(21)}A`,
+    );
+    expect(mismatch.status).toBe(409);
+
+    const ordinaryBoardId = `b_${"U".repeat(22)}`;
+    const ordinaryStub = binding.getByName(ordinaryBoardId);
+    const ordinaryLaunch = await launchClassroom(
+      ordinaryStub,
+      actorId,
+      "owner",
+      issuedAt,
+      "Ordinary owner",
+      undefined,
+      undefined,
+      ordinaryBoardId,
+    );
+    expect(ordinaryLaunch.status).toBe(201);
+    await ordinaryLaunch.arrayBuffer();
+    const ordinaryList = await ordinaryStub.fetch(
+      internalActorRequest(actorId, `/api/v1/boards/${ordinaryBoardId}/organisation/templates`),
+    );
+    expect(ordinaryList.status).toBe(200);
+    expect(await ordinaryList.json()).toEqual({
+      organisationId: null,
+      canManage: false,
+      templates: [],
     });
   });
 

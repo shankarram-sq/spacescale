@@ -8,13 +8,13 @@ per board validates, commits, sequences, and broadcasts every durable action
 through the shared board reducer. SQLite is authoritative; private R2 objects
 provide immutable recovery checkpoints and named snapshots.
 
-## Classroom template tools
+## Space collaboration tools
 
 Alongside freehand drawing, shapes, and plain text, the board supports durable
 sticky notes for brainstorming, exit tickets, sorting, and feedback. Choose
 **Sticky note** or press `N`, click the board, and type immediately. A note may
 be left empty, uses a 180 × 140 board-unit default size, and can be recolored
-with the six classroom presets while creating it or after selecting it. A saved
+with the six SpaceScale presets while creating it or after selecting it. A saved
 sticky note or image card also exposes a lower-right resize handle.
 
 Sticky notes participate in the same authoritative collaboration pipeline as
@@ -37,14 +37,14 @@ the item reveals the creator's signed display name. The Worker uses only an
 opaque actor ID for durable attribution; it does not store or expose the raw
 stable user identifier.
 
-Board owners can choose **Classroom data JSON** from the export menu to download
+Space owners can choose **Attributed data JSON** from the export menu to download
 the current authoritative objects together with participant names and normalized
 text attribution. Creator and content author are reported separately: for a
 sticky, text item, image description, or zone title, the responsible user is the
 last participant who authored the current value; table cells are attributed
 individually. The same owner-only data is available to trusted backends at
 `GET /api/v1/boards/<board-id>/export.attributed.json`. It contains opaque actor
-IDs and display names, never raw email addresses or `user_identifier` values.
+IDs and display names, never raw email addresses or `participant_id` values.
 
 Owners can also enable private **Image cards** for a board. Editors then upload,
 paste, or drop PNG, JPEG, WebP, and static GIF images; the browser removes photo
@@ -66,13 +66,16 @@ role/lock, copy/delete, snapshot, replay, and safe JSON/SVG export behavior as
 the other durable board items.
 
 Owners and editors can select **Follow me** to share their live canvas position
-and zoom with the class, including while drawing is locked. Participants may
+and zoom with the Space, including while drawing is locked. Participants may
 press `Esc` or choose **Stop** to leave that Spotlight session; a later session
 can be followed normally. Spotlight traffic is ephemeral and never enters board
 history, snapshots, exports, or the offline outbox.
 
-The **Templates** menu adds five local starter layouts—Exit ticket, K-W-L,
-Sort it, Pair share, and Vote with stamps—as one ordinary attributed item batch.
+The **Templates** menu includes five built-in starter layouts—Exit ticket,
+K-W-L, Sort it, Pair share, and Vote with stamps—as ordinary attributed item
+batches. Owners of an organisation-managed Space can also save a selection as
+an organisation template. Those templates appear in every Space signed for the
+same Organisation and remain isolated from every other Organisation.
 Vote totals are derived live from each participant's latest stamp in the vote
 table and are not stored in board history or exports. Only owners receive the
 bulk **Clear votes** action; the underlying stamps remain ordinary board items.
@@ -147,7 +150,7 @@ encrypted secrets or the Cloudflare deployment API.
 | `TURNSTILE_SITE_KEY` | Production public site key from **Cloudflare Dashboard → Turnstile → widget → Site Key**. It may be exposed to the browser. Staging deliberately omits it because Turnstile is disabled there for browser automation. |
 | `SESSION_SIGNING_KEY_CURRENT` | Secret HMAC key for device sessions. Generate independently per environment with `openssl rand -base64 32`. |
 | `SESSION_SIGNING_KEY_PREVIOUS` | Optional prior session key, accepted only during rotation. Leave empty on a new installation. |
-| `CLASSROOM_INTEGRATION_KEY` | Secret HMAC key shared with the trusted classroom backend for participant-specific embed URLs. Generate with `openssl rand -base64 32` and keep it stable. |
+| `ORGANISATION_SIGNING_KEYS` | Secret JSON registry of Organisation-specific HMAC keys. Each entry has a stable `derivation_key`, a `current` launch key with `kid`, and optional `previous` keys for rotation. Generate every key independently with `openssl rand -base64 32`. |
 | `APP_HOSTNAME` | Public hostname only—no scheme, path, query, or trailing slash. Example: `whiteboard.example.com` or a `workers.dev` hostname. |
 | `ALLOWED_ORIGINS` | Comma-separated exact HTTPS origins allowed to embed `/embed`. Missing, blank, or invalid configuration denies all framing; a literal `*` explicitly allows every parent. |
 | `BOARD_CREATION_ENABLED` | Public fail-closed operational switch. `true` permits new boards; `false` preserves existing-board read/reconnect/export routes while rejecting creation. |
@@ -263,11 +266,16 @@ rollback. Focused development checks are the normal promotion criterion; moving
 the same SHA through `staging` and then `main` is recommended but not enforced.
 Full CI and Playwright are manual-only.
 
+For GitHub deployments, add `ORGANISATION_SIGNING_KEYS` as an encrypted secret
+in both the `staging` and `production` GitHub environments. The workflow uploads
+it with each Worker version using Wrangler's secret file support. The commands
+below remain useful for manual or Cloudflare-native deployments.
+
 Install runtime secrets before the first production request:
 
 ```sh
 npx wrangler secret put SESSION_SIGNING_KEY_CURRENT
-npx wrangler secret put CLASSROOM_INTEGRATION_KEY
+npx wrangler secret put ORGANISATION_SIGNING_KEYS
 npx wrangler secret put TURNSTILE_SECRET_KEY
 ```
 
@@ -275,7 +283,7 @@ Install distinct staging secrets explicitly against the staging environment:
 
 ```sh
 npx wrangler secret put SESSION_SIGNING_KEY_CURRENT --env staging
-npx wrangler secret put CLASSROOM_INTEGRATION_KEY --env staging
+npx wrangler secret put ORGANISATION_SIGNING_KEYS --env staging
 ```
 
 Before running either bootstrap/deploy command, set `.env` to the selected
@@ -289,7 +297,7 @@ that accepts both keys, rotate the current key, wait past the session window,
 then remove the previous key.
 
 For staging and production use distinct Worker deployments, Durable Object
-namespaces, R2 buckets, session keys, classroom integration keys, and origins.
+namespaces, R2 buckets, session keys, Organisation key registries, and origins.
 The production widget is production-only. Never copy production data into local
 development or staging.
 
@@ -316,6 +324,7 @@ and incident procedures. GitHub environment settings, bucket provisioning, and
 the lightweight release flow are in
 [docs/deployment-ci.md](docs/deployment-ci.md).
 
-Trusted-backend signing, coach-first JSON initialization, iframe setup,
-student-owned editing, live coach controls, co-owners, and the activity feed are documented in
-[docs/classroom-embedding.md](docs/classroom-embedding.md).
+Trusted-backend signing, Organisation and Space isolation, initial JSON import,
+iframe setup, participant-owned editing, live owner controls, co-owners,
+Organisation templates, and the activity feed are documented in
+[docs/organisation-embedding.md](docs/organisation-embedding.md).

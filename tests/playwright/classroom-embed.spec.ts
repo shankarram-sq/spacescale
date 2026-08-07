@@ -1,7 +1,7 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { expect, type Frame, type Page, test } from "@playwright/test";
-import { isolatedContextOptions } from "./helpers";
+import { createBoard, isolatedContextOptions } from "./helpers";
 
 const LOCAL_PARENT_URL = "http://localhost:4173/";
 const LOCAL_WORKER_ORIGIN = "https://127.0.0.1:8787";
@@ -11,40 +11,49 @@ type Participant = {
   name: string;
   role: "owner" | "editor" | "viewer";
   displayName: string;
-  userIdentifier: string;
+  participantId: string;
 };
 
-test("classroom iframes join one board with live owner controls and attribution", async ({
+type OrganisationSigningRegistry = Record<
+  string,
+  {
+    derivation_key: string;
+    current: { kid: string; key: string };
+    previous: Array<{ kid: string; key: string }>;
+  }
+>;
+
+test("Organisation participants join one Space with live owner controls and attribution", async ({
   browser,
   page,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "The classroom orchestration flow runs once.");
+  test.skip(testInfo.project.name !== "chromium", "The Organisation Space flow runs once.");
   test.skip(
     Boolean(process.env.PLAYWRIGHT_BASE_URL),
-    "Remote classroom testing requires a separately configured parent origin and signing key.",
+    "Remote Organisation testing requires a configured parent origin and signing registry.",
   );
 
-  const integrationKey = readDevVar("CLASSROOM_INTEGRATION_KEY");
-  const boardName = `playwright-classroom-${randomUUID()}`;
+  const demo = readOrganisationSigningEntry("demo");
+  const spaceId = `playwright-space-${randomUUID()}`;
   const now = Math.floor(Date.now() / 1_000);
   const participants = {
     coach: {
       name: "coach",
       role: "owner",
       displayName: "Coach Mira",
-      userIdentifier: `coach-${randomUUID()}`,
+      participantId: `coach-${randomUUID()}`,
     },
     student: {
       name: "student",
       role: "editor",
       displayName: "Student Asha",
-      userIdentifier: `student-${randomUUID()}`,
+      participantId: `student-${randomUUID()}`,
     },
     coOwner: {
       name: "co-owner",
       role: "owner",
       displayName: "Coach Dev",
-      userIdentifier: `coach-${randomUUID()}`,
+      participantId: `coach-${randomUUID()}`,
     },
   } satisfies Record<string, Participant>;
 
@@ -62,26 +71,29 @@ test("classroom iframes join one board with live owner controls and attribution"
       page,
       LOCAL_PARENT_URL,
       participants.coach,
-      launchUrl(LOCAL_WORKER_ORIGIN, integrationKey, boardName, participants.coach, now),
+      launchUrl(LOCAL_WORKER_ORIGIN, "demo", spaceId, demo, participants.coach, now),
     );
     const student = await mountParticipant(
       studentPage,
       LOCAL_PARENT_URL,
       participants.student,
-      launchUrl(LOCAL_WORKER_ORIGIN, integrationKey, boardName, participants.student, now),
+      launchUrl(LOCAL_WORKER_ORIGIN, "demo", spaceId, demo, participants.student, now),
     );
     const coOwner = await mountParticipant(
       coOwnerPage,
       LOCAL_PARENT_URL,
       participants.coOwner,
-      launchUrl(LOCAL_WORKER_ORIGIN, integrationKey, boardName, participants.coOwner, now),
+      launchUrl(LOCAL_WORKER_ORIGIN, "demo", spaceId, demo, participants.coOwner, now),
     );
 
     const boardPaths = [coach, student, coOwner].map((frame) => new URL(frame.url()).pathname);
     expect(new Set(boardPaths).size).toBe(1);
     expect(boardPaths[0]).toMatch(/^\/embed\/b\/b_[A-Za-z\d_-]{22}$/u);
-    for (const frame of [coach, student, coOwner]) expect(new URL(frame.url()).hash).toBe("");
-
+    for (const frame of [coach, student, coOwner]) {
+      const location = new URL(frame.url());
+      expect(location.search).toBe("");
+      expect(location.hash).toBe("");
+    }
     const studentItemId = await drawRectangle(student);
     for (const frame of [coach, student, coOwner]) {
       await expect(frame.locator("#drawing-area [data-item-id]")).toHaveCount(1);
@@ -165,6 +177,150 @@ test("classroom iframes join one board with live owner controls and attribution"
   }
 });
 
+test("Organisation owners share reusable templates across Spaces", async ({
+  browser,
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "The Organisation template flow runs once.");
+  test.skip(
+    Boolean(process.env.PLAYWRIGHT_BASE_URL),
+    "Remote Organisation testing requires a configured parent origin and signing registry.",
+  );
+  test.slow();
+
+  const demo = readOrganisationSigningEntry("demo");
+  const now = Math.floor(Date.now() / 1_000);
+  const participant = {
+    name: "template-owner-a",
+    role: "owner",
+    displayName: "Coach Templates",
+    participantId: `coach-${randomUUID()}`,
+  } satisfies Participant;
+  const templateName = `Reflection ${randomUUID().slice(0, 8)}`;
+  const source = await mountParticipant(
+    page,
+    LOCAL_PARENT_URL,
+    participant,
+    launchUrl(
+      LOCAL_WORKER_ORIGIN,
+      "demo",
+      `playwright-template-space-a-${randomUUID()}`,
+      demo,
+      participant,
+      now,
+    ),
+  );
+
+  const sourceItemId = await drawRectangle(source);
+  await selectItem(source, sourceItemId);
+  await source.getByTestId("activities-button").click();
+  const sourceMenu = source.getByTestId("activities-menu");
+  await expect(sourceMenu).toBeVisible();
+  await expect(sourceMenu.getByTestId("activity-exit-ticket")).toBeVisible();
+  const saveSelection = sourceMenu.locator("[data-save-organisation-template]");
+  await expect(saveSelection).toBeVisible();
+  await expect(saveSelection).toBeEnabled();
+  await saveSelection.click();
+
+  const dialog = source.getByRole("dialog", { name: "Save selected objects" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText("1 selected object", { exact: true })).toBeVisible();
+  await dialog.getByRole("textbox", { name: "Name" }).fill(templateName);
+  await dialog
+    .getByRole("textbox", { name: /^Description/u })
+    .fill("Reusable across Spaces in the demo Organisation.");
+  await dialog.getByRole("button", { name: "Save template" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(source.getByTestId("toast-region")).toContainText(
+    `${templateName} saved for this organisation.`,
+  );
+
+  const destinationContext = await browser.newContext(isolatedContextOptions(testInfo, 33));
+  const ordinaryContext = await browser.newContext(isolatedContextOptions(testInfo, 34));
+  try {
+    const destinationPage = await destinationContext.newPage();
+    const destinationParticipant = { ...participant, name: "template-owner-b" };
+    const destination = await mountParticipant(
+      destinationPage,
+      LOCAL_PARENT_URL,
+      destinationParticipant,
+      launchUrl(
+        LOCAL_WORKER_ORIGIN,
+        "demo",
+        `playwright-template-space-b-${randomUUID()}`,
+        demo,
+        destinationParticipant,
+        now,
+      ),
+    );
+    await destination.getByTestId("activities-button").click();
+    const destinationMenu = destination.getByTestId("activities-menu");
+    const addTemplate = destinationMenu.getByRole("menuitem", {
+      name: `Add ${templateName} organisation template`,
+    });
+    await expect(addTemplate).toBeVisible();
+    await expect(addTemplate).toContainText("Reusable across Spaces in the demo Organisation.");
+    await addTemplate.click();
+    await expect(destination.locator("#drawing-area [data-item-id]")).toHaveCount(1);
+    await expect(destination.getByTestId("selection-actions")).toBeVisible();
+    await expect(destination.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+    const destinationItemId = await destination
+      .locator("#drawing-area [data-item-id]")
+      .getAttribute("data-item-id");
+    expect(destinationItemId).not.toBe(sourceItemId);
+
+    const ordinaryPage = await ordinaryContext.newPage();
+    let ordinaryTemplateResponseSeen = false;
+    ordinaryPage.on("response", (response) => {
+      if (response.url().includes("/organisation/templates") && response.status() === 200) {
+        ordinaryTemplateResponseSeen = true;
+      }
+    });
+    await createBoard(ordinaryPage, `Ordinary Space ${randomUUID().slice(0, 8)}`);
+    await expect.poll(() => ordinaryTemplateResponseSeen).toBe(true);
+    await ordinaryPage.getByTestId("activities-button").click();
+    const ordinaryMenu = ordinaryPage.getByTestId("activities-menu");
+    await expect(ordinaryMenu.getByTestId("activity-exit-ticket")).toBeVisible();
+    await expect(ordinaryMenu.locator("[data-organisation-templates-section]")).toBeHidden();
+  } finally {
+    await Promise.all([destinationContext.close(), ordinaryContext.close()]);
+  }
+});
+
+test("an Organisation assertion cannot borrow another Organisation's signing key", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "The cross-Organisation check runs once.");
+  test.skip(
+    Boolean(process.env.PLAYWRIGHT_BASE_URL),
+    "Remote Organisation testing requires a configured parent origin and signing registry.",
+  );
+
+  const demo = readOrganisationSigningEntry("demo");
+  const participant = {
+    name: "wrong-organisation",
+    role: "owner",
+    displayName: "Coach Outside Demo",
+    participantId: `coach-${randomUUID()}`,
+  } satisfies Participant;
+  const source = launchUrl(
+    LOCAL_WORKER_ORIGIN,
+    "another-organisation",
+    `playwright-space-${randomUUID()}`,
+    demo,
+    participant,
+    Math.floor(Date.now() / 1_000),
+  );
+  const frame = await mountParticipantFrame(page, LOCAL_PARENT_URL, participant, source);
+
+  await expect(frame.getByTestId("fatal-screen")).toBeVisible();
+  await expect(frame.getByTestId("board-shell")).toHaveCount(0);
+  const location = new URL(frame.url());
+  expect(location.pathname).toBe("/embed");
+  expect(location.search).toBe("");
+  expect(location.hash).toBe("");
+});
+
 function readDevVar(name: string): string {
   const localVariablesFile = process.env.LOCAL_DEV_VARS_FILE ?? ".dev.vars.example";
   const contents = readFileSync(localVariablesFile, "utf8");
@@ -180,30 +336,68 @@ function readDevVar(name: string): string {
   return value;
 }
 
+function readOrganisationSigningEntry(organisationId: string): {
+  current: { kid: string; key: string };
+} {
+  const registry = JSON.parse(
+    readDevVar("ORGANISATION_SIGNING_KEYS"),
+  ) as OrganisationSigningRegistry;
+  const entry = registry[organisationId];
+  if (
+    entry === undefined ||
+    typeof entry.current?.kid !== "string" ||
+    typeof entry.current.key !== "string"
+  ) {
+    throw new Error(`Organisation ${organisationId} is missing a current signing key.`);
+  }
+  return entry;
+}
+
 function launchUrl(
   workerOrigin: string,
-  integrationKey: string,
-  boardName: string,
+  organisationId: string,
+  spaceId: string,
+  signing: { current: { kid: string; key: string } },
   participant: Participant,
   issuedAt: number,
 ): string {
   const payload = {
     v: 1,
     aud: "localhost",
-    board_name: boardName,
+    organisation_id: organisationId,
+    space_id: spaceId,
+    kid: signing.current.kid,
     role: participant.role,
     display_name: participant.displayName,
-    user_identifier: participant.userIdentifier,
+    participant_id: participant.participantId,
     iat: issuedAt,
     exp: issuedAt + 60 * 60,
   };
   const payloadPart = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
-  const signed = `cl1.${payloadPart}`;
-  const signature = createHmac("sha256", integrationKey).update(signed, "utf8").digest("base64url");
+  const signed = `el1.${payloadPart}`;
+  const signature = createHmac("sha256", signing.current.key)
+    .update(signed, "utf8")
+    .digest("base64url");
   return `${workerOrigin}/embed#launch=${encodeURIComponent(`${signed}.${signature}`)}`;
 }
 
 async function mountParticipant(
+  page: Page,
+  parentUrl: string,
+  participant: Participant,
+  source: string,
+): Promise<Frame> {
+  const frame = await mountParticipantFrame(page, parentUrl, participant, source);
+  await expect
+    .poll(() => sanitizedFrameLocation(frame), { timeout: 15_000 })
+    .toMatch(/^\/embed\/b\/b_[A-Za-z\d_-]{22}$/u);
+  await expect(frame.getByTestId("board-shell")).toBeVisible();
+  await expect(frame.locator("#board-canvas")).toHaveAttribute("data-ready", "true");
+  await expect(frame.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+  return frame;
+}
+
+async function mountParticipantFrame(
   page: Page,
   parentUrl: string,
   participant: Participant,
@@ -221,7 +415,13 @@ async function mountParticipant(
       iframe.title = `${title} whiteboard`;
       iframe.src = frameSource;
       iframe.referrerPolicy = "no-referrer";
-      iframe.sandbox.add("allow-scripts", "allow-same-origin", "allow-downloads", "allow-modals");
+      iframe.sandbox.add(
+        "allow-scripts",
+        "allow-same-origin",
+        "allow-downloads",
+        "allow-modals",
+        "allow-forms",
+      );
       iframe.allow = "clipboard-write";
       iframe.style.width = "100%";
       iframe.style.height = "100%";
@@ -236,13 +436,16 @@ async function mountParticipant(
   );
 
   await expect
-    .poll(() => sanitizedFrameLocation(page.frame({ name: participant.name })), { timeout: 15_000 })
-    .toMatch(/^\/embed\/b\/b_[A-Za-z\d_-]{22}$/u);
+    .poll(
+      () => {
+        const frame = page.frame({ name: participant.name });
+        return frame !== null && frame.url() !== "about:blank";
+      },
+      { timeout: 15_000 },
+    )
+    .toBe(true);
   const frame = page.frame({ name: participant.name });
   if (frame === null) throw new Error(`The ${participant.name} iframe did not load.`);
-  await expect(frame.getByTestId("board-shell")).toBeVisible();
-  await expect(frame.locator("#board-canvas")).toHaveAttribute("data-ready", "true");
-  await expect(frame.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
   return frame;
 }
 
@@ -303,6 +506,16 @@ async function drawRectangle(frame: Frame): Promise<string> {
   const itemId = await items.nth(before).getAttribute("data-item-id");
   if (itemId === null) throw new Error("The authoritative item ID is missing.");
   return itemId;
+}
+
+async function selectItem(frame: Frame, itemId: string): Promise<void> {
+  await frame.getByRole("button", { name: /^Select and move/u }).click();
+  const item = frame.locator(`#drawing-area [data-item-id="${itemId}"]`);
+  const bounds = await item.boundingBox();
+  expect(bounds).not.toBeNull();
+  if (!bounds) throw new Error("The item has no layout bounds.");
+  await frame.page().mouse.click(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  await expect(frame.getByTestId("selection-actions")).toBeVisible();
 }
 
 function captureCspErrors(page: Page, errors: string[]): void {

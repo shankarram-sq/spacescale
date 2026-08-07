@@ -1328,6 +1328,67 @@ button:disabled {
   line-height: 1.35;
 }
 
+.activities-menu-divider {
+  height: 1px;
+  margin: 8px 9px 4px;
+  background: var(--line);
+}
+
+.organisation-template-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px;
+}
+
+.organisation-template-row > button:first-child {
+  min-width: 0;
+}
+
+.activities-template-list .organisation-template-delete {
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: 9px;
+  color: var(--muted);
+  font-size: 18px;
+  text-align: center;
+}
+
+.activities-template-list .organisation-template-delete:hover:not(:disabled),
+.activities-template-list .organisation-template-delete:focus-visible {
+  background: #fff0ee;
+  color: #923b36;
+}
+
+.activities-template-status {
+  min-height: 14px;
+  margin: 4px 9px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.activities-menu .organisation-template-save {
+  width: calc(100% - 18px);
+  min-height: 36px;
+  margin: 6px 9px 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.activities-menu .organisation-template-save:hover:not(:disabled),
+.activities-menu .organisation-template-save:focus-visible {
+  border-color: var(--blue);
+  background: #f3f6ff;
+}
+
 .menu-eyebrow {
   margin: 7px 9px 6px;
   color: var(--muted);
@@ -2074,26 +2135,30 @@ button:disabled {
   box-shadow: var(--shadow);
 }
 
-.image-alt-dialog form {
+.image-alt-dialog form,
+.organisation-template-dialog form {
   display: grid;
   gap: 12px;
 }
 
-.image-alt-dialog h2 {
+.image-alt-dialog h2,
+.organisation-template-dialog h2 {
   margin: 0;
   font:
     650 25px / 1.15 Georgia,
     serif;
 }
 
-.image-alt-dialog p {
+.image-alt-dialog p,
+.organisation-template-dialog p {
   margin: -4px 0 2px;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.55;
 }
 
-.image-alt-dialog label {
+.image-alt-dialog label,
+.organisation-template-dialog label {
   display: grid;
   gap: 7px;
   color: var(--ink);
@@ -2101,14 +2166,16 @@ button:disabled {
   font-weight: 680;
 }
 
-.image-alt-dialog label i {
+.image-alt-dialog label i,
+.organisation-template-dialog label i {
   color: var(--muted);
   font-size: 9px;
   font-style: normal;
   font-weight: 500;
 }
 
-.image-alt-dialog textarea {
+.image-alt-dialog textarea,
+.organisation-template-dialog :where(input, textarea) {
   width: 100%;
   min-height: 108px;
   padding: 11px 12px;
@@ -2123,18 +2190,35 @@ button:disabled {
     sans-serif;
 }
 
-.image-alt-dialog textarea:focus {
+.image-alt-dialog textarea:focus,
+.organisation-template-dialog :where(input, textarea):focus {
   border-color: var(--blue);
   outline: 3px solid rgb(62 99 221 / 13%);
 }
 
-.image-alt-dialog > form > small {
+.organisation-template-dialog input {
+  min-height: 44px;
+  resize: none;
+}
+
+.organisation-template-dialog textarea {
+  min-height: 84px;
+}
+
+.organisation-template-dialog p.inline-error {
+  margin: 0;
+  color: #923b36;
+}
+
+.image-alt-dialog > form > small,
+.organisation-template-dialog > form > small {
   justify-self: end;
   color: var(--muted);
   font-size: 9px;
 }
 
-.image-alt-dialog :where(.dialog-actions) {
+.image-alt-dialog :where(.dialog-actions),
+.organisation-template-dialog :where(.dialog-actions) {
   margin-top: 7px;
 }
 

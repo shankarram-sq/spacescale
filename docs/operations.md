@@ -19,14 +19,14 @@ provision a Cloudflare dashboard or alert.
    the same widget. Staging deliberately has no Turnstile widget or credentials.
 3. Give each GitHub environment token **Workers Scripts: Edit** and **Workers
    R2 Storage: Edit**. Automatic deployment uses those permissions to create or
-   verify both private buckets on every run.
-4. Install production runtime secrets with
+   verify both private buckets on every run. Add the environment-specific
+   `ORGANISATION_SIGNING_KEYS` JSON as a GitHub environment secret; the workflow
+   uploads it as an encrypted Worker-version secret.
+4. Install the other production runtime secrets with
    `npx wrangler secret put SESSION_SIGNING_KEY_CURRENT`,
-   `npx wrangler secret put CLASSROOM_INTEGRATION_KEY`, and
-   `npx wrangler secret put TURNSTILE_SECRET_KEY`. Install only the two
-   staging signing secrets with
-   `npx wrangler secret put SESSION_SIGNING_KEY_CURRENT --env staging` and
-   `npx wrangler secret put CLASSROOM_INTEGRATION_KEY --env staging`.
+   and `npx wrangler secret put TURNSTILE_SECRET_KEY`. Install the staging
+   session secret with
+   `npx wrangler secret put SESSION_SIGNING_KEY_CURRENT --env staging`.
 5. Optionally run `npm run cf:check` or
    `npm run cf:bootstrap -- --env <development|staging|production>` for a manual
    access check. Local development never needs Cloudflare credentials.
@@ -50,7 +50,7 @@ must agree with local configuration before bootstrap: staging uses bucket
 `false` for an intentional creation freeze before deploying. Bootstrap rejects
 hostname, bucket, and switch drift.
 
-Set `ALLOWED_ORIGINS` to a comma-separated list of exact classroom application
+Set `ALLOWED_ORIGINS` to a comma-separated list of exact parent application
 origins in local configuration and in each GitHub environment. It is public
 configuration, not a secret. Missing, blank, path-bearing, wildcard-pattern, or
 malformed values deny framing. A literal `*` allows every iframe parent.
@@ -89,10 +89,11 @@ keys or secrets. Staging has no widget pairing to inspect.
 
 Never reuse signing keys between environments.
 
-`CLASSROOM_INTEGRATION_KEY` is also an identity-derivation key. Keep it stable
-within an environment and back it up in the secret manager. Rotating it creates
-new derived classroom board and actor IDs; treat rotation as a classroom data
-migration, not routine session-key maintenance.
+Each `ORGANISATION_SIGNING_KEYS` entry separates its stable `derivation_key`
+from rotatable launch keys. Back up the derivation key: changing it creates new
+opaque Organisation, Space, and Participant IDs. Rotate only the `current`
+launch key by moving it into `previous`, adding a new `kid`, and removing the
+old key after issued launch URLs have expired.
 
 ## Deploy and recovery
 

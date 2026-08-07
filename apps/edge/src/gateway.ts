@@ -1,5 +1,4 @@
 import { BoardRoom } from "./board-room";
-import { ClassroomAuthService, type VerifiedClassroomLaunch } from "./classroom-auth";
 import { MAX_CLASSROOM_IMPORT_ENCODED_CHARS } from "./classroom-import";
 import { bytesToBase64Url, randomBoardId, randomToken, sha256 } from "./crypto";
 import { assertExactKeys, isRecord, readJsonBody } from "./http/body";
@@ -14,13 +13,15 @@ import {
 } from "./http/security";
 import { HmacIdentityService } from "./identity";
 import { safeLog } from "./logging";
+import { OrganisationAuthService, type VerifiedOrganisationLaunch } from "./organisation-auth";
+import { OrganisationRoom } from "./organisation-room";
 import { runtimeTelemetryContext } from "./telemetry";
 import { validateTurnstile } from "./turnstile";
 import type { Env } from "./types";
 import { optionalTitle, requireBoardId, requireDisplayName } from "./validation";
 import { randomDisplayName } from "./validation-internal";
 
-export { BoardRoom };
+export { BoardRoom, OrganisationRoom };
 
 const BOARD_ROUTE = /^\/api\/v1\/boards\/(b_[A-Za-z0-9_-]{22})(?:\/|$)/u;
 const MUTATING_METHODS = new Set(["POST", "PATCH", "DELETE", "PUT"]);
@@ -111,27 +112,28 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
     const body = await readJsonBody(request, MAX_CLASSROOM_IMPORT_ENCODED_CHARS + 16 * 1_024);
     assertExactKeys(body, ["token", "importSnapshot"], ["token"]);
     if (body.importSnapshot !== undefined && typeof body.importSnapshot !== "string") {
-      throw new HttpError(400, "BAD_REQUEST", "The classroom import is invalid.");
+      throw new HttpError(400, "BAD_REQUEST", "The Space import is invalid.");
     }
     if (
       typeof body.importSnapshot === "string" &&
       body.importSnapshot.length > MAX_CLASSROOM_IMPORT_ENCODED_CHARS
     ) {
-      throw new HttpError(413, "PAYLOAD_TOO_LARGE", "The classroom import is too large.");
+      throw new HttpError(413, "PAYLOAD_TOO_LARGE", "The Space import is too large.");
     }
 
     const now = Date.now();
-    const classroom = new ClassroomAuthService(env);
-    const launch = await classroom.verifyLaunchToken(body.token, now);
+    const organisationAuth = new OrganisationAuthService(env);
+    const launch = await organisationAuth.verifyLaunchToken(body.token, now);
     enforceGatewayRateLimit(`embed:actor:${launch.actorId}`, 10, 1 / 10);
 
     const stub = env.BOARD_ROOMS.getByName(launch.boardId);
-    const internalLaunch = new Request(`${url.origin}/__internal/classroom-launch`, {
+    const internalLaunch = new Request(`${url.origin}/__internal/organisation-launch`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         publicId: launch.boardId,
-        title: launch.boardName,
+        organisationId: launch.organisationId,
+        title: launch.spaceTitle,
         role: launch.role,
         displayName: launch.displayName,
         launchIssuedAtMs: launch.issuedAtMs,
@@ -144,7 +146,7 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
       makeInternalRequest(internalLaunch, launch.actorId, launch.expiresAtMs, requestId),
     );
     if (!launchResponse.ok) return launchResponse;
-    const effective = parseClassroomLaunchResponse(await launchResponse.json(), launch);
+    const effective = parseOrganisationLaunchResponse(await launchResponse.json(), launch);
 
     const identity = new HmacIdentityService(env);
     const issued = await identity.issueEmbedSession(
@@ -181,7 +183,7 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
     const identity = new HmacIdentityService(env);
     const session = await identity.verifySession(request);
     if (session.boardId !== undefined) {
-      throw new HttpError(403, "FORBIDDEN", "The classroom session is board-scoped.");
+      throw new HttpError(403, "FORBIDDEN", "The embed session is Space-scoped.");
     }
     await identity.verifyCsrf(request, session);
     const clientAddress = request.headers.get("cf-connecting-ip") ?? "local";
@@ -258,7 +260,7 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
     const identity = new HmacIdentityService(env);
     const session = await identity.verifySession(routedRequest);
     if (session.boardId !== undefined && session.boardId !== boardId) {
-      throw new HttpError(403, "FORBIDDEN", "The classroom session is not valid for this board.");
+      throw new HttpError(403, "FORBIDDEN", "The embed session is not valid for this Space.");
     }
     if (MUTATING_METHODS.has(routedRequest.method) || isSocket) {
       requireSameOrigin(routedRequest, env);
@@ -318,7 +320,7 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
   return env.ASSETS.fetch(request);
 }
 
-type ClassroomLaunchResponse = {
+type OrganisationLaunchResponse = {
   board: {
     id: string;
     title: string;
@@ -334,12 +336,12 @@ type ClassroomLaunchResponse = {
   };
 };
 
-function parseClassroomLaunchResponse(
+function parseOrganisationLaunchResponse(
   value: unknown,
-  launch: VerifiedClassroomLaunch,
-): ClassroomLaunchResponse {
+  launch: VerifiedOrganisationLaunch,
+): OrganisationLaunchResponse {
   if (!isRecord(value) || !isRecord(value.board) || !isRecord(value.actor)) {
-    throw new HttpError(500, "INTERNAL_ERROR", "The classroom room response is invalid.");
+    throw new HttpError(500, "INTERNAL_ERROR", "The Space response is invalid.");
   }
   const board = value.board;
   const actor = value.actor;
@@ -357,7 +359,7 @@ function parseClassroomLaunchResponse(
     (actor.role !== "owner" && actor.role !== "editor" && actor.role !== "viewer") ||
     typeof actor.displayName !== "string"
   ) {
-    throw new HttpError(500, "INTERNAL_ERROR", "The classroom room response is invalid.");
+    throw new HttpError(500, "INTERNAL_ERROR", "The Space response is invalid.");
   }
   const title = optionalTitle(board.title);
   const displayName = requireDisplayName(actor.displayName);

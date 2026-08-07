@@ -1,7 +1,9 @@
 # Local-only values loaded directly by `npm run dev`; never deploy these values.
 SESSION_SIGNING_KEY_CURRENT="local-development-signing-key-change-before-sharing"
 SESSION_SIGNING_KEY_PREVIOUS=""
-# Local-only classroom launch key. Never deploy or share this value.
-CLASSROOM_INTEGRATION_KEY="local-development-classroom-launch-key-change-before-sharing"
+# Local-only organisation registry. Each organisation has one stable derivation
+# key plus a current launch-signing key and optional previous rotation keys.
+# Never deploy or share these example values.
+ORGANISATION_SIGNING_KEYS='{"demo":{"derivation_key":"local-development-organisation-derivation-key-change-before-sharing","current":{"kid":"local-v1","key":"local-development-organisation-signing-key-change-before-sharing"},"previous":[]}}'
 # Cloudflare's always-pass test secret. Never deploy it.
 TURNSTILE_SECRET_KEY="1x0000000000000000000000000000000AA"

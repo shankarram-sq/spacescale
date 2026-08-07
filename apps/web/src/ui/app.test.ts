@@ -2,22 +2,23 @@ import { describe, expect, it } from "vitest";
 import type { BoardItem, BoardSnapshot, DurableOperation } from "../types";
 import {
   actorFromAccessChanged,
+  attributedDataDownloadAllowed,
+  attributedDataFilename,
   boardIdFromPath,
   buildCreatorNameMap,
   buildStickyColourOperations,
   clampImageAlt,
   clampStickyText,
-  classroomDataDownloadAllowed,
-  classroomDataFilename,
   imageUploadIssue,
   localSvg,
   MAX_IMAGE_UPLOAD_BYTES,
   managedInvitationStorageKey,
   operationAllowedForActor,
+  organisationTemplateManagementForRole,
   STAMP_CHOICES,
   STICKY_COLORS,
   savedAuthoritativeItems,
-  serializeClassroomData,
+  serializeAttributedData,
   tableCellDraftFromOperation,
 } from "./app";
 
@@ -85,6 +86,18 @@ describe("creator display names", () => {
         affectedActor: { id: actorId, displayName: "Asha Patel" },
       }),
     ).toBeNull();
+  });
+});
+
+describe("live Organisation-template management", () => {
+  it("enables owners and disables editors or viewers after an access change", () => {
+    expect(organisationTemplateManagementForRole("org-spacescale", "owner")).toBe(true);
+    expect(organisationTemplateManagementForRole("org-spacescale", "editor")).toBe(false);
+    expect(organisationTemplateManagementForRole("org-spacescale", "viewer")).toBe(false);
+  });
+
+  it("leaves non-Organisation Spaces outside live management synchronization", () => {
+    expect(organisationTemplateManagementForRole(null, "owner")).toBeNull();
   });
 });
 
@@ -211,7 +224,7 @@ describe("student item ownership preflight", () => {
 });
 
 describe("board path routing", () => {
-  it("accepts normal and classroom embed board paths", () => {
+  it("accepts normal and embedded Space paths", () => {
     expect(boardIdFromPath(`/b/${boardId}`)).toBe(boardId);
     expect(boardIdFromPath(`/b/${boardId}/`)).toBe(boardId);
     expect(boardIdFromPath(`/embed/b/${boardId}`)).toBe(boardId);
@@ -225,14 +238,14 @@ describe("board path routing", () => {
   });
 });
 
-describe("classroom-data download", () => {
+describe("attributed data download", () => {
   it("is visible to every owner and hidden from editors and viewers", () => {
-    expect(classroomDataDownloadAllowed("owner")).toBe(true);
-    expect(classroomDataDownloadAllowed("editor")).toBe(false);
-    expect(classroomDataDownloadAllowed("viewer")).toBe(false);
+    expect(attributedDataDownloadAllowed("owner")).toBe(true);
+    expect(attributedDataDownloadAllowed("editor")).toBe(false);
+    expect(attributedDataDownloadAllowed("viewer")).toBe(false);
   });
 
-  it("uses a classroom-facing filename and preserves attributed text as formatted JSON", () => {
+  it("uses an attributed-data filename and preserves attributed text as formatted JSON", () => {
     const data = {
       format: "cf-whiteboard-attributed-json" as const,
       version: 1 as const,
@@ -356,8 +369,8 @@ describe("classroom-data download", () => {
       ],
     };
 
-    expect(classroomDataFilename(data.board.title)).toBe("peer-feedback-7-b-classroom-data.json");
-    const serialized = serializeClassroomData(data);
+    expect(attributedDataFilename(data.board.title)).toBe("peer-feedback-7-b-attributed-data.json");
+    const serialized = serializeAttributedData(data);
     expect(serialized.endsWith("\n")).toBe(true);
     expect(JSON.parse(serialized)).toEqual(data);
     expect(serialized).toContain('"text": "Could you explain the second step?"');

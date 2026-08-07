@@ -46,9 +46,11 @@ different Cloudflare accounts and should use distinct credentials.
 | --- | --- | --- | --- |
 | Staging | Secret | `CLOUDFLARE_ACCOUNT_ID` | Account containing the isolated staging Worker and buckets. |
 | Staging | Secret | `CLOUDFLARE_API_TOKEN` | Staging account token. |
+| Staging | Secret | `ORGANISATION_SIGNING_KEYS` | JSON registry uploaded as an encrypted Worker-version secret. |
 | Staging | Variable | `ALLOWED_ORIGINS` | Comma-separated iframe origins; blank denies all and `*` allows all. |
 | Production | Secret | `CLOUDFLARE_ACCOUNT_ID` | Account containing the production Worker and buckets. |
 | Production | Secret | `CLOUDFLARE_API_TOKEN` | Production account token. |
+| Production | Secret | `ORGANISATION_SIGNING_KEYS` | JSON registry uploaded as an encrypted Worker-version secret. |
 | Production | Variable | `TURNSTILE_SITE_KEY` | Public key for the production Turnstile widget. |
 | Production | Variable | `ALLOWED_ORIGINS` | Comma-separated iframe origins; blank denies all and `*` allows all. |
 
@@ -61,16 +63,18 @@ needs these account permissions:
 Correct existing private buckets are reused without mutation. Bucket bootstrap
 also rejects a bucket with an enabled `r2.dev` or custom public domain.
 
-Install encrypted Worker runtime secrets separately from GitHub deployment
-credentials:
+The workflow passes `ORGANISATION_SIGNING_KEYS` through Wrangler's
+`--secrets-file`; it is encrypted as a Worker-version secret and never written
+to the repository or logs. Install the remaining Worker runtime secrets once
+with Wrangler or the Cloudflare dashboard:
 
 | Worker | Required runtime secrets |
 | --- | --- |
-| Staging | `SESSION_SIGNING_KEY_CURRENT`, `CLASSROOM_INTEGRATION_KEY` |
-| Production | `SESSION_SIGNING_KEY_CURRENT`, `CLASSROOM_INTEGRATION_KEY`, `TURNSTILE_SECRET_KEY` |
+| Staging | `SESSION_SIGNING_KEY_CURRENT`; Organisation registry supplied by the GitHub environment |
+| Production | `SESSION_SIGNING_KEY_CURRENT`, `TURNSTILE_SECRET_KEY`; Organisation registry supplied by the GitHub environment |
 
 `SESSION_SIGNING_KEY_PREVIOUS` is optional during a controlled session-key
-rotation. Never share session or classroom integration keys across environments.
+rotation. Never share session or Organisation signing keys across environments.
 
 ## Environment isolation
 

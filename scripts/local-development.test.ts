@@ -49,7 +49,7 @@ describe("local development configuration", () => {
       TURNSTILE_ENABLED: "false",
     });
     expect(localSecrets).toContain("SESSION_SIGNING_KEY_CURRENT=");
-    expect(localSecrets).toContain("CLASSROOM_INTEGRATION_KEY=");
+    expect(localSecrets).toContain("ORGANISATION_SIGNING_KEYS=");
     expect(localSecrets).not.toContain("CLOUDFLARE_ACCOUNT_ID");
     expect(localSecrets).not.toContain("CLOUDFLARE_API_TOKEN");
     expect(

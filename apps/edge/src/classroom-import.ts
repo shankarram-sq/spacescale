@@ -21,14 +21,14 @@ export type ClassroomBoardImport = {
 
 export function decodeClassroomBoardImport(encodedSnapshot: unknown): ClassroomBoardImport {
   if (typeof encodedSnapshot !== "string" || encodedSnapshot.length === 0) {
-    throw invalidImport("The classroom import must be a base64url-encoded canonical JSON export.");
+    throw invalidImport("The Space import must be a base64url-encoded canonical JSON export.");
   }
   if (encodedSnapshot.length > MAX_CLASSROOM_IMPORT_ENCODED_CHARS) {
     throw importTooLarge();
   }
   const bytes = base64UrlToBytes(encodedSnapshot);
   if (bytes === null) {
-    throw invalidImport("The classroom import is not valid base64url data.");
+    throw invalidImport("The Space import is not valid base64url data.");
   }
   if (bytes.byteLength > MAX_CLASSROOM_IMPORT_BYTES) throw importTooLarge();
 
@@ -36,13 +36,13 @@ export function decodeClassroomBoardImport(encodedSnapshot: unknown): ClassroomB
   try {
     raw = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes));
   } catch {
-    throw invalidImport("The classroom import is not valid UTF-8 JSON.");
+    throw invalidImport("The Space import is not valid UTF-8 JSON.");
   }
   assertSafeJson(raw, 0);
   if (
     !isExactRecord(raw, ["format", "version", "boardId", "seq", "createdAt", "settings", "items"])
   ) {
-    throw invalidImport("The classroom import is not a canonical whiteboard export.");
+    throw invalidImport("The Space import is not a canonical whiteboard export.");
   }
   if (
     typeof raw.boardId !== "string" ||
@@ -53,16 +53,16 @@ export function decodeClassroomBoardImport(encodedSnapshot: unknown): ClassroomB
     (raw.createdAt as number) < 0 ||
     !Array.isArray(raw.items)
   ) {
-    throw invalidImport("The classroom import metadata is invalid.");
+    throw invalidImport("The Space import metadata is invalid.");
   }
   if (raw.items.length > MAX_CLASSROOM_IMPORT_ITEMS) {
     throw new BoardDomainError(
       "BOARD_LIMIT_REACHED",
-      `A classroom URL import may contain at most ${MAX_CLASSROOM_IMPORT_ITEMS} objects.`,
+      `A Space URL import may contain at most ${MAX_CLASSROOM_IMPORT_ITEMS} objects.`,
     );
   }
   if (!isExactRecord(raw.settings, ["title"])) {
-    throw invalidImport("The classroom import settings are invalid.");
+    throw invalidImport("The Space import settings are invalid.");
   }
 
   let snapshot: ReturnType<typeof parseStoredSnapshot>;
@@ -78,7 +78,7 @@ export function decodeClassroomBoardImport(encodedSnapshot: unknown): ClassroomB
   const items = snapshot.items.map((item, index) => {
     const protocolItem = item as unknown as ProtocolBoardItem;
     if (!ACTOR_ID_PATTERN.test(item.createdBy)) {
-      throw invalidImport("Every imported object must have an opaque classroom creator ID.");
+      throw invalidImport("Every imported object must have an opaque Participant creator ID.");
     }
     if (protocolItem.kind === "image") {
       throw invalidImport(
@@ -111,6 +111,6 @@ function importTooLarge(): HttpError {
   return new HttpError(
     413,
     "PAYLOAD_TOO_LARGE",
-    `The classroom import must be at most ${MAX_CLASSROOM_IMPORT_BYTES} decoded bytes.`,
+    `The Space import must be at most ${MAX_CLASSROOM_IMPORT_BYTES} decoded bytes.`,
   );
 }

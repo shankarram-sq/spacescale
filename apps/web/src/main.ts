@@ -24,14 +24,18 @@ void start();
 async function start(): Promise<void> {
   try {
     if (embedLaunch !== null) {
-      showBootMessage("Opening your classroom board…");
+      showBootMessage("Opening your Space…");
       const launched = await api.startEmbedSession(embedLaunch);
       boardId = launched.board.id;
       history.replaceState(history.state, "", `/embed/b/${encodeURIComponent(launched.board.id)}`);
       await api.ensureSession();
     } else if (embedPath) {
       if (api.embedSessionToken === null) {
-        throw new ApiError("AUTH_REQUIRED", "Open this board again from your classroom.", 401);
+        throw new ApiError(
+          "AUTH_REQUIRED",
+          "Open this Space again from its parent application.",
+          401,
+        );
       }
       await api.ensureSession();
     } else {

@@ -324,6 +324,61 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
       );
     `,
   },
+  {
+    version: 10,
+    name: "organisation_scoped_boards",
+    sql: `
+      ALTER TABLE board ADD COLUMN organisation_id TEXT
+        CHECK (
+          organisation_id IS NULL OR (
+            length(organisation_id) = 24 AND
+            substr(organisation_id, 1, 2) = 'o_' AND
+            organisation_id NOT GLOB '*[^A-Za-z0-9_-]*'
+          )
+        );
+
+      ALTER TABLE board ADD COLUMN organisation_mode INTEGER NOT NULL DEFAULT 0
+        CHECK (
+          (organisation_mode = 0 AND organisation_id IS NULL) OR
+          (organisation_mode = 1 AND organisation_id IS NOT NULL)
+        );
+    `,
+  },
+] as const;
+
+export const ORGANISATION_SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
+  {
+    version: 1,
+    name: "organisation_templates",
+    sql: `
+      CREATE TABLE organisation (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        organisation_id TEXT NOT NULL UNIQUE
+          CHECK (
+            length(organisation_id) = 24 AND
+            substr(organisation_id, 1, 2) = 'o_' AND
+            organisation_id NOT GLOB '*[^A-Za-z0-9_-]*'
+          ),
+        created_at_ms INTEGER NOT NULL
+      );
+
+      CREATE TABLE templates (
+        template_id TEXT PRIMARY KEY
+          CHECK (length(template_id) = 26 AND substr(template_id, 1, 4) = 'tpl_'),
+        name TEXT NOT NULL,
+        description TEXT,
+        items_json TEXT NOT NULL CHECK (json_valid(items_json)),
+        byte_count INTEGER NOT NULL CHECK (byte_count BETWEEN 2 AND 524288),
+        created_by TEXT NOT NULL
+          CHECK (length(created_by) = 24 AND substr(created_by, 1, 2) = 'a_'),
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+      ) WITHOUT ROWID;
+
+      CREATE INDEX templates_updated_at
+        ON templates(updated_at_ms DESC, template_id);
+    `,
+  },
 ] as const;
 
 export function applyMigrations(
@@ -381,6 +436,55 @@ export function applyMigrations(
       ...telemetry,
       result: migration.name,
       seq: migration.version,
+    });
+  }
+}
+
+export function applyOrganisationMigrations(storage: DurableObjectStorage): void {
+  const sql = storage.sql;
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS _sql_schema_migrations (
+      version INTEGER PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      applied_at_ms INTEGER NOT NULL
+    )
+  `);
+
+  const applied = new Map(
+    sql
+      .exec<{ version: number; name: string }>(
+        "SELECT version, name FROM _sql_schema_migrations ORDER BY version",
+      )
+      .toArray()
+      .map((row) => [row.version, row.name]),
+  );
+
+  for (const migration of ORGANISATION_SCHEMA_MIGRATIONS) {
+    const existingName = applied.get(migration.version);
+    if (existingName !== undefined && existingName !== migration.name) {
+      throw new Error(`Organisation schema migration ${migration.version} has an unexpected name.`);
+    }
+    if (existingName !== undefined) continue;
+    storage.transactionSync(() => {
+      const raced = sql
+        .exec<{ name: string }>(
+          "SELECT name FROM _sql_schema_migrations WHERE version = ?",
+          migration.version,
+        )
+        .toArray()[0];
+      if (raced !== undefined) {
+        if (raced.name !== migration.name) {
+          throw new Error("Organisation schema migration ledger conflict.");
+        }
+        return;
+      }
+      sql.exec(migration.sql);
+      sql.exec(
+        "INSERT INTO _sql_schema_migrations(version, name, applied_at_ms) VALUES (?, ?, ?)",
+        migration.version,
+        migration.name,
+        Date.now(),
+      );
     });
   }
 }

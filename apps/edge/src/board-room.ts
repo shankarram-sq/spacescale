@@ -52,6 +52,11 @@ import {
 import { prepareOwnedItemOperation } from "./item-ownership";
 import { safeLog } from "./logging";
 import { applyMigrations } from "./migrations";
+import {
+  MAX_ORGANISATION_TEMPLATE_BYTES,
+  ORGANISATION_ID_PATTERN,
+  type OrganisationRoom,
+} from "./organisation-room";
 import { TokenBucket } from "./rate-limit";
 import {
   backfillSnapshotAccounting,
@@ -142,6 +147,7 @@ const RETAINED_AUTOMATIC_SNAPSHOTS = 20;
 const MAX_RETENTION_DELETES_PER_ALARM = 20;
 const INTERNAL_INIT_PATH = "/__internal/initialize";
 const INTERNAL_CLASSROOM_LAUNCH_PATH = "/__internal/classroom-launch";
+const INTERNAL_ORGANISATION_LAUNCH_PATH = "/__internal/organisation-launch";
 const TELEMETRY_AGGREGATE_INTERVAL_MS = 60_000;
 // Start graceful shedding before the hard 200 frame/s room ceiling so a
 // 20-drawer burst cannot monopolize the Durable Object input queue. The
@@ -301,6 +307,11 @@ export class BoardRoom extends DurableObject<Env> {
       return this.classroomLaunch(request, actor);
     }
 
+    if (url.pathname === INTERNAL_ORGANISATION_LAUNCH_PATH) {
+      requireMethod(request, "POST");
+      return this.classroomLaunch(request, actor, true);
+    }
+
     const board = this.requireBoard();
     const prefix = `/api/v1/boards/${board.public_id}`;
     if (!url.pathname.startsWith(`${prefix}/`))
@@ -334,6 +345,26 @@ export class BoardRoom extends DurableObject<Env> {
     if (suffix === "/activity") {
       requireMethod(request, "GET");
       return this.listActivity(request, actor, board);
+    }
+    if (suffix === "/organisation/templates") {
+      if (request.method === "GET") {
+        return this.listOrganisationTemplates(actor, board, url.origin);
+      }
+      if (request.method === "POST") {
+        return this.createOrganisationTemplate(request, actor, board, url.origin);
+      }
+      return methodNotAllowed("GET, POST");
+    }
+    const organisationTemplateMatch = /^\/organisation\/templates\/(tpl_[A-Za-z0-9_-]{22})$/u.exec(
+      suffix,
+    );
+    if (organisationTemplateMatch !== null) {
+      if (request.method !== "DELETE") return methodNotAllowed("DELETE");
+      const templateId = organisationTemplateMatch[1];
+      if (templateId === undefined) {
+        throw new HttpError(404, "NOT_FOUND", "Template not found.");
+      }
+      return this.deleteOrganisationTemplate(actor, board, url.origin, templateId);
     }
     const memberMatch = /^\/members\/(a_[A-Za-z0-9_-]{22})$/u.exec(suffix);
     if (memberMatch !== null) {
@@ -479,7 +510,11 @@ export class BoardRoom extends DurableObject<Env> {
     return Response.json({ initialized: true, created }, { status: created ? 201 : 200 });
   }
 
-  private async classroomLaunch(request: Request, actor: InternalActorContext): Promise<Response> {
+  private async classroomLaunch(
+    request: Request,
+    actor: InternalActorContext,
+    requireOrganisation = false,
+  ): Promise<Response> {
     const body = await readJsonBody(request, MAX_CLASSROOM_IMPORT_ENCODED_CHARS + 16 * 1_024);
     assertExactKeys(
       body,
@@ -492,6 +527,7 @@ export class BoardRoom extends DurableObject<Env> {
         "placeholderOwnerActorId",
         "ownerRecoveryHash",
         "importSnapshot",
+        "organisationId",
       ],
       [
         "publicId",
@@ -508,7 +544,7 @@ export class BoardRoom extends DurableObject<Env> {
     }
     const launchTitle = optionalTitle(body.title);
     if (body.role !== "viewer" && body.role !== "editor" && body.role !== "owner") {
-      throw new HttpError(400, "BAD_REQUEST", "The classroom role is invalid.");
+      throw new HttpError(400, "BAD_REQUEST", "The Space role is invalid.");
     }
     const role = body.role;
     const displayName = requireDisplayName(body.displayName);
@@ -519,6 +555,17 @@ export class BoardRoom extends DurableObject<Env> {
       Number.MAX_SAFE_INTEGER,
     );
     const placeholderOwnerActorId = requireActorId(body.placeholderOwnerActorId);
+    if (
+      body.organisationId !== undefined &&
+      (typeof body.organisationId !== "string" ||
+        !ORGANISATION_ID_PATTERN.test(body.organisationId))
+    ) {
+      throw new HttpError(400, "BAD_REQUEST", "The organisation ID is invalid.");
+    }
+    if (requireOrganisation && body.organisationId === undefined) {
+      throw new HttpError(400, "BAD_REQUEST", "The organisation ID is required.");
+    }
+    const organisationId = typeof body.organisationId === "string" ? body.organisationId : null;
     const recoveryHash =
       typeof body.ownerRecoveryHash === "string" ? base64UrlToBytes(body.ownerRecoveryHash) : null;
     if (recoveryHash === null || recoveryHash.byteLength !== 32) {
@@ -550,8 +597,9 @@ export class BoardRoom extends DurableObject<Env> {
              singleton, public_id, title, access_mode, drawing_policy,
              owner_actor_id, owner_recovery_hash, latest_seq, next_z, min_replay_seq,
              snapshot_live_item_count,
-             snapshot_live_item_bytes, classroom_mode, created_at_ms, updated_at_ms
-           ) VALUES (1, ?, ?, 'private', 'editors_enabled', ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+             snapshot_live_item_bytes, classroom_mode, organisation_mode,
+             organisation_id, created_at_ms, updated_at_ms
+           ) VALUES (1, ?, ?, 'private', 'editors_enabled', ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
           body.publicId,
           title,
           placeholderOwnerActorId,
@@ -561,6 +609,8 @@ export class BoardRoom extends DurableObject<Env> {
           importedBoard === null ? 0 : 1,
           importedAccounting?.itemCount ?? 0,
           importedAccounting?.itemBytes ?? 0,
+          organisationId === null ? 0 : 1,
+          organisationId,
           now,
           now,
         );
@@ -572,7 +622,12 @@ export class BoardRoom extends DurableObject<Env> {
         }
         board = this.requireBoard();
         created = true;
-      } else if (board.public_id !== body.publicId || board.classroom_mode !== 1) {
+      } else if (
+        board.public_id !== body.publicId ||
+        board.classroom_mode !== 1 ||
+        board.organisation_mode !== (organisationId === null ? 0 : 1) ||
+        board.organisation_id !== organisationId
+      ) {
         throw new HttpError(409, "CONFLICT", "The board was already initialized.");
       }
       // Primary custody must move through the explicit ownership-transfer path.
@@ -679,6 +734,117 @@ export class BoardRoom extends DurableObject<Env> {
       },
       { status: created ? 201 : 200, headers: { "Cache-Control": "no-store" } },
     );
+  }
+
+  private async listOrganisationTemplates(
+    actor: InternalActorContext,
+    board: BoardRow,
+    origin: string,
+  ): Promise<Response> {
+    const access = this.requireView(board, actor.actorId);
+    const organisationId = this.organisationIdForBoard(board);
+    if (organisationId === null) {
+      return Response.json({ organisationId: null, canManage: false, templates: [] });
+    }
+    const response = await this.organisationRoomFetch(
+      organisationId,
+      new Request(`${origin}/__internal/organisations/${organisationId}/templates`, {
+        method: "GET",
+        headers: { [INTERNAL_REQUEST_ID_HEADER]: actor.requestId },
+      }),
+    );
+    if (!response.ok) return response;
+    const templates: unknown = await response.json();
+    if (!Array.isArray(templates)) {
+      throw new HttpError(500, "INTERNAL_ERROR", "The organisation template response is invalid.");
+    }
+    return Response.json({
+      organisationId,
+      canManage: access.role === "owner",
+      templates,
+    });
+  }
+
+  private async createOrganisationTemplate(
+    request: Request,
+    actor: InternalActorContext,
+    board: BoardRow,
+    origin: string,
+  ): Promise<Response> {
+    this.requireOwner(board, actor.actorId);
+    const organisationId = this.organisationIdForBoard(board);
+    if (organisationId === null) {
+      throw new HttpError(
+        403,
+        "FORBIDDEN",
+        "Organisation templates are not available for this board.",
+      );
+    }
+    const body = await readJsonBody(request, MAX_ORGANISATION_TEMPLATE_BYTES + 32 * 1_024);
+    assertExactKeys(body, ["name", "description", "items"], ["name", "items"]);
+    return this.organisationRoomFetch(
+      organisationId,
+      new Request(`${origin}/__internal/organisations/${organisationId}/templates`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          [INTERNAL_REQUEST_ID_HEADER]: actor.requestId,
+        },
+        body: JSON.stringify({ ...body, createdBy: actor.actorId }),
+      }),
+    );
+  }
+
+  private async deleteOrganisationTemplate(
+    actor: InternalActorContext,
+    board: BoardRow,
+    origin: string,
+    templateId: string,
+  ): Promise<Response> {
+    this.requireOwner(board, actor.actorId);
+    const organisationId = this.organisationIdForBoard(board);
+    if (organisationId === null) {
+      throw new HttpError(
+        403,
+        "FORBIDDEN",
+        "Organisation templates are not available for this board.",
+      );
+    }
+    return this.organisationRoomFetch(
+      organisationId,
+      new Request(`${origin}/__internal/organisations/${organisationId}/templates/${templateId}`, {
+        method: "DELETE",
+        headers: { [INTERNAL_REQUEST_ID_HEADER]: actor.requestId },
+      }),
+    );
+  }
+
+  private organisationIdForBoard(board: BoardRow): string | null {
+    if (board.organisation_mode === 0 && board.organisation_id === null) return null;
+    if (
+      board.organisation_mode === 1 &&
+      typeof board.organisation_id === "string" &&
+      ORGANISATION_ID_PATTERN.test(board.organisation_id)
+    ) {
+      return board.organisation_id;
+    }
+    throw new HttpError(500, "INTERNAL_ERROR", "The board organisation scope is invalid.");
+  }
+
+  private organisationRoomFetch(organisationId: string, request: Request): Promise<Response> {
+    const namespace = (
+      this.env as Env & {
+        ORGANISATION_ROOMS?: DurableObjectNamespace<OrganisationRoom>;
+      }
+    ).ORGANISATION_ROOMS;
+    if (namespace === undefined) {
+      throw new HttpError(
+        503,
+        "TEMPORARILY_UNAVAILABLE",
+        "Organisation templates are temporarily unavailable.",
+      );
+    }
+    return namespace.getByName(organisationId).fetch(request);
   }
 
   private bootstrap(actor: InternalActorContext, capturedBoard: BoardRow): Response {

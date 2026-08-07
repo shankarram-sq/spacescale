@@ -5,11 +5,12 @@ export type DrawingPolicy = "editors_enabled" | "owner_only" | "locked";
 export interface Env {
   ASSETS: Fetcher;
   BOARD_ROOMS: DurableObjectNamespace;
+  ORGANISATION_ROOMS: DurableObjectNamespace;
   BOARD_ASSETS: R2Bucket;
   BOARD_SNAPSHOTS: R2Bucket;
   WORKER_VERSION: WorkerVersionMetadata;
   APP_HOSTNAME: string;
-  CLASSROOM_INTEGRATION_KEY?: string;
+  ORGANISATION_SIGNING_KEYS?: string;
   ALLOWED_ORIGINS?: string;
   ENVIRONMENT?: string;
   SESSION_SIGNING_KEY_CURRENT: string;
@@ -56,6 +57,8 @@ export interface BoardRow {
   images_enabled: number;
   owner_actor_id: string;
   classroom_mode: number;
+  organisation_mode: number;
+  organisation_id: string | null;
   latest_seq: number;
   next_z: number;
   acl_version: number;

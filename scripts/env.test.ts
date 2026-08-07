@@ -40,3 +40,36 @@ describe("ALLOWED_ORIGINS public configuration", () => {
     );
   });
 });
+
+describe("ORGANISATION_SIGNING_KEYS private configuration", () => {
+  const valid = {
+    alpha: {
+      derivation_key: Buffer.alloc(32, "d").toString("base64"),
+      current: { kid: "2026-08", key: Buffer.alloc(32, "c").toString("base64") },
+      previous: [{ kid: "2026-07", key: Buffer.alloc(32, "p").toString("base64") }],
+    },
+  };
+
+  it("accepts stable derivation keys with current and previous launch keys", () => {
+    expect(() =>
+      assertPublicConfiguration({ ORGANISATION_SIGNING_KEYS: JSON.stringify(valid) }),
+    ).not.toThrow();
+  });
+
+  it.each([
+    "not-json",
+    "{}",
+    JSON.stringify({ alpha: { ...valid.alpha, derivation_key: "short" } }),
+    JSON.stringify({ alpha: { ...valid.alpha, current: { kid: "bad kid", key: "c".repeat(32) } } }),
+    JSON.stringify({
+      alpha: {
+        ...valid.alpha,
+        previous: [{ kid: "2026-08", key: "p".repeat(32) }],
+      },
+    }),
+  ])("rejects malformed or unsafe registries", (value) => {
+    expect(() => assertPublicConfiguration({ ORGANISATION_SIGNING_KEYS: value })).toThrow(
+      /ORGANISATION_SIGNING_KEYS/u,
+    );
+  });
+});

@@ -1,3 +1,5 @@
+import { MAX_BATCH_OPERATIONS, normalizeBoardItem } from "@collab/protocol";
+
 import type {
   AccessMode,
   BoardItem,
@@ -15,7 +17,7 @@ export type EmbedLaunch = {
   importSnapshot?: string;
 };
 
-const MAX_CLASSROOM_IMPORT_ENCODED_CHARS = Math.ceil((1 * 1_024 * 1_024 * 4) / 3);
+const MAX_EMBED_IMPORT_ENCODED_CHARS = Math.ceil((1 * 1_024 * 1_024 * 4) / 3);
 
 export type EmbedSession = {
   sessionToken: string;
@@ -66,7 +68,7 @@ export type BoardImageAsset = {
   sizeBytes: number;
 };
 
-export type AttributedBoardExport = {
+export type AttributedDataExport = {
   format: "cf-whiteboard-attributed-json";
   version: 1;
   board: {
@@ -102,6 +104,22 @@ export type AttributedBoardExport = {
   }>;
 };
 
+export type OrganisationTemplate = {
+  id: string;
+  name: string;
+  description: string | null;
+  items: BoardItem[];
+  createdBy: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type OrganisationTemplates = {
+  organisationId: string | null;
+  canManage: boolean;
+  templates: OrganisationTemplate[];
+};
+
 export class ApiError extends Error {
   constructor(
     readonly code: string,
@@ -133,13 +151,9 @@ export class ApiClient {
   async startEmbedSession(launch: EmbedLaunch): Promise<EmbedSession> {
     if (
       launch.importSnapshot !== undefined &&
-      launch.importSnapshot.length > MAX_CLASSROOM_IMPORT_ENCODED_CHARS
+      launch.importSnapshot.length > MAX_EMBED_IMPORT_ENCODED_CHARS
     ) {
-      throw new ApiError(
-        "PAYLOAD_TOO_LARGE",
-        "The board import in this classroom URL is too large.",
-        413,
-      );
+      throw new ApiError("PAYLOAD_TOO_LARGE", "The initial Space import is too large.", 413);
     }
     const result = await this.request<unknown>(
       "/api/v1/embed/session",
@@ -187,7 +201,7 @@ export class ApiClient {
     if (this.embedBearer !== null) {
       throw new ApiError(
         "AUTH_REQUIRED",
-        "Open this board again from your classroom to renew access.",
+        "Open this Space again from its parent application to renew access.",
         401,
       );
     }
@@ -392,9 +406,38 @@ export class ApiClient {
     return response.blob();
   }
 
-  async attributedBoardExport(boardId: string): Promise<AttributedBoardExport> {
-    return this.request<AttributedBoardExport>(
+  async attributedDataExport(boardId: string): Promise<AttributedDataExport> {
+    return this.request<AttributedDataExport>(
       `/api/v1/boards/${encodeURIComponent(boardId)}/export.attributed.json`,
+    );
+  }
+
+  async organisationTemplates(boardId: string): Promise<OrganisationTemplates> {
+    const result = await this.request<unknown>(
+      `/api/v1/boards/${encodeURIComponent(boardId)}/organisation/templates`,
+    );
+    return parseOrganisationTemplates(result);
+  }
+
+  async createOrganisationTemplate(
+    boardId: string,
+    input: { name: string; description?: string; items: BoardItem[] },
+  ): Promise<OrganisationTemplate> {
+    const result = await this.request<unknown>(
+      `/api/v1/boards/${encodeURIComponent(boardId)}/organisation/templates`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": crypto.randomUUID() },
+        body: JSON.stringify(input),
+      },
+    );
+    return parseOrganisationTemplate(result);
+  }
+
+  async deleteOrganisationTemplate(boardId: string, templateId: string): Promise<void> {
+    await this.request(
+      `/api/v1/boards/${encodeURIComponent(boardId)}/organisation/templates/${encodeURIComponent(templateId)}`,
+      { method: "DELETE" },
     );
   }
 
@@ -604,6 +647,70 @@ function parseBoardImageAsset(value: unknown): BoardImageAsset {
   };
 }
 
+function parseOrganisationTemplates(value: unknown): OrganisationTemplates {
+  if (
+    !isRecord(value) ||
+    (value.organisationId !== null &&
+      (typeof value.organisationId !== "string" ||
+        !/^o_[A-Za-z0-9_-]{22}$/u.test(value.organisationId))) ||
+    typeof value.canManage !== "boolean" ||
+    !Array.isArray(value.templates)
+  ) {
+    throw invalidOrganisationTemplateResponse(value);
+  }
+  return {
+    organisationId: value.organisationId,
+    canManage: value.canManage,
+    templates: value.templates.map((template) => parseOrganisationTemplate(template)),
+  };
+}
+
+function parseOrganisationTemplate(value: unknown): OrganisationTemplate {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    !/^tpl_[A-Za-z0-9_-]{22}$/u.test(value.id) ||
+    typeof value.name !== "string" ||
+    value.name.trim().length === 0 ||
+    (value.description !== null && typeof value.description !== "string") ||
+    !Array.isArray(value.items) ||
+    value.items.length === 0 ||
+    value.items.length > MAX_BATCH_OPERATIONS ||
+    typeof value.createdBy !== "string" ||
+    !/^a_[A-Za-z0-9_-]{22}$/u.test(value.createdBy) ||
+    !Number.isSafeInteger(value.createdAt) ||
+    (value.createdAt as number) < 0 ||
+    !Number.isSafeInteger(value.updatedAt) ||
+    (value.updatedAt as number) < 0
+  ) {
+    throw invalidOrganisationTemplateResponse(value);
+  }
+  let items: BoardItem[];
+  try {
+    items = value.items.map((item) => normalizeBoardItem(item) as BoardItem);
+  } catch {
+    throw invalidOrganisationTemplateResponse(value);
+  }
+  return {
+    id: value.id,
+    name: value.name,
+    description: value.description,
+    items,
+    createdBy: value.createdBy,
+    createdAt: value.createdAt as number,
+    updatedAt: value.updatedAt as number,
+  };
+}
+
+function invalidOrganisationTemplateResponse(details: unknown): ApiError {
+  return new ApiError(
+    "INVALID_RESPONSE",
+    "The server returned invalid organisation template data.",
+    500,
+    details,
+  );
+}
+
 function invalidBoardImageAsset(details: unknown): ApiError {
   return new ApiError(
     "INVALID_RESPONSE",
@@ -652,7 +759,7 @@ function parseEmbedSession(value: unknown): EmbedSession {
 function invalidEmbedSession(details: unknown): ApiError {
   return new ApiError(
     "INVALID_RESPONSE",
-    "The server did not return a valid classroom session.",
+    "The server did not return a valid embedded Space session.",
     500,
     details,
   );

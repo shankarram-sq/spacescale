@@ -65,7 +65,6 @@ export function assertPublicConfiguration(values: Record<string, string>): void 
   }
   for (const [name, key] of [
     ["SESSION_SIGNING_KEY_CURRENT", values.SESSION_SIGNING_KEY_CURRENT],
-    ["CLASSROOM_INTEGRATION_KEY", values.CLASSROOM_INTEGRATION_KEY],
   ] as const) {
     if (!key) continue;
     const looksBase64 = /^[A-Za-z\d+/]+={0,2}$/u.test(key) && key.length % 4 === 0;
@@ -75,6 +74,9 @@ export function assertPublicConfiguration(values: Record<string, string>): void 
     if (keyBytes < 32) {
       throw new Error(`${name} must contain at least 32 random bytes.`);
     }
+  }
+  if (values.ORGANISATION_SIGNING_KEYS) {
+    assertOrganisationSigningKeys(values.ORGANISATION_SIGNING_KEYS);
   }
   const allowedOrigins = values.ALLOWED_ORIGINS?.trim();
   if (allowedOrigins && allowedOrigins !== "*") {
@@ -112,6 +114,62 @@ export function assertPublicConfiguration(values: Record<string, string>): void 
       }
     }
   }
+}
+
+function assertOrganisationSigningKeys(source: string): void {
+  let value: unknown;
+  try {
+    value = JSON.parse(source);
+  } catch {
+    throw new Error("ORGANISATION_SIGNING_KEYS must be valid JSON.");
+  }
+  if (!isRecord(value) || Object.keys(value).length < 1 || Object.keys(value).length > 256) {
+    throw new Error("ORGANISATION_SIGNING_KEYS must contain 1 to 256 organisations.");
+  }
+  for (const [organisationId, rawOrganisation] of Object.entries(value)) {
+    if (
+      organisationId.normalize("NFC").trim() !== organisationId ||
+      organisationId.length < 1 ||
+      organisationId.length > 120 ||
+      !isRecord(rawOrganisation) ||
+      !hasStrongKey(rawOrganisation.derivation_key) ||
+      !isRecord(rawOrganisation.current) ||
+      !validKeyId(rawOrganisation.current.kid) ||
+      !hasStrongKey(rawOrganisation.current.key) ||
+      !Array.isArray(rawOrganisation.previous) ||
+      rawOrganisation.previous.length > 8
+    ) {
+      throw new Error(`ORGANISATION_SIGNING_KEYS has an invalid entry for ${organisationId}.`);
+    }
+    const keyIds = new Set<string>([rawOrganisation.current.kid as string]);
+    for (const previous of rawOrganisation.previous) {
+      if (
+        !isRecord(previous) ||
+        !validKeyId(previous.kid) ||
+        !hasStrongKey(previous.key) ||
+        keyIds.has(previous.kid as string)
+      ) {
+        throw new Error(`ORGANISATION_SIGNING_KEYS has an invalid rotation for ${organisationId}.`);
+      }
+      keyIds.add(previous.kid as string);
+    }
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function validKeyId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(value);
+}
+
+function hasStrongKey(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const looksBase64 = /^[A-Za-z\d+/]+={0,2}$/u.test(value) && value.length % 4 === 0;
+  return (
+    (looksBase64 ? Buffer.from(value, "base64").byteLength : Buffer.byteLength(value, "utf8")) >= 32
+  );
 }
 
 export function assertTurnstileSiteKeyForEnvironment(

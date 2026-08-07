@@ -1,15 +1,28 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 
 import { describe, expect, it, vi } from "vitest";
-import { signClassroomLaunchToken } from "./classroom-auth";
 import { MAX_CLASSROOM_IMPORT_ENCODED_CHARS } from "./classroom-import";
 import gateway from "./gateway";
 import { configuredFrameAncestors } from "./http/security";
 import { HmacIdentityService } from "./identity";
+import {
+  type OrganisationSigningKeyRegistry,
+  signOrganisationLaunchToken,
+} from "./organisation-auth";
 import type { Env } from "./types";
 
-const INTEGRATION_KEY = "classroom-integration-key-with-enough-entropy";
+const ORGANISATION_KEY = "school-42";
+const DERIVATION_KEY = `organisation-derivation-key-${"d".repeat(32)}`;
+const SIGNING_KEY = `organisation-signing-key-${"s".repeat(32)}`;
 const SESSION_KEY = "classroom-session-key-with-enough-entropy";
+
+const SIGNING_KEYS: OrganisationSigningKeyRegistry = {
+  [ORGANISATION_KEY]: {
+    derivation_key: DERIVATION_KEY,
+    current: { kid: "2026-08", key: SIGNING_KEY },
+    previous: [],
+  },
+};
 
 type CapturedRequest = {
   boardId: string;
@@ -34,7 +47,7 @@ function makeEnv(options: { allowedOrigins?: string } = {}): {
         body,
       });
       const pathname = new URL(request.url).pathname;
-      if (pathname === "/__internal/classroom-launch") {
+      if (pathname === "/__internal/organisation-launch") {
         const launch = body as {
           publicId: string;
           title: string;
@@ -72,14 +85,14 @@ function makeEnv(options: { allowedOrigins?: string } = {}): {
   }));
   const env = {
     APP_HOSTNAME: "localhost",
-    CLASSROOM_INTEGRATION_KEY: INTEGRATION_KEY,
+    ORGANISATION_SIGNING_KEYS: JSON.stringify(SIGNING_KEYS),
     ALLOWED_ORIGINS: options.allowedOrigins,
     SESSION_SIGNING_KEY_CURRENT: SESSION_KEY,
     SESSION_SIGNING_KEY_PREVIOUS: "",
     BOARD_CREATION_ENABLED: "true",
     TURNSTILE_ENABLED: "false",
     ENVIRONMENT: "development",
-    WORKER_VERSION: { id: "classroom-test-version" },
+    WORKER_VERSION: { id: "organisation-test-version" },
     BOARD_ROOMS: { getByName },
     ASSETS: {
       fetch: async () =>
@@ -94,26 +107,29 @@ function makeEnv(options: { allowedOrigins?: string } = {}): {
 async function launchToken(
   suffix: string,
   overrides: Partial<{
-    board_name: string;
+    organisation_id: string;
+    space_id: string;
     role: "owner" | "editor" | "viewer";
     display_name: string;
-    user_identifier: string;
+    participant_id: string;
   }> = {},
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1_000);
-  return signClassroomLaunchToken(
+  return signOrganisationLaunchToken(
     {
       v: 1,
       aud: "localhost",
-      board_name: `Classroom board ${suffix}`,
+      organisation_id: ORGANISATION_KEY,
+      space_id: `Classroom Space ${suffix}`,
+      kid: "2026-08",
       role: "editor",
       display_name: `Student ${suffix}`,
-      user_identifier: `student-${suffix}`,
+      participant_id: `student-${suffix}`,
       iat: now - 5,
       exp: now + 3_600,
       ...overrides,
     },
-    INTEGRATION_KEY,
+    SIGNING_KEY,
   );
 }
 
@@ -133,16 +149,16 @@ async function exchange(
   );
 }
 
-describe("classroom embed gateway", () => {
+describe("organisation embed gateway", () => {
   it("exchanges a signed launch for a scoped session after authoritative membership", async () => {
     const { env, captured, getByName } = makeEnv();
     const response = await exchange(
       env,
       await launchToken("exchange", {
-        board_name: "  Algebra classroom  ",
+        space_id: "  Algebra Space  ",
         role: "owner",
         display_name: "  Coach Mira  ",
-        user_identifier: "coach-mira",
+        participant_id: "coach-mira",
       }),
       "http://localhost",
       "eyJmb3JtYXQiOiJjZi13aGl0ZWJvYXJkLWpzb24ifQ",
@@ -157,7 +173,7 @@ describe("classroom embed gateway", () => {
       actor: { id: string; role: string; displayName: string };
     };
     expect(result.board).toMatchObject({
-      title: "Algebra classroom",
+      title: "Algebra Space",
       url: `http://localhost/embed/b/${result.board.id}`,
     });
     expect(result.actor).toMatchObject({ role: "owner", displayName: "Coach Mira" });
@@ -165,7 +181,7 @@ describe("classroom embed gateway", () => {
 
     expect(captured).toHaveLength(1);
     const forwarded = captured[0];
-    expect(forwarded?.url).toBe("http://localhost/__internal/classroom-launch");
+    expect(forwarded?.url).toBe("http://localhost/__internal/organisation-launch");
     expect(forwarded?.headers.get("authorization")).toBeNull();
     expect(forwarded?.headers.get("x-whiteboard-internal-actor")).toBe(result.actor.id);
     expect(forwarded?.headers.get("x-whiteboard-internal-session-expiry")).toBe(
@@ -173,7 +189,8 @@ describe("classroom embed gateway", () => {
     );
     expect(forwarded?.body).toEqual({
       publicId: result.board.id,
-      title: "Algebra classroom",
+      organisationId: expect.stringMatching(/^o_[A-Za-z0-9_-]{22}$/u),
+      title: "Algebra Space",
       role: "owner",
       displayName: "Coach Mira",
       launchIssuedAtMs: expect.any(Number),

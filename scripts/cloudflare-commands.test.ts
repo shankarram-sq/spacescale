@@ -26,7 +26,13 @@ function configuredValue(name: string): string {
     CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
     CLOUDFLARE_API_TOKEN: "cloudflare-api-token",
     SESSION_SIGNING_KEY_CURRENT: "s".repeat(32),
-    CLASSROOM_INTEGRATION_KEY: "c".repeat(32),
+    ORGANISATION_SIGNING_KEYS: JSON.stringify({
+      demo: {
+        derivation_key: "d".repeat(32),
+        current: { kid: "v1", key: "c".repeat(32) },
+        previous: [],
+      },
+    }),
     R2_BUCKET_NAME: staging ? "staging-cloud-collab" : "collab-canvas-snapshots",
     APP_HOSTNAME: staging ? "staging-cloud-collab.spacescale.net" : "spacescale.net",
     TURNSTILE_SITE_KEY: "real-turnstile-site-key",

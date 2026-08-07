@@ -182,14 +182,14 @@ export class HmacIdentityService implements IdentityService {
     now = Date.now(),
   ): Promise<IssuedEmbedSession> {
     if (!ACTOR_ID_PATTERN.test(actorId) || !BOARD_ID_PATTERN.test(boardId)) {
-      throw new HttpError(500, "INTERNAL_ERROR", "The classroom identity is invalid.");
+      throw new HttpError(500, "INTERNAL_ERROR", "The embed identity is invalid.");
     }
     if (
       !Number.isSafeInteger(expiresAt) ||
       expiresAt <= now ||
       expiresAt - now > EMBED_SESSION_LIFETIME_MS + MAX_CLOCK_SKEW_MS
     ) {
-      throw new HttpError(401, "AUTH_REQUIRED", "The classroom session has expired.");
+      throw new HttpError(401, "AUTH_REQUIRED", "The Space session has expired.");
     }
     const payload: EmbedSessionPayload = { v: 1, a: actorId, b: boardId, i: now, e: expiresAt };
     const token = await this.signPayloadWithPrefix(EMBED_SESSION_PREFIX, payload, this.#currentKey);
@@ -344,7 +344,7 @@ function isEmbedSessionPayload(value: unknown): value is EmbedSessionPayload {
 }
 
 function invalidSession(): HttpError {
-  return new HttpError(401, "AUTH_REQUIRED", "The classroom session is invalid or expired.");
+  return new HttpError(401, "AUTH_REQUIRED", "The Space session is invalid or expired.");
 }
 
 export const __identityTestUtils = {
