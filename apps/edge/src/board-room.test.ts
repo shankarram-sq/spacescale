@@ -233,6 +233,43 @@ function createStampCommit(commandId: string, actionId: string, itemId: string) 
   };
 }
 
+function createImageCommit(
+  commandId: string,
+  actionId: string,
+  itemId: string,
+  assetId: string,
+  mimeType: "image/gif" | "image/png" = "image/gif",
+  intrinsicWidth = 1,
+  intrinsicHeight = 1,
+) {
+  return {
+    v: 1,
+    t: "client.commit",
+    commandId,
+    actionId,
+    baseSeq: 0,
+    op: {
+      kind: "item.create",
+      item: {
+        id: itemId,
+        kind: "image",
+        style: { kind: "image", opacity: 1, radius: 12 },
+        transform: [1, 0, 0, 1, 0, 0],
+        geometry: {
+          x: 10,
+          y: 20,
+          width: 100,
+          height: 100,
+          assetId,
+          mimeType,
+          intrinsicWidth,
+          intrinsicHeight,
+        },
+      },
+    },
+  };
+}
+
 function seedActionRows(
   sql: SqlStorage,
   count: number,
@@ -354,7 +391,7 @@ describe("BoardRoom initialization", () => {
         .one(),
     }));
     expect(state).toEqual({
-      migrations: [1, 2, 3, 4, 5, 6, 7],
+      migrations: [1, 2, 3, 4, 5, 6, 7, 8],
       boards: 1,
       owners: 1,
       classroomMode: 0,
@@ -1621,6 +1658,109 @@ describe("BoardRoom initialization", () => {
     owner.socket.close(1000, "done");
     editor.socket.close(1000, "done");
     viewer.socket.close(1000, "done");
+  });
+
+  it("requires image commits to reference matching committed board assets", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const connected = await connect(stub, actorId);
+
+    const missing = createImageCommit(
+      "018f0000-0000-7000-8000-000000000890",
+      "018f0000-0000-7000-8000-000000000891",
+      "018f0000-0000-7000-8000-000000000892",
+      `asset_${"M".repeat(42)}Q`,
+    );
+    connected.socket.send(JSON.stringify(missing));
+    expect(
+      await connected.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === missing.commandId,
+      ),
+    ).toMatchObject({ code: "INVALID_FRAME", latestSeq: 0 });
+
+    const digest = "A".repeat(43);
+    const assetId = `asset_${digest}`;
+    await runInDurableObject(stub, (_instance, durableState) => {
+      const now = Date.now();
+      durableState.storage.sql.exec(
+        `INSERT INTO board_assets(
+           asset_id, sha256, r2_key, mime_type, intrinsic_width,
+           intrinsic_height, byte_count, state, created_by,
+           created_at_ms, committed_at_ms
+         ) VALUES (?, ?, ?, 'image/gif', 1, 1, 1, 'pending', ?, ?, NULL)`,
+        assetId,
+        digest,
+        `boards/${boardId}/assets/${assetId}`,
+        actorId,
+        now,
+      );
+    });
+
+    const pending = createImageCommit(
+      "018f0000-0000-7000-8000-000000000893",
+      "018f0000-0000-7000-8000-000000000894",
+      "018f0000-0000-7000-8000-000000000895",
+      assetId,
+    );
+    connected.socket.send(JSON.stringify(pending));
+    expect(
+      await connected.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === pending.commandId,
+      ),
+    ).toMatchObject({ code: "INVALID_FRAME", latestSeq: 0 });
+
+    await runInDurableObject(stub, (_instance, durableState) => {
+      durableState.storage.sql.exec(
+        "UPDATE board_assets SET state = 'committed', committed_at_ms = ? WHERE asset_id = ?",
+        Date.now(),
+        assetId,
+      );
+    });
+
+    const mismatched = createImageCommit(
+      "018f0000-0000-7000-8000-000000000896",
+      "018f0000-0000-7000-8000-000000000897",
+      "018f0000-0000-7000-8000-000000000898",
+      assetId,
+      "image/png",
+    );
+    connected.socket.send(JSON.stringify(mismatched));
+    expect(
+      await connected.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === mismatched.commandId,
+      ),
+    ).toMatchObject({ code: "INVALID_FRAME", latestSeq: 0 });
+
+    const valid = createImageCommit(
+      "018f0000-0000-7000-8000-000000000900",
+      "018f0000-0000-7000-8000-000000000901",
+      "018f0000-0000-7000-8000-000000000902",
+      assetId,
+    );
+    connected.socket.send(JSON.stringify(valid));
+    expect(
+      await connected.next(
+        (frame) => frame.t === "server.action" && frame.commandId === valid.commandId,
+      ),
+    ).toMatchObject({
+      seq: 1,
+      op: { kind: "item.create", item: { geometry: { assetId } } },
+    });
+
+    const counts = await runInDurableObject(stub, (_instance, durableState) => ({
+      latestSeq: durableState.storage.sql
+        .exec<{ latest_seq: number }>("SELECT latest_seq FROM board")
+        .one().latest_seq,
+      actions: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM actions")
+        .one().count,
+      items: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM items")
+        .one().count,
+    }));
+    expect(counts).toEqual({ latestSeq: 1, actions: 1, items: 1 });
+
+    connected.socket.close(1000, "done");
   });
 
   it("keeps attributed sticky content durable through history, R2 restore, and hibernation", async () => {

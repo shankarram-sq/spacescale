@@ -2,8 +2,11 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import {
+  ACTIVE_TOOLS,
+  assertCanonicalAssetId,
   canonicalRequestHashInput,
   canonicalStringify,
+  normalizeBoardAccessPolicy,
   ProtocolValidationError,
   parseClientFrame,
   validateDurableOperation,
@@ -13,6 +16,7 @@ import {
 const ID_1 = "018f0000-0000-7000-8000-000000000001";
 const ID_2 = "018f0000-0000-7000-8000-000000000002";
 const ID_3 = "018f0000-0000-7000-8000-000000000003";
+const ASSET_ID = "asset_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 function rectangle(id = ID_1) {
   return {
@@ -47,6 +51,26 @@ function stamp(id = ID_1, stampKind = "star") {
     style: { kind: "stamp", color: "#e11d48", opacity: 0.555 },
     transform: [1, 0, 0, 1, 0, 0],
     geometry: { x: 12.345, y: -7.555, size: 71.999, stamp: stampKind },
+  };
+}
+
+function image(id = ID_1) {
+  return {
+    id,
+    kind: "image",
+    style: { kind: "image", opacity: 0.555, radius: 12.125 },
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: {
+      x: 15.129,
+      y: 17.555,
+      width: -100,
+      height: 80,
+      assetId: ASSET_ID,
+      alt: "Source diagram",
+      mimeType: "image/png",
+      intrinsicWidth: 1200,
+      intrinsicHeight: 800,
+    },
   };
 }
 
@@ -204,6 +228,106 @@ describe("durable operation validation", () => {
     ).toMatchObject({
       patch: { geometry: { x: 20, y: 30, size: 80, stamp: "check" } },
     });
+  });
+
+  it("normalizes durable image cards without embedding asset bytes", () => {
+    expect(validateDurableOperation({ kind: "item.create", item: image() })).toEqual({
+      kind: "item.create",
+      item: {
+        id: ID_1,
+        kind: "image",
+        style: { kind: "image", opacity: 0.56, radius: 12.13 },
+        transform: [1, 0, 0, 1, 0, 0],
+        geometry: {
+          x: -84.87,
+          y: 17.56,
+          width: 100,
+          height: 80,
+          assetId: ASSET_ID,
+          alt: "Source diagram",
+          mimeType: "image/png",
+          intrinsicWidth: 1200,
+          intrinsicHeight: 800,
+        },
+      },
+    });
+    expect(assertCanonicalAssetId(ASSET_ID)).toBe(ASSET_ID);
+    expect(ACTIVE_TOOLS).toContain("image");
+    expect(
+      validateDurableOperation({
+        kind: "item.update",
+        itemId: ID_1,
+        expectedVersion: 1,
+        patch: { geometry: { ...image().geometry, alt: "" } },
+      }),
+    ).toMatchObject({
+      patch: {
+        geometry: expect.not.objectContaining({ alt: expect.anything() }),
+      },
+    });
+  });
+
+  it("rejects hostile image references, metadata, dimensions, alt, and styles", () => {
+    const cases = [
+      { ...image(), geometry: { ...image().geometry, assetId: "data:image/png;base64,AAAA" } },
+      { ...image(), geometry: { ...image().geometry, mimeType: "image/svg+xml" } },
+      { ...image(), geometry: { ...image().geometry, intrinsicWidth: 4097 } },
+      {
+        ...image(),
+        geometry: { ...image().geometry, intrinsicWidth: 4001, intrinsicHeight: 4000 },
+      },
+      { ...image(), geometry: { ...image().geometry, alt: "x".repeat(501) } },
+      { ...image(), geometry: { ...image().geometry, bytes: "AAAA" } },
+      { ...image(), style: { kind: "image", opacity: 1, radius: -1 } },
+      { ...image(), style: { kind: "image", opacity: 1, radius: 257 } },
+    ];
+    for (const item of cases) {
+      expect(() => validateDurableOperation({ kind: "item.create", item })).toThrow(
+        ProtocolValidationError,
+      );
+    }
+    expect(() =>
+      assertCanonicalAssetId("asset_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB"),
+    ).toThrow(/base64url SHA-256/);
+  });
+
+  it("requires imagesEnabled in canonical authoritative board policy", () => {
+    expect(
+      normalizeBoardAccessPolicy({
+        accessMode: "private",
+        drawingPolicy: "owner_only",
+        imagesEnabled: false,
+        aclVersion: 3,
+      }),
+    ).toEqual({
+      accessMode: "private",
+      drawingPolicy: "owner_only",
+      imagesEnabled: false,
+      aclVersion: 3,
+    });
+    expect(() =>
+      normalizeBoardAccessPolicy({
+        accessMode: "private",
+        drawingPolicy: "owner_only",
+        aclVersion: 3,
+      }),
+    ).toThrow(/Missing field "imagesEnabled"/);
+    expect(() =>
+      normalizeBoardAccessPolicy({
+        accessMode: "private",
+        drawingPolicy: "owner_only",
+        imagesEnabled: "false",
+        aclVersion: 3,
+      }),
+    ).toThrow(/must be a boolean/);
+    expect(() =>
+      normalizeBoardAccessPolicy({
+        accessMode: "private",
+        drawingPolicy: "owner_only",
+        imagesEnabled: false,
+        aclVersion: 0,
+      }),
+    ).toThrow(/greater than or equal to 1/);
   });
 
   it("rejects nested batches, unknown patch fields, and duplicate affected IDs", () => {

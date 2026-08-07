@@ -2,8 +2,10 @@ import {
   type BoxGeometry,
   canonicalNumber,
   GeometryValidationError,
+  type ImageGeometry,
   type ItemGeometry,
   inferAndNormalizeGeometry,
+  isCanonicalImageAssetId,
   type LineGeometry,
   normalizeCoordinate,
   normalizeGeometry,
@@ -21,6 +23,8 @@ export type {
   Bounds,
   BoxGeometry,
   GeometryKind,
+  ImageGeometry,
+  ImageMimeType,
   ItemGeometry,
   LineGeometry,
   PencilGeometry,
@@ -31,7 +35,13 @@ export type {
   TextGeometry,
   Transform,
 } from "@collab/geometry";
-export { STAMP_KINDS } from "@collab/geometry";
+export {
+  IMAGE_MIME_TYPES,
+  MAX_IMAGE_ALT_CODE_POINTS,
+  MAX_IMAGE_INTRINSIC_DIMENSION,
+  MAX_IMAGE_INTRINSIC_PIXELS,
+  STAMP_KINDS,
+} from "@collab/geometry";
 
 export const PROTOCOL_VERSION = 1 as const;
 export const MAX_ORDINARY_FRAME_BYTES = 64 * 1024;
@@ -44,6 +54,7 @@ export const MAX_STICKY_TEXT_CODE_POINTS = 1_000;
 export const MAX_PUBLIC_RESULT_BYTES = 512 * 1024;
 export const MAX_ACTION_PAYLOAD_BYTES = 1.5 * 1024 * 1024;
 export const MAX_SNAPSHOT_BYTES = 20 * 1024 * 1024;
+export const MAX_IMAGE_RADIUS = 256;
 
 export const ITEM_KINDS = [
   "pencil",
@@ -52,6 +63,7 @@ export const ITEM_KINDS = [
   "ellipse",
   "text",
   "sticky",
+  "image",
   "stamp",
 ] as const;
 export const BOARD_ROLES = ["viewer", "editor", "owner"] as const;
@@ -63,6 +75,14 @@ export type BoardItemKind = ItemKind;
 export type BoardRole = (typeof BOARD_ROLES)[number];
 export type DrawingPolicy = (typeof DRAWING_POLICIES)[number];
 export type AccessMode = (typeof ACCESS_MODES)[number];
+
+export interface BoardAccessPolicy {
+  accessMode: AccessMode;
+  drawingPolicy: DrawingPolicy;
+  imagesEnabled: boolean;
+  aclVersion: number;
+}
+
 export type Matrix = Transform;
 
 export interface Frame {
@@ -93,13 +113,19 @@ export interface StickyStyle {
   opacity: number;
 }
 
+export interface ImageStyle {
+  kind: "image";
+  opacity: number;
+  radius: number;
+}
+
 export interface StampStyle {
   kind: "stamp";
   color: string;
   opacity: number;
 }
 
-export type ItemStyle = StrokeStyle | TextStyle | StickyStyle | StampStyle;
+export type ItemStyle = StrokeStyle | TextStyle | StickyStyle | ImageStyle | StampStyle;
 
 interface BoardItemBase {
   id: string;
@@ -145,6 +171,12 @@ export interface StickyItem extends BoardItemBase {
   geometry: StickyGeometry;
 }
 
+export interface ImageItem extends BoardItemBase {
+  kind: "image";
+  style: ImageStyle;
+  geometry: ImageGeometry;
+}
+
 export interface StampItem extends BoardItemBase {
   kind: "stamp";
   style: StampStyle;
@@ -158,6 +190,7 @@ export type BoardItem =
   | EllipseItem
   | TextItem
   | StickyItem
+  | ImageItem
   | StampItem;
 
 type WithoutServerFields<T> = T extends BoardItem ? Omit<T, "z" | "version" | "createdBy"> : never;
@@ -368,6 +401,7 @@ export const ACTIVE_TOOLS = [
   "ellipse",
   "text",
   "sticky",
+  "image",
   "stamp",
   "eraser",
   "select",
@@ -517,6 +551,23 @@ function expectSafeInteger(value: unknown, path: string, minimum = 0): number {
   return value as number;
 }
 
+export function normalizeBoardAccessPolicy(
+  value: unknown,
+  path = "$boardPolicy",
+): BoardAccessPolicy {
+  const object = expectRecord(value, path);
+  expectExactKeys(object, ["accessMode", "drawingPolicy", "imagesEnabled", "aclVersion"], [], path);
+  if (typeof object.imagesEnabled !== "boolean") {
+    fail("imagesEnabled must be a boolean", `${path}.imagesEnabled`);
+  }
+  return {
+    accessMode: expectLiteral(object.accessMode, ACCESS_MODES, `${path}.accessMode`),
+    drawingPolicy: expectLiteral(object.drawingPolicy, DRAWING_POLICIES, `${path}.drawingPolicy`),
+    imagesEnabled: object.imagesEnabled,
+    aclVersion: expectSafeInteger(object.aclVersion, `${path}.aclVersion`, 1),
+  };
+}
+
 function base64UrlIsCanonical(value: string): boolean {
   const match = PREFIXED_BASE64URL_PATTERN.exec(value);
   if (match === null) return false;
@@ -548,6 +599,17 @@ export function isCanonicalId(value: unknown): value is string {
 export function assertCanonicalId(value: unknown, path = "$id"): string {
   if (!isCanonicalId(value)) {
     fail("Expected a canonical UUID or prefixed base64url ID", path);
+  }
+  return value;
+}
+
+export function isCanonicalAssetId(value: unknown): value is string {
+  return isCanonicalImageAssetId(value);
+}
+
+export function assertCanonicalAssetId(value: unknown, path = "$assetId"): string {
+  if (!isCanonicalAssetId(value)) {
+    fail("Expected asset_ followed by a canonical 43-character base64url SHA-256 digest", path);
   }
   return value;
 }
@@ -632,6 +694,24 @@ export function normalizeStickyStyle(value: unknown, path = "$style"): StickySty
   };
 }
 
+export function normalizeImageStyle(value: unknown, path = "$style"): ImageStyle {
+  const object = expectRecord(value, path);
+  if (object.kind !== "image") fail('Expected style kind "image"', `${path}.kind`);
+  expectExactKeys(object, ["kind", "opacity", "radius"], [], path);
+  if (typeof object.radius !== "number" || !Number.isFinite(object.radius)) {
+    fail("Image corner radius must be a finite number", `${path}.radius`);
+  }
+  const radius = canonicalNumber(object.radius, 2);
+  if (radius < 0 || radius > MAX_IMAGE_RADIUS) {
+    fail(`Image corner radius must be between 0 and ${MAX_IMAGE_RADIUS}`, `${path}.radius`);
+  }
+  return {
+    kind: "image",
+    opacity: normalizeOpacity(object.opacity, `${path}.opacity`),
+    radius,
+  };
+}
+
 export function normalizeStampStyle(value: unknown, path = "$style"): StampStyle {
   const object = expectRecord(value, path);
   if (object.kind !== "stamp") fail('Expected style kind "stamp"', `${path}.kind`);
@@ -648,8 +728,9 @@ export function normalizeItemStyle(value: unknown, path = "$style"): ItemStyle {
   if (object.kind === "stroke") return normalizeStrokeStyle(object, path);
   if (object.kind === "text") return normalizeTextStyle(object, path);
   if (object.kind === "sticky") return normalizeStickyStyle(object, path);
+  if (object.kind === "image") return normalizeImageStyle(object, path);
   if (object.kind === "stamp") return normalizeStampStyle(object, path);
-  fail('Style kind must be "stroke", "text", "sticky", or "stamp"', `${path}.kind`);
+  fail('Style kind must be "stroke", "text", "sticky", "image", or "stamp"', `${path}.kind`);
 }
 
 function isValidXmlCodePoint(codePoint: number): boolean {
@@ -718,12 +799,18 @@ function normalizeGeometryForItem(kind: ItemKind, value: unknown, path: string):
       text: validateStickyText((geometry as StickyGeometry).text, `${path}.text`),
     };
   }
+  if (kind === "image") {
+    const image = geometry as ImageGeometry;
+    assertCanonicalAssetId(image.assetId, `${path}.assetId`);
+    return image;
+  }
   return geometry;
 }
 
 function normalizeStyleForKind(kind: ItemKind, value: unknown, path: string): ItemStyle {
   if (kind === "text") return normalizeTextStyle(value, path);
   if (kind === "sticky") return normalizeStickyStyle(value, path);
+  if (kind === "image") return normalizeImageStyle(value, path);
   if (kind === "stamp") return normalizeStampStyle(value, path);
   return normalizeStrokeStyle(value, path);
 }

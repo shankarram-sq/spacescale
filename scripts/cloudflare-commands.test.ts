@@ -2,10 +2,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   environment: "staging" as "staging" | "production",
+  assetScenario: "existing" as "existing" | "missing" | "conflict",
+  assetLookupCount: 0,
   requiredCalls: [] as string[][],
   requestPaths: [] as string[],
+  requestCalls: [] as Array<{
+    path: string;
+    method: string;
+    body: string | undefined;
+  }>,
   output: [] as string[],
   assertTurnstileSiteKeyForEnvironment: vi.fn(),
+  spawnSync: vi.fn(() => ({ status: 0 })),
+}));
+
+vi.mock("node:child_process", () => ({
+  spawnSync: mocks.spawnSync,
 }));
 
 function configuredValue(name: string): string {
@@ -34,21 +46,36 @@ vi.mock("./env.ts", () => ({
     return Object.fromEntries(names.map((name) => [name, configuredValue(name)]));
   }),
   publicApiFailure: vi.fn((label: string) => new Error(label)),
-  cloudflareRequest: vi.fn(async (path: string) => {
+  cloudflareRequest: vi.fn(async (path: string, init: RequestInit = {}) => {
+    const method = init.method?.toUpperCase() ?? "GET";
     mocks.requestPaths.push(path);
+    mocks.requestCalls.push({
+      path,
+      method,
+      body: init.body === undefined ? undefined : String(init.body),
+    });
     const hostname = configuredValue("APP_HOSTNAME");
     const bucketName = configuredValue("R2_BUCKET_NAME");
+    const assetBucketName =
+      mocks.environment === "staging" ? "staging-cloud-collab-assets" : "collab-canvas-assets";
+    const account = "a".repeat(32);
+    const bucketLookupPath = `/accounts/${account}/r2/buckets/${encodeURIComponent(bucketName)}`;
+    const assetLookupPath = `/accounts/${account}/r2/buckets/${encodeURIComponent(assetBucketName)}`;
     const workerService =
       mocks.environment === "production"
         ? "cloudflare-collab-canvas"
         : "cloudflare-collab-canvas-staging";
     let result: unknown = {};
+    let status = 200;
+    let success = true;
     if (path.endsWith("/tokens/verify")) result = { status: "active" };
     else if (path.endsWith("/workers/scripts")) result = [];
     else if (path.includes("/workers/domains?")) {
       result = [{ hostname, service: workerService, cert_id: "certificate" }];
     } else if (path.endsWith("/r2/buckets?per_page=1000")) {
-      result = { buckets: [{ name: bucketName, jurisdiction: "default" }] };
+      result = {
+        buckets: [bucketName, assetBucketName].map((name) => ({ name, jurisdiction: "default" })),
+      };
     } else if (path.endsWith("/domains/managed")) result = { enabled: false };
     else if (path.endsWith("/domains/custom")) result = { domains: [] };
     else if (path.includes("/challenges/widgets/")) {
@@ -57,12 +84,33 @@ vi.mock("./env.ts", () => ({
         secret: configuredValue("TURNSTILE_SECRET_KEY"),
         domains: [hostname],
       };
-    } else if (path.includes("/r2/buckets/")) {
+    } else if (method === "POST" && path.endsWith("/r2/buckets")) {
+      const body = JSON.parse(String(init.body)) as { name: string };
+      if (mocks.assetScenario === "conflict" && body.name === assetBucketName) {
+        status = 409;
+        success = false;
+        result = undefined;
+      } else {
+        result = { name: body.name, jurisdiction: "default" };
+      }
+    } else if (path === assetLookupPath) {
+      mocks.assetLookupCount += 1;
+      if (
+        mocks.assetScenario === "missing" ||
+        (mocks.assetScenario === "conflict" && mocks.assetLookupCount === 1)
+      ) {
+        status = 404;
+        success = false;
+        result = undefined;
+      } else {
+        result = { name: assetBucketName, jurisdiction: "default" };
+      }
+    } else if (path === bucketLookupPath) {
       result = { name: bucketName, jurisdiction: "default" };
     }
     return {
-      response: new Response(null, { status: 200 }),
-      envelope: { success: true, result },
+      response: new Response(null, { status }),
+      envelope: { success, result },
     };
   }),
 }));
@@ -73,12 +121,19 @@ const originalExitCode = process.exitCode;
 beforeEach(() => {
   vi.resetModules();
   mocks.environment = "staging";
+  mocks.assetScenario = "existing";
+  mocks.assetLookupCount = 0;
   mocks.requiredCalls.length = 0;
   mocks.requestPaths.length = 0;
+  mocks.requestCalls.length = 0;
   mocks.output.length = 0;
   mocks.assertTurnstileSiteKeyForEnvironment.mockReset();
+  mocks.spawnSync.mockReset();
+  mocks.spawnSync.mockReturnValue({ status: 0 });
   process.exitCode = 0;
   process.env.ALLOWED_ORIGINS = "*";
+  delete process.env.R2_BUCKET_NAME;
+  delete process.env.APP_HOSTNAME;
   delete process.env.BOARD_CREATION_ENABLED;
   vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
     mocks.output.push(String(chunk));
@@ -100,6 +155,8 @@ afterEach(() => {
   process.argv = [...originalArgv];
   process.exitCode = originalExitCode;
   delete process.env.ALLOWED_ORIGINS;
+  delete process.env.R2_BUCKET_NAME;
+  delete process.env.APP_HOSTNAME;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -110,24 +167,83 @@ describe.sequential("Cloudflare command Turnstile configuration", () => {
 
     await import("./bootstrap-cloudflare.ts");
 
-    expect(mocks.requiredCalls).toHaveLength(1);
-    expect(mocks.requiredCalls[0]).not.toContain("TURNSTILE_SITE_KEY");
+    expect(mocks.requiredCalls).toEqual([["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"]]);
     expect(mocks.assertTurnstileSiteKeyForEnvironment).not.toHaveBeenCalled();
     expect(mocks.requestPaths.some((path) => path.includes("/challenges/"))).toBe(false);
+    expect(mocks.requestPaths.some((path) => path.includes("staging-cloud-collab-assets"))).toBe(
+      true,
+    );
   });
 
-  it("keeps the production bootstrap site-key requirement strict", async () => {
+  it("provisions production without requiring deploy-only public configuration", async () => {
     mocks.environment = "production";
     process.argv = ["node", "bootstrap-cloudflare.ts", "--env", "production"];
 
     await import("./bootstrap-cloudflare.ts");
 
-    expect(mocks.requiredCalls).toHaveLength(1);
-    expect(mocks.requiredCalls[0]).toContain("TURNSTILE_SITE_KEY");
+    expect(mocks.requiredCalls).toEqual([["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"]]);
+    expect(mocks.assertTurnstileSiteKeyForEnvironment).not.toHaveBeenCalled();
+    expect(mocks.spawnSync).not.toHaveBeenCalled();
+  });
+
+  it("requires production public configuration only when deployment is requested", async () => {
+    mocks.environment = "production";
+    process.argv = ["node", "bootstrap-cloudflare.ts", "--env", "production", "--deploy"];
+
+    await import("./bootstrap-cloudflare.ts");
+
+    expect(mocks.requiredCalls).toEqual([
+      ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
+      ["TURNSTILE_SITE_KEY"],
+    ]);
     expect(mocks.assertTurnstileSiteKeyForEnvironment).toHaveBeenCalledWith(
       "real-turnstile-site-key",
       "production",
     );
+    expect(mocks.spawnSync).toHaveBeenCalledOnce();
+  });
+
+  it("does not mutate existing private buckets on a provisioning rerun", async () => {
+    process.argv = ["node", "bootstrap-cloudflare.ts", "--env", "staging"];
+
+    await import("./bootstrap-cloudflare.ts");
+
+    expect(mocks.requestCalls.filter((call) => call.method === "POST")).toHaveLength(0);
+    expect(JSON.parse(mocks.output.at(-1) ?? "{}")).toMatchObject({
+      created: false,
+      assetCreated: false,
+    });
+  });
+
+  it("creates only the missing private asset bucket", async () => {
+    mocks.assetScenario = "missing";
+    process.argv = ["node", "bootstrap-cloudflare.ts", "--env", "staging"];
+
+    await import("./bootstrap-cloudflare.ts");
+
+    const postCalls = mocks.requestCalls.filter((call) => call.method === "POST");
+    expect(postCalls).toHaveLength(1);
+    expect(JSON.parse(postCalls[0]?.body ?? "{}")).toEqual({
+      name: "staging-cloud-collab-assets",
+    });
+    expect(JSON.parse(mocks.output.at(-1) ?? "{}")).toMatchObject({
+      created: false,
+      assetCreated: true,
+    });
+  });
+
+  it("re-reads and verifies an exact bucket after a first-create conflict", async () => {
+    mocks.assetScenario = "conflict";
+    process.argv = ["node", "bootstrap-cloudflare.ts", "--env", "staging"];
+
+    await import("./bootstrap-cloudflare.ts");
+
+    expect(mocks.requestCalls.filter((call) => call.method === "POST")).toHaveLength(1);
+    expect(mocks.assetLookupCount).toBe(2);
+    expect(JSON.parse(mocks.output.at(-1) ?? "{}")).toMatchObject({
+      created: false,
+      assetCreated: false,
+    });
   });
 
   it("checks staging access without requiring or probing Turnstile credentials", async () => {
@@ -142,6 +258,7 @@ describe.sequential("Cloudflare command Turnstile configuration", () => {
     expect(mocks.output.join("")).toContain(
       JSON.stringify({ check: "turnstile", enabled: false, skipped: true }),
     );
+    expect(mocks.output.join("")).toContain('"configuredAssetBucketExists":true');
   });
 
   it("keeps production access checks strict and probes both Turnstile credentials", async () => {

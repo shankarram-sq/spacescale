@@ -31,6 +31,10 @@
     {
       "binding": "BOARD_SNAPSHOTS",
       "bucket_name": "collab-canvas-snapshots"
+    },
+    {
+      "binding": "BOARD_ASSETS",
+      "bucket_name": "collab-canvas-assets"
     }
   ],
   "vars": {
@@ -75,6 +79,10 @@
         {
           "binding": "BOARD_SNAPSHOTS",
           "bucket_name": "cloudflare-collab-canvas-dev-snapshots"
+        },
+        {
+          "binding": "BOARD_ASSETS",
+          "bucket_name": "cloudflare-collab-canvas-dev-assets"
         }
       ],
       "version_metadata": {
@@ -117,6 +125,10 @@
         {
           "binding": "BOARD_SNAPSHOTS",
           "bucket_name": "staging-cloud-collab"
+        },
+        {
+          "binding": "BOARD_ASSETS",
+          "bucket_name": "staging-cloud-collab-assets"
         }
       ],
       "version_metadata": {

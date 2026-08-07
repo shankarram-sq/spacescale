@@ -53,6 +53,29 @@ function stamp(version = 1): BoardItem {
   };
 }
 
+function image(version = 1): BoardItem {
+  return {
+    id: ITEM_ID,
+    kind: "image",
+    z: 3,
+    version,
+    createdBy: ACTOR_ID,
+    style: { kind: "image", opacity: 0.9, radius: 12 },
+    transform: [1, 0, 0, 1, 15, -10],
+    geometry: {
+      x: 40,
+      y: 50,
+      width: 360,
+      height: 240,
+      assetId: `asset_${"c".repeat(43)}`,
+      alt: "Microscope slide",
+      mimeType: "image/png",
+      intrinsicWidth: 1_200,
+      intrinsicHeight: 800,
+    },
+  };
+}
+
 function snapshot(items: BoardItem[] = [], seq = 0): BoardSnapshot {
   return { format: "cf-whiteboard-json", version: 1, seq, items };
 }
@@ -178,6 +201,18 @@ describe("BoardModel", () => {
     expect(model.getItem(ITEM_ID)).toEqual(item);
     expect(model.hitTest([75, 40], 0)?.kind).toBe("stamp");
     expect(model.hitTest([73, 38], 0)).toBeUndefined();
+  });
+
+  it("uses the full transformed image card for bounds and hit testing", () => {
+    const item = image();
+    expect(itemBounds(item)).toEqual({ minX: 55, minY: 40, maxX: 415, maxY: 280 });
+
+    const model = new BoardModel();
+    model.load(snapshot([item], 5));
+
+    expect(model.getItem(ITEM_ID)).toEqual(item);
+    expect(model.hitTest([56, 41], 0)?.kind).toBe("image");
+    expect(model.hitTest([54, 39], 0)).toBeUndefined();
   });
 
   it("retains the optimistic journal when a remote action makes rebase unsafe", () => {

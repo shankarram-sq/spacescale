@@ -43,6 +43,14 @@ export type RecoverySnapshot = {
   createdAt: number;
 };
 
+export type BoardImageAsset = {
+  assetId: string;
+  mimeType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+  intrinsicWidth: number;
+  intrinsicHeight: number;
+  sizeBytes: number;
+};
+
 export class ApiError extends Error {
   constructor(
     readonly code: string,
@@ -225,7 +233,12 @@ export class ApiClient {
 
   async updateSettings(
     boardId: string,
-    values: { title?: string; accessMode?: AccessMode; drawingPolicy?: DrawingPolicy },
+    values: {
+      title?: string;
+      accessMode?: AccessMode;
+      drawingPolicy?: DrawingPolicy;
+      imagesEnabled?: boolean;
+    },
     expectedAclVersion: number,
   ): Promise<Record<string, unknown>> {
     return this.request(`/api/v1/boards/${encodeURIComponent(boardId)}/settings`, {
@@ -268,6 +281,48 @@ export class ApiClient {
       `/api/v1/boards/${encodeURIComponent(boardId)}/invitations/${encodeURIComponent(invitationId)}`,
       { method: "DELETE" },
     );
+  }
+
+  async uploadBoardImage(boardId: string, image: Blob): Promise<BoardImageAsset> {
+    const result = await this.request<unknown>(
+      `/api/v1/boards/${encodeURIComponent(boardId)}/assets`,
+      {
+        method: "POST",
+        headers: { "Content-Type": image.type },
+        body: image,
+      },
+    );
+    return parseBoardImageAsset(result);
+  }
+
+  async boardImage(boardId: string, assetId: string): Promise<Blob> {
+    const headers = new Headers({ Accept: "image/*" });
+    if (this.embedBearer) headers.set("Authorization", `Bearer ${this.embedBearer}`);
+    const response = await fetch(
+      `/api/v1/boards/${encodeURIComponent(boardId)}/assets/${encodeURIComponent(assetId)}`,
+      {
+        method: "GET",
+        headers,
+        credentials: "same-origin",
+        cache: "no-store",
+      },
+    );
+    if (!response.ok) {
+      const contentType = response.headers.get("content-type") ?? "";
+      const payload: unknown = contentType.includes("application/json")
+        ? await response.json().catch(() => null)
+        : await response.text().catch(() => "");
+      const serverError = isRecord(payload) && isRecord(payload.error) ? payload.error : null;
+      throw new ApiError(
+        typeof serverError?.code === "string" ? serverError.code : `HTTP_${response.status}`,
+        typeof serverError?.message === "string"
+          ? serverError.message
+          : "The image could not be loaded.",
+        response.status,
+        payload,
+      );
+    }
+    return response.blob();
   }
 
   async snapshots(boardId: string): Promise<RecoverySnapshot[]> {
@@ -339,7 +394,7 @@ export class ApiClient {
     const method = (init.method ?? "GET").toUpperCase();
     const headers = new Headers(init.headers);
     headers.set("Accept", "application/json");
-    if (init.body) headers.set("Content-Type", "application/json");
+    if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
     if (includeEmbedBearer && this.embedBearer) {
       headers.set("Authorization", `Bearer ${this.embedBearer}`);
     }
@@ -436,6 +491,47 @@ function storeEmbedBearer(token: string): void {
   } catch {
     // The in-memory copy remains usable when session history is unavailable.
   }
+}
+
+function parseBoardImageAsset(value: unknown): BoardImageAsset {
+  if (!isRecord(value)) throw invalidBoardImageAsset(value);
+  const mimeType = value.mimeType;
+  if (
+    typeof value.assetId !== "string" ||
+    !/^asset_[A-Za-z0-9_-]{43}$/u.test(value.assetId) ||
+    (mimeType !== "image/png" &&
+      mimeType !== "image/jpeg" &&
+      mimeType !== "image/webp" &&
+      mimeType !== "image/gif") ||
+    !Number.isSafeInteger(value.intrinsicWidth) ||
+    (value.intrinsicWidth as number) < 1 ||
+    (value.intrinsicWidth as number) > 4_096 ||
+    !Number.isSafeInteger(value.intrinsicHeight) ||
+    (value.intrinsicHeight as number) < 1 ||
+    (value.intrinsicHeight as number) > 4_096 ||
+    (value.intrinsicWidth as number) * (value.intrinsicHeight as number) > 16_000_000 ||
+    !Number.isSafeInteger(value.sizeBytes) ||
+    (value.sizeBytes as number) < 1 ||
+    (value.sizeBytes as number) > 5 * 1_024 * 1_024
+  ) {
+    throw invalidBoardImageAsset(value);
+  }
+  return {
+    assetId: value.assetId,
+    mimeType,
+    intrinsicWidth: value.intrinsicWidth as number,
+    intrinsicHeight: value.intrinsicHeight as number,
+    sizeBytes: value.sizeBytes as number,
+  };
+}
+
+function invalidBoardImageAsset(details: unknown): ApiError {
+  return new ApiError(
+    "INVALID_RESPONSE",
+    "The server did not return valid image metadata.",
+    500,
+    details,
+  );
 }
 
 function parseEmbedSession(value: unknown): EmbedSession {

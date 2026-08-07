@@ -282,6 +282,33 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
       END;
     `,
   },
+  {
+    version: 8,
+    name: "private_board_image_assets",
+    sql: `
+      ALTER TABLE board ADD COLUMN images_enabled INTEGER NOT NULL DEFAULT 0
+        CHECK (images_enabled IN (0, 1));
+
+      CREATE TABLE board_assets (
+        asset_id TEXT PRIMARY KEY
+          CHECK (length(asset_id) = 49 AND substr(asset_id, 1, 6) = 'asset_'),
+        sha256 TEXT NOT NULL UNIQUE CHECK (length(sha256) = 43),
+        r2_key TEXT NOT NULL UNIQUE,
+        mime_type TEXT NOT NULL
+          CHECK (mime_type IN ('image/png', 'image/jpeg', 'image/webp', 'image/gif')),
+        intrinsic_width INTEGER NOT NULL CHECK (intrinsic_width BETWEEN 1 AND 4096),
+        intrinsic_height INTEGER NOT NULL CHECK (intrinsic_height BETWEEN 1 AND 4096),
+        byte_count INTEGER NOT NULL CHECK (byte_count BETWEEN 1 AND 5242880),
+        state TEXT NOT NULL CHECK (state IN ('pending', 'committed')),
+        created_by TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        committed_at_ms INTEGER
+      ) WITHOUT ROWID;
+
+      CREATE INDEX board_assets_state_created_at
+        ON board_assets(state, created_at_ms);
+    `,
+  },
 ] as const;
 
 export function applyMigrations(

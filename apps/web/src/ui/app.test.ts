@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { BoardSnapshot } from "../types";
-import { boardIdFromPath, clampStickyText, localSvg, STAMP_CHOICES, STICKY_COLORS } from "./app";
+import {
+  boardIdFromPath,
+  clampImageAlt,
+  clampStickyText,
+  imageUploadIssue,
+  localSvg,
+  MAX_IMAGE_UPLOAD_BYTES,
+  STAMP_CHOICES,
+  STICKY_COLORS,
+} from "./app";
 
 const boardId = "b_1234567890123456789012";
 
@@ -104,6 +113,23 @@ describe("sticky note UI configuration", () => {
     };
 
     expect(localSvg(snapshot, "Rotated sticky")).toContain('viewBox="118 -22 114 164"');
+  });
+});
+
+describe("image card UI validation", () => {
+  it("prechecks supported MIME types, empty files, and the classroom size limit", () => {
+    expect(imageUploadIssue({ type: "image/png", size: 1_024 })).toBeNull();
+    expect(imageUploadIssue({ type: "image/svg+xml", size: 1_024 })).toContain(
+      "PNG, JPEG, WebP, or GIF",
+    );
+    expect(imageUploadIssue({ type: "image/png", size: 0 })).toContain("empty");
+    expect(imageUploadIssue({ type: "image/png", size: MAX_IMAGE_UPLOAD_BYTES + 1 })).toContain(
+      "5 MiB",
+    );
+  });
+
+  it("limits alt text by Unicode code point", () => {
+    expect(clampImageAlt(`${"😀".repeat(500)}overflow`)).toBe("😀".repeat(500));
   });
 });
 

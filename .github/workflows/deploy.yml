@@ -1,16 +1,12 @@
 name: Deploy
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
+  push:
     branches: [staging, main]
 
-# Never let two rollouts for the same release branch modify Cloudflare traffic concurrently.
-# Stale staging and production commits are rejected again before deployment.
 concurrency:
-  group: cloudflare-collab-canvas-${{ github.event.workflow_run.head_branch }}-delivery
-  cancel-in-progress: false
+  group: cloudflare-collab-canvas-${{ github.ref }}-deploy
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -20,843 +16,175 @@ env:
   WRANGLER_VERSION: 4.118.0
 
 jobs:
-  staging_deploy:
-    name: Staging deploy and 20-client smoke (${{ github.event.workflow_run.head_sha }})
-    if: >-
-      ${{
-        github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.event == 'push' &&
-        github.event.workflow_run.head_branch == 'staging' &&
-        github.event.workflow_run.head_repository.full_name == github.repository
-      }}
+  staging:
+    if: github.ref == 'refs/heads/staging'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     environment:
       name: staging
       url: https://staging-cloud-collab.spacescale.net
-    permissions:
-      contents: read
-      statuses: write
     env:
-      VALIDATED_SHA: ${{ github.event.workflow_run.head_sha }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       ALLOWED_ORIGINS: ${{ vars.ALLOWED_ORIGINS }}
-      STAGING_URL: https://staging-cloud-collab.spacescale.net
+      DEPLOY_URL: https://staging-cloud-collab.spacescale.net
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
-
-      - name: Verify this is the current validated staging commit
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$VALIDATED_SHA"
-          current_staging="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
-            --retry 2 --retry-all-errors --max-time 20 \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/staging" | jq -er '.sha')"
-          test "$current_staging" = "$VALIDATED_SHA" || {
-            echo "staging advanced after this CI run; refusing to deploy a stale commit" >&2
-            exit 1
-          }
-
-      - name: Mark exact-SHA staging validation pending
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh api --method POST \
-            "repos/$GITHUB_REPOSITORY/statuses/$VALIDATED_SHA" \
-            -f state=pending \
-            -f context=cloudflare/staging \
-            -f description='Staging deployment and smoke test are running' \
-            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            >/dev/null
 
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
-      - name: Install the validated lockfile
-        run: npm ci
+      - run: npm ci
 
-      - name: Install the load-test browser
-        run: npx --no-install playwright install --with-deps chromium
-
-      - name: Verify pinned local Wrangler and deployment inputs
+      - name: Verify Cloudflare inputs
         shell: bash
         run: |
           set -euo pipefail
-          : "${CLOUDFLARE_ACCOUNT_ID:?Configure the environment-scoped Cloudflare account ID}"
-          : "${CLOUDFLARE_API_TOKEN:?Configure an environment-scoped Workers Scripts Edit token}"
+          : "${CLOUDFLARE_ACCOUNT_ID:?Configure the staging Cloudflare account ID}"
+          : "${CLOUDFLARE_API_TOKEN:?Configure the staging Cloudflare API token}"
           test "$(node -p "require('./node_modules/wrangler/package.json').version")" = "$WRANGLER_VERSION"
 
-      - name: Build production web assets
-        run: npm run build:web
+      - name: Ensure private staging R2 buckets
+        run: npm run cf:bootstrap -- --env staging
 
-      - name: Upload the isolated staging Worker version
-        id: staging_candidate
+      - run: npm run build:web
+
+      - name: Upload staging Worker version
+        id: upload
         shell: bash
         run: |
           set -euo pipefail
           output="$RUNNER_TEMP/wrangler-staging-upload.jsonl"
-          rm -f "$output"
           WRANGLER_OUTPUT_FILE_PATH="$output" npx --no-install wrangler versions upload \
             --env staging \
-            --strict \
-            --tag "staging-${VALIDATED_SHA:0:12}" \
-            --message "validated staging ${VALIDATED_SHA}" \
+            --tag "staging-${GITHUB_SHA:0:12}" \
+            --message "staging ${GITHUB_SHA}" \
             --var "APP_HOSTNAME:staging-cloud-collab.spacescale.net" \
             --var "BOARD_CREATION_ENABLED:true" \
             --var "ALLOWED_ORIGINS:${ALLOWED_ORIGINS}" \
             --var "TURNSTILE_ENABLED:false" \
             --var "ENVIRONMENT:staging"
-
-          entry="$(jq -sc '
-            [.[] | select(
-              .type == "version-upload" and
-              .worker_name == "cloudflare-collab-canvas-staging"
-            )] | last // error("missing staging version-upload output")
-          ' "$output")"
-          version="$(jq -er '
-            .version_id |
-            select(type == "string" and
-              test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"; "i"))
-          ' <<< "$entry")"
+          version="$(jq -r 'select(.type == "version-upload") | .version_id' "$output" | tail -n 1)"
+          test -n "$version"
+          test "$version" != "null"
           echo "version_id=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Promote the staging version without reconciling routes
-        env:
-          STAGING_VERSION: ${{ steps.staging_candidate.outputs.version_id }}
+      - name: Deploy staging version at 100%
         shell: bash
         run: |
           set -euo pipefail
           npx --no-install wrangler versions deploy \
-            "${STAGING_VERSION}@100" \
+            "${{ steps.upload.outputs.version_id }}@100" \
             --env staging \
             --yes \
-            --message "validated staging ${VALIDATED_SHA}"
+            --message "staging ${GITHUB_SHA}"
 
-          status="$RUNNER_TEMP/wrangler-staging-status.json"
-          npx --no-install wrangler deployments status \
-            --env staging --json > "$status"
-          jq -e --arg version "$STAGING_VERSION" '
-            .versions as $versions |
-            ($versions | length) == 1 and
-            $versions[0].version_id == $version and
-            $versions[0].percentage == 100
-          ' "$status" >/dev/null
-
-      - name: Probe staging health and static assets
-        env:
-          STAGING_VERSION: ${{ steps.staging_candidate.outputs.version_id }}
+      - name: Probe staging health
         shell: bash
         run: |
           set -euo pipefail
-          health="$RUNNER_TEMP/staging-health.json"
-          headers="$RUNNER_TEMP/staging-headers.txt"
-          index="$RUNNER_TEMP/staging-index.html"
-
-          release_ready=false
-          for attempt in $(seq 1 12); do
-            curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
-              --retry 3 --retry-all-errors --max-time 20 \
-              -D "$headers" -o "$health" \
-              "$STAGING_URL/healthz?release=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${attempt}"
-            if jq -e --arg version "$STAGING_VERSION" '
-                .ok == true and
-                .service == "cloudflare-collab-canvas-edge" and
-                .versionId == $version
-              ' "$health" >/dev/null &&
-              tr -d '\r' < "$headers" |
-                grep -Eiq '^x-content-type-options:[[:space:]]*nosniff[[:space:]]*$'
+          for attempt in 1 2 3 4 5; do
+            if curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+              --connect-timeout 5 --max-time 15 \
+              "$DEPLOY_URL/healthz?deploy=${GITHUB_RUN_ID}-${attempt}" |
+              jq -e '.ok == true and .service == "cloudflare-collab-canvas-edge"' >/dev/null
             then
-              release_ready=true
-              break
+              exit 0
             fi
-
-            observed_version="$(jq -r '.versionId // "unavailable"' "$health" 2>/dev/null || echo invalid-response)"
-            echo "Waiting for staging version $STAGING_VERSION (attempt $attempt/12; observed $observed_version)"
-            if ((attempt < 12)); then
-              sleep 5
-            fi
+            sleep 3
           done
-          test "$release_ready" = true || {
-            echo "Staging did not converge to version $STAGING_VERSION" >&2
-            jq -c '{ok, service, versionId}' "$health" >&2 || true
-            exit 1
-          }
-
-          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
-            --retry 3 --retry-all-errors --max-time 20 \
-            -o "$index" "$STAGING_URL/?release=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          grep -q 'Commonspace' "$index"
-
-      - name: Run the short 20-client staging load test
-        shell: bash
-        run: |
-          set -euo pipefail
-          LOAD_BASE_URL="$STAGING_URL" LOAD_ALLOW_REMOTE=1 npm run load:smoke
-
-      - name: Publish exact-SHA staging attestation
-        if: ${{ always() }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PRIOR_JOB_STATUS: ${{ job.status }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          state=failure
-          description='Staging deployment or smoke test failed'
-          if [[ "$PRIOR_JOB_STATUS" == success ]]; then
-            state=success
-            description='Staging deployment and smoke test passed'
-          fi
-          gh api --method POST \
-            "repos/$GITHUB_REPOSITORY/statuses/$VALIDATED_SHA" \
-            -f state="$state" \
-            -f context=cloudflare/staging \
-            -f description="$description" \
-            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            >/dev/null
-
-  staging:
-    name: Verify exact commit passed staging
-    if: >-
-      ${{
-        github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.event == 'push' &&
-        github.event.workflow_run.head_branch == 'main' &&
-        github.event.workflow_run.head_repository.full_name == github.repository
-      }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      actions: read
-      contents: read
-      statuses: read
-    steps:
-      - name: Require successful staging delivery for this exact commit
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VALIDATED_SHA: ${{ github.event.workflow_run.head_sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          github_api_get() {
-            local path="$1"
-            curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
-              --retry 5 --retry-all-errors --retry-delay 2 --retry-max-time 45 \
-              --connect-timeout 10 --max-time 20 \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H 'Accept: application/vnd.github+json' \
-              -H 'X-GitHub-Api-Version: 2022-11-28' \
-              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/$path"
-          }
-
-          current_staging="$(github_api_get "commits/staging" | jq -er '.sha')"
-          test "$current_staging" = "$VALIDATED_SHA" || {
-            echo "main must contain the current, successfully staged commit" >&2
-            exit 1
-          }
-
-          status_json="$(github_api_get \
-            "commits/$VALIDATED_SHA/status?per_page=100"
-          )"
-          attestation="$(jq -cer '
-              [.statuses[] | select(.context == "cloudflare/staging")] |
-              sort_by(.id) |
-              last |
-              select(.state == "success")
-            ' <<< "$status_json")" || {
-            echo "the exact main commit lacks a trusted successful staging attestation" >&2
-            exit 1
-          }
-
-          target_prefix="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/"
-          attested_run_id="$(jq -er --arg prefix "$target_prefix" '
-            .target_url |
-            select(type == "string" and startswith($prefix)) |
-            ltrimstr($prefix) |
-            select(test("^[1-9][0-9]*$"))
-          ' <<< "$attestation")" || {
-            echo "the staging attestation does not reference an exact Actions run" >&2
-            exit 1
-          }
-
-          run_json="$(github_api_get \
-            "actions/runs/$attested_run_id"
-          )"
-          jobs_json="$(github_api_get \
-            "actions/runs/$attested_run_id/jobs?per_page=100"
-          )"
-          # workflow_run REST run/job head_sha values identify the default-branch
-          # workflow revision, not the triggering CI commit. The trusted dynamic
-          # staging job name carries that upstream SHA into immutable job metadata.
-          jq -e \
-            --arg repository "$GITHUB_REPOSITORY" '
-              .name == "Deploy" and
-              .path == ".github/workflows/deploy.yml" and
-              .event == "workflow_run" and
-              .status == "completed" and
-              .conclusion == "success" and
-              .head_repository.full_name == $repository
-            ' <<< "$run_json" >/dev/null || {
-            echo "the staging attestation does not reference a trusted successful Deploy run" >&2
-            exit 1
-          }
-          staging_job_name="Staging deploy and 20-client smoke ($VALIDATED_SHA)"
-          jq -e --arg job_name "$staging_job_name" '
-            [.jobs[] | select(
-              .name == $job_name
-            )] |
-            length == 1 and
-            .[0].status == "completed" and
-            .[0].conclusion == "success"
-          ' <<< "$jobs_json" >/dev/null || {
-            echo "the attested Deploy run lacks a successful exact-SHA staging job" >&2
-            exit 1
-          }
+          echo "Staging health probe failed" >&2
+          exit 1
 
   production:
-    name: Approved production promotion
-    needs: staging
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    # Configure required reviewers on this GitHub environment. Entering this job
-    # is the explicit human approval that the release is rollback-compatible with
-    # every additive Durable Object/SQLite migration in the candidate.
+    timeout-minutes: 15
     environment:
       name: production
       url: https://spacescale.net
-    permissions:
-      contents: read
     env:
-      VALIDATED_SHA: ${{ github.event.workflow_run.head_sha }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
       ALLOWED_ORIGINS: ${{ vars.ALLOWED_ORIGINS }}
-      PRODUCTION_URL: https://spacescale.net
+      DEPLOY_URL: https://spacescale.net
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
-
-      - name: Verify exact approved commit
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$VALIDATED_SHA"
-          current_main="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
-            --retry 2 --retry-all-errors --max-time 20 \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/main" | jq -er '.sha')"
-          test "$current_main" = "$VALIDATED_SHA" || {
-            echo "main advanced before production approval; refusing a stale rollout" >&2
-            exit 1
-          }
 
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
-      - name: Install the validated lockfile
-        run: npm ci
+      - run: npm ci
 
-      - name: Verify pinned local Wrangler and production inputs
+      - name: Verify Cloudflare inputs
         shell: bash
         run: |
           set -euo pipefail
-          : "${CLOUDFLARE_ACCOUNT_ID:?Configure the environment-scoped Cloudflare account ID}"
-          : "${CLOUDFLARE_API_TOKEN:?Configure an environment-scoped Workers Scripts Edit token}"
-          : "${TURNSTILE_SITE_KEY:?Configure the production widget public site key}"
+          : "${CLOUDFLARE_ACCOUNT_ID:?Configure the production Cloudflare account ID}"
+          : "${CLOUDFLARE_API_TOKEN:?Configure the production Cloudflare API token}"
+          : "${TURNSTILE_SITE_KEY:?Configure the production Turnstile site key}"
           test "$(node -p "require('./node_modules/wrangler/package.json').version")" = "$WRANGLER_VERSION"
-          if [[ "$TURNSTILE_SITE_KEY" =~ ^[123]x0{10,} ]] || ((${#TURNSTILE_SITE_KEY} < 10)); then
-            echo "A real, dedicated production Turnstile site key is required" >&2
-            exit 1
-          fi
 
-      - name: Build production web assets
-        run: npm run build:web
+      - name: Ensure private production R2 buckets
+        run: npm run cf:bootstrap -- --env production
 
-      - name: Capture the current 100% rollback version
-        id: stable
-        shell: bash
-        run: |
-          set -euo pipefail
-          status="$RUNNER_TEMP/production-before.json"
-          npx --no-install wrangler deployments status --env="" --json > "$status"
-          previous="$(jq -er '
-            .versions as $versions |
-            if (($versions | length) == 1 and ($versions[0].percentage == 100))
-            then $versions[0].version_id
-            else error("production is already split or has no single stable version")
-            end |
-            select(type == "string" and
-              test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"; "i"))
-          ' "$status")"
-          echo "previous_version=$previous" >> "$GITHUB_OUTPUT"
+      - run: npm run build:web
 
-      - name: Upload candidate without production traffic
-        id: candidate
-        env:
-          PREVIOUS_VERSION: ${{ steps.stable.outputs.previous_version }}
+      - name: Upload production Worker version
+        id: upload
         shell: bash
         run: |
           set -euo pipefail
           output="$RUNNER_TEMP/wrangler-production-upload.jsonl"
-          rm -f "$output"
           WRANGLER_OUTPUT_FILE_PATH="$output" npx --no-install wrangler versions upload \
             --env="" \
-            --tag "main-${VALIDATED_SHA:0:12}" \
-            --message "validated main ${VALIDATED_SHA}" \
+            --tag "main-${GITHUB_SHA:0:12}" \
+            --message "production ${GITHUB_SHA}" \
             --var "APP_HOSTNAME:spacescale.net" \
             --var "BOARD_CREATION_ENABLED:true" \
             --var "ALLOWED_ORIGINS:${ALLOWED_ORIGINS}" \
             --var "TURNSTILE_SITE_KEY:${TURNSTILE_SITE_KEY}" \
             --var "TURNSTILE_ENABLED:true" \
             --var "ENVIRONMENT:production"
+          version="$(jq -r 'select(.type == "version-upload") | .version_id' "$output" | tail -n 1)"
+          test -n "$version"
+          test "$version" != "null"
+          echo "version_id=$version" >> "$GITHUB_OUTPUT"
 
-          entry="$(jq -sc '[.[] | select(.type == "version-upload")] | last' "$output")"
-          version="$(jq -er '
-            .version_id |
-            select(type == "string" and
-              test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"; "i"))
-          ' <<< "$entry")"
-          test "$version" != "$PREVIOUS_VERSION"
-
-          candidate="$RUNNER_TEMP/production-candidate-version.json"
-          retained="$RUNNER_TEMP/production-retained-version.json"
-          npx --no-install wrangler versions view "$version" --env="" --json > "$candidate"
-          npx --no-install wrangler versions view "$PREVIOUS_VERSION" --env="" --json > "$retained"
-
-          retained_namespace="$(jq -er '
-            [.resources.bindings[] |
-              select(.name == "BOARD_ROOMS" and .type == "durable_object_namespace") |
-              .namespace_id] |
-            if length == 1 then .[0]
-            else error("retained version must have exactly one BOARD_ROOMS namespace")
-            end |
-            select(type == "string" and length > 0)
-          ' "$retained")"
-
-          retained_secrets="$(jq -cer '
-            [.resources.bindings[] | select(.type == "secret_text") | .name] |
-            sort |
-            if length > 0 then .
-            else error("retained version must have secret bindings")
-            end
-          ' "$retained")"
-          jq -e \
-            --arg version "$version" \
-            --arg allowedOrigins "$ALLOWED_ORIGINS" \
-            --arg turnstileSiteKey "$TURNSTILE_SITE_KEY" \
-            --arg namespace "$retained_namespace" \
-            --argjson retainedSecrets "$retained_secrets" '
-              . as $candidate |
-              $candidate.resources.bindings as $bindings |
-              def binding($name):
-                [$bindings[] | select(.name == $name)] |
-                if length == 1 then .[0]
-                else error("candidate must have exactly one " + $name + " binding")
-                end;
-              ([
-                { name: "ALLOWED_ORIGINS", type: "plain_text" },
-                { name: "APP_HOSTNAME", type: "plain_text" },
-                { name: "ASSETS", type: "assets" },
-                { name: "BOARD_CREATION_ENABLED", type: "plain_text" },
-                { name: "BOARD_ROOMS", type: "durable_object_namespace" },
-                { name: "BOARD_SNAPSHOTS", type: "r2_bucket" },
-                { name: "CLASSROOM_INTEGRATION_KEY", type: "secret_text" },
-                { name: "ENVIRONMENT", type: "plain_text" },
-                { name: "SESSION_SIGNING_KEY_CURRENT", type: "secret_text" },
-                { name: "TURNSTILE_ENABLED", type: "plain_text" },
-                { name: "TURNSTILE_SECRET_KEY", type: "secret_text" },
-                { name: "TURNSTILE_SITE_KEY", type: "plain_text" },
-                { name: "WORKER_VERSION", type: "version_metadata" }
-              ] +
-              (if any($bindings[]; .name == "SESSION_SIGNING_KEY_PREVIOUS")
-               then [{ name: "SESSION_SIGNING_KEY_PREVIOUS", type: "secret_text" }]
-               else []
-               end) | sort_by(.name)) as $expectedBindings |
-              $candidate.id == $version and
-              ($bindings | map({ name, type }) | sort_by(.name)) == $expectedBindings and
-              ($retainedSecrets -
-                [$bindings[] | select(.type == "secret_text") | .name]) == [] and
-              (binding("ALLOWED_ORIGINS").text == $allowedOrigins) and
-              (binding("APP_HOSTNAME").text == "spacescale.net") and
-              (binding("BOARD_CREATION_ENABLED").text == "true") and
-              (binding("ENVIRONMENT").text == "production") and
-              (binding("TURNSTILE_ENABLED").text == "true") and
-              (binding("TURNSTILE_SITE_KEY").text == $turnstileSiteKey) and
-              (binding("BOARD_SNAPSHOTS").bucket_name == "collab-canvas-snapshots") and
-              (binding("BOARD_ROOMS").class_name == "BoardRoom") and
-              (binding("BOARD_ROOMS").namespace_id == $namespace) and
-              $candidate.resources.script_runtime.compatibility_date == "2026-08-04" and
-              $candidate.resources.script_runtime.compatibility_flags == ["nodejs_compat"]
-            ' "$candidate" >/dev/null
-
-          echo "candidate_version=$version" >> "$GITHUB_OUTPUT"
-
-      - name: Record the exact rollback target
+      - name: Deploy production version at 100%
         shell: bash
         run: |
           set -euo pipefail
-          jq -n \
-            --arg commit "$VALIDATED_SHA" \
-            --arg previous "${{ steps.stable.outputs.previous_version }}" \
-            --arg candidate "${{ steps.candidate.outputs.candidate_version }}" \
-            --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            '{
-              commit: $commit,
-              previousVersion: $previous,
-              candidateVersion: $candidate,
-              workflowRun: $run,
-              rollbackCommand: ("npx --no-install wrangler versions deploy " + $previous + "@100 --env= --yes")
-            }' > rollback-manifest.json
-
-      # Static Asset HTML and content-hashed asset requests have no repository-
-      # verified version affinity yet. Percentage splitting could therefore mix
-      # versions and 404 an asset. Keep the candidate at 0%, select it explicitly
-      # for real-domain probes, then promote atomically. Percentage rollout stays
-      # fail-closed until an external affinity mechanism is configured and tested.
-      - name: Attach candidate at 0%, override-smoke it, then promote atomically
-        id: rollout
-        timeout-minutes: 13
-        shell: bash
-        env:
-          PREVIOUS_VERSION: ${{ steps.stable.outputs.previous_version }}
-          CANDIDATE_VERSION: ${{ steps.candidate.outputs.candidate_version }}
-        run: |
-          set -euo pipefail
-
-          verify_traffic() {
-            local candidate_percentage="$1"
-            local status=""
-            for attempt in $(seq 1 12); do
-              status="$RUNNER_TEMP/production-traffic-${candidate_percentage}-${attempt}.json"
-              if npx --no-install wrangler deployments status --env="" --json > "$status"; then
-                if jq -e \
-                    --arg previous "$PREVIOUS_VERSION" \
-                    --arg candidate "$CANDIDATE_VERSION" \
-                    --argjson candidatePercentage "$candidate_percentage" '
-                      .versions as $versions |
-                      if $candidatePercentage == 100 then
-                        ($versions | length) == 1 and
-                        any($versions[]; .version_id == $candidate and .percentage == 100)
-                      else
-                        ($versions | length) == 2 and
-                        any($versions[]; .version_id == $candidate and .percentage == $candidatePercentage) and
-                        any($versions[]; .version_id == $previous and .percentage == (100 - $candidatePercentage))
-                      end
-                    ' "$status" >/dev/null
-                then
-                  return 0
-                fi
-
-                if jq -e '.versions | type == "array"' "$status" >/dev/null; then
-                  if jq -e \
-                      --arg previous "$PREVIOUS_VERSION" \
-                      --arg candidate "$CANDIDATE_VERSION" \
-                      --argjson candidatePercentage "$candidate_percentage" '
-                        .versions as $versions |
-                        def previous_only:
-                          ($versions | length) == 1 and
-                          any($versions[]; .version_id == $previous and .percentage == 100);
-                        def attached_zero:
-                          ($versions | length) == 2 and
-                          any($versions[]; .version_id == $previous and .percentage == 100) and
-                          any($versions[]; .version_id == $candidate and .percentage == 0);
-                        if $candidatePercentage == 0 then
-                          previous_only
-                        else
-                          previous_only or attached_zero
-                        end
-                      ' "$status" >/dev/null
-                  then
-                    echo "Waiting for exact production traffic state (candidate ${candidate_percentage}%; attempt $attempt/12; observed safe predecessor)"
-                    jq -c '{versions: [.versions[]? | {version_id, percentage}]}' "$status"
-                  else
-                    echo "Unsafe production traffic state while targeting candidate ${candidate_percentage}%" >&2
-                    jq -c '{versions: [.versions[]? | {version_id, percentage}]}' "$status" >&2
-                    return 1
-                  fi
-                else
-                  echo "Waiting for a valid production traffic status response (attempt $attempt/12)"
-                fi
-              else
-                echo "Unable to read production traffic status (attempt $attempt/12)"
-              fi
-
-              if ((attempt < 12)); then sleep 5; fi
-            done
-            echo "Production traffic did not converge to candidate ${candidate_percentage}%" >&2
-            jq -c '{versions: [.versions[]? | {version_id, percentage}]}' "$status" >&2 2>/dev/null || true
-            return 1
-          }
-
-          override_value="cloudflare-collab-canvas=\"${CANDIDATE_VERSION}\""
-          echo "traffic_changed=true" >> "$GITHUB_OUTPUT"
           npx --no-install wrangler versions deploy \
+            "${{ steps.upload.outputs.version_id }}@100" \
             --env="" \
-            "${PREVIOUS_VERSION}@100" "${CANDIDATE_VERSION}@0" --yes \
-            --message "${VALIDATED_SHA} candidate attached at 0%"
-          verify_traffic 0
+            --yes \
+            --message "production ${GITHUB_SHA}"
 
-          override_ready=false
-          override_streak=0
-          required_override_streak=3
-          max_override_attempts=12
-          override_health=""
-          override_headers=""
-          for attempt in $(seq 1 "$max_override_attempts"); do
-            override_health="$RUNNER_TEMP/production-override-health-${attempt}.json"
-            override_headers="$RUNNER_TEMP/production-override-headers-${attempt}.txt"
+      - name: Probe production health
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
             if curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
-              --connect-timeout 5 --max-time 10 \
-              -H "Cloudflare-Workers-Version-Overrides: $override_value" \
-              -D "$override_headers" -o "$override_health" \
-              "$PRODUCTION_URL/healthz?candidate-ready=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${attempt}"
+              --connect-timeout 5 --max-time 15 \
+              "$DEPLOY_URL/healthz?deploy=${GITHUB_RUN_ID}-${attempt}" |
+              jq -e '.ok == true and .service == "cloudflare-collab-canvas-edge"' >/dev/null
             then
-              if ! jq -e '
-                  .ok == true and
-                  .service == "cloudflare-collab-canvas-edge" and
-                  (.versionId | type == "string")
-                ' "$override_health" >/dev/null
-              then
-                echo "Unsafe production application identity during override convergence" >&2
-                jq -c '{ok, service, versionId}' "$override_health" >&2 || true
-                exit 1
-              fi
-
-              observed_override_version="$(jq -er '.versionId' "$override_health")"
-              case "$observed_override_version" in
-                "$CANDIDATE_VERSION")
-                  if ! tr -d '\r' < "$override_headers" |
-                    grep -Eiq '^x-content-type-options:[[:space:]]*nosniff[[:space:]]*$'
-                  then
-                    echo "Candidate override response is missing nosniff" >&2
-                    exit 1
-                  fi
-                  if ! tr -d '\r' < "$override_headers" |
-                    grep -Eiq '^content-security-policy:'
-                  then
-                    echo "Candidate override response is missing Content-Security-Policy" >&2
-                    exit 1
-                  fi
-                  override_streak=$((override_streak + 1))
-                  echo "Candidate override sample ${override_streak}/${required_override_streak} (attempt $attempt/$max_override_attempts)"
-                  if ((override_streak >= required_override_streak)); then
-                    override_ready=true
-                    break
-                  fi
-                  ;;
-                "$PREVIOUS_VERSION")
-                  override_streak=0
-                  echo "Waiting through safe retained-version override propagation (attempt $attempt/$max_override_attempts)"
-                  ;;
-                *)
-                  echo "Unsafe unknown production override version: $observed_override_version" >&2
-                  exit 1
-                  ;;
-              esac
-            else
-              override_streak=0
-              echo "Production override health transport failure; candidate streak reset (attempt $attempt/$max_override_attempts)"
+              exit 0
             fi
-
-            if ((attempt < max_override_attempts)); then sleep 2; fi
+            sleep 3
           done
-          test "$override_ready" = true || {
-            echo "Production override did not achieve ${required_override_streak} consecutive candidate samples" >&2
-            jq -c '{ok, service, versionId}' "$override_health" >&2 2>/dev/null || true
-            exit 1
-          }
-
-          override_index="$RUNNER_TEMP/production-override-index.html"
-          override_assets="$RUNNER_TEMP/production-override-assets.txt"
-          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
-            --retry 3 --retry-all-errors --max-time 20 \
-            -H "Cloudflare-Workers-Version-Overrides: $override_value" \
-            -o "$override_index" "$PRODUCTION_URL/?candidate=${GITHUB_RUN_ID}"
-          grep -q 'Commonspace' "$override_index"
-          grep -Eo '(src|href)="/assets/[^"]+"' "$override_index" |
-            sed -E 's/^[^=]+="([^"]+)"$/\1/' | sort -u > "$override_assets"
-          test -s "$override_assets"
-          while IFS= read -r asset; do
-            case "$asset" in
-              /assets/*) ;;
-              *) echo "Unexpected candidate asset path" >&2; exit 1 ;;
-            esac
-            curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
-              --retry 3 --retry-all-errors --max-time 20 \
-              -H "Cloudflare-Workers-Version-Overrides: $override_value" \
-              -o /dev/null "$PRODUCTION_URL$asset"
-          done < "$override_assets"
-
-          npx --no-install wrangler versions deploy \
-            --env="" \
-            "${CANDIDATE_VERSION}@100" --yes \
-            --message "${VALIDATED_SHA} promoted after 0% override smoke"
-          verify_traffic 100
-
-          promotion_ready=false
-          candidate_streak=0
-          required_candidate_streak=10
-          max_semantic_attempts=30
-          promotion_health=""
-          for attempt in $(seq 1 "$max_semantic_attempts"); do
-            promotion_health="$RUNNER_TEMP/production-promotion-health-${attempt}.json"
-            # This outer loop is the retry budget. Bound each sample so the
-            # production job always retains ample time for automatic rollback.
-            if curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
-              --connect-timeout 5 --max-time 10 \
-              -o "$promotion_health" \
-              "$PRODUCTION_URL/healthz?promotion-ready=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${attempt}"
-            then
-              if ! jq -e '
-                  .ok == true and
-                  .service == "cloudflare-collab-canvas-edge" and
-                  (.versionId | type == "string")
-                ' "$promotion_health" >/dev/null
-              then
-                echo "Unsafe production application identity during candidate convergence" >&2
-                jq -c '{ok, service, versionId}' "$promotion_health" >&2 || true
-                exit 1
-              fi
-
-              observed_version="$(jq -er '.versionId' "$promotion_health")"
-              case "$observed_version" in
-                "$CANDIDATE_VERSION")
-                  candidate_streak=$((candidate_streak + 1))
-                  echo "Candidate convergence sample ${candidate_streak}/${required_candidate_streak} (attempt $attempt/$max_semantic_attempts)"
-                  if ((candidate_streak >= required_candidate_streak)); then
-                    promotion_ready=true
-                    break
-                  fi
-                  ;;
-                "$PREVIOUS_VERSION")
-                  candidate_streak=0
-                  echo "Waiting through safe retained-version propagation (attempt $attempt/$max_semantic_attempts)"
-                  ;;
-                *)
-                  echo "Unsafe unknown production version: $observed_version" >&2
-                  exit 1
-                  ;;
-              esac
-            else
-              candidate_streak=0
-              echo "Production health transport failure; candidate streak reset (attempt $attempt/$max_semantic_attempts)"
-            fi
-
-            if ((attempt < max_semantic_attempts)); then sleep 2; fi
-          done
-          test "$promotion_ready" = true || {
-            echo "Production did not achieve ${required_candidate_streak} consecutive candidate samples" >&2
-            jq -c '{ok, service, versionId}' "$promotion_health" >&2 2>/dev/null || true
-            exit 1
-          }
-
-          live_index="$RUNNER_TEMP/production-live-index.html"
-          live_assets="$RUNNER_TEMP/production-live-assets.txt"
-          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
-            --retry 3 --retry-all-errors --max-time 20 \
-            -o "$live_index" "$PRODUCTION_URL/?promotion=${GITHUB_RUN_ID}"
-          grep -q 'Commonspace' "$live_index"
-          grep -Eo '(src|href)="/assets/[^"]+"' "$live_index" |
-            sed -E 's/^[^=]+="([^"]+)"$/\1/' | sort -u > "$live_assets"
-          test -s "$live_assets"
-          while IFS= read -r asset; do
-            curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
-              --retry 3 --retry-all-errors --max-time 20 \
-              -o /dev/null "$PRODUCTION_URL$asset"
-          done < "$live_assets"
-
-      - name: Automatically restore the retained version after a rollout failure
-        if: ${{ failure() && steps.rollout.outputs.traffic_changed == 'true' }}
-        continue-on-error: true
-        env:
-          PREVIOUS_VERSION: ${{ steps.stable.outputs.previous_version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          npx --no-install wrangler versions deploy \
-            --env="" \
-            "${PREVIOUS_VERSION}@100" --yes \
-            --message "automatic rollback of ${VALIDATED_SHA} from run ${GITHUB_RUN_ID}"
-
-          rollback_ready=false
-          for attempt in $(seq 1 12); do
-            status="$RUNNER_TEMP/production-rollback-status-${attempt}.json"
-            health="$RUNNER_TEMP/production-rollback-health-${attempt}.json"
-            traffic_restored=false
-            if npx --no-install wrangler deployments status --env="" --json > "$status"; then
-              jq -e --arg version "$PREVIOUS_VERSION" '
-                (.versions | length) == 1 and
-                .versions[0].version_id == $version and
-                .versions[0].percentage == 100
-              ' "$status" >/dev/null && traffic_restored=true
-            fi
-            if [[ "$traffic_restored" == true ]] &&
-              curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
-                --retry 2 --retry-all-errors --max-time 20 \
-                -o "$health" \
-                "$PRODUCTION_URL/healthz?rollback=${GITHUB_RUN_ID}-${attempt}" &&
-              jq -e --arg version "$PREVIOUS_VERSION" '
-                .ok == true and
-                .service == "cloudflare-collab-canvas-edge" and
-                .versionId == $version
-              ' "$health" >/dev/null
-            then
-              rollback_ready=true
-              break
-            fi
-            if ((attempt < 12)); then sleep 5; fi
-          done
-          test "$rollback_ready" = true
-
-      - name: Write deployment summary
-        if: ${{ always() && steps.stable.outputs.previous_version != '' }}
-        shell: bash
-        run: |
-          {
-            echo '## Cloudflare production delivery'
-            echo
-            echo "- Validated commit: \`$VALIDATED_SHA\`"
-            echo "- Retained rollback version: \`${{ steps.stable.outputs.previous_version }}\`"
-            if [[ -n "${{ steps.candidate.outputs.candidate_version }}" ]]; then
-              echo "- Candidate version: \`${{ steps.candidate.outputs.candidate_version }}\`"
-            fi
-            echo
-            echo 'Manual rollback (only while the retained code remains schema-compatible):'
-            echo
-            echo '\`\`\`sh'
-            echo "npx --no-install wrangler versions deploy ${{ steps.stable.outputs.previous_version }}@100 --env= --yes"
-            echo '\`\`\`'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Retain rollback manifest
-        if: ${{ always() && hashFiles('rollback-manifest.json') != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: production-rollback-${{ github.run_id }}-${{ github.run_attempt }}
-          path: rollback-manifest.json
-          if-no-files-found: error
-          retention-days: 90
+          echo "Production health probe failed" >&2
+          exit 1

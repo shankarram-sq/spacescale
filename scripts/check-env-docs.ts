@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 type EnvironmentName = "development" | "staging" | "production";
 type EnvironmentConfiguration = {
   bucketName: string;
+  assetBucketName: string;
   jurisdiction: "default" | "eu" | "fedramp";
   hostname: string;
   turnstileEnabled: boolean;
@@ -75,9 +76,15 @@ for (const environmentName of ["development", "staging", "production"] as const)
   if (deployed.assets?.run_worker_first !== true) {
     errors.push(`${environmentName} Static Assets must run the Worker first`);
   }
-  const bucket = deployed.r2_buckets?.find((binding) => binding.binding === "BOARD_SNAPSHOTS");
-  if (bucket?.bucket_name !== environment.bucketName) {
-    errors.push(`${environmentName} R2 binding does not match committed environment configuration`);
+  const snapshotBucket = deployed.r2_buckets?.find(
+    (binding) => binding.binding === "BOARD_SNAPSHOTS",
+  );
+  const assetBucket = deployed.r2_buckets?.find((binding) => binding.binding === "BOARD_ASSETS");
+  if (
+    snapshotBucket?.bucket_name !== environment.bucketName ||
+    assetBucket?.bucket_name !== environment.assetBucketName
+  ) {
+    errors.push(`${environmentName} R2 bindings do not match committed environment configuration`);
   }
   const expectedVariables = {
     APP_HOSTNAME: environment.hostname,

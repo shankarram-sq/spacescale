@@ -47,6 +47,7 @@ function makeEnv(options: { allowedOrigins?: string } = {}): {
               title: launch.title,
               accessMode: "private",
               drawingPolicy: "editors_enabled",
+              imagesEnabled: false,
               aclVersion: 1,
             },
             actor: {

@@ -11,37 +11,41 @@ provision a Cloudflare dashboard or alert.
 
 ## Provisioning
 
-1. Provision the isolated staging Worker, its private `staging-cloud-collab`
-   R2 bucket, and the `staging-cloud-collab.spacescale.net` Worker Custom
-   Domain. Keep its Durable Object namespace and signing keys separate from
-   production.
+1. Provision the isolated staging Worker and the
+   `staging-cloud-collab.spacescale.net` Worker Custom Domain. Keep its Durable
+   Object namespace and signing keys separate from production.
 2. Create one dedicated production Turnstile widget. Allow only
    `spacescale.net`, and copy its public site key and Siteverify secret from
    the same widget. Staging deliberately has no Turnstile widget or credentials.
-3. Run `npm run cf:check` for the selected environment.
-4. Run `npm run cf:bootstrap -- --env <development|staging|production>`.
-5. Install production runtime secrets with
+3. Give each GitHub environment token **Workers Scripts: Edit** and **Workers
+   R2 Storage: Edit**. Automatic deployment uses those permissions to create or
+   verify both private buckets on every run.
+4. Install production runtime secrets with
    `npx wrangler secret put SESSION_SIGNING_KEY_CURRENT`,
    `npx wrangler secret put CLASSROOM_INTEGRATION_KEY`, and
    `npx wrangler secret put TURNSTILE_SECRET_KEY`. Install only the two
    staging signing secrets with
    `npx wrangler secret put SESSION_SIGNING_KEY_CURRENT --env staging` and
    `npx wrangler secret put CLASSROOM_INTEGRATION_KEY --env staging`.
-6. Deploy staging only from the `staging` branch. Do not initialize individual
-   board objects from CI; the creator request chooses their placement.
-7. Validate `/healthz`, create a disposable staging board, commit one item,
-   reconnect from its prior sequence, create a named snapshot, and confirm both
-   JSON and SVG exports. Verify the named snapshot through the owner API and
-   its private immutable R2 object metadata without printing board content.
-8. Move `main` to that unchanged commit only after the staging delivery and
-   20-client smoke test pass. Production remains behind its GitHub environment
-   approval gate.
+5. Optionally run `npm run cf:check` or
+   `npm run cf:bootstrap -- --env <development|staging|production>` for a manual
+   access check. Local development never needs Cloudflare credentials.
+6. Run focused development checks for the feature being changed.
+7. Push the commit to `staging`. The workflow idempotently provisions both R2
+   buckets, builds, deploys the exact SHA directly at 100%, and probes
+   `/healthz`.
+8. If desired, create a disposable staging board and exercise the changed
+   behavior. Browser, image, export, reconnect, and load checks are optional and
+   run only on demand.
+9. Push the same SHA to `main` when ready. This order is recommended but not an
+   enforced gate.
 
 The public environment values are committed in `config/environments.json` and
 must agree with local configuration before bootstrap: staging uses bucket
-`staging-cloud-collab` and hostname
+`staging-cloud-collab`, asset bucket `staging-cloud-collab-assets`, and hostname
 `staging-cloud-collab.spacescale.net`; production uses bucket
-`collab-canvas-snapshots` and hostname `spacescale.net`. Keep
+`collab-canvas-snapshots`, asset bucket `collab-canvas-assets`, and hostname
+`spacescale.net`. Keep
 `BOARD_CREATION_ENABLED=true` normally; set the committed public switch to
 `false` for an intentional creation freeze before deploying. Bootstrap rejects
 hostname, bucket, and switch drift.
@@ -57,12 +61,12 @@ fallback disabled. Confirm the custom domains and certificates are active after
 the first authorized deployment. Ongoing staging CI uses Worker version
 upload/deploy and deliberately does not reconcile that pre-attached domain, so
 its token needs no Zone Workers Routes permission. Staging has its own Worker,
-Durable Object namespace, R2 bucket, runtime signing keys, and test data; it
+Durable Object namespace, R2 buckets, runtime signing keys, and test data; it
 inherits no production route, binding, secret, or data.
 
-Staging fixes `TURNSTILE_ENABLED=false` so Playwright, AI-driven browser tests,
-and the 20-client smoke test can exercise board creation and capability claims
-without interactive challenges. Treat it as a public, lower-trust automation
+Staging fixes `TURNSTILE_ENABLED=false` so Playwright and AI-driven browser
+tests can exercise board creation and capability claims without interactive
+challenges. Treat it as a public, lower-trust automation
 surface and use disposable test data only. Production fixes
 `TURNSTILE_ENABLED=true` and fails closed without its real site key and
 Siteverify secret.
@@ -90,25 +94,20 @@ within an environment and back it up in the secret manager. Rotating it creates
 new derived classroom board and actor IDs; treat rotation as a classroom data
 migration, not routine session-key maintenance.
 
-## Deploy and rollback
+## Deploy and recovery
 
-Push a candidate commit to `staging` and wait for CI, the isolated staging
-version promotion, and the 20-client smoke test to pass. The workflow then
-publishes a `cloudflare/staging` commit-status attestation for that exact SHA.
-Fast-forward `main` to that SHA without amending, squashing, or creating a new
-merge commit. The production workflow verifies that the current staging tip
-matches `main` and that the latest trusted attestation on that commit succeeded
-before requesting production approval. Any changed SHA must repeat staging
-validation.
+Pushes to `staging` and `main` deploy the pushed SHA directly at 100% after
+idempotent bucket provisioning and a web build. The only automatic post-deploy
+check is a small five-attempt health probe. Full CI, Playwright, load testing,
+attestations, approval, candidate traffic, convergence, and automated rollback
+are intentionally outside the path.
 
-Cloudflare-native Git builds and the repository's protected GitHub workflow are
-both documented in [deployment-ci.md](deployment-ci.md); use only one automatic
-production deploy path at a time. Retain the prior production version. Until
-version affinity is configured for both HTML and content-hashed Static Assets,
-attach a candidate at 0%, verify it with a version override, and promote
-atomically rather than percentage-splitting browser traffic. Roll back Worker
-code only when it can read every forward schema migration already applied;
-never pair a destructive schema change with incompatible old code.
+Cloudflare-native Git builds and the GitHub workflow are both documented in
+[deployment-ci.md](deployment-ci.md); use only one automatic deploy path for a
+Worker. Production currently has no consumers, so recover by fixing forward and
+redeploying. If an unused environment is easier to reset, its Worker storage may
+be reset deliberately. There is no backward-compatibility or storage migration
+gate for this new installation.
 
 ## Metadata-only board inspection
 

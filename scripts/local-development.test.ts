@@ -55,5 +55,11 @@ describe("local development configuration", () => {
     expect(
       wrangler.r2_buckets?.find((binding) => binding.binding === "BOARD_SNAPSHOTS"),
     ).not.toHaveProperty("preview_bucket_name");
+    expect(
+      wrangler.r2_buckets?.find((binding) => binding.binding === "BOARD_ASSETS"),
+    ).toMatchObject({
+      binding: "BOARD_ASSETS",
+    });
+    expect(localSecrets).not.toContain("R2_ASSET");
   });
 });

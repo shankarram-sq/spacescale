@@ -246,11 +246,13 @@ function geometryMatchesKind(item: BoardItem, geometry: ItemGeometry): boolean {
       return "x1" in geometry;
     case "rectangle":
     case "ellipse":
-      return "width" in geometry && !("text" in geometry);
+      return "width" in geometry && !("text" in geometry) && !("assetId" in geometry);
     case "text":
       return "text" in geometry && !("width" in geometry);
     case "sticky":
-      return "width" in geometry && "text" in geometry;
+      return "width" in geometry && "text" in geometry && !("assetId" in geometry);
+    case "image":
+      return "assetId" in geometry;
     case "stamp":
       return "stamp" in geometry;
   }
@@ -263,15 +265,27 @@ function validatePatchForItem(item: BoardItem, patch: ItemPatch): void {
         ? "text"
         : item.kind === "sticky"
           ? "sticky"
-          : item.kind === "stamp"
-            ? "stamp"
-            : "stroke";
+          : item.kind === "image"
+            ? "image"
+            : item.kind === "stamp"
+              ? "stamp"
+              : "stroke";
     if (patch.style.kind !== expectedKind) {
       coreFail("INVALID_FRAME", `The patch style does not match the stored ${item.kind} item.`);
     }
   }
   if (patch.geometry !== undefined && !geometryMatchesKind(item, patch.geometry)) {
     coreFail("INVALID_FRAME", `The patch geometry does not match the stored ${item.kind} item.`);
+  }
+  if (item.kind === "image" && patch.geometry !== undefined && "assetId" in patch.geometry) {
+    if (
+      patch.geometry.assetId !== item.geometry.assetId ||
+      patch.geometry.mimeType !== item.geometry.mimeType ||
+      patch.geometry.intrinsicWidth !== item.geometry.intrinsicWidth ||
+      patch.geometry.intrinsicHeight !== item.geometry.intrinsicHeight
+    ) {
+      coreFail("INVALID_FRAME", "An image item's immutable asset metadata cannot be changed.");
+    }
   }
 }
 
@@ -681,6 +695,36 @@ function normalizeEffectState(
   return { exists: true, item };
 }
 
+function imageAssetMetadataMatches(left: BoardItem, right: BoardItem): boolean {
+  return (
+    left.kind === "image" &&
+    right.kind === "image" &&
+    left.geometry.assetId === right.geometry.assetId &&
+    left.geometry.mimeType === right.geometry.mimeType &&
+    left.geometry.intrinsicWidth === right.geometry.intrinsicWidth &&
+    left.geometry.intrinsicHeight === right.geometry.intrinsicHeight
+  );
+}
+
+function validateImageHistoryTransition(
+  before: LogicalItemState,
+  after: LogicalItemState,
+  label: string,
+): void {
+  if (!before.exists || !after.exists) return;
+  if (before.item.kind !== "image" && after.item.kind !== "image") return;
+  if (!imageAssetMetadataMatches(before.item, after.item)) {
+    coreFail("INVALID_FRAME", `${label} changes immutable image asset metadata.`);
+  }
+}
+
+function validateImageHistoryRestoration(current: BoardItem, target: BoardItem): void {
+  if (current.kind !== "image" && target.kind !== "image") return;
+  if (!imageAssetMetadataMatches(current, target)) {
+    coreFail("INVALID_FRAME", "History cannot restore changed immutable image asset metadata.");
+  }
+}
+
 function normalizeEffects(rawEffects: readonly ItemEffect[]): ItemEffect[] {
   if (!Array.isArray(rawEffects) || rawEffects.length === 0) {
     coreFail("INVALID_FRAME", "History effects must be a non-empty array.");
@@ -699,10 +743,13 @@ function normalizeEffects(rawEffects: readonly ItemEffect[]): ItemEffect[] {
     if (seen.has(itemId))
       coreFail("INVALID_FRAME", "History effects may contain each item only once.");
     seen.add(itemId);
+    const before = normalizeEffectState(rawEffect.before, itemId, "before");
+    const after = normalizeEffectState(rawEffect.after, itemId, "after");
+    validateImageHistoryTransition(before, after, `History effect ${index}`);
     return {
       itemId,
-      before: normalizeEffectState(rawEffect.before, itemId, "before"),
-      after: normalizeEffectState(rawEffect.after, itemId, "after"),
+      before,
+      after,
       beforeStateToken: validateStateToken(rawEffect.beforeStateToken, "beforeStateToken"),
       afterStateToken: validateStateToken(rawEffect.afterStateToken, "afterStateToken"),
     };
@@ -739,6 +786,7 @@ function applyHistoryEffects(
       coreFail("INTERNAL_ERROR", "A validated history item disappeared during reduction.");
     }
     if (targetState.exists) {
+      validateImageHistoryRestoration(current.item, targetState.item);
       const restored = normalizeBoardItem({ ...targetState.item, version: context.seq });
       records.set(effect.itemId, { exists: true, item: restored, stateToken: targetToken });
       changes.push({ kind: "item.replace", item: cloneBoardItem(restored) });
@@ -909,11 +957,17 @@ function canonicalItem(item: BoardItem): BoardItem {
               fontSize: normalized.style.fontSize,
               opacity: normalized.style.opacity,
             }
-          : {
-              kind: "stamp" as const,
-              color: normalized.style.color,
-              opacity: normalized.style.opacity,
-            };
+          : normalized.style.kind === "image"
+            ? {
+                kind: "image" as const,
+                opacity: normalized.style.opacity,
+                radius: normalized.style.radius,
+              }
+            : {
+                kind: "stamp" as const,
+                color: normalized.style.color,
+                opacity: normalized.style.opacity,
+              };
   const geometry =
     normalized.kind === "pencil"
       ? { points: normalized.geometry.points.map(([x, y]) => [x, y] as [number, number]) }
@@ -934,19 +988,33 @@ function canonicalItem(item: BoardItem): BoardItem {
                 height: normalized.geometry.height,
                 text: normalized.geometry.text,
               }
-            : normalized.kind === "stamp"
+            : normalized.kind === "image"
               ? {
-                  x: normalized.geometry.x,
-                  y: normalized.geometry.y,
-                  size: normalized.geometry.size,
-                  stamp: normalized.geometry.stamp,
-                }
-              : {
                   x: normalized.geometry.x,
                   y: normalized.geometry.y,
                   width: normalized.geometry.width,
                   height: normalized.geometry.height,
-                };
+                  assetId: normalized.geometry.assetId,
+                  ...(normalized.geometry.alt === undefined
+                    ? {}
+                    : { alt: normalized.geometry.alt }),
+                  mimeType: normalized.geometry.mimeType,
+                  intrinsicWidth: normalized.geometry.intrinsicWidth,
+                  intrinsicHeight: normalized.geometry.intrinsicHeight,
+                }
+              : normalized.kind === "stamp"
+                ? {
+                    x: normalized.geometry.x,
+                    y: normalized.geometry.y,
+                    size: normalized.geometry.size,
+                    stamp: normalized.geometry.stamp,
+                  }
+                : {
+                    x: normalized.geometry.x,
+                    y: normalized.geometry.y,
+                    width: normalized.geometry.width,
+                    height: normalized.geometry.height,
+                  };
   return {
     id: normalized.id,
     kind: normalized.kind,

@@ -2,6 +2,8 @@ import { STAMP_SVG_PATHS } from "@collab/svg-export";
 import type {
   BoardItem,
   BoxGeometry,
+  ImageGeometry,
+  ImageStyle,
   LineGeometry,
   Matrix,
   Point,
@@ -18,6 +20,8 @@ import type {
 import type { BoardModel, Bounds } from "./model";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
+export type ImageAssetLoader = (assetId: string) => Promise<Blob>;
+
 export const STICKY_PADDING = 14;
 export const STICKY_CORNER_RADIUS = 12;
 export const STICKY_LINE_HEIGHT = 1.2;
@@ -33,12 +37,15 @@ export class BoardRenderer {
   private readonly selectionLayer: SVGGElement;
   private readonly cursorLayer: SVGGElement;
   private readonly itemNodes = new Map<string, SVGGraphicsElement>();
+  private readonly imageAssets: ImageAssetCache;
   private selectedIds = new Set<string>();
 
   constructor(
     container: HTMLElement,
     private readonly model: BoardModel,
+    loadImageAsset: ImageAssetLoader,
   ) {
+    this.imageAssets = new ImageAssetCache(loadImageAsset);
     this.svg = svgElement("svg");
     this.svg.id = "board-canvas";
     this.svg.classList.add("board-canvas");
@@ -92,6 +99,7 @@ export class BoardRenderer {
   }
 
   destroy(): void {
+    this.imageAssets.destroy();
     this.viewport.destroy();
     this.svg.remove();
   }
@@ -197,7 +205,7 @@ export class BoardRenderer {
     for (const id of ids) {
       const item = this.model.getItem(id);
       if (!item) continue;
-      const node = itemNode(item);
+      const node = itemNode(item, (assetId) => this.imageAssets.load(assetId));
       node.classList.add("local-preview", "move-preview");
       node.setAttribute(
         "transform",
@@ -265,7 +273,7 @@ export class BoardRenderer {
         for (const id of ids) {
           const item = this.model.getItem(id);
           if (!item) continue;
-          const node = itemNode(item);
+          const node = itemNode(item, (assetId) => this.imageAssets.load(assetId));
           node.setAttribute("stroke", color);
           node.setAttribute("opacity", "0.45");
           node.setAttribute(
@@ -326,11 +334,18 @@ export class BoardRenderer {
         this.itemNodes.delete(id);
         continue;
       }
-      const replacement = itemNode(item);
+      const replacement = itemNode(item, (assetId) => this.imageAssets.load(assetId));
       if (current) current.replaceWith(replacement);
       this.itemNodes.set(id, replacement);
       this.insertInPaintOrder(replacement, item.z);
     }
+    this.imageAssets.retain(
+      new Set(
+        [...this.model.items.values()].flatMap((item) =>
+          item.kind === "image" ? [item.geometry.assetId] : [],
+        ),
+      ),
+    );
     this.setSelection([...this.selectedIds].filter((id) => this.model.getItem(id)));
   }
 
@@ -345,6 +360,83 @@ export class BoardRenderer {
       }
     }
     this.drawingArea.insertBefore(node, before);
+  }
+}
+
+type ImageAssetEntry = {
+  active: boolean;
+  url: string | null;
+  promise: Promise<string>;
+};
+
+class ImageAssetCache {
+  private readonly entries = new Map<string, ImageAssetEntry>();
+  private destroyed = false;
+
+  constructor(private readonly loader: ImageAssetLoader) {}
+
+  load(assetId: string): Promise<string> {
+    const existing = this.entries.get(assetId);
+    if (existing) return existing.promise;
+
+    const entry: ImageAssetEntry = {
+      active: true,
+      url: null,
+      promise: Promise.resolve(""),
+    };
+    entry.promise = this.loader(assetId)
+      .then((blob) => staticDisplayBlob(blob))
+      .then((blob) => {
+        const url = URL.createObjectURL(blob);
+        if (this.destroyed || !entry.active) {
+          URL.revokeObjectURL(url);
+          throw new Error("Image asset is no longer in use.");
+        }
+        entry.url = url;
+        return url;
+      })
+      .catch((error: unknown) => {
+        if (this.entries.get(assetId) === entry) this.entries.delete(assetId);
+        throw error;
+      });
+    this.entries.set(assetId, entry);
+    return entry.promise;
+  }
+
+  retain(assetIds: ReadonlySet<string>): void {
+    for (const [assetId, entry] of this.entries) {
+      if (assetIds.has(assetId)) continue;
+      entry.active = false;
+      this.entries.delete(assetId);
+      if (entry.url) URL.revokeObjectURL(entry.url);
+    }
+  }
+
+  destroy(): void {
+    this.destroyed = true;
+    this.retain(new Set());
+  }
+}
+
+async function staticDisplayBlob(blob: Blob): Promise<Blob> {
+  if (blob.type !== "image/gif" || typeof createImageBitmap !== "function") return blob;
+  try {
+    const bitmap = await createImageBitmap(blob);
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const context = canvas.getContext("2d");
+      if (!context) return blob;
+      context.drawImage(bitmap, 0, 0);
+      return (
+        (await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"))) ?? blob
+      );
+    } finally {
+      bitmap.close();
+    }
+  } catch {
+    return blob;
   }
 }
 
@@ -473,7 +565,10 @@ export class CanvasViewport {
   }
 }
 
-function itemNode(item: BoardItem): SVGGraphicsElement {
+function itemNode(
+  item: BoardItem,
+  loadImageAsset: (assetId: string) => Promise<string>,
+): SVGGraphicsElement {
   let node: SVGGraphicsElement;
   switch (item.kind) {
     case "pencil": {
@@ -514,11 +609,117 @@ function itemNode(item: BoardItem): SVGGraphicsElement {
     case "stamp":
       node = stampNode(item.geometry, item.style);
       break;
+    case "image":
+      node = imageNode(item.id, item.geometry, item.style, loadImageAsset);
+      break;
   }
   node.dataset.itemId = item.id;
   node.dataset.z = String(item.z);
   node.classList.add("board-item", `board-item-${item.kind}`);
   node.setAttribute("transform", matrixAttribute(item.transform));
+  return node;
+}
+
+function imageNode(
+  itemId: string,
+  geometry: ImageGeometry,
+  style: ImageStyle,
+  loadImageAsset: (assetId: string) => Promise<string>,
+): SVGGElement {
+  const node = svgElement("g");
+  const label = geometry.alt?.trim() || "Board image";
+  const clipId = `image-clip-${itemId.replace(/[^A-Za-z0-9_-]/gu, "-")}`;
+  node.setAttribute("role", "img");
+  node.setAttribute("aria-label", label);
+  node.setAttribute("opacity", String(style.opacity));
+  node.dataset.assetId = geometry.assetId;
+  node.dataset.imageState = "loading";
+
+  const definitions = svgElement("defs");
+  const clip = svgElement("clipPath");
+  clip.id = clipId;
+  const clipRect = svgElement("rect");
+  clipRect.setAttribute("x", String(geometry.x));
+  clipRect.setAttribute("y", String(geometry.y));
+  clipRect.setAttribute("width", String(geometry.width));
+  clipRect.setAttribute("height", String(geometry.height));
+  clipRect.setAttribute(
+    "rx",
+    String(Math.min(style.radius, geometry.width / 2, geometry.height / 2)),
+  );
+  clip.append(clipRect);
+  definitions.append(clip);
+
+  const background = svgElement("rect");
+  background.classList.add("image-card-background");
+  background.setAttribute("x", String(geometry.x));
+  background.setAttribute("y", String(geometry.y));
+  background.setAttribute("width", String(geometry.width));
+  background.setAttribute("height", String(geometry.height));
+  background.setAttribute(
+    "rx",
+    String(Math.min(style.radius, geometry.width / 2, geometry.height / 2)),
+  );
+
+  const image = svgElement("image");
+  image.classList.add("image-card-content");
+  image.setAttribute("x", String(geometry.x));
+  image.setAttribute("y", String(geometry.y));
+  image.setAttribute("width", String(geometry.width));
+  image.setAttribute("height", String(geometry.height));
+  image.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  image.setAttribute("clip-path", `url(#${clipId})`);
+  image.setAttribute("visibility", "hidden");
+  image.setAttribute("aria-hidden", "true");
+
+  const fallback = svgElement("g");
+  fallback.classList.add("image-card-fallback");
+  fallback.dataset.imageFallback = "true";
+  fallback.setAttribute("aria-hidden", "true");
+  const fallbackMark = svgElement("path");
+  const centerX = geometry.x + geometry.width / 2;
+  const centerY = geometry.y + geometry.height / 2;
+  const markSize = Math.max(8, Math.min(24, geometry.width / 6, geometry.height / 6));
+  fallbackMark.setAttribute(
+    "d",
+    `M ${centerX - markSize} ${centerY + markSize / 2} l ${markSize * 0.65} -${markSize * 0.75} l ${markSize * 0.45} ${markSize * 0.45} l ${markSize * 0.5} -${markSize * 0.65} l ${markSize * 0.75} ${markSize} Z`,
+  );
+  const fallbackText = svgElement("text");
+  fallbackText.setAttribute("x", String(centerX));
+  fallbackText.setAttribute("y", String(centerY + markSize * 1.45));
+  fallbackText.setAttribute("text-anchor", "middle");
+  fallbackText.textContent = "Loading image…";
+  fallback.append(fallbackMark, fallbackText);
+
+  const border = svgElement("rect");
+  border.classList.add("image-card-border");
+  border.setAttribute("x", String(geometry.x));
+  border.setAttribute("y", String(geometry.y));
+  border.setAttribute("width", String(geometry.width));
+  border.setAttribute("height", String(geometry.height));
+  border.setAttribute(
+    "rx",
+    String(Math.min(style.radius, geometry.width / 2, geometry.height / 2)),
+  );
+  border.setAttribute("pointer-events", "none");
+
+  node.append(definitions, background, image, fallback, border);
+  void loadImageAsset(geometry.assetId)
+    .then((url) => {
+      if (!node.isConnected) return;
+      image.setAttribute("href", url);
+      image.setAttribute("visibility", "visible");
+      fallback.setAttribute("display", "none");
+      node.dataset.imageState = "ready";
+    })
+    .catch(() => {
+      if (!node.isConnected) return;
+      image.removeAttribute("href");
+      image.setAttribute("visibility", "hidden");
+      fallback.removeAttribute("display");
+      fallbackText.textContent = "Image unavailable";
+      node.dataset.imageState = "error";
+    });
   return node;
 }
 

@@ -12,6 +12,7 @@ type BucketList = { buckets?: Bucket[] } | Bucket[];
 type EnvironmentName = "development" | "staging" | "production";
 type PublicEnvironment = {
   bucketName: string;
+  assetBucketName: string;
   hostname: string;
   turnstileEnabled: boolean;
   boardCreationEnabled: boolean;
@@ -131,11 +132,16 @@ const buckets = await cloudflareRequest<BucketList>(
 );
 const result = buckets.envelope.result;
 const bucketList = Array.isArray(result) ? result : (result?.buckets ?? []);
+const configuredBucketExists = bucketList.some((bucket) => bucket.name === env.R2_BUCKET_NAME);
+const configuredAssetBucketExists = bucketList.some(
+  (bucket) => bucket.name === environmentConfiguration.assetBucketName,
+);
 report({
   check: "r2_access",
   httpStatus: buckets.response.status,
   success: buckets.envelope.success,
-  configuredBucketExists: bucketList.some((bucket) => bucket.name === env.R2_BUCKET_NAME),
+  configuredBucketExists,
+  configuredAssetBucketExists,
   bucketCount: bucketList.length,
   errorCodes: (buckets.envelope.errors ?? []).map((error) => error.code),
 });
@@ -222,6 +228,8 @@ if (
   !domains.envelope.success ||
   (configuredDomain !== undefined && !expectedWorkerAttached) ||
   !buckets.envelope.success ||
+  !configuredBucketExists ||
+  !configuredAssetBucketExists ||
   turnstileAccessInvalid
 ) {
   process.exitCode = 1;

@@ -24,6 +24,8 @@ export const FIXTURE_IDS = {
   copy: "018f0000-0000-7000-8000-000000000006",
   sticky: "018f0000-0000-7000-8000-000000000007",
   stamp: "018f0000-0000-7000-8000-000000000008",
+  image: "018f0000-0000-7000-8000-000000000009",
+  asset: "asset_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 } as const;
 
 export const FIXTURE_TIME = 1_785_840_000_000;
@@ -111,6 +113,27 @@ export function newStampItem(overrides: Partial<NewBoardItem> = {}): NewBoardIte
     style: { kind: "stamp", color: "#e11d48", opacity: 1 },
     transform: [1, 0, 0, 1, 0, 0],
     geometry: { x: 60, y: 70, size: 72, stamp: "heart" },
+    ...overrides,
+  } as NewBoardItem;
+}
+
+export function newImageItem(overrides: Partial<NewBoardItem> = {}): NewBoardItem {
+  return {
+    id: FIXTURE_IDS.image,
+    kind: "image",
+    style: { kind: "image", opacity: 1, radius: 12 },
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: {
+      x: 10,
+      y: 20,
+      width: 240,
+      height: 160,
+      assetId: FIXTURE_IDS.asset,
+      alt: "Fixture image",
+      mimeType: "image/png",
+      intrinsicWidth: 1200,
+      intrinsicHeight: 800,
+    },
     ...overrides,
   } as NewBoardItem;
 }

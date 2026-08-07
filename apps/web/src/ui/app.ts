@@ -1,5 +1,7 @@
 import { boundsForItems } from "@collab/geometry";
 import {
+  MAX_IMAGE_INTRINSIC_DIMENSION,
+  MAX_IMAGE_INTRINSIC_PIXELS,
   MAX_STICKY_TEXT_CODE_POINTS,
   normalizeBoardItem,
   validateClientFrame,
@@ -11,6 +13,7 @@ import { BoardRenderer, STICKY_PADDING } from "../board/renderer";
 import { DurableOutbox, type OutboxEntry, OutboxLimitError } from "../persistence/outbox";
 import {
   buildCapturedTextUpdate,
+  buildImageCreateOperation,
   buildStickyCreateOperation,
   type CapturedTextEdit,
   DEFAULT_STICKY_HEIGHT,
@@ -35,6 +38,7 @@ import type {
   DrawingPolicy,
   DurableOperation,
   HistoryState,
+  ImageGeometry,
   Member,
   Point,
   Presence,
@@ -56,6 +60,7 @@ const TOOL_DEFINITIONS: Array<{ name: ToolName; label: string; shortcut: string;
     { name: "text", label: "Text", shortcut: "T", glyph: "T" },
     { name: "sticky", label: "Sticky note", shortcut: "N", glyph: "▣" },
     { name: "stamp", label: "Stamp", shortcut: "K", glyph: "★" },
+    { name: "image", label: "Add image", shortcut: "I", glyph: "▧" },
     { name: "eraser", label: "Eraser", shortcut: "E", glyph: "◇" },
     { name: "pan", label: "Pan canvas", shortcut: "H", glyph: "✋" },
   ];
@@ -68,6 +73,7 @@ const DRAW_TOOLS = new Set<ToolName>([
   "text",
   "sticky",
   "stamp",
+  "image",
   "eraser",
 ]);
 
@@ -93,6 +99,82 @@ type StickyDraftRecovery = {
   selectionStart: number;
   selectionEnd: number;
 };
+
+export const IMAGE_UPLOAD_MIME_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+] as const;
+export const MAX_IMAGE_UPLOAD_BYTES = 5 * 1_024 * 1_024;
+export const MAX_IMAGE_ALT_CODE_POINTS = 500;
+
+class ImagePreparationError extends Error {}
+
+type ImageAltEdit = {
+  itemId: string;
+  expectedVersion: number;
+  geometry: ImageGeometry;
+};
+
+export function imageUploadIssue(image: Pick<Blob, "size" | "type">): string | null {
+  if (!IMAGE_UPLOAD_MIME_TYPES.includes(image.type as (typeof IMAGE_UPLOAD_MIME_TYPES)[number])) {
+    return "Choose a PNG, JPEG, WebP, or GIF image.";
+  }
+  if (image.size < 1) return "That image file is empty.";
+  if (image.size > MAX_IMAGE_UPLOAD_BYTES) return "Choose an image no larger than 5 MiB.";
+  return null;
+}
+
+async function privacySafeImageUpload(image: File): Promise<Blob> {
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(image, { imageOrientation: "from-image" });
+  } catch {
+    throw new ImagePreparationError("That image could not be read.");
+  }
+
+  try {
+    if (
+      bitmap.width < 1 ||
+      bitmap.height < 1 ||
+      bitmap.width > MAX_IMAGE_INTRINSIC_DIMENSION ||
+      bitmap.height > MAX_IMAGE_INTRINSIC_DIMENSION ||
+      bitmap.width * bitmap.height > MAX_IMAGE_INTRINSIC_PIXELS
+    ) {
+      throw new ImagePreparationError(
+        `Choose an image no larger than ${MAX_IMAGE_INTRINSIC_DIMENSION}px per side and 16 megapixels.`,
+      );
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const context = canvas.getContext("2d");
+    if (!context) throw new ImagePreparationError("That image could not be prepared safely.");
+    context.drawImage(bitmap, 0, 0);
+
+    const outputType =
+      image.type === "image/jpeg"
+        ? "image/jpeg"
+        : image.type === "image/webp"
+          ? "image/webp"
+          : "image/png";
+    const prepared = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, outputType, 0.92),
+    );
+    if (!prepared) throw new ImagePreparationError("That image could not be prepared safely.");
+    const issue = imageUploadIssue(prepared);
+    if (issue) throw new ImagePreparationError(issue);
+    return prepared;
+  } finally {
+    bitmap.close();
+  }
+}
+
+export function clampImageAlt(value: string): string {
+  return [...value].slice(0, MAX_IMAGE_ALT_CODE_POINTS).join("");
+}
 
 export const STICKY_COLORS = [
   { name: "Yellow", value: "#fde68a" },
@@ -145,6 +227,8 @@ export class BoardApp {
   private textEditorPreview: (() => void) | null = null;
   private textEditorClosing = false;
   private textEditorCloseAttempt = 0;
+  private imageUploadInFlight = false;
+  private imageAltEdit: ImageAltEdit | null = null;
   private readonly pendingStickyDrafts = new Map<string, StickyDraftRecovery>();
   private readonly rejectedStickyDrafts: StickyDraftRecovery[] = [];
   private accessMembers: Member[] = [];
@@ -165,6 +249,9 @@ export class BoardApp {
   private readonly stylePopover: HTMLElement;
   private readonly exportMenu: HTMLElement;
   private readonly selectionActions: HTMLElement;
+  private readonly imageInput: HTMLInputElement;
+  private readonly imageAltDialog: HTMLDialogElement;
+  private readonly imageAltInput: HTMLTextAreaElement;
   private readonly undoButton: HTMLButtonElement;
   private readonly redoButton: HTMLButtonElement;
   private readonly archivedBanner: HTMLElement;
@@ -201,6 +288,9 @@ export class BoardApp {
     this.stylePopover = query(this.root, "[data-testid='style-popover']", HTMLElement);
     this.exportMenu = query(this.root, "[data-testid='export-menu']", HTMLElement);
     this.selectionActions = query(this.root, "[data-testid='selection-actions']", HTMLElement);
+    this.imageInput = query(this.root, "[data-image-input]", HTMLInputElement);
+    this.imageAltDialog = query(this.root, "[data-testid='image-alt-dialog']", HTMLDialogElement);
+    this.imageAltInput = query(this.imageAltDialog, "[data-image-alt-input]", HTMLTextAreaElement);
     this.undoButton = query(this.root, "[data-testid='undo-button']", HTMLButtonElement);
     this.redoButton = query(this.root, "[data-testid='redo-button']", HTMLButtonElement);
     this.archivedBanner = query(this.root, "[data-testid='archived-banner']", HTMLElement);
@@ -213,6 +303,7 @@ export class BoardApp {
     this.renderer = new BoardRenderer(
       query(this.root, "[data-canvas-host]", HTMLElement),
       this.model,
+      (assetId) => this.api.boardImage(this.bootstrap.board.id, assetId),
     );
     this.renderer.viewport.subscribe((zoom) => {
       this.zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
@@ -221,6 +312,7 @@ export class BoardApp {
       model: this.model,
       renderer: this.renderer,
       canDraw: () => this.canCommit(),
+      canUseImages: () => this.canUploadImages(),
       getStyle: () => this.style,
       commit: (operation, actionId) => this.commit(operation, actionId),
       preview: (gestureId, previewSeq, kind, payload) =>
@@ -229,9 +321,14 @@ export class BoardApp {
         this.socket.sendPresence(cursor, tool);
       },
       editText: (point, item) => this.openTextEditor(point, item),
+      editImageAlt: (item) => this.openImageAltEditor(item),
       onToolChanged: (tool) => {
         this.setActiveToolButton(tool);
         if (tool === "stamp") this.setStylePopoverOpen(true);
+        if (tool === "image") {
+          this.setStylePopoverOpen(false);
+          this.openImagePicker();
+        }
       },
       onToolReactivated: (tool) => this.reactivateTool(tool),
       onSelectionChanged: (ids) => this.updateSelectionActions(ids),
@@ -251,6 +348,7 @@ export class BoardApp {
           this.bootstrap.actor.role = state.role;
           this.bootstrap.actor.sessionExpiresAt = state.sessionExpiresAt;
           this.bootstrap.board.drawingPolicy = state.drawingPolicy;
+          this.bootstrap.board.imagesEnabled = state.imagesEnabled;
           this.bootstrap.board.aclVersion = state.aclVersion;
           this.history.historyVersion = state.historyVersion;
           this.history.canUndo = state.canUndo;
@@ -279,7 +377,10 @@ export class BoardApp {
     );
 
     this.bindShellEvents();
-    this.model.subscribe(() => this.updateStatus());
+    this.model.subscribe(() => {
+      this.updateStatus();
+      this.updateSelectionActions(this.tools.selection);
+    });
     this.model.subscribeRebase((error) => this.handleRebaseState(error));
     this.presences.set(bootstrap.actor.id, {
       ...bootstrap.actor,
@@ -302,6 +403,10 @@ export class BoardApp {
     if (this.textEditorTimer !== null) window.clearTimeout(this.textEditorTimer);
     this.pendingStickyDrafts.clear();
     this.rejectedStickyDrafts.length = 0;
+    document.removeEventListener("paste", this.onImagePaste);
+    this.renderer.svg.removeEventListener("dragover", this.onImageDragOver);
+    this.renderer.svg.removeEventListener("drop", this.onImageDrop);
+    this.closeImageAltEditor();
     void this.closeTextEditor(false);
     this.socket.destroy();
     this.tools.destroy();
@@ -360,6 +465,7 @@ export class BoardApp {
             <p class="sr-only" id="canvas-help">Use the tool rail to draw. Hold Space to pan. Scroll or pinch to zoom.</p>
             <div class="canvas-hint" data-canvas-hint aria-hidden="true">Drag anywhere to begin</div>
             <div class="selection-actions" data-testid="selection-actions" hidden>
+              <button type="button" data-selection-alt aria-label="Edit image alt text" hidden>Edit alt text</button>
               <button type="button" data-selection-copy aria-label="Copy selected items">Copy</button>
               <button type="button" data-selection-delete aria-label="Delete selected items">Delete</button>
             </div>
@@ -371,6 +477,8 @@ export class BoardApp {
             </div>
           </section>
         </main>
+
+        <input type="file" data-testid="image-input" data-image-input accept="image/png,image/jpeg,image/webp,image/gif" hidden />
 
         <div class="style-wrap">
           <button class="style-trigger" type="button" data-testid="style-button" aria-label="Open drawing style" aria-controls="style-popover" aria-expanded="false">
@@ -404,6 +512,21 @@ export class BoardApp {
           <div class="drawer-heading"><div><span class="eyebrow">Owner controls</span><h2>Share & access</h2></div><button type="button" data-close-drawer aria-label="Close access panel">×</button></div>
           <div data-access-body></div>
         </aside>
+
+
+        <dialog class="claim-dialog image-alt-dialog" data-testid="image-alt-dialog" aria-labelledby="image-alt-title">
+          <form data-image-alt-form>
+            <span class="eyebrow">Accessibility</span>
+            <h2 id="image-alt-title">Describe this image</h2>
+            <p>Alt text helps participants using screen readers understand what this card shows.</p>
+            <label><span>Alt text <i>optional</i></span><textarea data-image-alt-input rows="4" placeholder="Describe the important visual information"></textarea></label>
+            <small><output data-image-alt-count>0</output> / ${MAX_IMAGE_ALT_CODE_POINTS}</small>
+            <div class="dialog-actions">
+              <button type="button" data-image-alt-cancel>Cancel</button>
+              <button class="primary-button" type="submit">Save alt text</button>
+            </div>
+          </form>
+        </dialog>
 
         <div class="recovery-banner" data-testid="recovery-banner" hidden>
           <div><strong data-recovery-title>Unsaved recovery data</strong><span data-recovery-message>Some commands are too old to resend safely.</span></div>
@@ -567,6 +690,48 @@ export class BoardApp {
       () => void this.tools.deleteSelection(),
     );
 
+    query(this.root, "[data-selection-alt]", HTMLButtonElement).addEventListener("click", () => {
+      const [selectedId] = this.tools.selection;
+      const selected = selectedId ? this.model.getItem(selectedId) : undefined;
+      if (selected?.kind === "image") this.openImageAltEditor(selected);
+    });
+    this.imageInput.addEventListener("change", () => {
+      const image = this.imageInput.files?.[0];
+      this.imageInput.value = "";
+      if (image) void this.uploadImage(image, this.imagePlacementCenter());
+    });
+    query(this.imageAltDialog, "[data-image-alt-form]", HTMLFormElement).addEventListener(
+      "submit",
+      (event) => {
+        event.preventDefault();
+        void this.saveImageAlt();
+      },
+    );
+    query(this.imageAltDialog, "[data-image-alt-cancel]", HTMLButtonElement).addEventListener(
+      "click",
+      () => this.closeImageAltEditor(),
+    );
+    this.imageAltDialog.addEventListener("cancel", () => {
+      this.imageAltEdit = null;
+    });
+    this.imageAltDialog.addEventListener("close", () => {
+      this.imageAltEdit = null;
+    });
+    this.imageAltInput.addEventListener("input", () => {
+      const value = clampImageAlt(this.imageAltInput.value);
+      if (value !== this.imageAltInput.value) {
+        const cursor = Math.min(value.length, this.imageAltInput.selectionStart);
+        this.imageAltInput.value = value;
+        this.imageAltInput.setSelectionRange(cursor, cursor);
+      }
+      query(this.imageAltDialog, "[data-image-alt-count]", HTMLOutputElement).value = String(
+        [...value].length,
+      );
+    });
+    this.renderer.svg.addEventListener("dragover", this.onImageDragOver);
+    this.renderer.svg.addEventListener("drop", this.onImageDrop);
+    document.addEventListener("paste", this.onImagePaste);
+
     query(this.root, "[data-testid='participants-button']", HTMLButtonElement).addEventListener(
       "click",
       (event) => {
@@ -645,6 +810,162 @@ export class BoardApp {
         exportButton.setAttribute("aria-expanded", "false");
       }
     });
+  }
+
+  private readonly onImageDragOver = (event: DragEvent): void => {
+    if (!dataTransferHasImage(event.dataTransfer)) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+  };
+
+  private readonly onImageDrop = (event: DragEvent): void => {
+    const image = firstImageFile(event.dataTransfer);
+    if (!image) return;
+    event.preventDefault();
+    const point = this.renderer.viewport.clientToBoard(event.clientX, event.clientY);
+    void this.uploadImage(image, point);
+  };
+
+  private readonly onImagePaste = (event: ClipboardEvent): void => {
+    if (isEditingTarget(event.target)) return;
+    const image = firstImageFile(event.clipboardData);
+    if (!image) return;
+    event.preventDefault();
+    void this.uploadImage(image, this.imagePlacementCenter());
+  };
+
+  private canUploadImages(): boolean {
+    return this.bootstrap.board.imagesEnabled && !this.imageUploadInFlight && this.canCommit();
+  }
+
+  private openImagePicker(): void {
+    if (!this.bootstrap.board.imagesEnabled) {
+      this.notify("Image cards are disabled by the owner.", "warning");
+      return;
+    }
+    if (!navigator.onLine || this.phase !== "ready") {
+      this.notify("Upload when reconnected.", "warning");
+      return;
+    }
+    if (!this.canCommit()) {
+      this.notify("Drawing is read only.", "warning");
+      return;
+    }
+    if (this.imageUploadInFlight) {
+      this.notify("An image is already uploading.", "info");
+      return;
+    }
+    this.imageInput.click();
+  }
+
+  private imagePlacementCenter(): Point {
+    const bounds = this.renderer.viewport.viewBounds;
+    return [(bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2];
+  }
+
+  private async uploadImage(image: File, center: Point): Promise<void> {
+    const issue = imageUploadIssue(image);
+    if (issue) {
+      this.notify(issue, "warning");
+      return;
+    }
+    if (!this.bootstrap.board.imagesEnabled) {
+      this.notify("Image cards are disabled by the owner.", "warning");
+      return;
+    }
+    if (!navigator.onLine || this.phase !== "ready") {
+      this.notify("Upload when reconnected.", "warning");
+      return;
+    }
+    if (!this.canCommit()) {
+      this.notify("Drawing is read only.", "warning");
+      return;
+    }
+    if (this.imageUploadInFlight) {
+      this.notify("An image is already uploading.", "info");
+      return;
+    }
+
+    this.imageUploadInFlight = true;
+    this.updatePermissions();
+    try {
+      const prepared = await privacySafeImageUpload(image);
+      const asset = await this.api.uploadBoardImage(this.bootstrap.board.id, prepared);
+      if (!this.bootstrap.board.imagesEnabled || !this.canCommit()) {
+        this.notify(
+          "The image uploaded, but permission changed before its card could be added.",
+          "warning",
+        );
+        return;
+      }
+      const itemId = createId();
+      const accepted = await this.commit(buildImageCreateOperation(itemId, center, asset));
+      if (!accepted) {
+        this.notify("The image uploaded, but its card could not be added.", "warning");
+        return;
+      }
+      this.tools.setTool("select");
+      this.tools.selectOnly([itemId]);
+      this.notify("Image added.", "info");
+    } catch (error) {
+      if (error instanceof ApiError) this.notify(error.message, "error");
+      else if (error instanceof ImagePreparationError) this.notify(error.message, "warning");
+      else this.notify("The image could not be uploaded.", "error");
+    } finally {
+      this.imageUploadInFlight = false;
+      this.updatePermissions();
+    }
+  }
+
+  private openImageAltEditor(item: Extract<BoardItem, { kind: "image" }>): void {
+    if (!this.canCommit()) {
+      this.notify("Drawing is read only.", "warning");
+      return;
+    }
+    if (item.version <= 0) {
+      this.notify("Wait for the image to finish saving before editing alt text.", "info");
+      return;
+    }
+    this.imageAltEdit = {
+      itemId: item.id,
+      expectedVersion: item.version,
+      geometry: structuredClone(item.geometry),
+    };
+    this.imageAltInput.value = item.geometry.alt ?? "";
+    query(this.imageAltDialog, "[data-image-alt-count]", HTMLOutputElement).value = String(
+      [...this.imageAltInput.value].length,
+    );
+    if (!this.imageAltDialog.open) this.imageAltDialog.showModal();
+    this.imageAltInput.focus();
+    this.imageAltInput.setSelectionRange(
+      this.imageAltInput.value.length,
+      this.imageAltInput.value.length,
+    );
+  }
+
+  private closeImageAltEditor(): void {
+    this.imageAltEdit = null;
+    if (this.imageAltDialog.open) this.imageAltDialog.close();
+  }
+
+  private async saveImageAlt(): Promise<void> {
+    const edit = this.imageAltEdit;
+    if (!edit || !this.canCommit()) {
+      this.closeImageAltEditor();
+      return;
+    }
+    const value = clampImageAlt(this.imageAltInput.value).trim();
+    const { alt: _previousAlt, ...geometry } = edit.geometry;
+    const submit = query(this.imageAltDialog, "button[type='submit']", HTMLButtonElement);
+    submit.disabled = true;
+    const accepted = await this.commit({
+      kind: "item.update",
+      itemId: edit.itemId,
+      expectedVersion: edit.expectedVersion,
+      patch: { geometry: value ? { ...geometry, alt: value } : geometry },
+    });
+    submit.disabled = false;
+    if (accepted) this.closeImageAltEditor();
   }
 
   private async restoreOutbox(): Promise<void> {
@@ -871,6 +1192,10 @@ export class BoardApp {
 
   private handleAccessChanged(frame: ServerFrame): void {
     const access = isRecord(frame.access) ? frame.access : frame;
+    if (typeof access.imagesEnabled !== "boolean") {
+      this.socket.resynchronize("Board image permissions changed; refreshing policy.");
+      return;
+    }
     if (access.role === "viewer" || access.role === "editor" || access.role === "owner")
       this.bootstrap.actor.role = access.role;
     if (
@@ -880,10 +1205,13 @@ export class BoardApp {
     ) {
       this.bootstrap.board.drawingPolicy = access.drawingPolicy;
     }
+    this.bootstrap.board.imagesEnabled = access.imagesEnabled;
     if (access.accessMode === "private" || access.accessMode === "link_view")
       this.bootstrap.board.accessMode = access.accessMode;
     if (typeof access.aclVersion === "number") this.bootstrap.board.aclVersion = access.aclVersion;
     if (!canRoleDraw(this.bootstrap.actor.role, this.bootstrap.board.drawingPolicy))
+      this.tools.setTool("select");
+    if (!this.bootstrap.board.imagesEnabled && this.tools.tool === "image")
       this.tools.setTool("select");
     this.updatePermissions();
   }
@@ -1326,6 +1654,7 @@ export class BoardApp {
         <button type="button" data-policy="owner_only">Lock students</button>
         <button type="button" data-policy="locked">Lock everyone</button>
       </div>
+      <label class="field-row image-policy-row"><span><strong>Image cards</strong><small>Allow participants who can draw to upload images</small></span><input type="checkbox" data-images-enabled aria-label="Allow image uploads" /></label>
       <label class="field-row"><span>Board link</span><select data-access-mode aria-label="Board link access"><option value="link_view">Anyone with link can view</option><option value="private">Members only</option></select></label>
     `;
     for (const button of section.querySelectorAll<HTMLButtonElement>("[data-policy]")) {
@@ -1342,6 +1671,12 @@ export class BoardApp {
     accessMode.addEventListener(
       "change",
       () => void this.setAccessMode(accessMode.value as AccessMode),
+    );
+    const imagesEnabled = query(section, "[data-images-enabled]", HTMLInputElement);
+    imagesEnabled.checked = this.bootstrap.board.imagesEnabled;
+    imagesEnabled.addEventListener(
+      "change",
+      () => void this.setImagesEnabled(imagesEnabled.checked),
     );
     this.accessBody.append(section);
 
@@ -1563,6 +1898,25 @@ export class BoardApp {
       this.renderAccessPanel();
     } catch (error) {
       this.apiError(error);
+    }
+  }
+
+  private async setImagesEnabled(enabled: boolean): Promise<void> {
+    try {
+      const result = await this.api.updateSettings(
+        this.bootstrap.board.id,
+        { imagesEnabled: enabled },
+        this.bootstrap.board.aclVersion,
+      );
+      this.bootstrap.board.imagesEnabled = enabled;
+      this.adoptAclVersion(result);
+      if (!enabled && this.tools.tool === "image") this.tools.setTool("select");
+      this.updatePermissions();
+      this.renderAccessPanel();
+      this.notify(enabled ? "Image uploads are enabled." : "Image uploads are disabled.", "info");
+    } catch (error) {
+      this.apiError(error);
+      this.renderAccessPanel();
     }
   }
 
@@ -2014,9 +2368,15 @@ export class BoardApp {
   private updatePermissions(): void {
     const canEdit = this.canCommit();
     const archived = this.phase === "archived";
+    if ((!canEdit || !this.bootstrap.board.imagesEnabled) && this.tools.tool === "image") {
+      this.tools.setTool("select");
+    }
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-tool]")) {
       const name = button.dataset.tool as ToolName;
-      button.disabled = DRAW_TOOLS.has(name) && !canEdit;
+      button.disabled =
+        DRAW_TOOLS.has(name) &&
+        (!canEdit ||
+          (name === "image" && (!this.bootstrap.board.imagesEnabled || this.imageUploadInFlight)));
     }
     this.accessButton.hidden = this.bootstrap.actor.role !== "owner" || archived;
     this.accessButton.disabled = archived || this.archivePending;
@@ -2038,6 +2398,9 @@ export class BoardApp {
     this.renderer.svg.setAttribute("aria-readonly", String(!canEdit));
     this.updateHistoryControls();
     this.updateStatus();
+    this.imageInput.disabled = !this.canUploadImages();
+    if (!canEdit) this.closeImageAltEditor();
+    this.updateSelectionActions(this.tools.selection);
     if (canEdit && !this.textEditor && this.rejectedStickyDrafts.length > 0) {
       queueMicrotask(() => this.restoreNextStickyDraft());
     }
@@ -2160,6 +2523,14 @@ export class BoardApp {
     this.selectionActions.hidden = ids.size === 0;
     const label = ids.size === 1 ? "1 selected" : `${ids.size} selected`;
     this.selectionActions.setAttribute("aria-label", label);
+    const canEdit = this.canCommit();
+    query(this.selectionActions, "[data-selection-copy]", HTMLButtonElement).disabled = !canEdit;
+    query(this.selectionActions, "[data-selection-delete]", HTMLButtonElement).disabled = !canEdit;
+    const alt = query(this.selectionActions, "[data-selection-alt]", HTMLButtonElement);
+    const [selectedId] = ids;
+    const selected = selectedId ? this.model.getItem(selectedId) : undefined;
+    alt.hidden = ids.size !== 1 || selected?.kind !== "image";
+    alt.disabled = !canEdit || selected?.version === 0;
   }
 
   private zoomBy(factor: number): void {
@@ -2181,6 +2552,7 @@ export class BoardApp {
 
   private reactivateTool(tool: ToolName): void {
     if (tool === "stamp") this.setStylePopoverOpen(true);
+    if (tool === "image") this.openImagePicker();
   }
 
   private togglePopover(popover: HTMLElement, trigger: HTMLButtonElement): void {
@@ -2703,6 +3075,29 @@ function formatBytes(value: number): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function firstImageFile(transfer: DataTransfer | null): File | null {
+  if (!transfer) return null;
+  for (const file of Array.from(transfer.files)) {
+    if (file.type.startsWith("image/")) return file;
+  }
+  for (const item of Array.from(transfer.items)) {
+    if (item.kind !== "file" || !item.type.startsWith("image/")) continue;
+    const file = item.getAsFile();
+    if (file) return file;
+  }
+  return null;
+}
+
+function dataTransferHasImage(transfer: DataTransfer | null): boolean {
+  if (!transfer) return false;
+  return (
+    Array.from(transfer.files).some((file) => file.type.startsWith("image/")) ||
+    Array.from(transfer.items).some(
+      (item) => item.kind === "file" && item.type.startsWith("image/"),
+    )
+  );
 }
 
 function isEditingTarget(target: EventTarget | null): boolean {

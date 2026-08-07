@@ -217,4 +217,48 @@ describe("durable outbox identity scoping", () => {
     expect(restored.expired).toEqual([]);
     expect(restored.active[0]?.command).toEqual(stampCommand);
   });
+
+  it("persists image metadata without raw bytes or Blob URLs", async () => {
+    installIndexedDb();
+    const outbox = new DurableOutbox();
+    const boardId = "b_1234567890123456789012";
+    const actorId = "a_1111111111111111111111";
+    const assetId = `asset_${"b".repeat(43)}`;
+    const imageCommand: CommitFrame = {
+      v: PROTOCOL_VERSION,
+      t: "client.commit",
+      commandId: "image-command",
+      actionId: "image-action",
+      baseSeq: 9,
+      op: {
+        kind: "item.create",
+        item: {
+          id: "018f47a1-7a2b-7c3d-8e4f-123456789abf",
+          kind: "image",
+          style: { kind: "image", opacity: 1, radius: 12 },
+          transform: [1, 0, 0, 1, 0, 0],
+          geometry: {
+            x: 30,
+            y: 40,
+            width: 360,
+            height: 240,
+            assetId,
+            alt: "Students comparing leaf structures",
+            mimeType: "image/png",
+            intrinsicWidth: 1_200,
+            intrinsicHeight: 800,
+          },
+        },
+      },
+    };
+
+    await outbox.put(boardId, actorId, imageCommand);
+    const restored = await outbox.contents(boardId, actorId);
+    const serialized = JSON.stringify(restored.active[0]?.command);
+
+    expect(restored.active[0]?.command).toEqual(imageCommand);
+    expect(serialized).toContain(assetId);
+    expect(serialized).not.toMatch(/data:|blob:|base64|iVBOR/u);
+    expect(restored.active[0]?.byteLength).toBeLessThan(1_024);
+  });
 });

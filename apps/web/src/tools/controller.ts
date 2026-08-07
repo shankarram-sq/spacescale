@@ -6,6 +6,7 @@ import type {
   BoardItem,
   BoxGeometry,
   DurableOperation,
+  ImageGeometry,
   LineGeometry,
   Matrix,
   Point,
@@ -46,6 +47,7 @@ const TOOL_SHORTCUTS: Partial<Record<string, ToolName>> = {
   t: "text",
   n: "sticky",
   k: "stamp",
+  i: "image",
   e: "eraser",
   h: "pan",
 };
@@ -58,6 +60,7 @@ const SHORTCUT_DRAW_TOOLS = new Set<ToolName>([
   "text",
   "sticky",
   "stamp",
+  "image",
   "eraser",
 ]);
 
@@ -182,10 +185,61 @@ export function buildStampCreateOperation(
   };
 }
 
+export const DEFAULT_IMAGE_MAX_WIDTH = 360;
+export const DEFAULT_IMAGE_MAX_HEIGHT = 280;
+export const DEFAULT_IMAGE_RADIUS = 12;
+
+export type ImageAssetMetadata = Pick<
+  ImageGeometry,
+  "assetId" | "mimeType" | "intrinsicWidth" | "intrinsicHeight"
+>;
+
+export function defaultImageCardSize(
+  intrinsicWidth: number,
+  intrinsicHeight: number,
+): { width: number; height: number } {
+  const scale = Math.min(
+    DEFAULT_IMAGE_MAX_WIDTH / intrinsicWidth,
+    DEFAULT_IMAGE_MAX_HEIGHT / intrinsicHeight,
+  );
+  return {
+    width: Math.max(1, roundBoard(intrinsicWidth * scale)),
+    height: Math.max(1, roundBoard(intrinsicHeight * scale)),
+  };
+}
+
+export function buildImageCreateOperation(
+  itemId: string,
+  center: Point,
+  asset: ImageAssetMetadata,
+): BatchItemOperation {
+  const size = defaultImageCardSize(asset.intrinsicWidth, asset.intrinsicHeight);
+  return {
+    kind: "item.create",
+    item: {
+      id: itemId,
+      kind: "image",
+      style: { kind: "image", opacity: 1, radius: DEFAULT_IMAGE_RADIUS },
+      transform: identityMatrix(),
+      geometry: {
+        x: roundBoard(center[0] - size.width / 2),
+        y: roundBoard(center[1] - size.height / 2),
+        width: size.width,
+        height: size.height,
+        assetId: asset.assetId,
+        mimeType: asset.mimeType,
+        intrinsicWidth: asset.intrinsicWidth,
+        intrinsicHeight: asset.intrinsicHeight,
+      },
+    },
+  };
+}
+
 export type ToolControllerOptions = {
   model: BoardModel;
   renderer: BoardRenderer;
   canDraw: () => boolean;
+  canUseImages: () => boolean;
   getStyle: () => StyleState;
   commit: (operation: DurableOperation, actionId?: string) => Promise<boolean>;
   preview: (
@@ -201,6 +255,7 @@ export type ToolControllerOptions = {
   ) => boolean;
   presence: (cursor: { x: number; y: number } | null, tool: ToolName) => void;
   editText: (point: Point, item?: BoardItem) => void;
+  editImageAlt: (item: Extract<BoardItem, { kind: "image" }>) => void;
   onToolChanged: (tool: ToolName) => void;
   onToolReactivated: (tool: ToolName) => void;
   onSelectionChanged: (ids: ReadonlySet<string>) => void;
@@ -308,6 +363,10 @@ export class ToolController {
   }
 
   setTool(tool: ToolName): void {
+    if (tool === "image" && !this.options.canUseImages()) {
+      this.options.notify("Image cards are disabled by the owner.", "warning");
+      return;
+    }
     if (this.toolValue === tool) return;
     this.cancelGesture();
     this.lastStickyTap = null;
@@ -725,6 +784,11 @@ export class ToolController {
         event.preventDefault();
         this.lastStickyTap = null;
         this.options.editText(pointFromItem(item), item);
+        return;
+      }
+      if (item?.kind === "image" && this.options.canDraw()) {
+        event.preventDefault();
+        this.options.editImageAlt(item);
         return;
       }
     }

@@ -34,13 +34,21 @@ import {
   parseCommitFrame,
   prepareItemOperation,
 } from "./domain";
-import { assertExactKeys, isRecord, readJsonBody } from "./http/body";
+import { assertExactKeys, isRecord, readBoundedBytes, readJsonBody } from "./http/body";
 import { errorResponse, HttpError } from "./http/errors";
 import {
   INTERNAL_ACTOR_HEADER,
   INTERNAL_EXPIRY_HEADER,
   INTERNAL_REQUEST_ID_HEADER,
 } from "./http/security";
+import {
+  type ImageAssetMimeType,
+  MAX_IMAGE_ASSET_BYTES,
+  MAX_IMAGE_ASSET_BYTES_PER_BOARD,
+  MAX_IMAGE_ASSETS_PER_BOARD,
+  parseImageAsset,
+  requireImageAssetMimeType,
+} from "./image-assets";
 import { safeLog } from "./logging";
 import { applyMigrations } from "./migrations";
 import { TokenBucket } from "./rate-limit";
@@ -194,6 +202,20 @@ type CommitMetrics = {
 };
 type CommitExecution = { transactionStarted: boolean };
 
+type BoardAssetRow = {
+  [key: string]: SqlStorageValue;
+  asset_id: string;
+  sha256: string;
+  r2_key: string;
+  mime_type: ImageAssetMimeType;
+  intrinsic_width: number;
+  intrinsic_height: number;
+  byte_count: number;
+  state: "pending" | "committed";
+  created_at_ms: number;
+  committed_at_ms: number | null;
+};
+
 export class BoardRoom extends DurableObject<Env> {
   readonly #sql: SqlStorage;
   readonly #buckets = new TokenBucket();
@@ -207,6 +229,7 @@ export class BoardRoom extends DurableObject<Env> {
   #lastBoardMetricsSignature = "";
   readonly #pendingQuotaDays = new Set<string>();
   #quotaEmissionScheduled = false;
+  #assetUploadTail = Promise.resolve();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -335,6 +358,19 @@ export class BoardRoom extends DurableObject<Env> {
     if (suffix === "/settings") {
       requireMethod(request, "PATCH");
       return this.patchSettings(request, actor);
+    }
+    if (suffix === "/assets") {
+      requireMethod(request, "POST");
+      return this.uploadImageAsset(request, actor, board);
+    }
+    const assetMatch = /^\/assets\/(asset_[A-Za-z0-9_-]{43})$/u.exec(suffix);
+    if (assetMatch !== null) {
+      requireMethod(request, "GET");
+      const assetId = assetMatch[1];
+      if (assetId === undefined) {
+        throw new HttpError(404, "NOT_FOUND", "Image asset not found.");
+      }
+      return this.getImageAsset(actor, board, assetId);
     }
     if (suffix === "/archive") {
       requireMethod(request, "POST");
@@ -596,6 +632,7 @@ export class BoardRoom extends DurableObject<Env> {
           title: board.title,
           accessMode: board.access_mode,
           drawingPolicy: board.drawing_policy,
+          imagesEnabled: board.images_enabled === 1,
           aclVersion,
         },
         actor: { id: actor.actorId, role: access.role, displayName: access.displayName },
@@ -620,6 +657,7 @@ export class BoardRoom extends DurableObject<Env> {
           title: board.title,
           accessMode: board.access_mode,
           drawingPolicy: board.drawing_policy,
+          imagesEnabled: board.images_enabled === 1,
           aclVersion: board.acl_version,
           latestSeq: board.latest_seq,
           snapshotSeq: snapshot.seq,
@@ -861,7 +899,7 @@ export class BoardRoom extends DurableObject<Env> {
     const body = await readJsonBody(request, 8 * 1_024);
     assertExactKeys(
       body,
-      ["title", "accessMode", "drawingPolicy", "expectedAclVersion"],
+      ["title", "accessMode", "drawingPolicy", "imagesEnabled", "expectedAclVersion"],
       ["expectedAclVersion"],
     );
     const expected = requireSafeInteger(
@@ -884,7 +922,16 @@ export class BoardRoom extends DurableObject<Env> {
     ) {
       throw new HttpError(400, "BAD_REQUEST", "The drawing policy is invalid.");
     }
-    if (title === undefined && accessMode === undefined && drawingPolicy === undefined) {
+    const imagesEnabled = body.imagesEnabled;
+    if (imagesEnabled !== undefined && typeof imagesEnabled !== "boolean") {
+      throw new HttpError(400, "BAD_REQUEST", "The image upload setting is invalid.");
+    }
+    if (
+      title === undefined &&
+      accessMode === undefined &&
+      drawingPolicy === undefined &&
+      imagesEnabled === undefined
+    ) {
       throw new HttpError(400, "BAD_REQUEST", "No setting change was supplied.");
     }
     let updated!: BoardRow;
@@ -908,11 +955,12 @@ export class BoardRoom extends DurableObject<Env> {
       }
       const now = Date.now();
       this.#sql.exec(
-        `UPDATE board SET title = ?, access_mode = ?, drawing_policy = ?,
+        `UPDATE board SET title = ?, access_mode = ?, drawing_policy = ?, images_enabled = ?,
           acl_version = acl_version + 1, updated_at_ms = ? WHERE singleton = 1`,
         title ?? board.title,
         accessMode ?? board.access_mode,
         drawingPolicy ?? board.drawing_policy,
+        imagesEnabled === undefined ? board.images_enabled : imagesEnabled ? 1 : 0,
         now,
       );
       updated = this.requireBoard();
@@ -923,9 +971,242 @@ export class BoardRoom extends DurableObject<Env> {
         title: updated.title,
         accessMode: updated.access_mode,
         drawingPolicy: updated.drawing_policy,
+        imagesEnabled: updated.images_enabled === 1,
         aclVersion: updated.acl_version,
       },
     });
+  }
+
+  private async uploadImageAsset(
+    request: Request,
+    actor: InternalActorContext,
+    capturedBoard: BoardRow,
+  ): Promise<Response> {
+    this.requireImageUploadAllowed(capturedBoard, actor.actorId);
+    const contentEncoding = (request.headers.get("content-encoding") ?? "identity")
+      .trim()
+      .toLowerCase();
+    if (request.headers.has("content-range") || contentEncoding !== "identity") {
+      throw new HttpError(
+        400,
+        "BAD_REQUEST",
+        "Encoded or partial image uploads are not supported.",
+      );
+    }
+    const declaredMimeType = requireImageAssetMimeType(request.headers.get("content-type"));
+    const bytes = await readBoundedBytes(request, MAX_IMAGE_ASSET_BYTES);
+    if (bytes.byteLength === 0) {
+      throw new HttpError(400, "BAD_REQUEST", "The image upload is empty.");
+    }
+    const parsed = parseImageAsset(bytes, declaredMimeType);
+    const digest = await sha256Base64Url(bytes);
+    const assetId = `asset_${digest}`;
+
+    const status = await this.withAssetUploadLock(async () => {
+      const now = Date.now();
+      let wasCommitted = false;
+      let r2Key = "";
+
+      this.ctx.storage.transactionSync(() => {
+        const board = this.requireBoard();
+        this.requireImageUploadAllowed(board, actor.actorId);
+        this.#sql.exec(
+          "DELETE FROM board_assets WHERE state = 'pending' AND created_at_ms < ?",
+          now - 15 * 60 * 1_000,
+        );
+
+        let row = this.readBoardAsset(assetId);
+        if (row === null) {
+          const usage = this.#sql
+            .exec<{ asset_count: number; byte_count: number }>(
+              "SELECT COUNT(*) AS asset_count, COALESCE(SUM(byte_count), 0) AS byte_count FROM board_assets",
+            )
+            .one();
+          if (
+            usage.asset_count >= MAX_IMAGE_ASSETS_PER_BOARD ||
+            usage.byte_count + bytes.byteLength > MAX_IMAGE_ASSET_BYTES_PER_BOARD
+          ) {
+            throw new HttpError(
+              413,
+              "BOARD_LIMIT_REACHED",
+              "This board has reached its private image storage limit.",
+            );
+          }
+          r2Key = `boards/${board.public_id}/assets/${assetId}`;
+          this.#sql.exec(
+            "INSERT INTO board_assets(asset_id, sha256, r2_key, mime_type, intrinsic_width, intrinsic_height, byte_count, state, created_by, created_at_ms, committed_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL)",
+            assetId,
+            digest,
+            r2Key,
+            parsed.mimeType,
+            parsed.intrinsicWidth,
+            parsed.intrinsicHeight,
+            bytes.byteLength,
+            actor.actorId,
+            now,
+          );
+          row = this.readBoardAsset(assetId);
+        }
+        if (row === null) {
+          throw assetStorageUnavailable();
+        }
+        this.assertBoardAssetMatches(row, {
+          assetId,
+          digest,
+          r2Key: `boards/${board.public_id}/assets/${assetId}`,
+          mimeType: parsed.mimeType,
+          intrinsicWidth: parsed.intrinsicWidth,
+          intrinsicHeight: parsed.intrinsicHeight,
+          byteCount: bytes.byteLength,
+        });
+        r2Key = row.r2_key;
+        wasCommitted = row.state === "committed";
+      });
+
+      try {
+        await putImmutableR2Object(this.env.BOARD_ASSETS, r2Key, bytes, {
+          sha256: digest,
+          httpMetadata: { contentType: parsed.mimeType },
+        });
+        this.ctx.storage.transactionSync(() => {
+          const board = this.requireBoard();
+          this.requireImageUploadAllowed(board, actor.actorId);
+          const row = this.readBoardAsset(assetId);
+          if (row === null) throw assetStorageUnavailable();
+          this.assertBoardAssetMatches(row, {
+            assetId,
+            digest,
+            r2Key,
+            mimeType: parsed.mimeType,
+            intrinsicWidth: parsed.intrinsicWidth,
+            intrinsicHeight: parsed.intrinsicHeight,
+            byteCount: bytes.byteLength,
+          });
+          if (row.state === "pending") {
+            this.#sql.exec(
+              "UPDATE board_assets SET state = 'committed', committed_at_ms = ? WHERE asset_id = ? AND state = 'pending'",
+              Date.now(),
+              assetId,
+            );
+          }
+        });
+      } catch (error) {
+        if (!wasCommitted) {
+          this.#sql.exec(
+            "DELETE FROM board_assets WHERE asset_id = ? AND state = 'pending'",
+            assetId,
+          );
+        }
+        throw error;
+      }
+
+      return wasCommitted ? 200 : 201;
+    });
+
+    return Response.json(
+      {
+        assetId,
+        mimeType: parsed.mimeType,
+        intrinsicWidth: parsed.intrinsicWidth,
+        intrinsicHeight: parsed.intrinsicHeight,
+        sizeBytes: bytes.byteLength,
+      },
+      { status, headers: { "Cache-Control": "private, no-store" } },
+    );
+  }
+
+  private async getImageAsset(
+    actor: InternalActorContext,
+    capturedBoard: BoardRow,
+    assetId: string,
+  ): Promise<Response> {
+    const board = readBoard(this.#sql) ?? capturedBoard;
+    this.requireView(board, actor.actorId);
+    const row = this.readBoardAsset(assetId);
+    if (row === null || row.state !== "committed") {
+      throw new HttpError(404, "NOT_FOUND", "Image asset not found.");
+    }
+    const expectedKey = `boards/${board.public_id}/assets/${assetId}`;
+    if (
+      row.asset_id !== assetId ||
+      row.sha256 !== assetId.slice("asset_".length) ||
+      row.r2_key !== expectedKey
+    ) {
+      throw assetStorageUnavailable();
+    }
+
+    const object = await getR2Object(this.env.BOARD_ASSETS, expectedKey);
+    if (object === null) throw assetStorageUnavailable();
+    if (
+      object.size !== row.byte_count ||
+      object.customMetadata?.sha256 !== row.sha256 ||
+      object.httpMetadata?.contentType !== row.mime_type
+    ) {
+      throw assetStorageUnavailable();
+    }
+
+    return new Response(object.body, {
+      headers: {
+        "Cache-Control": "private, no-store",
+        "Content-Disposition": "inline",
+        "Content-Length": String(row.byte_count),
+        "Content-Type": row.mime_type,
+        "Cross-Origin-Resource-Policy": "same-origin",
+        Vary: "Cookie, Authorization",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  }
+
+  private readBoardAsset(assetId: string): BoardAssetRow | null {
+    return (
+      this.#sql
+        .exec<BoardAssetRow>(
+          "SELECT asset_id, sha256, r2_key, mime_type, intrinsic_width, intrinsic_height, byte_count, state, created_at_ms, committed_at_ms FROM board_assets WHERE asset_id = ?",
+          assetId,
+        )
+        .toArray()[0] ?? null
+    );
+  }
+
+  private assertBoardAssetMatches(
+    row: BoardAssetRow,
+    expected: {
+      assetId: string;
+      digest: string;
+      r2Key: string;
+      mimeType: ImageAssetMimeType;
+      intrinsicWidth: number;
+      intrinsicHeight: number;
+      byteCount: number;
+    },
+  ): void {
+    if (
+      row.asset_id !== expected.assetId ||
+      row.sha256 !== expected.digest ||
+      row.r2_key !== expected.r2Key ||
+      row.mime_type !== expected.mimeType ||
+      row.intrinsic_width !== expected.intrinsicWidth ||
+      row.intrinsic_height !== expected.intrinsicHeight ||
+      row.byte_count !== expected.byteCount
+    ) {
+      throw assetStorageUnavailable();
+    }
+  }
+
+  private async withAssetUploadLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.#assetUploadTail;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.#assetUploadTail = previous.then(() => gate);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
   }
 
   private async archiveBoard(request: Request, actor: InternalActorContext): Promise<Response> {
@@ -1943,6 +2224,7 @@ export class BoardRoom extends DurableObject<Env> {
         t: "server.welcome",
         actor: { id: actor.actorId, displayName: access.displayName, role: access.role },
         drawingPolicy: board.drawing_policy,
+        imagesEnabled: board.images_enabled === 1,
         aclVersion: board.acl_version,
         historyVersion: history.historyVersion,
         canUndo: history.canUndo,
@@ -2298,6 +2580,12 @@ export class BoardRoom extends DurableObject<Env> {
         nextZ: board.next_z,
         liveCount: board.snapshot_live_item_count,
       });
+      for (const write of prepared.writes.values()) {
+        const item = write.item as unknown as ProtocolBoardItem;
+        if (!write.deleted && item.kind === "image") {
+          this.requireCommittedImageAsset(board, item);
+        }
+      }
       const acceptedAt = Date.now();
       action = {
         v: 1,
@@ -3250,6 +3538,7 @@ export class BoardRoom extends DurableObject<Env> {
           t: "access.changed",
           role: access.role,
           drawingPolicy: board.drawing_policy,
+          imagesEnabled: board.images_enabled === 1,
           aclVersion: board.acl_version,
           ...(affectedActorId ? { affectedActorId } : {}),
         });
@@ -3335,6 +3624,7 @@ export class BoardRoom extends DurableObject<Env> {
       t: "access.changed",
       role: refreshed.role,
       drawingPolicy: board.drawing_policy,
+      imagesEnabled: board.images_enabled === 1,
       aclVersion: board.acl_version,
     });
     return refreshed;
@@ -3530,6 +3820,38 @@ export class BoardRoom extends DurableObject<Env> {
   private requireContentMutationAllowed(board: BoardRow, role: BoardRole): void {
     if (!canDraw(board.drawing_policy, role)) {
       throw new BoardDomainError("FORBIDDEN", "Drawing is not currently allowed.");
+    }
+  }
+
+  private requireImageUploadAllowed(board: BoardRow, actorId: string) {
+    const access = this.requireView(board, actorId);
+    this.requireContentMutationAllowed(board, access.role);
+    if (board.images_enabled !== 1) {
+      throw new HttpError(403, "FORBIDDEN", "Image uploads are disabled for this board.");
+    }
+    return access;
+  }
+
+  private requireCommittedImageAsset(
+    board: BoardRow,
+    item: Extract<ProtocolBoardItem, { kind: "image" }>,
+  ): void {
+    const assetId = item.geometry.assetId;
+    const row = this.readBoardAsset(assetId);
+    if (
+      row === null ||
+      row.state !== "committed" ||
+      row.asset_id !== assetId ||
+      row.sha256 !== assetId.slice("asset_".length) ||
+      row.r2_key !== `boards/${board.public_id}/assets/${assetId}` ||
+      row.mime_type !== item.geometry.mimeType ||
+      row.intrinsic_width !== item.geometry.intrinsicWidth ||
+      row.intrinsic_height !== item.geometry.intrinsicHeight
+    ) {
+      throw new BoardDomainError(
+        "INVALID_FRAME",
+        "The image asset is not available on this board.",
+      );
     }
   }
 
@@ -4520,6 +4842,10 @@ function mapRoomError(error: unknown): HttpError {
 
 function boardNotFoundError(): HttpError {
   return new HttpError(404, "NOT_FOUND", "Board not found.");
+}
+
+function assetStorageUnavailable(): HttpError {
+  return new HttpError(503, "TEMPORARILY_UNAVAILABLE", "Image storage is temporarily unavailable.");
 }
 
 function blobBytes(value: ArrayBuffer | Uint8Array): Uint8Array {

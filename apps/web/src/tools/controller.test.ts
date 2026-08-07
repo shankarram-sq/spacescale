@@ -4,9 +4,11 @@ import {
   buildCapturedDeleteOperations,
   buildCapturedMoveOperations,
   buildCapturedTextUpdate,
+  buildImageCreateOperation,
   buildStampCreateOperation,
   buildStickyCreateOperation,
   type CapturedMoveItem,
+  defaultImageCardSize,
   stickyTapMoveThreshold,
   tapAdjustedMovePoint,
   toolFromShortcut,
@@ -38,6 +40,8 @@ describe("captured gesture operations", () => {
     expect(toolFromShortcut("N", true)).toBe("sticky");
     expect(toolFromShortcut("k", false)).toBeUndefined();
     expect(toolFromShortcut("K", true)).toBe("stamp");
+    expect(toolFromShortcut("i", false)).toBeUndefined();
+    expect(toolFromShortcut("I", true)).toBe("image");
     expect(toolFromShortcut("v", false)).toBe("select");
     expect(toolFromShortcut("h", false)).toBe("pan");
   });
@@ -148,5 +152,38 @@ describe("captured gesture operations", () => {
         geometry: { x: 72, y: 96, size: 72, stamp: "sparkle" },
       },
     });
+  });
+
+  it("creates an aspect-preserving image card with metadata only", () => {
+    expect(defaultImageCardSize(1_200, 800)).toEqual({ width: 360, height: 240 });
+    expect(defaultImageCardSize(800, 1_600)).toEqual({ width: 140, height: 280 });
+
+    const operation = buildImageCreateOperation(ITEM_ID, [400, 300], {
+      assetId: `asset_${"a".repeat(43)}`,
+      mimeType: "image/webp",
+      intrinsicWidth: 1_200,
+      intrinsicHeight: 800,
+    });
+
+    expect(operation).toEqual({
+      kind: "item.create",
+      item: {
+        id: ITEM_ID,
+        kind: "image",
+        style: { kind: "image", opacity: 1, radius: 12 },
+        transform: [1, 0, 0, 1, 0, 0],
+        geometry: {
+          x: 220,
+          y: 180,
+          width: 360,
+          height: 240,
+          assetId: `asset_${"a".repeat(43)}`,
+          mimeType: "image/webp",
+          intrinsicWidth: 1_200,
+          intrinsicHeight: 800,
+        },
+      },
+    });
+    expect(JSON.stringify(operation)).not.toMatch(/data:|blob:|base64|ArrayBuffer/u);
   });
 });

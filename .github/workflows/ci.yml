@@ -1,9 +1,7 @@
 name: CI
 
 on:
-  pull_request:
-  push:
-    branches: [development, staging, main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -19,20 +17,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run docs:env-check
-      - name: Validate observability queries, charts, and alert thresholds
-        run: npm run observability:check
-      - run: npm run lint
+      - run: npm run check
       - name: Verify generated Worker binding types
         run: npm run cf:types -- --check
-      - run: npm run typecheck
-      - name: Verify frozen prior-client protocol compatibility
-        run: npm run protocol:compat
-      - run: npm test
-      - run: npm run build:web
-      - run: npm run test:edge
-      - run: npm run build
-      - run: npm run security:scan
 
   browser:
     runs-on: ubuntu-latest

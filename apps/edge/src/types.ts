@@ -5,6 +5,7 @@ export type DrawingPolicy = "editors_enabled" | "owner_only" | "locked";
 export interface Env {
   ASSETS: Fetcher;
   BOARD_ROOMS: DurableObjectNamespace;
+  BOARD_ASSETS: R2Bucket;
   BOARD_SNAPSHOTS: R2Bucket;
   WORKER_VERSION: WorkerVersionMetadata;
   APP_HOSTNAME: string;
@@ -52,6 +53,7 @@ export interface BoardRow {
   title: string;
   access_mode: AccessMode;
   drawing_policy: DrawingPolicy;
+  images_enabled: number;
   owner_actor_id: string;
   classroom_mode: number;
   latest_seq: number;

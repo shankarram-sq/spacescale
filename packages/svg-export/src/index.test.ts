@@ -59,6 +59,29 @@ function stampItem(
   };
 }
 
+function imageItem(id: string, alt?: string): Extract<BoardItem, { kind: "image" }> {
+  return {
+    id,
+    kind: "image",
+    z: 6,
+    version: 1,
+    createdBy: ACTOR,
+    style: { kind: "image", opacity: 0.75, radius: 20 },
+    transform: [1, 0, 0, 1, 5, 7],
+    geometry: {
+      x: 10,
+      y: 20,
+      width: 120,
+      height: 80,
+      assetId: "asset_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      ...(alt === undefined ? {} : { alt }),
+      mimeType: "image/png",
+      intrinsicWidth: 1200,
+      intrinsicHeight: 800,
+    },
+  };
+}
+
 describe("safe SVG serialization", () => {
   it("escapes text, title, attributes, and never emits user markup", () => {
     const text: BoardItem = {
@@ -203,6 +226,38 @@ describe("safe SVG serialization", () => {
     expect(rendered.get("question")).toContain('<circle cx="12" cy="17.6" r="1.2"');
     expect(rendered.get("smile")).toContain('<circle cx="12" cy="12" r="9"');
     expect(rendered.get("sparkle")).toContain(`d="${STAMP_SVG_PATHS.sparkle}" fill="#e11d48"`);
+  });
+
+  it("emits deterministic non-fetching placeholders for private image assets", () => {
+    const item = imageItem(
+      "018f0000-0000-7000-8000-000000000009",
+      "Microscope slide <unsafe> & detail",
+    );
+    const first = createSvgExport({ boardId: BOARD, seq: 9, padding: 0, items: [item] });
+    const second = createSvgExport({ boardId: BOARD, seq: 9, padding: 0, items: [item] });
+
+    expect(first.svg).toBe(second.svg);
+    expect(first.viewBox).toEqual({ minX: 15, minY: 27, maxX: 135, maxY: 107 });
+    expect(first.svg).toContain('data-export-placeholder="private-image"');
+    expect(first.svg).toContain('aria-label="Microscope slide &lt;unsafe&gt; &amp; detail"');
+    expect(first.svg).toContain("<title>Microscope slide &lt;unsafe&gt; &amp; detail</title>");
+    expect(first.svg).toContain('rx="20" fill="#f1f5f9" stroke="#64748b"');
+    expect(first.svg).not.toMatch(/<image(?:\s|>)/u);
+    expect(first.svg).not.toMatch(/(?:href|src)=/u);
+    expect(first.svg).not.toMatch(/data:image|;base64,/u);
+    expect(first.svg).not.toContain(item.geometry.assetId);
+    expect(first.svg).not.toContain(item.geometry.mimeType);
+    expect(first.svg).not.toMatch(/data-(?:asset-id|mime-type|intrinsic-(?:width|height))=/u);
+    expect(first.svg).not.toContain('"intrinsicWidth"');
+  });
+
+  it("uses a safe accessible fallback label when image alt text is omitted", () => {
+    const svg = serializeSvg({
+      boardId: BOARD,
+      seq: 10,
+      items: [imageItem("018f0000-0000-7000-8000-000000000009", undefined)],
+    });
+    expect(svg).toContain('role="img" aria-label="Image"><title>Image</title>');
   });
 
   it("rejects unrecognized/non-canonical items rather than serializing arbitrary data", () => {

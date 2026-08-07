@@ -614,7 +614,7 @@ export function itemBounds(item: BoardItem): Bounds {
   const padding =
     item.kind === "text"
       ? 2
-      : item.kind === "sticky" || item.kind === "stamp"
+      : item.kind === "sticky" || item.kind === "stamp" || item.kind === "image"
         ? 0
         : item.style.width / 2;
   return { minX: minX - padding, minY: minY - padding, maxX: maxX + padding, maxY: maxY + padding };
@@ -642,6 +642,7 @@ function geometryBounds(item: BoardItem): Bounds {
     case "rectangle":
     case "ellipse":
     case "sticky":
+    case "image":
       return boxBounds(item.geometry);
     case "stamp":
       return stampBounds(item.geometry);
@@ -697,6 +698,9 @@ function preciseHit(item: BoardItem, point: Point, extra: number): boolean {
     return false;
   }
   if (item.kind === "sticky") {
+    return containsPoint(expandBounds(boxBounds(item.geometry), extra), local);
+  }
+  if (item.kind === "image") {
     return containsPoint(expandBounds(boxBounds(item.geometry), extra), local);
   }
   if (item.kind === "stamp") {

@@ -36,6 +36,7 @@ export const STAMP_SVG_PATHS = {
 
 type StrokeBoardItem = Extract<BoardItem, { kind: "pencil" | "line" | "rectangle" | "ellipse" }>;
 type StickyBoardItem = Extract<BoardItem, { kind: "sticky" }>;
+type ImageBoardItem = Extract<BoardItem, { kind: "image" }>;
 type StampBoardItem = Extract<BoardItem, { kind: "stamp" }>;
 
 export interface SvgExportInput {
@@ -260,6 +261,28 @@ function renderSticky(item: StickyBoardItem): string {
   return `<g ${attributes}>${clip}${rectangle}${renderedText}</g>`;
 }
 
+function renderImagePlaceholder(item: ImageBoardItem): string {
+  const { x, y, width, height, alt } = item.geometry;
+  const radius = Math.min(item.style.radius, width / 2, height / 2);
+  const inset = Math.min(width, height) * 0.2;
+  const left = x + inset;
+  const top = y + inset;
+  const right = x + width - inset;
+  const bottom = y + height - inset;
+  const label = alt ?? "Image";
+  const attributes = [
+    `transform="${transformAttribute(item)}"`,
+    `opacity="${number(item.style.opacity)}"`,
+    `data-item-id="${escapeXmlAttribute(item.id)}"`,
+    `data-export-placeholder="private-image"`,
+    `role="img"`,
+    `aria-label="${escapeXmlAttribute(label)}"`,
+  ].join(" ");
+  const rectangle = `<rect x="${number(x)}" y="${number(y)}" width="${number(width)}" height="${number(height)}" rx="${number(radius)}" fill="#f1f5f9" stroke="#64748b" stroke-width="1" />`;
+  const crossedFrame = `<path d="M ${number(left)} ${number(top)} L ${number(right)} ${number(bottom)} M ${number(right)} ${number(top)} L ${number(left)} ${number(bottom)}" fill="none" stroke="#64748b" stroke-width="1.5" stroke-linecap="round" />`;
+  return `<g ${attributes}><title>${escapeXmlText(label)}</title>${rectangle}${crossedFrame}</g>`;
+}
+
 function renderStamp(item: StampBoardItem): string {
   const { x, y, size, stamp } = item.geometry;
   const color = escapeXmlAttribute(item.style.color);
@@ -338,6 +361,8 @@ export function renderSvgItem(item: BoardItem): string {
       return renderText(item);
     case "sticky":
       return renderSticky(item);
+    case "image":
+      return renderImagePlaceholder(item);
     case "stamp":
       return renderStamp(item);
   }

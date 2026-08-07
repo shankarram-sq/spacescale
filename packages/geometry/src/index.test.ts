@@ -4,8 +4,11 @@ import {
   boundsForItems,
   formatCanonicalNumber,
   GeometryValidationError,
+  imageGeometryContainsPoint,
+  isCanonicalImageAssetId,
   itemBounds,
   normalizeBoxGeometry,
+  normalizeImageGeometry,
   normalizePencilGeometry,
   normalizeStampGeometry,
   normalizeStickyGeometry,
@@ -13,6 +16,8 @@ import {
   transformBounds,
   translateTransform,
 } from "./index.js";
+
+const ASSET_ID = "asset_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 describe("geometry normalization", () => {
   it("rounds coordinates, removes adjacent duplicate points, and preserves order", () => {
@@ -85,6 +90,103 @@ describe("geometry normalization", () => {
     );
   });
 
+  it("canonicalizes bounded image cards and omits empty alt text", () => {
+    for (const mimeType of ["image/png", "image/jpeg", "image/webp", "image/gif"] as const) {
+      expect(
+        normalizeImageGeometry({
+          x: 10,
+          y: 20,
+          width: -100.555,
+          height: -50.444,
+          assetId: ASSET_ID,
+          alt: "",
+          mimeType,
+          intrinsicWidth: 1200,
+          intrinsicHeight: 800,
+        }),
+      ).toEqual({
+        x: -90.56,
+        y: -30.44,
+        width: 100.56,
+        height: 50.44,
+        assetId: ASSET_ID,
+        mimeType,
+        intrinsicWidth: 1200,
+        intrinsicHeight: 800,
+      });
+    }
+  });
+
+  it("enforces canonical SHA-256 base64url trailing bits in image asset IDs", () => {
+    const prefix = `asset_${"A".repeat(42)}`;
+    for (const last of ["A", "E", "8"]) {
+      expect(isCanonicalImageAssetId(`${prefix}${last}`)).toBe(true);
+    }
+    for (const last of ["B", "-", "_"]) {
+      expect(isCanonicalImageAssetId(`${prefix}${last}`)).toBe(false);
+    }
+  });
+
+  it("rejects non-canonical image assets, unsupported MIME types, and raw content", () => {
+    const valid = {
+      x: 0,
+      y: 0,
+      width: 100,
+      height: 80,
+      assetId: ASSET_ID,
+      mimeType: "image/png",
+      intrinsicWidth: 100,
+      intrinsicHeight: 80,
+    };
+    for (const assetId of [
+      "https://assets.example/image.png",
+      "data:image/png;base64,AAAA",
+      "asset_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "asset_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB",
+    ]) {
+      expect(() => normalizeImageGeometry({ ...valid, assetId })).toThrow(/base64url SHA-256/);
+    }
+    expect(() => normalizeImageGeometry({ ...valid, mimeType: "image/svg+xml" })).toThrow(
+      /MIME type/,
+    );
+    expect(() => normalizeImageGeometry({ ...valid, bytes: "AAAA" })).toThrow(/Unknown field/);
+    expect(() => normalizeImageGeometry({ ...valid, href: "https://bad.example" })).toThrow(
+      /Unknown field/,
+    );
+  });
+
+  it("enforces positive card/intrinsic dimensions, pixel budget, and safe alt text", () => {
+    const valid = {
+      x: 0,
+      y: 0,
+      width: 100,
+      height: 80,
+      assetId: ASSET_ID,
+      mimeType: "image/webp",
+      intrinsicWidth: 100,
+      intrinsicHeight: 80,
+    };
+    expect(() => normalizeImageGeometry({ ...valid, width: 0 })).toThrow(/greater than 0/);
+    expect(() => normalizeImageGeometry({ ...valid, height: 0 })).toThrow(/greater than 0/);
+    expect(() => normalizeImageGeometry({ ...valid, intrinsicWidth: 1.5 })).toThrow(
+      /positive integer/,
+    );
+    expect(() => normalizeImageGeometry({ ...valid, intrinsicHeight: 0 })).toThrow(
+      /positive integer/,
+    );
+    expect(() => normalizeImageGeometry({ ...valid, intrinsicWidth: 4097 })).toThrow(
+      /at most 4096/,
+    );
+    expect(() =>
+      normalizeImageGeometry({ ...valid, intrinsicWidth: 4001, intrinsicHeight: 4000 }),
+    ).toThrow(/16000000 pixels/);
+    expect(() => normalizeImageGeometry({ ...valid, alt: "😀".repeat(501) })).toThrow(
+      /at most 500/,
+    );
+    expect(() => normalizeImageGeometry({ ...valid, alt: "bad\u0000alt" })).toThrow(/control/);
+    expect(() => normalizeImageGeometry({ ...valid, alt: "bad\ud800alt" })).toThrow(/surrogate/);
+  });
+
   it("rejects non-finite, out-of-range, and unknown input", () => {
     expect(() => normalizeTransform([1, 0, 0, 1, Number.NaN, 0])).toThrow(GeometryValidationError);
     expect(() => normalizeTransform([1_000_001, 0, 0, 1, 0, 0])).toThrow(/Transform component/);
@@ -146,6 +248,33 @@ describe("bounds and transforms", () => {
         style: { kind: "sticky", fontSize: 16 },
       }),
     ).toThrow(/Transformed item bounds/);
+  });
+
+  it("uses the full transformed image card and inclusive local hit testing", () => {
+    const geometry = {
+      x: 2,
+      y: 3,
+      width: 20,
+      height: 10,
+      assetId: ASSET_ID,
+      alt: "Source diagram",
+      mimeType: "image/png" as const,
+      intrinsicWidth: 200,
+      intrinsicHeight: 100,
+    };
+    expect(
+      itemBounds({
+        kind: "image",
+        geometry,
+        transform: [0, 1, -1, 0, 100, 0],
+        style: { kind: "image" },
+      }),
+    ).toEqual({ minX: 87, minY: 2, maxX: 97, maxY: 22 });
+    expect(imageGeometryContainsPoint(geometry, [2, 3])).toBe(true);
+    expect(imageGeometryContainsPoint(geometry, [22, 13])).toBe(true);
+    expect(imageGeometryContainsPoint(geometry, [1.5, 2.5])).toBe(false);
+    expect(imageGeometryContainsPoint(geometry, [1.5, 2.5], 0.5)).toBe(true);
+    expect(() => imageGeometryContainsPoint(geometry, [5, 5], Number.NaN)).toThrow(/padding/);
   });
 
   it("unions item bounds and translates only the affine offset", () => {

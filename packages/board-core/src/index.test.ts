@@ -1,3 +1,4 @@
+import type { ImageGeometry, ItemEffect } from "@collab/protocol";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -9,6 +10,7 @@ import {
   canonicalSnapshotByteLengthFromParts,
   canonicalSnapshotBytes,
   canonicalSnapshotItemByteLength,
+  cloneBoardItem,
   createBoardState,
   liveItemsInPaintOrder,
   serializeCanonicalSnapshot,
@@ -18,6 +20,8 @@ const ALICE = "018f0000-0000-7000-8000-0000000000a1";
 const BOB = "018f0000-0000-7000-8000-0000000000b1";
 const RECTANGLE_ID = "018f0000-0000-7000-8000-000000000001";
 const COPY_ID = "018f0000-0000-7000-8000-000000000002";
+const ASSET_ID = "asset_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const OTHER_ASSET_ID = "asset_CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const ACTION_1 = "018f0000-0000-7000-8000-000000000101";
 const ACTION_2 = "018f0000-0000-7000-8000-000000000102";
 
@@ -55,6 +59,45 @@ function stamp(id = RECTANGLE_ID) {
     transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
     geometry: { x: 40, y: 50, size: 72, stamp: "heart" as const },
   };
+}
+
+function image(id = RECTANGLE_ID) {
+  return {
+    id,
+    kind: "image" as const,
+    style: { kind: "image" as const, opacity: 1, radius: 12 },
+    transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+    geometry: {
+      x: 10,
+      y: 20,
+      width: 240,
+      height: 160,
+      assetId: ASSET_ID,
+      alt: "Cell diagram",
+      mimeType: "image/png" as const,
+      intrinsicWidth: 1200,
+      intrinsicHeight: 800,
+    },
+  };
+}
+
+function corruptImageEffect(
+  effects: readonly ItemEffect[],
+  stateKey: "before" | "after",
+  change: Partial<
+    Pick<ImageGeometry, "assetId" | "mimeType" | "intrinsicWidth" | "intrinsicHeight">
+  >,
+): ItemEffect[] {
+  const corrupted = structuredClone(effects) as ItemEffect[];
+  const logicalState = corrupted[0]?.[stateKey];
+  if (logicalState?.exists !== true || logicalState.item.kind !== "image") {
+    throw new Error(`Expected ${stateKey} image effect state`);
+  }
+  logicalState.item.geometry = {
+    ...logicalState.item.geometry,
+    ...change,
+  };
+  return corrupted;
 }
 
 describe("normal board reductions", () => {
@@ -419,6 +462,191 @@ describe("normal board reductions", () => {
           patch: { geometry: { x: 1, y: 2, text: "wrong geometry" } },
         },
         { seq: 2, actorId: ALICE },
+      ),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_FRAME" }));
+  });
+
+  it("persists image cards while keeping uploaded asset metadata immutable", () => {
+    const created = applyDurableOperation(
+      createBoardState(),
+      { kind: "item.create", item: image() },
+      { seq: 1, actorId: ALICE },
+    );
+    const updated = applyDurableOperation(
+      created.state,
+      {
+        kind: "item.update",
+        itemId: RECTANGLE_ID,
+        expectedVersion: 1,
+        patch: {
+          style: { kind: "image", opacity: 0.8, radius: 18 },
+          geometry: {
+            ...image().geometry,
+            x: 30,
+            y: 40,
+            width: 300,
+            height: 200,
+            alt: "Labeled cell diagram",
+          },
+        },
+      },
+      { seq: 2, actorId: ALICE },
+    );
+    const stored = updated.state.items.get(RECTANGLE_ID)?.item;
+    expect(stored).toMatchObject({
+      kind: "image",
+      version: 2,
+      style: { kind: "image", opacity: 0.8, radius: 18 },
+      geometry: {
+        x: 30,
+        y: 40,
+        width: 300,
+        height: 200,
+        assetId: ASSET_ID,
+        alt: "Labeled cell diagram",
+        mimeType: "image/png",
+        intrinsicWidth: 1200,
+        intrinsicHeight: 800,
+      },
+    });
+
+    const undone = applyUndoEffects(updated.state, updated.effects, {
+      seq: 3,
+      targetActionId: ACTION_2,
+    });
+    expect(undone.state.items.get(RECTANGLE_ID)?.item).toMatchObject({
+      kind: "image",
+      version: 3,
+      style: { opacity: 1, radius: 12 },
+      geometry: {
+        assetId: ASSET_ID,
+        alt: "Cell diagram",
+        mimeType: "image/png",
+        intrinsicWidth: 1200,
+        intrinsicHeight: 800,
+      },
+    });
+    const redone = applyRedoEffects(undone.state, updated.effects, {
+      seq: 4,
+      targetActionId: ACTION_2,
+    });
+    expect(redone.state.items.get(RECTANGLE_ID)?.item).toMatchObject({
+      kind: "image",
+      version: 4,
+      geometry: { assetId: ASSET_ID, alt: "Labeled cell diagram" },
+    });
+
+    if (stored === undefined) throw new Error("Expected stored image fixture");
+    const cloned = cloneBoardItem(stored);
+    cloned.transform[4] = 999;
+    cloned.style = { kind: "image", opacity: 0.5, radius: 4 };
+    expect(updated.state.items.get(RECTANGLE_ID)?.item).toMatchObject({
+      transform: [1, 0, 0, 1, 0, 0],
+      style: { opacity: 0.8, radius: 18 },
+    });
+
+    const snapshot = JSON.parse(
+      serializeCanonicalSnapshot({
+        boardId: "018f0000-0000-7000-8000-0000000000ff",
+        seq: 2,
+        createdAt: 1_785_840_000_000,
+        settings: { title: "Image source analysis" },
+        items: liveItemsInPaintOrder(updated.state),
+      }),
+    ) as { items: unknown[] };
+    expect(snapshot.items).toEqual([
+      expect.objectContaining({
+        kind: "image",
+        style: { kind: "image", opacity: 0.8, radius: 18 },
+        geometry: {
+          x: 30,
+          y: 40,
+          width: 300,
+          height: 200,
+          assetId: ASSET_ID,
+          alt: "Labeled cell diagram",
+          mimeType: "image/png",
+          intrinsicWidth: 1200,
+          intrinsicHeight: 800,
+        },
+      }),
+    ]);
+    expect(JSON.stringify(snapshot)).not.toMatch(/data:image|base64|https?:\/\//u);
+
+    const copied = applyDurableOperation(
+      updated.state,
+      {
+        kind: "item.copy",
+        sourceItemId: RECTANGLE_ID,
+        expectedVersion: 2,
+        newItemId: COPY_ID,
+        translate: { x: 15, y: -10 },
+      },
+      { seq: 3, actorId: BOB },
+    );
+    expect(copied.state.items.get(COPY_ID)?.item).toMatchObject({
+      kind: "image",
+      createdBy: BOB,
+      transform: [1, 0, 0, 1, 15, -10],
+      geometry: { assetId: ASSET_ID, mimeType: "image/png" },
+    });
+
+    const immutableChanges = [
+      { assetId: OTHER_ASSET_ID },
+      { mimeType: "image/webp" as const },
+      { intrinsicWidth: 1199 },
+      { intrinsicHeight: 799 },
+    ];
+    for (const change of immutableChanges) {
+      expect(() =>
+        applyDurableOperation(
+          updated.state,
+          {
+            kind: "item.update",
+            itemId: RECTANGLE_ID,
+            expectedVersion: 2,
+            patch: { geometry: { ...image().geometry, ...change } },
+          },
+          { seq: 3, actorId: ALICE },
+        ),
+      ).toThrowError(expect.objectContaining({ code: "INVALID_FRAME" }));
+
+      expect(() =>
+        applyUndoEffects(updated.state, corruptImageEffect(updated.effects, "before", change), {
+          seq: 3,
+          targetActionId: ACTION_2,
+        }),
+      ).toThrowError(expect.objectContaining({ code: "INVALID_FRAME" }));
+      expect(() =>
+        applyRedoEffects(undone.state, corruptImageEffect(updated.effects, "after", change), {
+          seq: 4,
+          targetActionId: ACTION_2,
+        }),
+      ).toThrowError(expect.objectContaining({ code: "INVALID_FRAME" }));
+    }
+
+    const consistentlyCorruptedEffects = corruptImageEffect(
+      corruptImageEffect(updated.effects, "before", { assetId: OTHER_ASSET_ID }),
+      "after",
+      { assetId: OTHER_ASSET_ID },
+    );
+    expect(() =>
+      applyUndoEffects(updated.state, consistentlyCorruptedEffects, {
+        seq: 3,
+        targetActionId: ACTION_2,
+      }),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_FRAME" }));
+
+    expect(() =>
+      applyDurableOperation(
+        updated.state,
+        {
+          kind: "item.update",
+          itemId: RECTANGLE_ID,
+          expectedVersion: 2,
+          patch: { style: { kind: "stroke", color: "#123456", width: 2, opacity: 1 } },
+        },
+        { seq: 3, actorId: ALICE },
       ),
     ).toThrowError(expect.objectContaining({ code: "INVALID_FRAME" }));
   });

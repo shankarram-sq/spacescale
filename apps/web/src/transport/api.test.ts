@@ -277,3 +277,50 @@ describe("classroom embed session", () => {
     ]);
   });
 });
+
+describe("board image assets", () => {
+  it("uploads raw image bytes with CSRF and fetches authenticated Blob bytes", async () => {
+    const requests: CapturedRequest[] = [];
+    const assetId = `asset_${"d".repeat(43)}`;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+        requests.push({ path: String(input), init });
+        if (requests.length === 1) return Response.json({ csrfToken: "csrf-token" });
+        if (requests.length === 2) {
+          return Response.json({
+            assetId,
+            mimeType: "image/png",
+            intrinsicWidth: 640,
+            intrinsicHeight: 480,
+            sizeBytes: 4,
+          });
+        }
+        return new Response(new Uint8Array([1, 2, 3, 4]), {
+          headers: { "Content-Type": "image/png" },
+        });
+      }),
+    );
+
+    const api = new ApiClient(false);
+    await api.ensureSession();
+    const image = new Blob([new Uint8Array([1, 2, 3, 4])], { type: "image/png" });
+    await expect(api.uploadBoardImage("b_1234567890123456789012", image)).resolves.toEqual({
+      assetId,
+      mimeType: "image/png",
+      intrinsicWidth: 640,
+      intrinsicHeight: 480,
+      sizeBytes: 4,
+    });
+    const loaded = await api.boardImage("b_1234567890123456789012", assetId);
+
+    expect(loaded.type).toBe("image/png");
+    expect(requests[1]?.path).toBe("/api/v1/boards/b_1234567890123456789012/assets");
+    expect(requests[1]?.init.body).toBe(image);
+    expect(new Headers(requests[1]?.init.headers).get("content-type")).toBe("image/png");
+    expect(new Headers(requests[1]?.init.headers).get("x-csrf-token")).toBe("csrf-token");
+    expect(requests[2]?.path).toBe(`/api/v1/boards/b_1234567890123456789012/assets/${assetId}`);
+    expect(new Headers(requests[2]?.init.headers).get("accept")).toBe("image/*");
+    expect(requests[2]?.init.credentials).toBe("same-origin");
+  });
+});

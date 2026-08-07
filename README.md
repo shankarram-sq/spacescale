@@ -31,6 +31,18 @@ Stamps are durable board items too: every participant sees them in real time,
 and they support selection, movement, copy/delete, undo/redo, offline recovery,
 snapshots, and JSON/SVG export.
 
+Owners can also enable private **Image cards** for a board. Editors then upload,
+paste, or drop PNG, JPEG, WebP, and static GIF images; the browser removes photo
+metadata before upload and the Worker validates the decoded format, dimensions,
+content hash, role, lock state, and per-board quotas. Only immutable asset
+metadata enters board actions and snapshots. Raw bytes stay in the private
+`BOARD_ASSETS` R2 binding and are fetched through authenticated board URLs.
+
+Image cards use contain sizing, loading/error fallbacks, editable alt text, and
+the same selection, movement, copy/delete, persistence, and real-time controls
+as other items. Safe SVG export uses a placeholder rather than leaking a private
+asset URL or identifier.
+
 ## Local development
 
 Requirements: Node.js 22.19 or newer. Local development uses Miniflare-backed
@@ -65,6 +77,10 @@ npm run build
 npm run check
 ```
 
+Run the focused checks relevant to a change during normal development. The full
+`npm run check` and Playwright suites are available on demand and are not release
+gates.
+
 ## Cloudflare setup
 
 Cloudflare credentials are needed only for provisioning, validating, or deploying
@@ -78,7 +94,7 @@ encrypted secrets or the Cloudflare deployment API.
 
 | Name | Purpose and acquisition |
 | --- | --- |
-| `R2_BUCKET_NAME` | Private checkpoint/export bucket. Use a stable environment-specific name. `npm run cf:bootstrap` creates it; no R2 S3 key is needed. |
+| `R2_BUCKET_NAME` | Private checkpoint/export bucket. Use the committed environment-specific name. `npm run cf:bootstrap` creates it together with the separate private image bucket; no R2 S3 key is needed. |
 | `TURNSTILE_SITE_KEY` | Production public site key from **Cloudflare Dashboard → Turnstile → widget → Site Key**. It may be exposed to the browser. Staging deliberately omits it because Turnstile is disabled there for browser automation. |
 | `SESSION_SIGNING_KEY_CURRENT` | Secret HMAC key for device sessions. Generate independently per environment with `openssl rand -base64 32`. |
 | `SESSION_SIGNING_KEY_PREVIOUS` | Optional prior session key, accepted only during rotation. Leave empty on a new installation. |
@@ -105,10 +121,10 @@ account permissions when using `workers.dev` or a Worker Custom Domain. Add a
 TTL and client-IP restriction when CI has stable egress. Review the policy,
 create the token, copy it once, and store it only in the local/CI secret store.
 
-After the bucket exists, remove R2 Storage access and use a steady-state CI
-deployment token with only **Workers Scripts: Edit** scoped to the one account.
-Runtime R2 access comes from the private `BOARD_SNAPSHOTS` binding, not an API
-or S3 credential.
+Automatic deployment verifies or provisions both buckets on every run, so its
+environment token keeps both permissions. Runtime object access comes from the
+private `BOARD_SNAPSHOTS` and `BOARD_ASSETS` bindings, not an API or S3
+credential.
 
 Cloudflare does not support managing Turnstile widgets with account-owned API
 tokens. Create the production widget in the dashboard, or use a short-lived
@@ -128,17 +144,17 @@ Siteverify; tokens are single use and never reach a board Durable Object.
 
 The committed public deployment contract is:
 
-| Environment | Hostname | Private R2 bucket | Turnstile |
-| --- | --- | --- | --- |
-| Development | `localhost` | `cloudflare-collab-canvas-dev-snapshots` | Disabled; Cloudflare test site key only |
-| Staging | `staging-cloud-collab.spacescale.net` | `staging-cloud-collab` | Disabled deliberately for Playwright and 20-client automation |
-| Production | `spacescale.net` | `collab-canvas-snapshots` | Required; dedicated production widget |
+| Environment | Hostname | Snapshot bucket | Image bucket | Turnstile |
+| --- | --- | --- | --- | --- |
+| Development | `localhost` | `cloudflare-collab-canvas-dev-snapshots` | `cloudflare-collab-canvas-dev-assets` | Disabled |
+| Staging | `staging-cloud-collab.spacescale.net` | `staging-cloud-collab` | `staging-cloud-collab-assets` | Disabled for browser automation |
+| Production | `spacescale.net` | `collab-canvas-snapshots` | `collab-canvas-assets` | Required; dedicated production widget |
 
 Production and staging are separate Worker Custom Domains with `workers_dev`
 disabled, so neither deployment can silently fall back to an unintended
 hostname. Staging uses an isolated Worker, Durable Object namespace, R2 bucket,
 and signing keys. It has no Turnstile site key or secret: the deployment fixes
-`TURNSTILE_ENABLED=false` so Playwright and the short 20-client load test can
+`TURNSTILE_ENABLED=false` so Playwright and AI-driven browser checks can
 exercise capability flows without interactive challenges. Never put production
 data or credentials in this automation-only environment.
 
@@ -171,11 +187,11 @@ Provision an environment idempotently:
 npm run cf:bootstrap -- --env production
 ```
 
-The command reads `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` only from
-the process environment (the npm script loads ignored `.env` when present),
-verifies the committed environment/bucket configuration, creates the bucket
-only when absent, and emits a machine-readable result without secrets. Reruns
-against a correctly configured bucket succeed without mutation.
+The command reads `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` from the
+process environment (the npm script loads ignored `.env` when present), verifies
+the committed configuration, creates both private buckets only when absent, and
+emits a machine-readable result without secrets. Reruns against correctly
+configured buckets succeed without mutation.
 
 To deploy only after successful provisioning:
 
@@ -189,13 +205,14 @@ does not need a GitHub deployment API token. The exact dashboard settings,
 staging separation, and rollout tradeoffs are documented in
 [docs/deployment-ci.md](docs/deployment-ci.md#cloudflare-workers-builds).
 
-The retained GitHub Actions path treats branches as release environments. A
-push to `staging` can upload and promote only an isolated staging Worker
-version, then run the 20-client smoke test. A successful run records a trusted
-`cloudflare/staging` status on that exact commit. Production starts from `main`
-only when its SHA is still the current `staging` tip and carries that successful
-attestation. Promote by fast-forwarding `main` to the already-tested staging
-commit; do not create a merge or squash commit after staging validation.
+The retained GitHub Actions path is deliberately direct. A push to `staging` or
+`main` checks out that exact SHA, idempotently creates or reuses both private R2
+buckets, builds the web assets, uploads a Worker version, deploys it at 100%, and
+makes a small five-attempt health probe. It does not wait for CI, require an
+attestation or approval, stage a candidate, run load/browser suites, or automate
+rollback. Focused development checks are the normal promotion criterion; moving
+the same SHA through `staging` and then `main` is recommended but not enforced.
+Full CI and Playwright are manual-only.
 
 Install runtime secrets before the first production request:
 
@@ -236,7 +253,7 @@ Browser (TypeScript + SVG)
                          ├─ creation/claim abuse controls
                          └─ BoardRoom Durable Object per board
                               ├─ authoritative SQLite state/actions/ACL
-                              └─ immutable R2 recovery snapshots/exports
+                              └─ private R2 recovery snapshots and image assets
 ```
 
 The BoardRoom's private SQLite database is the sole authority for whether a
@@ -245,9 +262,9 @@ R2 availability. The gateway applies bounded creation and claim buckets.
 Production capability-issuing flows require action-bound Turnstile; development
 and the isolated automation-only staging environment deliberately disable it.
 
-See [docs/operations.md](docs/operations.md) for deployment, rollback,
-recovery, quotas, and incident procedures. GitHub environment, exact-commit
-staging gate, approval, candidate-smoke, and rollback setup is in
+See [docs/operations.md](docs/operations.md) for deployment, recovery, quotas,
+and incident procedures. GitHub environment settings, bucket provisioning, and
+the lightweight release flow are in
 [docs/deployment-ci.md](docs/deployment-ci.md).
 
 Trusted-backend signing, iframe setup, live coach controls, co-owners, and the

@@ -51,7 +51,10 @@ export default {
       response = errorResponse(error, requestId);
     }
     const secured = withSecurityHeaders(response, request, env, requestId);
-    if (new URL(request.url).pathname.startsWith("/api/")) {
+    if (
+      new URL(request.url).pathname.startsWith("/api/") &&
+      !secured.headers.get("cache-control")?.includes("no-store")
+    ) {
       secured.headers.set("Cache-Control", "no-store");
     }
     safeLog("info", "http.request_completed", {
@@ -310,6 +313,7 @@ type ClassroomLaunchResponse = {
     title: string;
     accessMode: "private" | "link_view";
     drawingPolicy: "editors_enabled" | "owner_only" | "locked";
+    imagesEnabled: boolean;
     aclVersion: number;
   };
   actor: {
@@ -335,6 +339,7 @@ function parseClassroomLaunchResponse(
     (board.drawingPolicy !== "editors_enabled" &&
       board.drawingPolicy !== "owner_only" &&
       board.drawingPolicy !== "locked") ||
+    typeof board.imagesEnabled !== "boolean" ||
     !Number.isSafeInteger(board.aclVersion) ||
     (board.aclVersion as number) < 1 ||
     actor.id !== launch.actorId ||
@@ -351,6 +356,7 @@ function parseClassroomLaunchResponse(
       title,
       accessMode: board.accessMode,
       drawingPolicy: board.drawingPolicy,
+      imagesEnabled: board.imagesEnabled,
       aclVersion: board.aclVersion as number,
     },
     actor: { id: launch.actorId, role: actor.role, displayName },

@@ -14,6 +14,7 @@ export type ToolName =
   | "text"
   | "sticky"
   | "stamp"
+  | "image"
   | "eraser"
   | "pan";
 
@@ -50,7 +51,13 @@ export type StampStyle = {
   opacity: number;
 };
 
-export type ItemStyle = StrokeStyle | TextStyle | StickyStyle | StampStyle;
+export type ImageStyle = {
+  kind: "image";
+  opacity: number;
+  radius: number;
+};
+
+export type ItemStyle = StrokeStyle | TextStyle | StickyStyle | StampStyle | ImageStyle;
 export type PencilGeometry = { points: Point[] };
 export type LineGeometry = { x1: number; y1: number; x2: number; y2: number };
 export type BoxGeometry = { x: number; y: number; width: number; height: number };
@@ -63,6 +70,18 @@ export type StickyGeometry = {
   text: string;
 };
 export type StampGeometry = { x: number; y: number; size: number; stamp: StampKind };
+
+export type ImageGeometry = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  assetId: string;
+  alt?: string;
+  mimeType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+  intrinsicWidth: number;
+  intrinsicHeight: number;
+};
 
 type ItemBase = {
   id: string;
@@ -107,6 +126,11 @@ export type StampItem = ItemBase & {
   style: StampStyle;
   geometry: StampGeometry;
 };
+export type ImageItem = ItemBase & {
+  kind: "image";
+  style: ImageStyle;
+  geometry: ImageGeometry;
+};
 export type BoardItem =
   | PencilItem
   | LineItem
@@ -114,7 +138,8 @@ export type BoardItem =
   | EllipseItem
   | TextItem
   | StickyItem
-  | StampItem;
+  | StampItem
+  | ImageItem;
 
 type WithoutServerFields<T> = T extends BoardItem ? Omit<T, "z" | "version" | "createdBy"> : never;
 export type NewBoardItem = WithoutServerFields<BoardItem>;
@@ -127,7 +152,8 @@ export type ItemPatch = {
     | BoxGeometry
     | TextGeometry
     | StickyGeometry
-    | StampGeometry;
+    | StampGeometry
+    | ImageGeometry;
 };
 
 export type BatchItemOperation =
@@ -195,6 +221,7 @@ export type Bootstrap = {
     title: string;
     accessMode: AccessMode;
     drawingPolicy: DrawingPolicy;
+    imagesEnabled: boolean;
     aclVersion: number;
     latestSeq: number;
     snapshotSeq: number;
@@ -274,7 +301,9 @@ export function isBoardItem(value: unknown): value is BoardItem {
   return (
     typeof item.id === "string" &&
     typeof item.kind === "string" &&
-    ["pencil", "line", "rectangle", "ellipse", "text", "sticky", "stamp"].includes(item.kind) &&
+    ["pencil", "line", "rectangle", "ellipse", "text", "sticky", "stamp", "image"].includes(
+      item.kind,
+    ) &&
     typeof item.z === "number" &&
     typeof item.version === "number" &&
     Array.isArray(item.transform) &&

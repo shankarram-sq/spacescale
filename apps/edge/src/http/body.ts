@@ -29,7 +29,10 @@ export async function readJsonBody(
   return value;
 }
 
-async function readBoundedBytes(request: Request, maximumBytes: number): Promise<Uint8Array> {
+export async function readBoundedBytes(
+  request: Request,
+  maximumBytes: number,
+): Promise<Uint8Array> {
   if (request.body === null) return new Uint8Array();
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];

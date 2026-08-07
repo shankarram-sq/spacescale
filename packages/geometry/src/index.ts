@@ -4,6 +4,12 @@ export const TRANSFORM_LINEAR_COMPONENT_LIMIT = COORDINATE_LIMIT;
 export const WORLD_COORDINATE_LIMIT = DIMENSION_LIMIT;
 export const MAX_PENCIL_POINTS = 10_000;
 export const MIN_PENCIL_POINTS = 2;
+export const IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
+export const MAX_IMAGE_ALT_CODE_POINTS = 500;
+export const MAX_IMAGE_INTRINSIC_DIMENSION = 4_096;
+export const MAX_IMAGE_INTRINSIC_PIXELS = 16_000_000;
+
+const IMAGE_ASSET_ID_PATTERN = /^asset_[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u;
 
 export type Point = [number, number];
 export type Transform = [number, number, number, number, number, number];
@@ -36,6 +42,16 @@ export interface StickyGeometry extends BoxGeometry {
   text: string;
 }
 
+export type ImageMimeType = (typeof IMAGE_MIME_TYPES)[number];
+
+export interface ImageGeometry extends BoxGeometry {
+  assetId: string;
+  alt?: string;
+  mimeType: ImageMimeType;
+  intrinsicWidth: number;
+  intrinsicHeight: number;
+}
+
 export const STAMP_KINDS = ["star", "check", "heart", "question", "smile", "sparkle"] as const;
 export type StampKind = (typeof STAMP_KINDS)[number];
 
@@ -52,6 +68,7 @@ export type ItemGeometry =
   | BoxGeometry
   | TextGeometry
   | StickyGeometry
+  | ImageGeometry
   | StampGeometry;
 
 export type GeometryKind =
@@ -61,6 +78,7 @@ export type GeometryKind =
   | "ellipse"
   | "text"
   | "sticky"
+  | "image"
   | "stamp";
 
 export interface Bounds {
@@ -78,6 +96,7 @@ export interface BoundsItem {
     | { kind: "stroke"; width: number }
     | { kind: "text"; fontSize: number }
     | { kind: "sticky"; fontSize: number }
+    | { kind: "image" }
     | { kind: "stamp" };
 }
 
@@ -308,6 +327,141 @@ export function normalizeStickyGeometry(value: unknown, path = "$geometry"): Sti
   return { ...box, text: object.text };
 }
 
+export function isCanonicalImageAssetId(value: unknown): value is string {
+  return typeof value === "string" && IMAGE_ASSET_ID_PATTERN.test(value);
+}
+
+function normalizeImageAlt(value: unknown, path: string): string | undefined {
+  if (value === undefined || value === "") return undefined;
+  if (typeof value !== "string") {
+    throw new GeometryValidationError("Expected image alt text to be a string", path);
+  }
+  let count = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const first = value.charCodeAt(index);
+    let codePoint = first;
+    if (first >= 0xd800 && first <= 0xdbff) {
+      const second = value.charCodeAt(index + 1);
+      if (!Number.isInteger(second) || second < 0xdc00 || second > 0xdfff) {
+        throw new GeometryValidationError("Image alt text contains an unpaired surrogate", path);
+      }
+      codePoint = (first - 0xd800) * 0x400 + second - 0xdc00 + 0x10000;
+      index += 1;
+    } else if (first >= 0xdc00 && first <= 0xdfff) {
+      throw new GeometryValidationError("Image alt text contains an unpaired surrogate", path);
+    }
+    const validXmlCodePoint =
+      codePoint === 0x9 ||
+      codePoint === 0xa ||
+      codePoint === 0xd ||
+      (codePoint >= 0x20 && codePoint <= 0x7e) ||
+      (codePoint >= 0xa0 && codePoint <= 0xd7ff) ||
+      (codePoint >= 0xe000 && codePoint <= 0xfffd) ||
+      (codePoint >= 0x10000 && codePoint <= 0x10ffff);
+    if (!validXmlCodePoint) {
+      throw new GeometryValidationError(
+        "Image alt text contains a disallowed control character",
+        path,
+      );
+    }
+    count += 1;
+    if (count > MAX_IMAGE_ALT_CODE_POINTS) {
+      throw new GeometryValidationError(
+        `Image alt text may contain at most ${MAX_IMAGE_ALT_CODE_POINTS} Unicode code points`,
+        path,
+      );
+    }
+  }
+  return value;
+}
+
+function normalizeIntrinsicDimension(value: unknown, path: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1) {
+    throw new GeometryValidationError("Expected a positive integer image dimension", path);
+  }
+  if ((value as number) > MAX_IMAGE_INTRINSIC_DIMENSION) {
+    throw new GeometryValidationError(
+      `Image dimension must be at most ${MAX_IMAGE_INTRINSIC_DIMENSION} pixels`,
+      path,
+    );
+  }
+  return value as number;
+}
+
+export function normalizeImageGeometry(value: unknown, path = "$geometry"): ImageGeometry {
+  const object = expectRecord(value, path);
+  const required = [
+    "x",
+    "y",
+    "width",
+    "height",
+    "assetId",
+    "mimeType",
+    "intrinsicWidth",
+    "intrinsicHeight",
+  ] as const;
+  const allowed = new Set<string>([...required, "alt"]);
+  for (const key of Object.keys(object)) {
+    if (!allowed.has(key)) {
+      throw new GeometryValidationError(`Unknown field ${JSON.stringify(key)}`, `${path}.${key}`);
+    }
+  }
+  for (const key of required) {
+    if (!own.call(object, key)) {
+      throw new GeometryValidationError(`Missing field ${JSON.stringify(key)}`, `${path}.${key}`);
+    }
+  }
+
+  const box = normalizeBoxGeometry(
+    { x: object.x, y: object.y, width: object.width, height: object.height },
+    path,
+  );
+  if (box.width === 0) {
+    throw new GeometryValidationError("Image width must be greater than 0", `${path}.width`);
+  }
+  if (box.height === 0) {
+    throw new GeometryValidationError("Image height must be greater than 0", `${path}.height`);
+  }
+  if (!isCanonicalImageAssetId(object.assetId)) {
+    throw new GeometryValidationError(
+      "Expected asset_ followed by a canonical 43-character base64url SHA-256 digest",
+      `${path}.assetId`,
+    );
+  }
+  if (
+    typeof object.mimeType !== "string" ||
+    !IMAGE_MIME_TYPES.includes(object.mimeType as ImageMimeType)
+  ) {
+    throw new GeometryValidationError(
+      `Image MIME type must be one of ${IMAGE_MIME_TYPES.map((mimeType) => JSON.stringify(mimeType)).join(", ")}`,
+      `${path}.mimeType`,
+    );
+  }
+  const intrinsicWidth = normalizeIntrinsicDimension(
+    object.intrinsicWidth,
+    `${path}.intrinsicWidth`,
+  );
+  const intrinsicHeight = normalizeIntrinsicDimension(
+    object.intrinsicHeight,
+    `${path}.intrinsicHeight`,
+  );
+  if (intrinsicWidth * intrinsicHeight > MAX_IMAGE_INTRINSIC_PIXELS) {
+    throw new GeometryValidationError(
+      `Image dimensions may contain at most ${MAX_IMAGE_INTRINSIC_PIXELS} pixels`,
+      path,
+    );
+  }
+  const alt = own.call(object, "alt") ? normalizeImageAlt(object.alt, `${path}.alt`) : undefined;
+  return {
+    ...box,
+    assetId: object.assetId,
+    ...(alt === undefined ? {} : { alt }),
+    mimeType: object.mimeType as ImageMimeType,
+    intrinsicWidth,
+    intrinsicHeight,
+  };
+}
+
 export function normalizeStampGeometry(value: unknown, path = "$geometry"): StampGeometry {
   const object = expectRecord(value, path);
   expectOnlyKeys(object, ["x", "y", "size", "stamp"], path);
@@ -340,6 +494,7 @@ export function normalizeGeometry(
 ): BoxGeometry;
 export function normalizeGeometry(kind: "text", value: unknown, path?: string): TextGeometry;
 export function normalizeGeometry(kind: "sticky", value: unknown, path?: string): StickyGeometry;
+export function normalizeGeometry(kind: "image", value: unknown, path?: string): ImageGeometry;
 export function normalizeGeometry(kind: "stamp", value: unknown, path?: string): StampGeometry;
 export function normalizeGeometry(kind: GeometryKind, value: unknown, path?: string): ItemGeometry;
 export function normalizeGeometry(
@@ -359,6 +514,8 @@ export function normalizeGeometry(
       return normalizeTextGeometry(value, path);
     case "sticky":
       return normalizeStickyGeometry(value, path);
+    case "image":
+      return normalizeImageGeometry(value, path);
     case "stamp":
       return normalizeStampGeometry(value, path);
   }
@@ -369,6 +526,7 @@ export function inferAndNormalizeGeometry(value: unknown, path = "$geometry"): I
   if (own.call(object, "points")) return normalizePencilGeometry(object, path);
   if (own.call(object, "x1")) return normalizeLineGeometry(object, path);
   if (own.call(object, "stamp")) return normalizeStampGeometry(object, path);
+  if (own.call(object, "assetId")) return normalizeImageGeometry(object, path);
   if (own.call(object, "width") && own.call(object, "text")) {
     return normalizeStickyGeometry(object, path);
   }
@@ -440,7 +598,8 @@ export function geometryBounds(
     }
     case "rectangle":
     case "ellipse":
-    case "sticky": {
+    case "sticky":
+    case "image": {
       const box = geometry as BoxGeometry;
       return {
         minX: box.x,
@@ -472,6 +631,25 @@ export function geometryBounds(
       };
     }
   }
+}
+
+export function imageGeometryContainsPoint(
+  geometry: ImageGeometry,
+  point: Point,
+  padding = 0,
+): boolean {
+  if (!Number.isFinite(padding) || padding < 0) {
+    throw new GeometryValidationError(
+      "Image hit-test padding must be a finite non-negative number",
+      "$padding",
+    );
+  }
+  return (
+    point[0] >= geometry.x - padding &&
+    point[0] <= geometry.x + geometry.width + padding &&
+    point[1] >= geometry.y - padding &&
+    point[1] <= geometry.y + geometry.height + padding
+  );
 }
 
 function maximumLinearScale(transform: Transform): number {

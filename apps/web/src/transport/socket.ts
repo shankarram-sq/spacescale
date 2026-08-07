@@ -15,6 +15,7 @@ import { PROTOCOL_VERSION } from "../types";
 type WelcomeState = {
   role: Role;
   drawingPolicy: DrawingPolicy;
+  imagesEnabled: boolean;
   aclVersion: number;
   historyVersion: number;
   sessionExpiresAt: number;
@@ -489,6 +490,7 @@ function welcomeState(frame: ServerFrame): WelcomeState | null {
   if (
     (role !== "viewer" && role !== "editor" && role !== "owner") ||
     (policy !== "editors_enabled" && policy !== "owner_only" && policy !== "locked") ||
+    typeof frame.imagesEnabled !== "boolean" ||
     aclVersion === null ||
     historyVersion === null ||
     sessionExpiresAt === null
@@ -498,6 +500,7 @@ function welcomeState(frame: ServerFrame): WelcomeState | null {
   return {
     role,
     drawingPolicy: policy,
+    imagesEnabled: frame.imagesEnabled,
     aclVersion,
     historyVersion,
     sessionExpiresAt,

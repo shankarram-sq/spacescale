@@ -5,6 +5,7 @@ import {
   boardState,
   createCommitFrame,
   FIXTURE_IDS,
+  newImageItem,
   newPencilItem,
   newRectangleItem,
   newStampItem,
@@ -21,6 +22,9 @@ describe("deterministic shared fixtures", () => {
     );
     expect(validateClientFrame(createCommitFrame(newStampItem()))).toEqual(
       createCommitFrame(newStampItem()),
+    );
+    expect(validateClientFrame(createCommitFrame(newImageItem()))).toEqual(
+      createCommitFrame(newImageItem()),
     );
   });
 

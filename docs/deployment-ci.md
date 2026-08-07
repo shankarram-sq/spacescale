@@ -1,212 +1,111 @@
-# Deployment setup
+# Deployment and CI
 
-The project retains GitHub Actions as the protected release path. Cloudflare
-Workers Builds is also supported as an alternative direct Git deployment path,
-but do not enable both paths for the same Worker at the same time.
+This repository intentionally uses a lightweight release flow while the product
+has no production consumers. A working development build may be promoted; broad
+validation is available on demand and is not a deployment gate.
 
-## Cloudflare Workers Builds
+## Workflows
 
-[Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) can
-connect a Worker to GitHub, pull each selected commit, run the test suite, and
-deploy without a GitHub Actions deployment token. If this path is enabled
-later, connect the production Worker in **Worker → Settings → Builds** with:
+`.github/workflows/ci.yml` is manual-only through `workflow_dispatch`. When
+explicitly started it runs the full repository check, verifies generated Worker
+binding types, and runs Playwright. Pull requests and branch pushes do not wait
+for this workflow.
 
-| Setting | Production value |
-| --- | --- |
-| Worker | `cloudflare-collab-canvas` |
-| Root directory | `/` |
-| Production branch | `main` |
-| Build variable | `NODE_VERSION=22.19.0` |
-| Build command | `npm run check` |
-| Deploy command | `npx --no-install wrangler deploy` |
+`.github/workflows/deploy.yml` runs directly on pushes to:
 
-Connect the `staging` branch only to the separate
-`cloudflare-collab-canvas-staging` Worker and use
-`npx --no-install wrangler deploy --env staging`. Its public hostname is
-`staging-cloud-collab.spacescale.net`, and its private R2 bucket is
-`staging-cloud-collab`. Do not connect either branch to both Workers or use a
-production preview branch as staging; previews would share production Durable
-Object and R2 bindings.
+- `staging`, targeting `staging-cloud-collab.spacescale.net`
+- `main`, targeting `spacescale.net`
 
-Store application secrets in **Worker → Settings → Variables & Secrets**, not
-in the Builds secret store. Build variables and secrets exist only while the
-repository is building and are not runtime bindings. Install these encrypted
-runtime secrets:
+Each job:
 
-| Worker | Runtime secrets |
-| --- | --- |
-| Staging | `SESSION_SIGNING_KEY_CURRENT`, optional `SESSION_SIGNING_KEY_PREVIOUS`, and `CLASSROOM_INTEGRATION_KEY` |
-| Production | The same three environment-specific keys plus `TURNSTILE_SECRET_KEY` |
+1. checks out the pushed `${{ github.sha }}`;
+2. installs the pinned dependencies;
+3. verifies the environment-scoped Cloudflare credentials;
+4. idempotently creates or reuses the snapshot and private image R2 buckets;
+5. builds the web assets;
+6. uploads a Worker version;
+7. deploys that version directly at 100%; and
+8. makes up to five small `/healthz` requests that check only `ok` and the
+   service identity.
 
-Set `ALLOWED_ORIGINS` as a dashboard-managed plain runtime variable on each
-Worker. Set the production `TURNSTILE_SITE_KEY` there as well. Staging has no
-Turnstile key or secret because its committed configuration disables Turnstile.
-Missing or blank `ALLOWED_ORIGINS` denies iframe parents; `*` deliberately
-permits every parent. The committed `keep_vars` setting prevents Wrangler from
-deleting dashboard-managed plain variables. Encrypted Worker secrets survive
-Wrangler deployments independently of `keep_vars`.
+The deployment workflow does not depend on CI, exact-SHA attestations,
+approvals, candidate traffic, browser or load suites, convergence loops,
+automated rollback, or a schema-compatibility gate. Fix forward and redeploy if
+a release has a defect. Because these are new, unused deployments, resetting an
+unused environment is also acceptable when faster than repairing its data.
 
-Production uploads intentionally omit `--strict` while plain runtime variables
-are supplied outside `wrangler.jsonc` and Custom Domain API records contain
-remote-only metadata. Wrangler compares the file-based configuration before it
-merges the environment-scoped command-line variables, so those safe differences
-appear as destructive drift. The protected workflow instead uploads without
-traffic, reads the new version back from Cloudflare, and verifies its exact
-bindings, public values, compatibility settings, R2 bucket, and retained
-Durable Object namespace before attaching it at 0%. Use strict mode only after
-moving all configuration ownership into Wrangler and testing that ownership
-model.
-
-A plain `wrangler deploy` immediately moves live traffic to the new version.
-Cloudflare-native builds do not reproduce the protected workflow's exact-commit
-staging gate, 20-client remote smoke, GitHub production approval,
-version-override probes, or automatic rollback. Keep the GitHub browser job if
-full Playwright coverage is required, because `npm run check` does not include
-`npm run test:e2e`.
-
-Enable and verify a Cloudflare Git connection before disabling
-`.github/workflows/deploy.yml`. Once enabled, disable one deployment path to
-prevent duplicate deployments. See Cloudflare's documentation for
-[build configuration](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/),
-[runtime secrets](https://developers.cloudflare.com/workers/configuration/secrets/),
-and [`keep_vars`](https://developers.cloudflare.com/workers/wrangler/configuration/#source-of-truth).
-
-## GitHub Actions deployment
-
-The `Deploy` workflow consumes successful push-triggered `CI` runs from two
-release branches, with deliberately separate authority:
-
-- `staging` can upload and promote a version only on
-  `cloudflare-collab-canvas-staging`, then probes
-  `staging-cloud-collab.spacescale.net` and runs the short 20-client load test.
-- After those checks, staging writes a `cloudflare/staging` commit-status
-  attestation to the exact validated SHA. `main` can enter the production gate
-  only when its SHA is still the current `staging` tip and the latest trusted
-  attestation for that SHA is successful. The production GitHub environment
-  must then be approved before any production candidate is uploaded.
-
-The production gate resolves the attestation's exact numeric Actions run URL
-through GitHub's API. It verifies the run is a completed, successful `Deploy`
-workflow for the same repository and SHA, then verifies that run contains one
-successful exact-SHA **Staging deploy and 20-client smoke** job. It does not
-depend on the commit-status `creator` field, which GitHub may return as null for
-statuses written with a workflow `GITHUB_TOKEN`.
-
-The staging workflow uses `wrangler versions upload` followed by
-`wrangler versions deploy ...@100`. These commands update code and traffic but
-do not reconcile routes, so the ongoing staging token needs no Zone Workers
-Routes permission. Provision and attach the Worker Custom Domain once before
-enabling CI. The staging deployment never modifies the production Worker,
-Durable Object namespace, R2 bucket, secrets, custom domain, or traffic. The
-production path does not redeploy staging; it verifies the prior exact-SHA
-attestation.
-
-Release an unchanged commit in this order:
-
-1. Push the candidate commit to `staging`.
-2. Wait for both `CI` and **Staging deploy and 20-client smoke** to succeed,
-   including the successful `cloudflare/staging` status on that SHA.
-3. Fast-forward `main` to that exact commit and push `main`.
-4. Wait for `CI`; confirm **Verify exact commit passed staging** accepts the
-   current staging tip and its trusted commit-status attestation.
-5. Approve the `production` environment and monitor candidate probes and
-   promotion.
-
-A merge commit, squash commit, amended commit, or any additional change after
-step 2 has a different SHA and must pass staging again. The workflow also
-rejects stale runs if either release branch advances while a delivery is
-queued.
-
-GitHub loads a `workflow_run` workflow from the repository's default branch.
-When introducing or changing this release controller, first land the final
-`.github/workflows/deploy.yml` on `main` without promoting application code.
-Its production gate fails closed until an exact candidate has subsequently
-passed the `staging` branch and published the attestation above.
+Moving the same commit from `development` to `staging` and then `main` is
+recommended for traceability, but the workflow does not enforce that order.
 
 ## GitHub environments
 
-Create `staging` and `production` GitHub environments. Credentials are
-environment-scoped and may use distinct Cloudflare account IDs and API tokens:
+Create `staging` and `production` GitHub environments. They may point to
+different Cloudflare accounts and should use distinct credentials.
 
-| Environment | Kind | Name | Required value |
+| Environment | Kind | Name | Value |
 | --- | --- | --- | --- |
-| Staging | Secret | `CLOUDFLARE_ACCOUNT_ID` | Account containing the isolated staging Worker and `staging-cloud-collab` bucket. |
-| Staging | Secret | `CLOUDFLARE_API_TOKEN` | Token scoped to that account with Workers Scripts: Edit (`Workers Scripts Write`). |
-| Staging | Variable (optional) | `ALLOWED_ORIGINS` | Exact comma-separated iframe origins; blank denies all and `*` allows all. |
-| Production | Secret | `CLOUDFLARE_ACCOUNT_ID` | Account containing the production Worker. |
-| Production | Secret | `CLOUDFLARE_API_TOKEN` | Token scoped to that account with Workers Scripts: Edit (`Workers Scripts Write`). |
-| Production | Variable | `TURNSTILE_SITE_KEY` | Public key of the dedicated real production widget; test keys are rejected. |
-| Production | Variable (optional) | `ALLOWED_ORIGINS` | Exact comma-separated iframe origins; blank denies all and `*` allows all. |
+| Staging | Secret | `CLOUDFLARE_ACCOUNT_ID` | Account containing the isolated staging Worker and buckets. |
+| Staging | Secret | `CLOUDFLARE_API_TOKEN` | Staging account token. |
+| Staging | Variable | `ALLOWED_ORIGINS` | Comma-separated iframe origins; blank denies all and `*` allows all. |
+| Production | Secret | `CLOUDFLARE_ACCOUNT_ID` | Account containing the production Worker and buckets. |
+| Production | Secret | `CLOUDFLARE_API_TOKEN` | Production account token. |
+| Production | Variable | `TURNSTILE_SITE_KEY` | Public key for the production Turnstile widget. |
+| Production | Variable | `ALLOWED_ORIGINS` | Comma-separated iframe origins; blank denies all and `*` allows all. |
 
-Add at least one required reviewer to the `production` environment. Approval
-authorizes the production job and confirms that the candidate can still read
-every additive Durable Object/SQLite migration if rollback is needed. Do not
-approve a release containing a destructive or backward-incompatible storage
-migration. The `staging` environment must not require production approval.
+Because every deployment verifies or provisions both R2 buckets, each API token
+needs these account permissions:
 
-Pre-provision the private R2 buckets. Install distinct Worker runtime secrets
-before enabling delivery:
+- **Workers Scripts: Edit**
+- **Workers R2 Storage: Edit**
 
-| Worker | Required encrypted runtime secrets |
+Correct existing private buckets are reused without mutation. Bucket bootstrap
+also rejects a bucket with an enabled `r2.dev` or custom public domain.
+
+Install encrypted Worker runtime secrets separately from GitHub deployment
+credentials:
+
+| Worker | Required runtime secrets |
 | --- | --- |
-| Staging | `SESSION_SIGNING_KEY_CURRENT` and `CLASSROOM_INTEGRATION_KEY` |
-| Production | `SESSION_SIGNING_KEY_CURRENT`, `CLASSROOM_INTEGRATION_KEY`, and `TURNSTILE_SECRET_KEY` |
+| Staging | `SESSION_SIGNING_KEY_CURRENT`, `CLASSROOM_INTEGRATION_KEY` |
+| Production | `SESSION_SIGNING_KEY_CURRENT`, `CLASSROOM_INTEGRATION_KEY`, `TURNSTILE_SECRET_KEY` |
 
-`SESSION_SIGNING_KEY_PREVIOUS` is optional on either Worker during a controlled
-rotation. Never share session or classroom signing keys between staging and
-production. After the buckets, Workers, and Custom Domains are provisioned, the
-CI tokens do not need R2, Turnstile administration, Zone, DNS, Routes, Tail, or
-Observability permissions. Runtime R2 access comes from the private binding;
-staging version upload/deploy intentionally leaves its pre-attached custom
-domain unchanged.
+`SESSION_SIGNING_KEY_PREVIOUS` is optional during a controlled session-key
+rotation. Never share session or classroom integration keys across environments.
 
-## Automation-only staging security
+## Environment isolation
 
-Staging deliberately fixes `TURNSTILE_ENABLED=false` in both committed
-configuration and the deployment command. It needs no Turnstile widget, site
-key, Siteverify secret, reusable test token, or token broker. This allows
-Playwright and AI-driven browser runs to exercise board creation and capability
-claims, and lets the delivery workflow run its 20-client smoke test without an
-interactive challenge.
+The committed deployment contract is:
 
-Treat `staging-cloud-collab.spacescale.net` as a public, lower-trust test
-surface. Use only disposable test boards, isolated Durable Objects and R2 data,
-and staging-only signing keys. Never connect a production classroom backend or
-copy production board data into staging. Production independently fixes
-`TURNSTILE_ENABLED=true`, requires a real `TURNSTILE_SITE_KEY`, and verifies
-requests with the installed `TURNSTILE_SECRET_KEY`.
+| Environment | Hostname | Snapshot bucket | Image bucket | Turnstile |
+| --- | --- | --- | --- | --- |
+| Development | `localhost` | `cloudflare-collab-canvas-dev-snapshots` | `cloudflare-collab-canvas-dev-assets` | Disabled |
+| Staging | `staging-cloud-collab.spacescale.net` | `staging-cloud-collab` | `staging-cloud-collab-assets` | Disabled |
+| Production | `spacescale.net` | `collab-canvas-snapshots` | `collab-canvas-assets` | Enabled |
 
-## Production promotion and rollback
+Staging is deliberately automation-friendly. It has no Turnstile challenge so
+Playwright and AI-driven testing can create disposable boards. Keep it isolated
+from production data, signing keys, Durable Objects, and R2 buckets.
 
-The workflow requires one existing production deployment at 100% before it can
-capture a rollback target. For the first installation, an operator must
-provision the production bucket and runtime secrets, run the documented
-production bootstrap/deploy once, and verify `/healthz`. A missing deployment
-or an existing traffic split fails closed; the workflow does not guess a
-rollback version.
+Production requires both `TURNSTILE_SITE_KEY` at deployment and
+`TURNSTILE_SECRET_KEY` at runtime. Configure both from the same widget and allow
+`spacescale.net` on that widget.
 
-Production upload uses the repository-pinned Wrangler 4.118.0 and sends no
-custom-domain traffic to the candidate. It then creates a two-version
-deployment with the prior version at 100% and candidate at 0%. Read-only
-health, HTML, and every referenced content-hashed asset are fetched through
-`spacescale.net` with:
+## Normal release
 
-```text
-Cloudflare-Workers-Version-Overrides: cloudflare-collab-canvas="candidate-version-id"
+Run only the focused development checks appropriate to the change, then push:
+
+```sh
+git push origin development
+git push origin development:staging
+git push origin development:main
 ```
 
-`/healthz` must report that exact candidate version from the version-metadata
-binding. Only then is the candidate promoted atomically to 100%; unpinned live
-health and Static Assets are checked again.
+The final two pushes trigger their environment deployments. A full validation
+run can be dispatched manually whenever requested.
 
-Percentage splitting is intentionally disabled for now. Vite HTML and its
-content-hashed asset requests can otherwise reach different Worker versions
-and produce a 404. A multi-step percentage rollout may replace the 0%-to-100%
-promotion only after an operator configures and verifies version affinity for
-all HTML and asset requests.
+## Cloudflare Workers Builds
 
-The previous version ID and exact rollback command are retained for 90 days as
-a workflow artifact. Any failure after the 0% deployment attempts to restore
-the previous version to 100%. If automation cannot do so, use the command in
-the job summary after confirming the retained code is still storage-schema
-compatible.
+Workers Builds may pull the repository and deploy with secrets stored at the
+Worker level. It remains an optional alternative. Do not enable it for a Worker
+that is also targeted by the GitHub deployment workflow, or both systems may
+race to deploy different commits.
