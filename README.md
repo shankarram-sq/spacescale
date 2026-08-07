@@ -73,6 +73,10 @@ on shapes, sticky notes, tables, image cards, and zones. V1 stores the snapped
 coordinates as ordinary line geometry, so moving the target later does not move
 the connector automatically.
 
+AI assistance remains unimplemented and disabled. Any future classroom AI
+feature must pass the [classroom AI safety and implementation
+gate](docs/classroom-ai-safety.md) before code or rollout.
+
 ## Local development
 
 Requirements: Node.js 22.19 or newer. Local development uses Miniflare-backed
