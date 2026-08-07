@@ -5,6 +5,7 @@ import type {
   NewBoardItem,
   ServerActionFrame,
   StrokeStyle,
+  TableStyle,
   TextStyle,
 } from "@collab/protocol";
 
@@ -25,6 +26,7 @@ export const FIXTURE_IDS = {
   sticky: "018f0000-0000-7000-8000-000000000007",
   stamp: "018f0000-0000-7000-8000-000000000008",
   image: "018f0000-0000-7000-8000-000000000009",
+  table: "018f0000-0000-7000-8000-00000000000a",
   asset: "asset_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 } as const;
 
@@ -45,6 +47,19 @@ export function textStyle(overrides: Partial<TextStyle> = {}): TextStyle {
     kind: "text",
     color: "#112233",
     fontSize: 24,
+    opacity: 1,
+    ...overrides,
+  };
+}
+
+export function tableStyle(overrides: Partial<TableStyle> = {}): TableStyle {
+  return {
+    kind: "table",
+    borderColor: "#94a3b8",
+    fill: "#ffffff",
+    headerFill: "#e2e8f0",
+    textColor: "#0f172a",
+    fontSize: 16,
     opacity: 1,
     ...overrides,
   };
@@ -133,6 +148,28 @@ export function newImageItem(overrides: Partial<NewBoardItem> = {}): NewBoardIte
       mimeType: "image/png",
       intrinsicWidth: 1200,
       intrinsicHeight: 800,
+    },
+    ...overrides,
+  } as NewBoardItem;
+}
+
+export function newTableItem(overrides: Partial<NewBoardItem> = {}): NewBoardItem {
+  return {
+    id: FIXTURE_IDS.table,
+    kind: "table",
+    style: tableStyle(),
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: {
+      x: 10,
+      y: 20,
+      columnWidths: [120, 120, 120],
+      rowHeights: [48, 48, 48],
+      cells: [
+        ["Term", "Meaning", "Example"],
+        ["", "", ""],
+        ["", "", ""],
+      ],
+      headerRow: true,
     },
     ...overrides,
   } as NewBoardItem;

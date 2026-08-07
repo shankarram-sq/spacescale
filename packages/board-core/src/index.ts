@@ -111,6 +111,14 @@ function cloneGeometry(geometry: ItemGeometry): ItemGeometry {
   if ("points" in geometry) {
     return { points: geometry.points.map(([x, y]) => [x, y]) };
   }
+  if ("cells" in geometry) {
+    return {
+      ...geometry,
+      columnWidths: [...geometry.columnWidths],
+      rowHeights: [...geometry.rowHeights],
+      cells: geometry.cells.map((row) => [...row]),
+    };
+  }
   return { ...geometry };
 }
 
@@ -246,15 +254,27 @@ function geometryMatchesKind(item: BoardItem, geometry: ItemGeometry): boolean {
       return "x1" in geometry;
     case "rectangle":
     case "ellipse":
-      return "width" in geometry && !("text" in geometry) && !("assetId" in geometry);
+      return (
+        "width" in geometry &&
+        !("text" in geometry) &&
+        !("assetId" in geometry) &&
+        !("cells" in geometry)
+      );
     case "text":
       return "text" in geometry && !("width" in geometry);
     case "sticky":
-      return "width" in geometry && "text" in geometry && !("assetId" in geometry);
+      return (
+        "width" in geometry &&
+        "text" in geometry &&
+        !("assetId" in geometry) &&
+        !("cells" in geometry)
+      );
     case "image":
       return "assetId" in geometry;
     case "stamp":
       return "stamp" in geometry;
+    case "table":
+      return "cells" in geometry;
   }
 }
 
@@ -269,7 +289,9 @@ function validatePatchForItem(item: BoardItem, patch: ItemPatch): void {
             ? "image"
             : item.kind === "stamp"
               ? "stamp"
-              : "stroke";
+              : item.kind === "table"
+                ? "table"
+                : "stroke";
     if (patch.style.kind !== expectedKind) {
       coreFail("INVALID_FRAME", `The patch style does not match the stored ${item.kind} item.`);
     }
@@ -963,11 +985,21 @@ function canonicalItem(item: BoardItem): BoardItem {
                 opacity: normalized.style.opacity,
                 radius: normalized.style.radius,
               }
-            : {
-                kind: "stamp" as const,
-                color: normalized.style.color,
-                opacity: normalized.style.opacity,
-              };
+            : normalized.style.kind === "stamp"
+              ? {
+                  kind: "stamp" as const,
+                  color: normalized.style.color,
+                  opacity: normalized.style.opacity,
+                }
+              : {
+                  kind: "table" as const,
+                  borderColor: normalized.style.borderColor,
+                  fill: normalized.style.fill,
+                  headerFill: normalized.style.headerFill,
+                  textColor: normalized.style.textColor,
+                  fontSize: normalized.style.fontSize,
+                  opacity: normalized.style.opacity,
+                };
   const geometry =
     normalized.kind === "pencil"
       ? { points: normalized.geometry.points.map(([x, y]) => [x, y] as [number, number]) }
@@ -1009,12 +1041,23 @@ function canonicalItem(item: BoardItem): BoardItem {
                     size: normalized.geometry.size,
                     stamp: normalized.geometry.stamp,
                   }
-                : {
-                    x: normalized.geometry.x,
-                    y: normalized.geometry.y,
-                    width: normalized.geometry.width,
-                    height: normalized.geometry.height,
-                  };
+                : normalized.kind === "table"
+                  ? {
+                      x: normalized.geometry.x,
+                      y: normalized.geometry.y,
+                      columnWidths: [...normalized.geometry.columnWidths],
+                      rowHeights: [...normalized.geometry.rowHeights],
+                      cells: normalized.geometry.cells.map((row) => [...row]),
+                      ...(normalized.geometry.headerRow === undefined
+                        ? {}
+                        : { headerRow: normalized.geometry.headerRow }),
+                    }
+                  : {
+                      x: normalized.geometry.x,
+                      y: normalized.geometry.y,
+                      width: normalized.geometry.width,
+                      height: normalized.geometry.height,
+                    };
   return {
     id: normalized.id,
     kind: normalized.kind,

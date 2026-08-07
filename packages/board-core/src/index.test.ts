@@ -81,6 +81,35 @@ function image(id = RECTANGLE_ID) {
   };
 }
 
+function table(id = RECTANGLE_ID) {
+  return {
+    id,
+    kind: "table" as const,
+    style: {
+      kind: "table" as const,
+      borderColor: "#94a3b8",
+      fill: "#ffffff",
+      headerFill: "#e2e8f0",
+      textColor: "#0f172a",
+      fontSize: 16,
+      opacity: 1,
+    },
+    transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+    geometry: {
+      x: 10,
+      y: 20,
+      columnWidths: [120, 120, 120],
+      rowHeights: [48, 48, 48],
+      cells: [
+        ["Term", "Meaning", "Example"],
+        ["Atom", "Small unit", "Carbon"],
+        ["", "", ""],
+      ],
+      headerRow: true,
+    },
+  };
+}
+
 function corruptImageEffect(
   effects: readonly ItemEffect[],
   stateKey: "before" | "after",
@@ -460,6 +489,156 @@ describe("normal board reductions", () => {
           itemId: RECTANGLE_ID,
           expectedVersion: 1,
           patch: { geometry: { x: 1, y: 2, text: "wrong geometry" } },
+        },
+        { seq: 2, actorId: ALICE },
+      ),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_FRAME" }));
+  });
+
+  it("persists, clones, copies, snapshots, and restores whole table grids", () => {
+    const created = applyDurableOperation(
+      createBoardState(),
+      { kind: "item.create", item: table() },
+      { seq: 1, actorId: ALICE },
+    );
+    const revisedGeometry = {
+      ...table().geometry,
+      cells: [
+        ["Word", "Definition", "Example"],
+        ["Atom", "Small unit of matter", "Carbon"],
+        ["Molecule", "Two or more atoms", "Water"],
+      ],
+    };
+    const updated = applyDurableOperation(
+      created.state,
+      {
+        kind: "item.update",
+        itemId: RECTANGLE_ID,
+        expectedVersion: 1,
+        patch: {
+          style: {
+            ...table().style,
+            headerFill: "#dbeafe",
+            opacity: 0.9,
+          },
+          geometry: revisedGeometry,
+        },
+      },
+      { seq: 2, actorId: ALICE },
+    );
+    const stored = updated.state.items.get(RECTANGLE_ID)?.item;
+    expect(stored).toMatchObject({
+      kind: "table",
+      version: 2,
+      style: { kind: "table", headerFill: "#dbeafe", opacity: 0.9 },
+      geometry: { headerRow: true, cells: revisedGeometry.cells },
+    });
+    if (stored?.kind !== "table") throw new Error("Expected stored table fixture");
+    const cloned = cloneBoardItem(stored);
+    if (cloned.kind !== "table") throw new Error("Expected cloned table fixture");
+    cloned.geometry.columnWidths[0] = 999;
+    cloned.geometry.rowHeights[0] = 999;
+    const firstClonedRow = cloned.geometry.cells[0];
+    if (firstClonedRow === undefined) throw new Error("Expected cloned table row");
+    firstClonedRow[0] = "Mutated";
+    expect(updated.state.items.get(RECTANGLE_ID)?.item).toMatchObject({
+      geometry: {
+        columnWidths: [120, 120, 120],
+        rowHeights: [48, 48, 48],
+        cells: revisedGeometry.cells,
+      },
+    });
+
+    const copied = applyDurableOperation(
+      updated.state,
+      {
+        kind: "item.copy",
+        sourceItemId: RECTANGLE_ID,
+        expectedVersion: 2,
+        newItemId: COPY_ID,
+        translate: { x: 25, y: -10 },
+      },
+      { seq: 3, actorId: BOB },
+    );
+    expect(copied.state.items.get(COPY_ID)?.item).toMatchObject({
+      kind: "table",
+      createdBy: BOB,
+      transform: [1, 0, 0, 1, 25, -10],
+      geometry: { cells: revisedGeometry.cells },
+    });
+
+    const undone = applyUndoEffects(updated.state, updated.effects, {
+      seq: 3,
+      targetActionId: ACTION_2,
+    });
+    expect(undone.state.items.get(RECTANGLE_ID)?.item).toMatchObject({
+      kind: "table",
+      version: 3,
+      style: { headerFill: "#e2e8f0", opacity: 1 },
+      geometry: { cells: table().geometry.cells },
+    });
+    const redone = applyRedoEffects(undone.state, updated.effects, {
+      seq: 4,
+      targetActionId: ACTION_2,
+    });
+    expect(redone.state.items.get(RECTANGLE_ID)?.item).toMatchObject({
+      kind: "table",
+      version: 4,
+      geometry: { cells: revisedGeometry.cells },
+    });
+
+    const snapshot = JSON.parse(
+      serializeCanonicalSnapshot({
+        boardId: "018f0000-0000-7000-8000-0000000000ff",
+        seq: 2,
+        createdAt: 1_785_840_000_000,
+        settings: { title: "Vocabulary grid" },
+        items: liveItemsInPaintOrder(updated.state),
+      }),
+    ) as { items: unknown[] };
+    expect(snapshot.items).toEqual([
+      expect.objectContaining({
+        kind: "table",
+        style: {
+          kind: "table",
+          borderColor: "#94a3b8",
+          fill: "#ffffff",
+          headerFill: "#dbeafe",
+          textColor: "#0f172a",
+          fontSize: 16,
+          opacity: 0.9,
+        },
+        geometry: {
+          x: 10,
+          y: 20,
+          columnWidths: [120, 120, 120],
+          rowHeights: [48, 48, 48],
+          cells: revisedGeometry.cells,
+          headerRow: true,
+        },
+      }),
+    ]);
+
+    expect(() =>
+      applyDurableOperation(
+        created.state,
+        {
+          kind: "item.update",
+          itemId: RECTANGLE_ID,
+          expectedVersion: 1,
+          patch: { style: { kind: "stamp", color: "#123456", opacity: 1 } },
+        },
+        { seq: 2, actorId: ALICE },
+      ),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_FRAME" }));
+    expect(() =>
+      applyDurableOperation(
+        created.state,
+        {
+          kind: "item.update",
+          itemId: RECTANGLE_ID,
+          expectedVersion: 1,
+          patch: { geometry: { x: 0, y: 0, width: 100, height: 100 } },
         },
         { seq: 2, actorId: ALICE },
       ),

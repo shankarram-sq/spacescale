@@ -7,6 +7,8 @@ import {
   inferAndNormalizeGeometry,
   isCanonicalImageAssetId,
   type LineGeometry,
+  MAX_TABLE_COLUMNS,
+  MAX_TABLE_ROWS,
   normalizeCoordinate,
   normalizeGeometry,
   normalizePoint,
@@ -15,6 +17,7 @@ import {
   type Point,
   type StampGeometry,
   type StickyGeometry,
+  type TableGeometry,
   type TextGeometry,
   type Transform,
 } from "@collab/geometry";
@@ -32,6 +35,7 @@ export type {
   StampGeometry,
   StampKind,
   StickyGeometry,
+  TableGeometry,
   TextGeometry,
   Transform,
 } from "@collab/geometry";
@@ -40,6 +44,8 @@ export {
   MAX_IMAGE_ALT_CODE_POINTS,
   MAX_IMAGE_INTRINSIC_DIMENSION,
   MAX_IMAGE_INTRINSIC_PIXELS,
+  MAX_TABLE_COLUMNS,
+  MAX_TABLE_ROWS,
   STAMP_KINDS,
 } from "@collab/geometry";
 
@@ -55,6 +61,8 @@ export const MAX_PUBLIC_RESULT_BYTES = 512 * 1024;
 export const MAX_ACTION_PAYLOAD_BYTES = 1.5 * 1024 * 1024;
 export const MAX_SNAPSHOT_BYTES = 20 * 1024 * 1024;
 export const MAX_IMAGE_RADIUS = 256;
+export const MAX_TABLE_CELL_TEXT_CODE_POINTS = 500;
+export const MAX_TABLE_TEXT_CODE_POINTS = 8_000;
 
 export const ITEM_KINDS = [
   "pencil",
@@ -65,6 +73,7 @@ export const ITEM_KINDS = [
   "sticky",
   "image",
   "stamp",
+  "table",
 ] as const;
 export const BOARD_ROLES = ["viewer", "editor", "owner"] as const;
 export const DRAWING_POLICIES = ["editors_enabled", "owner_only", "locked"] as const;
@@ -125,7 +134,23 @@ export interface StampStyle {
   opacity: number;
 }
 
-export type ItemStyle = StrokeStyle | TextStyle | StickyStyle | ImageStyle | StampStyle;
+export interface TableStyle {
+  kind: "table";
+  borderColor: string;
+  fill: string;
+  headerFill: string;
+  textColor: string;
+  fontSize: number;
+  opacity: number;
+}
+
+export type ItemStyle =
+  | StrokeStyle
+  | TextStyle
+  | StickyStyle
+  | ImageStyle
+  | StampStyle
+  | TableStyle;
 
 interface BoardItemBase {
   id: string;
@@ -183,6 +208,12 @@ export interface StampItem extends BoardItemBase {
   geometry: StampGeometry;
 }
 
+export interface TableItem extends BoardItemBase {
+  kind: "table";
+  style: TableStyle;
+  geometry: TableGeometry;
+}
+
 export type BoardItem =
   | PencilItem
   | LineItem
@@ -191,7 +222,8 @@ export type BoardItem =
   | TextItem
   | StickyItem
   | ImageItem
-  | StampItem;
+  | StampItem
+  | TableItem;
 
 type WithoutServerFields<T> = T extends BoardItem ? Omit<T, "z" | "version" | "createdBy"> : never;
 
@@ -403,6 +435,7 @@ export const ACTIVE_TOOLS = [
   "sticky",
   "image",
   "stamp",
+  "table",
   "eraser",
   "select",
   "pan",
@@ -723,6 +756,33 @@ export function normalizeStampStyle(value: unknown, path = "$style"): StampStyle
   };
 }
 
+export function normalizeTableStyle(value: unknown, path = "$style"): TableStyle {
+  const object = expectRecord(value, path);
+  if (object.kind !== "table") fail('Expected style kind "table"', `${path}.kind`);
+  expectExactKeys(
+    object,
+    ["kind", "borderColor", "fill", "headerFill", "textColor", "fontSize", "opacity"],
+    [],
+    path,
+  );
+  if (typeof object.fontSize !== "number" || !Number.isFinite(object.fontSize)) {
+    fail("Font size must be a finite number", `${path}.fontSize`);
+  }
+  const fontSize = canonicalNumber(object.fontSize, 2);
+  if (fontSize < 8 || fontSize > 256) {
+    fail("Font size must be between 8 and 256", `${path}.fontSize`);
+  }
+  return {
+    kind: "table",
+    borderColor: normalizeColor(object.borderColor, `${path}.borderColor`),
+    fill: normalizeColor(object.fill, `${path}.fill`),
+    headerFill: normalizeColor(object.headerFill, `${path}.headerFill`),
+    textColor: normalizeColor(object.textColor, `${path}.textColor`),
+    fontSize,
+    opacity: normalizeOpacity(object.opacity, `${path}.opacity`),
+  };
+}
+
 export function normalizeItemStyle(value: unknown, path = "$style"): ItemStyle {
   const object = expectRecord(value, path);
   if (object.kind === "stroke") return normalizeStrokeStyle(object, path);
@@ -730,7 +790,11 @@ export function normalizeItemStyle(value: unknown, path = "$style"): ItemStyle {
   if (object.kind === "sticky") return normalizeStickyStyle(object, path);
   if (object.kind === "image") return normalizeImageStyle(object, path);
   if (object.kind === "stamp") return normalizeStampStyle(object, path);
-  fail('Style kind must be "stroke", "text", "sticky", "image", or "stamp"', `${path}.kind`);
+  if (object.kind === "table") return normalizeTableStyle(object, path);
+  fail(
+    'Style kind must be "stroke", "text", "sticky", "image", "stamp", or "table"',
+    `${path}.kind`,
+  );
 }
 
 function isValidXmlCodePoint(codePoint: number): boolean {
@@ -785,6 +849,42 @@ export function validateStickyText(value: unknown, path = "$text"): string {
   return validateText(value, path, MAX_STICKY_TEXT_CODE_POINTS, true, "Sticky text");
 }
 
+export function validateTableCellText(value: unknown, path = "$cell"): string {
+  return validateText(value, path, MAX_TABLE_CELL_TEXT_CODE_POINTS, true, "Table cell text");
+}
+
+export function validateTableCells(value: unknown, path = "$cells"): string[][] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_TABLE_ROWS) {
+    fail(`Table cells must contain between 1 and ${MAX_TABLE_ROWS} rows`, path);
+  }
+  let columnCount: number | undefined;
+  let totalCodePoints = 0;
+  return value.map((rawRow, rowIndex) => {
+    if (!Array.isArray(rawRow) || rawRow.length < 1 || rawRow.length > MAX_TABLE_COLUMNS) {
+      fail(
+        `Every table row must contain between 1 and ${MAX_TABLE_COLUMNS} cells`,
+        `${path}[${rowIndex}]`,
+      );
+    }
+    if (columnCount === undefined) columnCount = rawRow.length;
+    if (rawRow.length !== columnCount) {
+      fail("Table cells must form a rectangular grid", `${path}[${rowIndex}]`);
+    }
+    return rawRow.map((rawCell, columnIndex) => {
+      const cellPath = `${path}[${rowIndex}][${columnIndex}]`;
+      const cell = validateTableCellText(rawCell, cellPath);
+      totalCodePoints += Array.from(cell).length;
+      if (totalCodePoints > MAX_TABLE_TEXT_CODE_POINTS) {
+        fail(
+          `Table text may contain at most ${MAX_TABLE_TEXT_CODE_POINTS} Unicode code points in total`,
+          cellPath,
+        );
+      }
+      return cell;
+    });
+  });
+}
+
 function normalizeGeometryForItem(kind: ItemKind, value: unknown, path: string): ItemGeometry {
   const geometry = fromGeometry(() => normalizeGeometry(kind, value, path));
   if (kind === "text") {
@@ -804,6 +904,10 @@ function normalizeGeometryForItem(kind: ItemKind, value: unknown, path: string):
     assertCanonicalAssetId(image.assetId, `${path}.assetId`);
     return image;
   }
+  if (kind === "table") {
+    const table = geometry as TableGeometry;
+    return { ...table, cells: validateTableCells(table.cells, `${path}.cells`) };
+  }
   return geometry;
 }
 
@@ -812,6 +916,7 @@ function normalizeStyleForKind(kind: ItemKind, value: unknown, path: string): It
   if (kind === "sticky") return normalizeStickyStyle(value, path);
   if (kind === "image") return normalizeImageStyle(value, path);
   if (kind === "stamp") return normalizeStampStyle(value, path);
+  if (kind === "table") return normalizeTableStyle(value, path);
   return normalizeStrokeStyle(value, path);
 }
 
@@ -874,6 +979,12 @@ export function normalizeItemPatch(value: unknown, path = "$patch"): ItemPatch {
           "width" in patch.geometry
             ? validateStickyText(patch.geometry.text, `${path}.geometry.text`)
             : validatePlainText(patch.geometry.text, `${path}.geometry.text`),
+      };
+    }
+    if ("cells" in patch.geometry) {
+      patch.geometry = {
+        ...patch.geometry,
+        cells: validateTableCells(patch.geometry.cells, `${path}.geometry.cells`),
       };
     }
   }

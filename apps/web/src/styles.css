@@ -408,6 +408,15 @@ button:disabled {
   font-size: 21px;
 }
 
+.tool-glyph-table {
+  color: #0d9488;
+  font-size: 21px;
+}
+
+.tool-rail button[aria-pressed="true"] .tool-glyph-table {
+  color: #fff;
+}
+
 .tool-rail button[aria-pressed="true"] .tool-glyph-image {
   color: #fff;
 }
@@ -476,7 +485,8 @@ button:disabled {
   cursor: text;
 }
 .board-canvas[data-tool="sticky"],
-.board-canvas[data-tool="stamp"] {
+.board-canvas[data-tool="stamp"],
+.board-canvas[data-tool="table"] {
   cursor: crosshair;
 }
 .board-canvas[data-tool="eraser"] {
@@ -561,6 +571,15 @@ button:disabled {
   stroke: rgb(195 61 54 / 45%);
 }
 
+.board-item-table .table-cell-text {
+  pointer-events: none;
+  user-select: none;
+}
+
+.board-item-table .table-cell-background {
+  shape-rendering: crispEdges;
+}
+
 .board-item.erase-target {
   opacity: 0.26;
   filter: drop-shadow(0 0 4px #e5484d);
@@ -616,6 +635,76 @@ button:disabled {
   font-size: 12px;
   pointer-events: none;
   box-shadow: 0 4px 16px rgb(42 41 36 / 5%);
+}
+
+.table-picker {
+  position: absolute;
+  z-index: 16;
+  top: 12px;
+  left: 12px;
+  width: min(260px, calc(100% - 24px));
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgb(255 255 255 / 96%);
+  box-shadow: 0 6px 22px rgb(35 34 30 / 12%);
+  backdrop-filter: blur(12px);
+}
+
+.table-picker > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.table-picker strong {
+  font-size: 13px;
+}
+
+.table-picker-note,
+.table-picker-field-label {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.table-picker-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.table-picker-fields label {
+  display: grid;
+  gap: 5px;
+}
+
+.table-picker select {
+  width: 100%;
+  height: 38px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fff;
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.table-header-toggle {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.table-header-toggle input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--blue);
 }
 
 .selection-actions,
@@ -1591,6 +1680,21 @@ button:disabled {
   box-shadow: 0 8px 24px rgb(66 52 25 / 18%);
 }
 
+.canvas-table-cell-editor {
+  position: fixed;
+  z-index: 90;
+  min-width: 0;
+  min-height: 72px;
+  padding: 9px 10px;
+  resize: none;
+  overflow: auto;
+  border: 2px solid var(--blue);
+  border-radius: 8px;
+  color: var(--ink);
+  line-height: 1.2;
+  box-shadow: 0 8px 24px rgb(41 50 91 / 18%);
+}
+
 .claim-dialog {
   width: min(490px, calc(100vw - 28px));
   padding: 30px;
@@ -2012,6 +2116,12 @@ button:disabled {
 
   .style-wrap {
     left: 58px;
+  }
+
+  .table-picker {
+    top: 8px;
+    left: 8px;
+    width: min(240px, calc(100% - 16px));
   }
 
   .zoom-controls {

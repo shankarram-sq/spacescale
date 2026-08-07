@@ -3,6 +3,7 @@ import {
   MAX_IMAGE_INTRINSIC_DIMENSION,
   MAX_IMAGE_INTRINSIC_PIXELS,
   MAX_STICKY_TEXT_CODE_POINTS,
+  MAX_TABLE_CELL_TEXT_CODE_POINTS,
   normalizeBoardItem,
   validateClientFrame,
   validateDurableOperation,
@@ -39,6 +40,7 @@ import type {
   DurableOperation,
   HistoryState,
   ImageGeometry,
+  Matrix,
   Member,
   Point,
   Presence,
@@ -46,6 +48,7 @@ import type {
   ServerAction,
   ServerFrame,
   StampKind,
+  TableGeometry,
   ToolName,
 } from "../types";
 import { canRoleDraw, createId, PROTOCOL_VERSION } from "../types";
@@ -61,6 +64,7 @@ const TOOL_DEFINITIONS: Array<{ name: ToolName; label: string; shortcut: string;
     { name: "sticky", label: "Sticky note", shortcut: "N", glyph: "▣" },
     { name: "stamp", label: "Stamp", shortcut: "K", glyph: "★" },
     { name: "image", label: "Add image", shortcut: "I", glyph: "▧" },
+    { name: "table", label: "Table", shortcut: "G", glyph: "▦" },
     { name: "eraser", label: "Eraser", shortcut: "E", glyph: "◇" },
     { name: "pan", label: "Pan canvas", shortcut: "H", glyph: "✋" },
   ];
@@ -74,6 +78,7 @@ const DRAW_TOOLS = new Set<ToolName>([
   "sticky",
   "stamp",
   "image",
+  "table",
   "eraser",
 ]);
 
@@ -89,6 +94,9 @@ type StyleState = {
   stampKind: StampKind;
   stampColor: string;
   stampOpacity: number;
+  tableRows: number;
+  tableColumns: number;
+  tableHeaderRow: boolean;
 };
 
 type StickyDraftRecovery = {
@@ -115,6 +123,23 @@ type ImageAltEdit = {
   itemId: string;
   expectedVersion: number;
   geometry: ImageGeometry;
+};
+
+type TableCellEdit = {
+  itemId: string;
+  expectedVersion: number;
+  geometry: TableGeometry;
+  row: number;
+  column: number;
+};
+
+type TableCellDraftRecovery = {
+  itemId: string;
+  row: number;
+  column: number;
+  text: string;
+  selectionStart: number;
+  selectionEnd: number;
 };
 
 export function imageUploadIssue(image: Pick<Blob, "size" | "type">): string | null {
@@ -176,6 +201,10 @@ export function clampImageAlt(value: string): string {
   return [...value].slice(0, MAX_IMAGE_ALT_CODE_POINTS).join("");
 }
 
+export function clampTableCellText(value: string): string {
+  return [...value].slice(0, MAX_TABLE_CELL_TEXT_CODE_POINTS).join("");
+}
+
 export const STICKY_COLORS = [
   { name: "Yellow", value: "#fde68a" },
   { name: "Pink", value: "#fecdd3" },
@@ -215,6 +244,9 @@ export class BoardApp {
     stampKind: "star",
     stampColor: "#e5484d",
     stampOpacity: 1,
+    tableRows: 3,
+    tableColumns: 3,
+    tableHeaderRow: false,
   };
   private readonly remotePreviews = new Map<string, RemotePreview>();
   private readonly presences = new Map<string, Presence>();
@@ -229,8 +261,12 @@ export class BoardApp {
   private textEditorCloseAttempt = 0;
   private imageUploadInFlight = false;
   private imageAltEdit: ImageAltEdit | null = null;
+  private tableCellEditor: HTMLTextAreaElement | null = null;
+  private tableCellEdit: TableCellEdit | null = null;
   private readonly pendingStickyDrafts = new Map<string, StickyDraftRecovery>();
   private readonly rejectedStickyDrafts: StickyDraftRecovery[] = [];
+  private readonly pendingTableCellDrafts = new Map<string, TableCellDraftRecovery>();
+  private readonly rejectedTableCellDrafts: TableCellDraftRecovery[] = [];
   private accessMembers: Member[] = [];
   private managedInvitations: ManagedInvitation[];
   private recoverySnapshots: RecoverySnapshot[] = [];
@@ -322,9 +358,11 @@ export class BoardApp {
       },
       editText: (point, item) => this.openTextEditor(point, item),
       editImageAlt: (item) => this.openImageAltEditor(item),
+      editTableCell: (item, row, column) => this.openTableCellEditor(item, row, column),
       onToolChanged: (tool) => {
         this.setActiveToolButton(tool);
         if (tool === "stamp") this.setStylePopoverOpen(true);
+        this.setTablePickerOpen(tool === "table");
         if (tool === "image") {
           this.setStylePopoverOpen(false);
           this.openImagePicker();
@@ -403,10 +441,13 @@ export class BoardApp {
     if (this.textEditorTimer !== null) window.clearTimeout(this.textEditorTimer);
     this.pendingStickyDrafts.clear();
     this.rejectedStickyDrafts.length = 0;
+    this.pendingTableCellDrafts.clear();
+    this.rejectedTableCellDrafts.length = 0;
     document.removeEventListener("paste", this.onImagePaste);
     this.renderer.svg.removeEventListener("dragover", this.onImageDragOver);
     this.renderer.svg.removeEventListener("drop", this.onImageDrop);
     this.closeImageAltEditor();
+    void this.closeTableCellEditor(false);
     void this.closeTextEditor(false);
     this.socket.destroy();
     this.tools.destroy();
@@ -464,6 +505,18 @@ export class BoardApp {
           <section class="canvas-wrap" data-canvas-host>
             <p class="sr-only" id="canvas-help">Use the tool rail to draw. Hold Space to pan. Scroll or pinch to zoom.</p>
             <div class="canvas-hint" data-canvas-hint aria-hidden="true">Drag anywhere to begin</div>
+            <section class="table-picker" data-testid="table-picker" aria-label="New table size" hidden>
+              <div><strong>New table</strong><span class="table-picker-note">Click the canvas to place it</span></div>
+              <div class="table-picker-fields">
+                <label><span class="table-picker-field-label">Columns</span><select data-table-columns aria-label="Table columns">
+                  <option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option>
+                </select></label>
+                <label><span class="table-picker-field-label">Rows</span><select data-table-rows aria-label="Table rows">
+                  <option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option>
+                </select></label>
+              </div>
+              <label class="table-header-toggle"><input type="checkbox" data-table-header /> <span>Header row</span></label>
+            </section>
             <div class="selection-actions" data-testid="selection-actions" hidden>
               <button type="button" data-selection-alt aria-label="Edit image alt text" hidden>Edit alt text</button>
               <button type="button" data-selection-copy aria-label="Copy selected items">Copy</button>
@@ -621,6 +674,18 @@ export class BoardApp {
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("button[data-tool]")) {
       button.addEventListener("click", () => this.activateTool(button.dataset.tool as ToolName));
     }
+    const tableColumns = query(this.root, "[data-table-columns]", HTMLSelectElement);
+    const tableRows = query(this.root, "[data-table-rows]", HTMLSelectElement);
+    const tableHeader = query(this.root, "[data-table-header]", HTMLInputElement);
+    tableColumns.addEventListener("change", () => {
+      this.style.tableColumns = Math.max(1, Math.min(6, Number(tableColumns.value)));
+    });
+    tableRows.addEventListener("change", () => {
+      this.style.tableRows = Math.max(1, Math.min(8, Number(tableRows.value)));
+    });
+    tableHeader.addEventListener("change", () => {
+      this.style.tableHeaderRow = tableHeader.checked;
+    });
     const toggleStyle = (): void =>
       this.togglePopover(
         this.stylePopover,
@@ -926,6 +991,7 @@ export class BoardApp {
       this.notify("Wait for the image to finish saving before editing alt text.", "info");
       return;
     }
+    void this.closeTableCellEditor(false);
     this.imageAltEdit = {
       itemId: item.id,
       expectedVersion: item.version,
@@ -966,6 +1032,137 @@ export class BoardApp {
     });
     submit.disabled = false;
     if (accepted) this.closeImageAltEditor();
+  }
+
+  private openTableCellEditor(
+    item: Extract<BoardItem, { kind: "table" }>,
+    row: number,
+    column: number,
+    recovery?: TableCellDraftRecovery,
+  ): void {
+    if (!this.canCommit()) {
+      this.notify("Drawing is read only.", "warning");
+      return;
+    }
+    if (item.version <= 0) {
+      this.notify("Wait for the table to finish saving before editing a cell.", "info");
+      return;
+    }
+    const bounds = tableCellLocalBounds(item.geometry, row, column);
+    if (!bounds) return;
+    void this.closeTextEditor(false);
+    void this.closeTableCellEditor(false);
+    this.tableCellEdit = {
+      itemId: item.id,
+      expectedVersion: item.version,
+      geometry: structuredClone(item.geometry),
+      row,
+      column,
+    };
+
+    const corners: Point[] = [
+      [bounds.minX, bounds.minY],
+      [bounds.maxX, bounds.minY],
+      [bounds.maxX, bounds.maxY],
+      [bounds.minX, bounds.maxY],
+    ];
+    const clientCorners = corners.map((point) =>
+      this.renderer.viewport.boardToClient(transformPoint(point, item.transform)),
+    );
+    const left = Math.min(...clientCorners.map((point) => point[0]));
+    const top = Math.min(...clientCorners.map((point) => point[1]));
+    const right = Math.max(...clientCorners.map((point) => point[0]));
+    const bottom = Math.max(...clientCorners.map((point) => point[1]));
+    const width = Math.min(Math.max(160, window.innerWidth - 16), Math.max(160, right - left));
+    const height = Math.min(Math.max(88, window.innerHeight - 68), Math.max(72, bottom - top));
+
+    const editor = document.createElement("textarea");
+    editor.className = "canvas-table-cell-editor";
+    editor.dataset.testid = "table-cell-editor";
+    editor.dataset.tableRow = String(row);
+    editor.dataset.tableColumn = String(column);
+    editor.setAttribute("aria-label", `Edit table cell, row ${row + 1}, column ${column + 1}`);
+    editor.maxLength = MAX_TABLE_CELL_TEXT_CODE_POINTS * 2;
+    editor.rows = 3;
+    editor.value = recovery?.text ?? item.geometry.cells[row]?.[column] ?? "";
+    editor.placeholder = "Type in this cell";
+    editor.style.left = `${Math.max(8, Math.min(window.innerWidth - width - 8, left))}px`;
+    editor.style.top = `${Math.max(60, Math.min(window.innerHeight - height - 8, top))}px`;
+    editor.style.width = `${width}px`;
+    editor.style.height = `${height}px`;
+    editor.style.fontSize = `${Math.max(14, Math.min(36, item.style.fontSize * this.renderer.viewport.zoom))}px`;
+    editor.style.color = item.style.textColor;
+    editor.style.background =
+      item.geometry.headerRow === true && row === 0 ? item.style.headerFill : item.style.fill;
+    document.body.append(editor);
+    this.tableCellEditor = editor;
+
+    editor.addEventListener("input", () => {
+      const value = clampTableCellText(editor.value);
+      if (value === editor.value) return;
+      const cursor = Math.min(value.length, editor.selectionStart);
+      editor.value = value;
+      editor.setSelectionRange(cursor, cursor);
+    });
+    editor.addEventListener("blur", () => void this.closeTableCellEditor(true));
+    editor.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        void this.closeTableCellEditor(false);
+      } else if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        void this.closeTableCellEditor(true);
+      }
+    });
+    editor.focus();
+    editor.setSelectionRange(
+      recovery?.selectionStart ?? editor.value.length,
+      recovery?.selectionEnd ?? editor.value.length,
+    );
+  }
+
+  private async closeTableCellEditor(save: boolean): Promise<void> {
+    const editor = this.tableCellEditor;
+    const edit = this.tableCellEdit;
+    if (!editor) return;
+    const text = clampTableCellText(editor.value);
+    const draft: TableCellDraftRecovery | null = edit
+      ? {
+          itemId: edit.itemId,
+          row: edit.row,
+          column: edit.column,
+          text,
+          selectionStart: editor.selectionStart,
+          selectionEnd: editor.selectionEnd,
+        }
+      : null;
+    this.tableCellEditor = null;
+    this.tableCellEdit = null;
+    editor.remove();
+    if (!save || !edit || !draft) {
+      this.scheduleRejectedDraftRestore();
+      return;
+    }
+    if (!this.canCommit()) {
+      this.recoverTableCellDraft(draft);
+      return;
+    }
+    const geometry = structuredClone(edit.geometry);
+    const row = geometry.cells[edit.row];
+    if (!row || edit.column < 0 || edit.column >= row.length) return;
+    row[edit.column] = text;
+    const accepted = await this.commit(
+      {
+        kind: "item.update",
+        itemId: edit.itemId,
+        expectedVersion: edit.expectedVersion,
+        patch: { geometry },
+      },
+      createId(),
+      (commandId) => this.pendingTableCellDrafts.set(commandId, draft),
+    );
+    if (!accepted) this.recoverTableCellDraft(draft);
+    else this.scheduleRejectedDraftRestore();
   }
 
   private async restoreOutbox(): Promise<void> {
@@ -1109,6 +1306,7 @@ export class BoardApp {
       );
       if (pending) {
         this.pendingStickyDrafts.delete(action.commandId);
+        this.pendingTableCellDrafts.delete(action.commandId);
         this.model.reject(action.commandId);
         void this.outbox.remove(this.bootstrap.board.id, this.bootstrap.actor.id, action.commandId);
         this.updateStatus();
@@ -1123,6 +1321,7 @@ export class BoardApp {
       this.bootstrap.board.latestSeq = action.seq;
       if (result.acknowledged) {
         this.pendingStickyDrafts.delete(action.commandId);
+        this.pendingTableCellDrafts.delete(action.commandId);
         void this.outbox.remove(this.bootstrap.board.id, this.bootstrap.actor.id, action.commandId);
       }
       if (!replay && action.actor.id !== this.bootstrap.actor.id) {
@@ -1143,6 +1342,7 @@ export class BoardApp {
     const commandId = typeof frame.commandId === "string" ? frame.commandId : null;
     const code = typeof frame.code === "string" ? frame.code : "REJECTED";
     let stickyDraft: StickyDraftRecovery | undefined;
+    let tableCellDraft: TableCellDraftRecovery | undefined;
     if (commandId) {
       const pendingCommand = this.model.pendingCommands.find(
         (command) => command.commandId === commandId,
@@ -1150,11 +1350,18 @@ export class BoardApp {
       stickyDraft =
         this.pendingStickyDrafts.get(commandId) ??
         (pendingCommand ? stickyDraftFromOperation(pendingCommand.op) : undefined);
+      tableCellDraft =
+        this.pendingTableCellDrafts.get(commandId) ??
+        (pendingCommand
+          ? tableCellDraftFromOperation(pendingCommand.op, this.model.authoritativeItems)
+          : undefined);
       this.pendingStickyDrafts.delete(commandId);
+      this.pendingTableCellDrafts.delete(commandId);
       this.model.reject(commandId);
       void this.outbox.remove(this.bootstrap.board.id, this.bootstrap.actor.id, commandId);
     }
     if (stickyDraft) this.recoverStickyDraft(stickyDraft);
+    if (tableCellDraft) this.recoverTableCellDraft(tableCellDraft);
     if (code === "STALE_HISTORY" && typeof frame.historyVersion === "number") {
       this.history = {
         historyVersion: frame.historyVersion,
@@ -1181,9 +1388,10 @@ export class BoardApp {
     const message =
       friendly[code] ??
       (typeof frame.message === "string" ? frame.message : "The edit was not saved.");
+    const retainedDraft = stickyDraft ? "sticky draft" : tableCellDraft ? "table cell draft" : null;
     this.notify(
-      stickyDraft
-        ? `${message} Your sticky draft was retained${this.canCommit() ? " and reopened" : " until editing is available"}.`
+      retainedDraft
+        ? `${message} Your ${retainedDraft} was retained${this.canCommit() ? " and reopened" : " until editing is available"}.`
         : message,
       code === "UNDO_EMPTY" || code === "REDO_EMPTY" ? "info" : "warning",
     );
@@ -1341,6 +1549,7 @@ export class BoardApp {
 
   private openTextEditor(point: Point, item?: BoardItem, recovery?: StickyDraftRecovery): void {
     if (!this.canCommit()) return;
+    void this.closeTableCellEditor(false);
     void this.closeTextEditor(false);
     const style = this.style;
     const textItem = item?.kind === "text" ? item : undefined;
@@ -1582,24 +1791,50 @@ export class BoardApp {
     this.textEditorTimer = null;
     editor.remove();
     this.renderer.clearLocalPreview();
-    if (this.rejectedStickyDrafts.length > 0) {
-      queueMicrotask(() => this.restoreNextStickyDraft());
-    }
+    this.scheduleRejectedDraftRestore();
   }
 
   private recoverStickyDraft(draft: StickyDraftRecovery): void {
     this.rejectedStickyDrafts.push(draft);
-    queueMicrotask(() => this.restoreNextStickyDraft());
+    this.scheduleRejectedDraftRestore();
   }
 
   private restoreNextStickyDraft(): void {
-    if (this.textEditor || !this.canCommit()) return;
+    if (this.textEditor || this.tableCellEditor || !this.canCommit()) return;
     const draft = this.rejectedStickyDrafts.shift();
     if (!draft) return;
     const latest = draft.itemId ? this.model.getItem(draft.itemId) : undefined;
     const sticky = latest?.kind === "sticky" ? latest : undefined;
     const point: Point = sticky ? [sticky.geometry.x, sticky.geometry.y] : draft.point;
     this.openTextEditor(point, sticky, draft);
+  }
+
+  private recoverTableCellDraft(draft: TableCellDraftRecovery): void {
+    this.rejectedTableCellDrafts.push(draft);
+    this.scheduleRejectedDraftRestore();
+  }
+
+  private restoreNextTableCellDraft(): void {
+    if (this.textEditor || this.tableCellEditor || !this.canCommit()) return;
+    const draft = this.rejectedTableCellDrafts[0];
+    if (!draft) return;
+    const latest = this.model.getItem(draft.itemId);
+    if (
+      latest?.kind !== "table" ||
+      latest.geometry.cells[draft.row]?.[draft.column] === undefined
+    ) {
+      return;
+    }
+    this.rejectedTableCellDrafts.shift();
+    this.openTableCellEditor(latest, draft.row, draft.column, draft);
+  }
+
+  private scheduleRejectedDraftRestore(): void {
+    if (this.rejectedStickyDrafts.length === 0 && this.rejectedTableCellDrafts.length === 0) return;
+    queueMicrotask(() => {
+      this.restoreNextStickyDraft();
+      this.restoreNextTableCellDraft();
+    });
   }
 
   private async updateTitle(): Promise<void> {
@@ -2341,6 +2576,7 @@ export class BoardApp {
   private enterArchivedState(): void {
     this.archivePending = false;
     void this.closeTextEditor(false);
+    void this.closeTableCellEditor(false);
     this.tools.setTool("select");
     this.remotePreviews.clear();
     this.renderer.renderRemotePreviews(this.remotePreviews.values());
@@ -2368,7 +2604,10 @@ export class BoardApp {
   private updatePermissions(): void {
     const canEdit = this.canCommit();
     const archived = this.phase === "archived";
-    if ((!canEdit || !this.bootstrap.board.imagesEnabled) && this.tools.tool === "image") {
+    if (
+      ((!canEdit || !this.bootstrap.board.imagesEnabled) && this.tools.tool === "image") ||
+      (!canEdit && this.tools.tool === "table")
+    ) {
       this.tools.setTool("select");
     }
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-tool]")) {
@@ -2400,9 +2639,10 @@ export class BoardApp {
     this.updateStatus();
     this.imageInput.disabled = !this.canUploadImages();
     if (!canEdit) this.closeImageAltEditor();
+    if (!canEdit) void this.closeTableCellEditor(false);
     this.updateSelectionActions(this.tools.selection);
-    if (canEdit && !this.textEditor && this.rejectedStickyDrafts.length > 0) {
-      queueMicrotask(() => this.restoreNextStickyDraft());
+    if (canEdit && !this.textEditor && !this.tableCellEditor) {
+      this.scheduleRejectedDraftRestore();
     }
   }
 
@@ -2553,6 +2793,11 @@ export class BoardApp {
   private reactivateTool(tool: ToolName): void {
     if (tool === "stamp") this.setStylePopoverOpen(true);
     if (tool === "image") this.openImagePicker();
+    if (tool === "table") this.setTablePickerOpen(true);
+  }
+
+  private setTablePickerOpen(open: boolean): void {
+    query(this.root, "[data-testid='table-picker']", HTMLElement).hidden = !open;
   }
 
   private togglePopover(popover: HTMLElement, trigger: HTMLButtonElement): void {
@@ -2906,6 +3151,27 @@ export function clampStickyText(value: string): string {
   return [...value].slice(0, MAX_STICKY_TEXT_CODE_POINTS).join("");
 }
 
+function tableCellLocalBounds(
+  geometry: TableGeometry,
+  row: number,
+  column: number,
+): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  const width = geometry.columnWidths[column];
+  const height = geometry.rowHeights[row];
+  if (width === undefined || height === undefined) return null;
+  const x =
+    geometry.x + geometry.columnWidths.slice(0, column).reduce((sum, value) => sum + value, 0);
+  const y = geometry.y + geometry.rowHeights.slice(0, row).reduce((sum, value) => sum + value, 0);
+  return { minX: x, minY: y, maxX: x + width, maxY: y + height };
+}
+
+function transformPoint(point: Point, matrix: Matrix): Point {
+  return [
+    matrix[0] * point[0] + matrix[2] * point[1] + matrix[4],
+    matrix[1] * point[0] + matrix[3] * point[1] + matrix[5],
+  ];
+}
+
 function aggregateItemBounds(items: Parameters<typeof boundsForItems>[0]) {
   return boundsForItems(items);
 }
@@ -2931,6 +3197,34 @@ function stickyDraftFromOperation(operation: DurableOperation): StickyDraftRecov
     text: geometry.text,
     selectionStart: geometry.text.length,
     selectionEnd: geometry.text.length,
+  };
+}
+
+export function tableCellDraftFromOperation(
+  operation: DurableOperation,
+  authoritativeItems: ReadonlyMap<string, BoardItem>,
+): TableCellDraftRecovery | undefined {
+  if (operation.kind !== "item.update") return undefined;
+  const geometry = operation.patch.geometry;
+  const current = authoritativeItems.get(operation.itemId);
+  if (!geometry || !("cells" in geometry) || current?.kind !== "table") return undefined;
+  const changed: Array<{ row: number; column: number; text: string }> = [];
+  geometry.cells.forEach((row, rowIndex) => {
+    row.forEach((text, columnIndex) => {
+      if (text !== current.geometry.cells[rowIndex]?.[columnIndex]) {
+        changed.push({ row: rowIndex, column: columnIndex, text });
+      }
+    });
+  });
+  const cell = changed.length === 1 ? changed[0] : undefined;
+  if (!cell) return undefined;
+  return {
+    itemId: operation.itemId,
+    row: cell.row,
+    column: cell.column,
+    text: cell.text,
+    selectionStart: cell.text.length,
+    selectionEnd: cell.text.length,
   };
 }
 

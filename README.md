@@ -43,6 +43,13 @@ the same selection, movement, copy/delete, persistence, and real-time controls
 as other items. Safe SVG export uses a placeholder rather than leaking a private
 asset URL or identifier.
 
+For lightweight learning grids, choose **Table** or press `G`, select 1–6
+columns and 1–8 rows, optionally enable a header row, then click the board. Each
+cell contains plain text only; double-click or double-tap a cell (or press
+`Enter`/`F2` on a selected table) to edit it. Tables use the same real-time,
+role/lock, copy/delete, snapshot, replay, and safe JSON/SVG export behavior as
+the other durable board items.
+
 ## Local development
 
 Requirements: Node.js 22.19 or newer. Local development uses Miniflare-backed

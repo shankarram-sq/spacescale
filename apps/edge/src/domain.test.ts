@@ -76,6 +76,45 @@ function createStampFrame(stamp = "check") {
   };
 }
 
+function createTableFrame() {
+  return {
+    v: 1,
+    t: "client.commit",
+    commandId: "018f0000-0000-7000-8000-000000000010",
+    actionId: "018f0000-0000-7000-8000-000000000011",
+    baseSeq: 0,
+    op: {
+      kind: "item.create",
+      item: {
+        id: itemId,
+        kind: "table",
+        style: {
+          kind: "table",
+          borderColor: "#64748b",
+          fill: "#ffffff",
+          headerFill: "#e2e8f0",
+          textColor: "#0f172a",
+          fontSize: 18,
+          opacity: 1,
+        },
+        transform: [1, 0, 0, 1, 0, 0],
+        geometry: {
+          x: 10,
+          y: 20,
+          columnWidths: [120, 120, 120],
+          rowHeights: [48, 48, 48],
+          cells: [
+            ["Know", "Want", "Learned"],
+            ["", "", ""],
+            ["", "", ""],
+          ],
+          headerRow: true,
+        },
+      },
+    },
+  };
+}
+
 describe("edge domain admission", () => {
   it("normalizes and prepares a canonical create with private lineage", () => {
     const parsed = parseCommitFrame(createFrame());
@@ -147,6 +186,63 @@ describe("edge domain admission", () => {
     const unsafeColor = createStampFrame();
     unsafeColor.op.item.style.color = "#16A34A";
     expect(() => parseCommitFrame(unsafeColor)).toThrow(BoardDomainError);
+  });
+
+  it("admits a bounded plain-text table and round-trips its canonical storage form", () => {
+    const parsed = parseCommitFrame(createTableFrame());
+    if (parsed.op.kind !== "item.create") throw new Error("unexpected operation");
+    const prepared = prepareItemOperation(parsed.op, new Map(), {
+      seq: 1,
+      actorId,
+      nextZ: 1,
+      liveCount: 0,
+      tokenFactory: () => "table-state",
+    });
+
+    const write = prepared.writes.get(itemId);
+    expect(write?.item).toMatchObject({
+      kind: "table",
+      z: 1,
+      version: 1,
+      createdBy: actorId,
+      geometry: {
+        x: 10,
+        y: 20,
+        columnWidths: [120, 120, 120],
+        rowHeights: [48, 48, 48],
+        cells: [
+          ["Know", "Want", "Learned"],
+          ["", "", ""],
+          ["", "", ""],
+        ],
+        headerRow: true,
+      },
+    });
+    expect(write?.bounds).toEqual({ minX: 10, minY: 20, maxX: 370, maxY: 164 });
+    expect(canonicalItemFromUnknown(JSON.parse(JSON.stringify(write?.item)))).toEqual(write?.item);
+  });
+
+  it("rejects malformed tables at the edge admission boundary", () => {
+    const ragged = createTableFrame();
+    ragged.op.item.geometry.cells[1] = ["only one cell"];
+    expect(() => parseCommitFrame(ragged)).toThrow(BoardDomainError);
+
+    const mismatchedColumns = createTableFrame();
+    mismatchedColumns.op.item.geometry.columnWidths = [120, 120];
+    expect(() => parseCommitFrame(mismatchedColumns)).toThrow(BoardDomainError);
+
+    const unsafeText = createTableFrame();
+    unsafeText.op.item.geometry.cells[1] = ["", "hidden\u0000control", ""];
+    expect(() => parseCommitFrame(unsafeText)).toThrow(BoardDomainError);
+
+    const oversizedCell = createTableFrame();
+    oversizedCell.op.item.geometry.cells[1] = ["", "🙂".repeat(501), ""];
+    expect(() => parseCommitFrame(oversizedCell)).toThrow(BoardDomainError);
+
+    const tooManyRows = createTableFrame();
+    tooManyRows.op.item.geometry.rowHeights = Array.from({ length: 9 }, () => 48);
+    tooManyRows.op.item.geometry.cells = Array.from({ length: 9 }, () => ["", "", ""]);
+    expect(() => parseCommitFrame(tooManyRows)).toThrow(BoardDomainError);
   });
 
   it("rejects sticky content beyond its classroom-safe limit", () => {

@@ -8,6 +8,8 @@ export const IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp", "image
 export const MAX_IMAGE_ALT_CODE_POINTS = 500;
 export const MAX_IMAGE_INTRINSIC_DIMENSION = 4_096;
 export const MAX_IMAGE_INTRINSIC_PIXELS = 16_000_000;
+export const MAX_TABLE_COLUMNS = 6;
+export const MAX_TABLE_ROWS = 8;
 
 const IMAGE_ASSET_ID_PATTERN = /^asset_[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u;
 
@@ -62,6 +64,15 @@ export interface StampGeometry {
   stamp: StampKind;
 }
 
+export interface TableGeometry {
+  x: number;
+  y: number;
+  columnWidths: number[];
+  rowHeights: number[];
+  cells: string[][];
+  headerRow?: boolean;
+}
+
 export type ItemGeometry =
   | PencilGeometry
   | LineGeometry
@@ -69,7 +80,8 @@ export type ItemGeometry =
   | TextGeometry
   | StickyGeometry
   | ImageGeometry
-  | StampGeometry;
+  | StampGeometry
+  | TableGeometry;
 
 export type GeometryKind =
   | "pencil"
@@ -79,7 +91,8 @@ export type GeometryKind =
   | "text"
   | "sticky"
   | "image"
-  | "stamp";
+  | "stamp"
+  | "table";
 
 export interface Bounds {
   minX: number;
@@ -97,7 +110,8 @@ export interface BoundsItem {
     | { kind: "text"; fontSize: number }
     | { kind: "sticky"; fontSize: number }
     | { kind: "image" }
-    | { kind: "stamp" };
+    | { kind: "stamp" }
+    | { kind: "table"; fontSize: number };
 }
 
 export class GeometryValidationError extends Error {
@@ -485,6 +499,119 @@ export function normalizeStampGeometry(value: unknown, path = "$geometry"): Stam
   return { x, y, size, stamp: object.stamp as StampKind };
 }
 
+function normalizeTableSizes(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+  label: "column" | "row",
+  path: string,
+): number[] {
+  if (!Array.isArray(value) || value.length < minimum || value.length > maximum) {
+    throw new GeometryValidationError(
+      `Table must contain between ${minimum} and ${maximum} ${label}${maximum === 1 ? "" : "s"}`,
+      path,
+    );
+  }
+  return value.map((entry, index) => {
+    const normalized = normalizeDimension(entry, `${path}[${index}]`);
+    if (normalized === 0) {
+      throw new GeometryValidationError(
+        `Table ${label} size must be greater than 0`,
+        `${path}[${index}]`,
+      );
+    }
+    return normalized;
+  });
+}
+
+export function tableGeometrySize(geometry: Pick<TableGeometry, "columnWidths" | "rowHeights">): {
+  width: number;
+  height: number;
+} {
+  return {
+    width: canonicalNumber(
+      geometry.columnWidths.reduce((total, width) => total + width, 0),
+      2,
+    ),
+    height: canonicalNumber(
+      geometry.rowHeights.reduce((total, height) => total + height, 0),
+      2,
+    ),
+  };
+}
+
+export function normalizeTableGeometry(value: unknown, path = "$geometry"): TableGeometry {
+  const object = expectRecord(value, path);
+  const required = ["x", "y", "columnWidths", "rowHeights", "cells"] as const;
+  const allowed = new Set<string>([...required, "headerRow"]);
+  for (const key of Object.keys(object)) {
+    if (!allowed.has(key)) {
+      throw new GeometryValidationError(`Unknown field ${JSON.stringify(key)}`, `${path}.${key}`);
+    }
+  }
+  for (const key of required) {
+    if (!own.call(object, key)) {
+      throw new GeometryValidationError(`Missing field ${JSON.stringify(key)}`, `${path}.${key}`);
+    }
+  }
+
+  const x = normalizeCoordinate(object.x, `${path}.x`);
+  const y = normalizeCoordinate(object.y, `${path}.y`);
+  const columnWidths = normalizeTableSizes(
+    object.columnWidths,
+    1,
+    MAX_TABLE_COLUMNS,
+    "column",
+    `${path}.columnWidths`,
+  );
+  const rowHeights = normalizeTableSizes(
+    object.rowHeights,
+    1,
+    MAX_TABLE_ROWS,
+    "row",
+    `${path}.rowHeights`,
+  );
+  if (!Array.isArray(object.cells) || object.cells.length !== rowHeights.length) {
+    throw new GeometryValidationError(
+      "Table cells must contain exactly one array per row height",
+      `${path}.cells`,
+    );
+  }
+  const cells = object.cells.map((rawRow, rowIndex) => {
+    if (!Array.isArray(rawRow) || rawRow.length !== columnWidths.length) {
+      throw new GeometryValidationError(
+        "Every table cell row must contain exactly one string per column width",
+        `${path}.cells[${rowIndex}]`,
+      );
+    }
+    return rawRow.map((cell, columnIndex) => {
+      if (typeof cell !== "string") {
+        throw new GeometryValidationError(
+          "Expected table cell text to be a string",
+          `${path}.cells[${rowIndex}][${columnIndex}]`,
+        );
+      }
+      return cell;
+    });
+  });
+  if (own.call(object, "headerRow") && typeof object.headerRow !== "boolean") {
+    throw new GeometryValidationError("Table headerRow must be a boolean", `${path}.headerRow`);
+  }
+  const { width, height } = tableGeometrySize({ columnWidths, rowHeights });
+  normalizeDimension(width, `${path}.columnWidths`);
+  normalizeDimension(height, `${path}.rowHeights`);
+  normalizeCoordinate(x + width, `${path}.x+width`);
+  normalizeCoordinate(y + height, `${path}.y+height`);
+  return {
+    x,
+    y,
+    columnWidths,
+    rowHeights,
+    cells,
+    ...(own.call(object, "headerRow") ? { headerRow: object.headerRow as boolean } : {}),
+  };
+}
+
 export function normalizeGeometry(kind: "pencil", value: unknown, path?: string): PencilGeometry;
 export function normalizeGeometry(kind: "line", value: unknown, path?: string): LineGeometry;
 export function normalizeGeometry(
@@ -496,6 +623,7 @@ export function normalizeGeometry(kind: "text", value: unknown, path?: string): 
 export function normalizeGeometry(kind: "sticky", value: unknown, path?: string): StickyGeometry;
 export function normalizeGeometry(kind: "image", value: unknown, path?: string): ImageGeometry;
 export function normalizeGeometry(kind: "stamp", value: unknown, path?: string): StampGeometry;
+export function normalizeGeometry(kind: "table", value: unknown, path?: string): TableGeometry;
 export function normalizeGeometry(kind: GeometryKind, value: unknown, path?: string): ItemGeometry;
 export function normalizeGeometry(
   kind: GeometryKind,
@@ -518,6 +646,8 @@ export function normalizeGeometry(
       return normalizeImageGeometry(value, path);
     case "stamp":
       return normalizeStampGeometry(value, path);
+    case "table":
+      return normalizeTableGeometry(value, path);
   }
 }
 
@@ -527,6 +657,7 @@ export function inferAndNormalizeGeometry(value: unknown, path = "$geometry"): I
   if (own.call(object, "x1")) return normalizeLineGeometry(object, path);
   if (own.call(object, "stamp")) return normalizeStampGeometry(object, path);
   if (own.call(object, "assetId")) return normalizeImageGeometry(object, path);
+  if (own.call(object, "cells")) return normalizeTableGeometry(object, path);
   if (own.call(object, "width") && own.call(object, "text")) {
     return normalizeStickyGeometry(object, path);
   }
@@ -599,8 +730,16 @@ export function geometryBounds(
     case "rectangle":
     case "ellipse":
     case "sticky":
-    case "image": {
-      const box = geometry as BoxGeometry;
+    case "image":
+    case "table": {
+      const box =
+        kind === "table"
+          ? {
+              x: (geometry as TableGeometry).x,
+              y: (geometry as TableGeometry).y,
+              ...tableGeometrySize(geometry as TableGeometry),
+            }
+          : (geometry as BoxGeometry);
       return {
         minX: box.x,
         minY: box.y,
@@ -649,6 +788,26 @@ export function imageGeometryContainsPoint(
     point[0] <= geometry.x + geometry.width + padding &&
     point[1] >= geometry.y - padding &&
     point[1] <= geometry.y + geometry.height + padding
+  );
+}
+
+export function tableGeometryContainsPoint(
+  geometry: TableGeometry,
+  point: Point,
+  padding = 0,
+): boolean {
+  if (!Number.isFinite(padding) || padding < 0) {
+    throw new GeometryValidationError(
+      "Table hit-test padding must be a finite non-negative number",
+      "$padding",
+    );
+  }
+  const { width, height } = tableGeometrySize(geometry);
+  return (
+    point[0] >= geometry.x - padding &&
+    point[0] <= geometry.x + width + padding &&
+    point[1] >= geometry.y - padding &&
+    point[1] <= geometry.y + height + padding
   );
 }
 

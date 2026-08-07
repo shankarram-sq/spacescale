@@ -32,11 +32,18 @@ type StyleState = {
   stampKind: StampKind;
   stampColor: string;
   stampOpacity: number;
+  tableRows: number;
+  tableColumns: number;
+  tableHeaderRow: boolean;
 };
 
 export const DEFAULT_STICKY_WIDTH = 180;
 export const DEFAULT_STICKY_HEIGHT = 140;
 export const DEFAULT_STAMP_SIZE = 72;
+export const DEFAULT_TABLE_COLUMNS = 3;
+export const DEFAULT_TABLE_ROWS = 3;
+export const DEFAULT_TABLE_COLUMN_WIDTH = 120;
+export const DEFAULT_TABLE_ROW_HEIGHT = 48;
 
 const TOOL_SHORTCUTS: Partial<Record<string, ToolName>> = {
   v: "select",
@@ -48,6 +55,7 @@ const TOOL_SHORTCUTS: Partial<Record<string, ToolName>> = {
   n: "sticky",
   k: "stamp",
   i: "image",
+  g: "table",
   e: "eraser",
   h: "pan",
 };
@@ -61,6 +69,7 @@ const SHORTCUT_DRAW_TOOLS = new Set<ToolName>([
   "sticky",
   "stamp",
   "image",
+  "table",
   "eraser",
 ]);
 
@@ -235,6 +244,46 @@ export function buildImageCreateOperation(
   };
 }
 
+export function buildTableCreateOperation(
+  itemId: string,
+  center: Point,
+  rows: number,
+  columns: number,
+  headerRow = false,
+): BatchItemOperation {
+  const rowCount = Math.max(1, Math.min(8, Math.round(rows)));
+  const columnCount = Math.max(1, Math.min(6, Math.round(columns)));
+  const width = columnCount * DEFAULT_TABLE_COLUMN_WIDTH;
+  const height = rowCount * DEFAULT_TABLE_ROW_HEIGHT;
+  return {
+    kind: "item.create",
+    item: {
+      id: itemId,
+      kind: "table",
+      style: {
+        kind: "table",
+        borderColor: "#a8a59d",
+        fill: "#fffefa",
+        headerFill: "#e8edff",
+        textColor: "#20201e",
+        fontSize: 16,
+        opacity: 1,
+      },
+      transform: identityMatrix(),
+      geometry: {
+        x: roundBoard(center[0] - width / 2),
+        y: roundBoard(center[1] - height / 2),
+        columnWidths: Array.from({ length: columnCount }, () => DEFAULT_TABLE_COLUMN_WIDTH),
+        rowHeights: Array.from({ length: rowCount }, () => DEFAULT_TABLE_ROW_HEIGHT),
+        cells: Array.from({ length: rowCount }, () =>
+          Array.from({ length: columnCount }, () => ""),
+        ),
+        ...(headerRow ? { headerRow: true } : {}),
+      },
+    },
+  };
+}
+
 export type ToolControllerOptions = {
   model: BoardModel;
   renderer: BoardRenderer;
@@ -256,6 +305,7 @@ export type ToolControllerOptions = {
   presence: (cursor: { x: number; y: number } | null, tool: ToolName) => void;
   editText: (point: Point, item?: BoardItem) => void;
   editImageAlt: (item: Extract<BoardItem, { kind: "image" }>) => void;
+  editTableCell: (item: Extract<BoardItem, { kind: "table" }>, row: number, column: number) => void;
   onToolChanged: (tool: ToolName) => void;
   onToolReactivated: (tool: ToolName) => void;
   onSelectionChanged: (ids: ReadonlySet<string>) => void;
@@ -321,6 +371,14 @@ type Gesture =
       start: Point;
       current: Point;
       operation: BatchItemOperation;
+    }
+  | {
+      kind: "table";
+      pointerId: number;
+      pointerType: string;
+      start: Point;
+      current: Point;
+      operation: BatchItemOperation;
     };
 
 type PinchState = {
@@ -339,6 +397,12 @@ export class ToolController {
   private pinch: PinchState | null = null;
   private lastPresenceAt = 0;
   private lastStickyTap: { itemId: string; at: number } | null = null;
+  private lastTableTap: {
+    itemId: string;
+    row: number;
+    column: number;
+    at: number;
+  } | null = null;
 
   constructor(private readonly options: ToolControllerOptions) {
     const { svg } = options.renderer;
@@ -370,6 +434,7 @@ export class ToolController {
     if (this.toolValue === tool) return;
     this.cancelGesture();
     this.lastStickyTap = null;
+    this.lastTableTap = null;
     this.toolValue = tool;
     this.options.renderer.setCursor(tool, this.spaceHeld);
     this.options.onToolChanged(tool);
@@ -600,6 +665,30 @@ export class ToolController {
       event.preventDefault();
       return;
     }
+
+    if (this.toolValue === "table") {
+      const operation = buildTableCreateOperation(
+        createId(),
+        point,
+        style.tableRows,
+        style.tableColumns,
+        style.tableHeaderRow,
+      );
+      if (event.pointerType === "touch") {
+        this.gesture = {
+          kind: "table",
+          pointerId: event.pointerId,
+          pointerType: event.pointerType,
+          start: point,
+          current: point,
+          operation,
+        };
+      } else {
+        void this.options.commit(operation);
+      }
+      event.preventDefault();
+      return;
+    }
   };
 
   private readonly onPointerMove = (event: PointerEvent): void => {
@@ -686,7 +775,7 @@ export class ToolController {
       this.options.renderer.showMarquee(pointsBounds(gesture.start, gesture.current));
     } else if (gesture.kind === "eraser") {
       this.collectEraser(boardPoint(event, this.options.renderer), gesture);
-    } else if (gesture.kind === "sticky" || gesture.kind === "stamp") {
+    } else if (gesture.kind === "sticky" || gesture.kind === "stamp" || gesture.kind === "table") {
       gesture.current = boardPoint(event, this.options.renderer);
     }
     event.preventDefault();
@@ -717,15 +806,16 @@ export class ToolController {
           )
         : undefined;
     const isItemTap = gesture.kind === "move" && adjustedMovePoint === gesture.start;
-    const tappedItem = isItemTap
-      ? this.options.model.hitTest(boardPoint(event, this.options.renderer), 0)
-      : undefined;
+    const tapPoint = boardPoint(event, this.options.renderer);
+    const tappedItem = isItemTap ? this.options.model.hitTest(tapPoint, 0) : undefined;
     if (isItemTap && gesture.kind === "move" && adjustedMovePoint) {
       gesture.current = adjustedMovePoint;
     }
     void this.finishGesture(gesture);
     if (tappedItem?.kind === "sticky") this.handleStickyTap(tappedItem, pointFromItem(tappedItem));
     else this.lastStickyTap = null;
+    if (tappedItem?.kind === "table") this.handleTableTap(tappedItem, tapPoint);
+    else this.lastTableTap = null;
     event.preventDefault();
   };
 
@@ -791,6 +881,12 @@ export class ToolController {
         this.options.editImageAlt(item);
         return;
       }
+      if (item?.kind === "table" && this.options.canDraw()) {
+        event.preventDefault();
+        this.lastTableTap = null;
+        this.options.editTableCell(item, 0, 0);
+        return;
+      }
     }
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     const shortcutKey = event.key.toLowerCase();
@@ -814,6 +910,7 @@ export class ToolController {
   private beginSelection(event: PointerEvent, point: Point): void {
     const hit = this.options.model.hitTest(point, 5 / this.options.renderer.viewport.zoom);
     if (hit?.kind !== "sticky") this.lastStickyTap = null;
+    if (hit?.kind !== "table") this.lastTableTap = null;
     if (hit) {
       if (!this.selected.has(hit.id))
         this.selectOnly(event.shiftKey ? [...this.selected, hit.id] : [hit.id]);
@@ -894,6 +991,16 @@ export class ToolController {
       return;
     }
     if (gesture.kind === "stamp") {
+      const point = tapAdjustedMovePoint(
+        gesture.start,
+        gesture.current,
+        gesture.pointerType,
+        this.options.renderer.viewport.zoom,
+      );
+      if (point === gesture.start) await this.options.commit(gesture.operation);
+      return;
+    }
+    if (gesture.kind === "table") {
       const point = tapAdjustedMovePoint(
         gesture.start,
         gesture.current,
@@ -989,7 +1096,8 @@ export class ToolController {
       gesture.kind === "pan" ||
       gesture.kind === "marquee" ||
       gesture.kind === "sticky" ||
-      gesture.kind === "stamp"
+      gesture.kind === "stamp" ||
+      gesture.kind === "table"
     ) {
       this.options.renderer.clearLocalPreview();
       return;
@@ -1012,6 +1120,26 @@ export class ToolController {
       return;
     }
     this.lastStickyTap = { itemId: item.id, at: now };
+  }
+
+  private handleTableTap(item: Extract<BoardItem, { kind: "table" }>, point: Point): void {
+    const cell = tableCellAtPoint(item, point);
+    if (!cell) {
+      this.lastTableTap = null;
+      return;
+    }
+    const now = performance.now();
+    if (
+      this.lastTableTap?.itemId === item.id &&
+      this.lastTableTap.row === cell.row &&
+      this.lastTableTap.column === cell.column &&
+      now - this.lastTableTap.at <= 450
+    ) {
+      this.lastTableTap = null;
+      this.options.editTableCell(item, cell.row, cell.column);
+      return;
+    }
+    this.lastTableTap = { itemId: item.id, ...cell, at: now };
   }
 }
 
@@ -1091,6 +1219,38 @@ function midpoint(a: Point, b: Point): Point {
 
 function identityMatrix(): Matrix {
   return [1, 0, 0, 1, 0, 0];
+}
+
+export function tableCellAtPoint(
+  item: Pick<Extract<BoardItem, { kind: "table" }>, "geometry" | "transform">,
+  point: Point,
+): { row: number; column: number } | null {
+  const local = inverseTransformPoint(point, item.transform);
+  if (!local) return null;
+  const x = local[0] - item.geometry.x;
+  const y = local[1] - item.geometry.y;
+  const column = axisIndex(x, item.geometry.columnWidths);
+  const row = axisIndex(y, item.geometry.rowHeights);
+  return row === null || column === null ? null : { row, column };
+}
+
+function inverseTransformPoint(point: Point, matrix: Matrix): Point | null {
+  const [a, b, c, d, e, f] = matrix;
+  const determinant = a * d - b * c;
+  if (Math.abs(determinant) < 1e-12) return null;
+  const x = point[0] - e;
+  const y = point[1] - f;
+  return [(d * x - c * y) / determinant, (-b * x + a * y) / determinant];
+}
+
+function axisIndex(position: number, sizes: readonly number[]): number | null {
+  if (position < 0) return null;
+  let edge = 0;
+  for (let index = 0; index < sizes.length; index += 1) {
+    edge += sizes[index] ?? 0;
+    if (position < edge || (index === sizes.length - 1 && position <= edge)) return index;
+  }
+  return null;
 }
 
 function buildShapeCreateOperation(

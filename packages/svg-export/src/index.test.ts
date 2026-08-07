@@ -82,6 +82,37 @@ function imageItem(id: string, alt?: string): Extract<BoardItem, { kind: "image"
   };
 }
 
+function tableItem(id: string): Extract<BoardItem, { kind: "table" }> {
+  return {
+    id,
+    kind: "table",
+    z: 7,
+    version: 1,
+    createdBy: ACTOR,
+    style: {
+      kind: "table",
+      borderColor: "#64748b",
+      fill: "#ffffff",
+      headerFill: "#dbeafe",
+      textColor: "#0f172a",
+      fontSize: 10,
+      opacity: 0.9,
+    },
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: {
+      x: 10,
+      y: 20,
+      columnWidths: [80, 100],
+      rowHeights: [40, 50],
+      cells: [
+        ["Header <&>", "Meaning"],
+        ["one two three four", `safe </text><script>alert("x")</script>`],
+      ],
+      headerRow: true,
+    },
+  };
+}
+
 describe("safe SVG serialization", () => {
   it("escapes text, title, attributes, and never emits user markup", () => {
     const text: BoardItem = {
@@ -258,6 +289,36 @@ describe("safe SVG serialization", () => {
       items: [imageItem("018f0000-0000-7000-8000-000000000009", undefined)],
     });
     expect(svg).toContain('role="img" aria-label="Image"><title>Image</title>');
+  });
+
+  it("renders deterministic clipped and wrapped table cells without executable markup", () => {
+    const item = tableItem("018f0000-0000-7000-8000-00000000000a");
+    const first = createSvgExport({ boardId: BOARD, seq: 11, padding: 0, items: [item] });
+    const second = createSvgExport({ boardId: BOARD, seq: 11, padding: 0, items: [item] });
+
+    expect(first.svg).toBe(second.svg);
+    expect(first.viewBox).toEqual({ minX: 10, minY: 20, maxX: 190, maxY: 110 });
+    expect(first.svg).toContain(
+      '<g transform="matrix(1 0 0 1 0 0)" opacity="0.9" data-item-id="018f0000-0000-7000-8000-00000000000a" role="table">',
+    );
+    expect(first.svg).toContain(
+      '<rect x="10" y="20" width="80" height="40" fill="#dbeafe" stroke="#64748b" stroke-width="1" />',
+    );
+    expect(first.svg).toContain(
+      '<rect x="10" y="60" width="80" height="50" fill="#ffffff" stroke="#64748b" stroke-width="1" />',
+    );
+    expect(first.svg).toContain(
+      '<clipPath id="table-clip-018f0000-0000-7000-8000-00000000000a-1-0" clipPathUnits="userSpaceOnUse"><rect x="18" y="68" width="64" height="34" /></clipPath>',
+    );
+    expect(first.svg).toContain('<tspan x="18" dy="0">one two</tspan>');
+    expect(first.svg).toContain('<tspan x="18" dy="12">three four</tspan>');
+    expect(first.svg).toContain('aria-label="Header &lt;&amp;&gt;"');
+    expect(first.svg).toContain(
+      'aria-label="safe &lt;/text&gt;&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;"',
+    );
+    expect(first.svg).toContain("&lt;/text&gt;&lt;script");
+    expect(first.svg).not.toContain("<script>");
+    expect(first.svg).not.toContain("foreignObject");
   });
 
   it("rejects unrecognized/non-canonical items rather than serializing arbitrary data", () => {

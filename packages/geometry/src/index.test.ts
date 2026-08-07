@@ -12,7 +12,9 @@ import {
   normalizePencilGeometry,
   normalizeStampGeometry,
   normalizeStickyGeometry,
+  normalizeTableGeometry,
   normalizeTransform,
+  tableGeometryContainsPoint,
   transformBounds,
   translateTransform,
 } from "./index.js";
@@ -88,6 +90,79 @@ describe("geometry normalization", () => {
     expect(() => normalizeStampGeometry({ x: 1_000_000, y: 0, size: 2, stamp: "star" })).toThrow(
       /Coordinate/,
     );
+  });
+
+  it("canonicalizes small rectangular table grids", () => {
+    expect(
+      normalizeTableGeometry({
+        x: 10.129,
+        y: -2.555,
+        columnWidths: [100.125, 80.555, 90],
+        rowHeights: [40.125, 50.555],
+        cells: [
+          ["A", "B", "C"],
+          ["1", "2", "3"],
+        ],
+        headerRow: true,
+      }),
+    ).toEqual({
+      x: 10.13,
+      y: -2.56,
+      columnWidths: [100.13, 80.56, 90],
+      rowHeights: [40.13, 50.56],
+      cells: [
+        ["A", "B", "C"],
+        ["1", "2", "3"],
+      ],
+      headerRow: true,
+    });
+  });
+
+  it("rejects malformed, oversized, and kind-confused table geometry", () => {
+    const valid = {
+      x: 0,
+      y: 0,
+      columnWidths: [100, 100],
+      rowHeights: [40, 40],
+      cells: [
+        ["A", "B"],
+        ["C", "D"],
+      ],
+    };
+    expect(() => normalizeTableGeometry({ ...valid, columnWidths: [] })).toThrow(/between 1 and 6/);
+    expect(() => normalizeTableGeometry({ ...valid, columnWidths: Array(7).fill(100) })).toThrow(
+      /between 1 and 6/,
+    );
+    expect(() => normalizeTableGeometry({ ...valid, rowHeights: Array(9).fill(40) })).toThrow(
+      /between 1 and 8/,
+    );
+    expect(() => normalizeTableGeometry({ ...valid, columnWidths: [100, 0] })).toThrow(
+      /greater than 0/,
+    );
+    expect(() => normalizeTableGeometry({ ...valid, rowHeights: [40, Number.NaN] })).toThrow(
+      /finite dimension/,
+    );
+    expect(() => normalizeTableGeometry({ ...valid, cells: [["A", "B"]] })).toThrow(
+      /one array per row height/,
+    );
+    expect(() => normalizeTableGeometry({ ...valid, cells: [["A"], ["B"]] })).toThrow(
+      /one string per column width/,
+    );
+    expect(() =>
+      normalizeTableGeometry({
+        ...valid,
+        cells: [
+          ["A", 2],
+          ["C", "D"],
+        ],
+      }),
+    ).toThrow(/cell text to be a string/);
+    expect(() => normalizeTableGeometry({ ...valid, headerRow: "yes" })).toThrow(/boolean/);
+    expect(() => normalizeTableGeometry({ ...valid, width: 200 })).toThrow(/Unknown field/);
+    expect(() => normalizeTableGeometry({ ...valid, assetId: ASSET_ID })).toThrow(/Unknown field/);
+    expect(() =>
+      normalizeTableGeometry({ ...valid, x: 999_900, columnWidths: [100, 100] }),
+    ).toThrow(/Coordinate/);
   });
 
   it("canonicalizes bounded image cards and omits empty alt text", () => {
@@ -275,6 +350,33 @@ describe("bounds and transforms", () => {
     expect(imageGeometryContainsPoint(geometry, [1.5, 2.5])).toBe(false);
     expect(imageGeometryContainsPoint(geometry, [1.5, 2.5], 0.5)).toBe(true);
     expect(() => imageGeometryContainsPoint(geometry, [5, 5], Number.NaN)).toThrow(/padding/);
+  });
+
+  it("uses summed table dimensions for transformed bounds and inclusive hit testing", () => {
+    const geometry = {
+      x: 2,
+      y: 3,
+      columnWidths: [20, 30],
+      rowHeights: [10, 15],
+      cells: [
+        ["A", "B"],
+        ["C", "D"],
+      ],
+      headerRow: true,
+    };
+    expect(
+      itemBounds({
+        kind: "table",
+        geometry,
+        transform: [0, 1, -1, 0, 100, 0],
+        style: { kind: "table", fontSize: 16 },
+      }),
+    ).toEqual({ minX: 72, minY: 2, maxX: 97, maxY: 52 });
+    expect(tableGeometryContainsPoint(geometry, [2, 3])).toBe(true);
+    expect(tableGeometryContainsPoint(geometry, [52, 28])).toBe(true);
+    expect(tableGeometryContainsPoint(geometry, [1.5, 2.5])).toBe(false);
+    expect(tableGeometryContainsPoint(geometry, [1.5, 2.5], 0.5)).toBe(true);
+    expect(() => tableGeometryContainsPoint(geometry, [5, 5], -1)).toThrow(/padding/);
   });
 
   it("unions item bounds and translates only the affine offset", () => {

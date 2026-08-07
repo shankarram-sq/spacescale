@@ -7,9 +7,11 @@ import {
   buildImageCreateOperation,
   buildStampCreateOperation,
   buildStickyCreateOperation,
+  buildTableCreateOperation,
   type CapturedMoveItem,
   defaultImageCardSize,
   stickyTapMoveThreshold,
+  tableCellAtPoint,
   tapAdjustedMovePoint,
   toolFromShortcut,
 } from "./controller";
@@ -42,6 +44,8 @@ describe("captured gesture operations", () => {
     expect(toolFromShortcut("K", true)).toBe("stamp");
     expect(toolFromShortcut("i", false)).toBeUndefined();
     expect(toolFromShortcut("I", true)).toBe("image");
+    expect(toolFromShortcut("g", false)).toBeUndefined();
+    expect(toolFromShortcut("G", true)).toBe("table");
     expect(toolFromShortcut("v", false)).toBe("select");
     expect(toolFromShortcut("h", false)).toBe("pan");
   });
@@ -185,5 +189,64 @@ describe("captured gesture operations", () => {
       },
     });
     expect(JSON.stringify(operation)).not.toMatch(/data:|blob:|base64|ArrayBuffer/u);
+  });
+
+  it("creates a centered, readable 3 by 3 table and clamps the classroom size", () => {
+    expect(buildTableCreateOperation(ITEM_ID, [400, 300], 3, 3, true)).toEqual({
+      kind: "item.create",
+      item: {
+        id: ITEM_ID,
+        kind: "table",
+        style: {
+          kind: "table",
+          borderColor: "#a8a59d",
+          fill: "#fffefa",
+          headerFill: "#e8edff",
+          textColor: "#20201e",
+          fontSize: 16,
+          opacity: 1,
+        },
+        transform: [1, 0, 0, 1, 0, 0],
+        geometry: {
+          x: 220,
+          y: 228,
+          columnWidths: [120, 120, 120],
+          rowHeights: [48, 48, 48],
+          cells: [
+            ["", "", ""],
+            ["", "", ""],
+            ["", "", ""],
+          ],
+          headerRow: true,
+        },
+      },
+    });
+
+    const capped = buildTableCreateOperation(ITEM_ID, [0, 0], 20, 0);
+    if (capped.kind !== "item.create") throw new Error("Expected a table create.");
+    expect(capped.item.kind).toBe("table");
+    if (capped.item.kind !== "table") throw new Error("Expected a table create.");
+    expect(capped.item.geometry.rowHeights).toHaveLength(8);
+    expect(capped.item.geometry.columnWidths).toHaveLength(1);
+    expect(capped.item.geometry.headerRow).toBeUndefined();
+  });
+
+  it("finds a table cell through the item's affine transform", () => {
+    const item = {
+      transform: [0, 1, -1, 0, 300, 10] as Matrix,
+      geometry: {
+        x: 10,
+        y: 20,
+        columnWidths: [100, 120],
+        rowHeights: [40, 50],
+        cells: [
+          ["a", "b"],
+          ["c", "d"],
+        ],
+      },
+    };
+
+    expect(tableCellAtPoint(item, [220, 170])).toEqual({ row: 1, column: 1 });
+    expect(tableCellAtPoint(item, [400, 170])).toBeNull();
   });
 });

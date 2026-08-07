@@ -11,6 +11,7 @@ import {
   parseClientFrame,
   validateDurableOperation,
   validatePlainText,
+  validateTableCellText,
 } from "./index.js";
 
 const ID_1 = "018f0000-0000-7000-8000-000000000001";
@@ -70,6 +71,35 @@ function image(id = ID_1) {
       mimeType: "image/png",
       intrinsicWidth: 1200,
       intrinsicHeight: 800,
+    },
+  };
+}
+
+function table(id = ID_1) {
+  return {
+    id,
+    kind: "table",
+    style: {
+      kind: "table",
+      borderColor: "#94a3b8",
+      fill: "#ffffff",
+      headerFill: "#e2e8f0",
+      textColor: "#0f172a",
+      fontSize: 16.125,
+      opacity: 0.555,
+    },
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: {
+      x: 10.125,
+      y: 20.555,
+      columnWidths: [120.125, 120, 120],
+      rowHeights: [48.125, 48, 48],
+      cells: [
+        ["Term", "Meaning", "Example"],
+        ["Atom", "Small unit", "Carbon"],
+        ["", "", ""],
+      ],
+      headerRow: true,
     },
   };
 }
@@ -289,6 +319,121 @@ describe("durable operation validation", () => {
     expect(() =>
       assertCanonicalAssetId("asset_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB"),
     ).toThrow(/base64url SHA-256/);
+  });
+
+  it("normalizes durable table grids and whole-geometry patches", () => {
+    expect(validateDurableOperation({ kind: "item.create", item: table() })).toEqual({
+      kind: "item.create",
+      item: {
+        id: ID_1,
+        kind: "table",
+        style: {
+          kind: "table",
+          borderColor: "#94a3b8",
+          fill: "#ffffff",
+          headerFill: "#e2e8f0",
+          textColor: "#0f172a",
+          fontSize: 16.13,
+          opacity: 0.56,
+        },
+        transform: [1, 0, 0, 1, 0, 0],
+        geometry: {
+          x: 10.13,
+          y: 20.56,
+          columnWidths: [120.13, 120, 120],
+          rowHeights: [48.13, 48, 48],
+          cells: [
+            ["Term", "Meaning", "Example"],
+            ["Atom", "Small unit", "Carbon"],
+            ["", "", ""],
+          ],
+          headerRow: true,
+        },
+      },
+    });
+    expect(ACTIVE_TOOLS).toContain("table");
+    expect(validateTableCellText("")).toBe("");
+    expect(
+      validateDurableOperation({
+        kind: "item.update",
+        itemId: ID_1,
+        expectedVersion: 1,
+        patch: {
+          geometry: {
+            ...table().geometry,
+            cells: [["A", "B", "C"], ...table().geometry.cells.slice(1)],
+          },
+        },
+      }),
+    ).toMatchObject({
+      patch: { geometry: { cells: [["A", "B", "C"], ...table().geometry.cells.slice(1)] } },
+    });
+  });
+
+  it("rejects malformed table grids, hostile text, unsafe sizes, and kind confusion", () => {
+    const base = table();
+    const cases = [
+      { ...base, geometry: { ...base.geometry, columnWidths: [] } },
+      { ...base, geometry: { ...base.geometry, rowHeights: Array(9).fill(48) } },
+      { ...base, geometry: { ...base.geometry, columnWidths: [120, 0, 120] } },
+      { ...base, geometry: { ...base.geometry, cells: base.geometry.cells.slice(0, 2) } },
+      {
+        ...base,
+        geometry: { ...base.geometry, cells: [["A"], ...base.geometry.cells.slice(1)] },
+      },
+      {
+        ...base,
+        geometry: {
+          ...base.geometry,
+          cells: [["x".repeat(501), "", ""], ...base.geometry.cells.slice(1)],
+        },
+      },
+      {
+        ...base,
+        geometry: {
+          ...base.geometry,
+          cells: [["bad\u0000cell", "", ""], ...base.geometry.cells.slice(1)],
+        },
+      },
+      {
+        ...base,
+        geometry: {
+          ...base.geometry,
+          cells: [["bad\ud800cell", "", ""], ...base.geometry.cells.slice(1)],
+        },
+      },
+      { ...base, geometry: { ...base.geometry, headerRow: "true" } },
+      { ...base, geometry: { ...base.geometry, width: 360 } },
+      { ...base, style: { ...base.style, borderColor: "#94A3B8" } },
+      { ...base, style: { ...base.style, fontSize: 7 } },
+      {
+        ...base,
+        style: { kind: "sticky", fill: "#ffffff", textColor: "#000000", fontSize: 16, opacity: 1 },
+      },
+    ];
+    for (const item of cases) {
+      expect(() => validateDurableOperation({ kind: "item.create", item })).toThrow(
+        ProtocolValidationError,
+      );
+    }
+
+    const tooMuchText = Array.from({ length: 3 }, () =>
+      Array.from({ length: 6 }, () => "x".repeat(500)),
+    );
+    expect(() =>
+      validateDurableOperation({
+        kind: "item.create",
+        item: {
+          ...base,
+          geometry: {
+            ...base.geometry,
+            columnWidths: Array(6).fill(80),
+            rowHeights: Array(3).fill(48),
+            cells: tooMuchText,
+          },
+        },
+      }),
+    ).toThrow(/at most 8000/);
   });
 
   it("requires imagesEnabled in canonical authoritative board policy", () => {

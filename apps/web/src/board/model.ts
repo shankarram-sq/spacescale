@@ -17,6 +17,7 @@ import type {
   Matrix,
   Point,
   ServerAction,
+  TableGeometry,
 } from "../types";
 import { isBoardItem } from "../types";
 
@@ -614,7 +615,10 @@ export function itemBounds(item: BoardItem): Bounds {
   const padding =
     item.kind === "text"
       ? 2
-      : item.kind === "sticky" || item.kind === "stamp" || item.kind === "image"
+      : item.kind === "sticky" ||
+          item.kind === "stamp" ||
+          item.kind === "image" ||
+          item.kind === "table"
         ? 0
         : item.style.width / 2;
   return { minX: minX - padding, minY: minY - padding, maxX: maxX + padding, maxY: maxY + padding };
@@ -644,6 +648,8 @@ function geometryBounds(item: BoardItem): Bounds {
     case "sticky":
     case "image":
       return boxBounds(item.geometry);
+    case "table":
+      return tableBounds(item.geometry);
     case "stamp":
       return stampBounds(item.geometry);
     case "text": {
@@ -663,6 +669,15 @@ function geometryBounds(item: BoardItem): Bounds {
 
 function boxBounds(box: BoxGeometry): Bounds {
   return { minX: box.x, minY: box.y, maxX: box.x + box.width, maxY: box.y + box.height };
+}
+
+function tableBounds(table: TableGeometry): Bounds {
+  return {
+    minX: table.x,
+    minY: table.y,
+    maxX: table.x + table.columnWidths.reduce((total, width) => total + width, 0),
+    maxY: table.y + table.rowHeights.reduce((total, height) => total + height, 0),
+  };
 }
 
 function stampBounds(stamp: Extract<BoardItem, { kind: "stamp" }>["geometry"]): Bounds {
@@ -702,6 +717,9 @@ function preciseHit(item: BoardItem, point: Point, extra: number): boolean {
   }
   if (item.kind === "image") {
     return containsPoint(expandBounds(boxBounds(item.geometry), extra), local);
+  }
+  if (item.kind === "table") {
+    return containsPoint(expandBounds(tableBounds(item.geometry), extra), local);
   }
   if (item.kind === "stamp") {
     return containsPoint(expandBounds(stampBounds(item.geometry), extra), local);

@@ -15,6 +15,8 @@ import type {
   StickyGeometry,
   StickyStyle,
   StrokeStyle,
+  TableGeometry,
+  TableStyle,
   ToolName,
 } from "../types";
 import type { BoardModel, Bounds } from "./model";
@@ -26,6 +28,9 @@ export const STICKY_PADDING = 14;
 export const STICKY_CORNER_RADIUS = 12;
 export const STICKY_LINE_HEIGHT = 1.2;
 export const STICKY_CHARACTER_WIDTH = 0.56;
+export const TABLE_CELL_PADDING = 8;
+export const TABLE_LINE_HEIGHT = 1.2;
+export const TABLE_CHARACTER_WIDTH = 0.56;
 
 export class BoardRenderer {
   readonly svg: SVGSVGElement;
@@ -612,12 +617,158 @@ function itemNode(
     case "image":
       node = imageNode(item.id, item.geometry, item.style, loadImageAsset);
       break;
+    case "table":
+      node = tableNode(item.id, item.geometry, item.style);
+      break;
   }
   node.dataset.itemId = item.id;
   node.dataset.z = String(item.z);
   node.classList.add("board-item", `board-item-${item.kind}`);
   node.setAttribute("transform", matrixAttribute(item.transform));
   return node;
+}
+
+export function tableNode(itemId: string, geometry: TableGeometry, style: TableStyle): SVGGElement {
+  const node = svgElement("g");
+  const rowCount = geometry.rowHeights.length;
+  const columnCount = geometry.columnWidths.length;
+  node.setAttribute("role", "table");
+  node.setAttribute(
+    "aria-label",
+    `Table, ${rowCount} ${rowCount === 1 ? "row" : "rows"} by ${columnCount} ${columnCount === 1 ? "column" : "columns"}`,
+  );
+  node.setAttribute("aria-rowcount", String(rowCount));
+  node.setAttribute("aria-colcount", String(columnCount));
+  node.setAttribute("opacity", String(style.opacity));
+  node.dataset.tableRows = String(rowCount);
+  node.dataset.tableColumns = String(columnCount);
+
+  const definitions = svgElement("defs");
+  node.append(definitions);
+  const safeId = itemId.replace(/[^A-Za-z0-9_-]/gu, "-");
+  let y = geometry.y;
+  for (let row = 0; row < rowCount; row += 1) {
+    const rowHeight = geometry.rowHeights[row] ?? 0;
+    const rowGroup = svgElement("g");
+    rowGroup.classList.add("table-row");
+    rowGroup.setAttribute("role", "row");
+    rowGroup.dataset.tableRow = String(row);
+    let x = geometry.x;
+    for (let column = 0; column < columnCount; column += 1) {
+      const columnWidth = geometry.columnWidths[column] ?? 0;
+      const value = geometry.cells[row]?.[column] ?? "";
+      const isHeader = geometry.headerRow === true && row === 0;
+      const clipId = `table-cell-${safeId}-${row}-${column}`;
+      const clip = svgElement("clipPath");
+      clip.id = clipId;
+      const clipRect = svgElement("rect");
+      clipRect.setAttribute("x", String(x + 1));
+      clipRect.setAttribute("y", String(y + 1));
+      clipRect.setAttribute("width", String(Math.max(0, columnWidth - 2)));
+      clipRect.setAttribute("height", String(Math.max(0, rowHeight - 2)));
+      clip.append(clipRect);
+      definitions.append(clip);
+
+      const cell = svgElement("g");
+      cell.classList.add("table-cell");
+      cell.dataset.tableCell = "true";
+      cell.dataset.tableRow = String(row);
+      cell.dataset.tableColumn = String(column);
+      cell.setAttribute("role", isHeader ? "columnheader" : "cell");
+      cell.setAttribute("aria-rowindex", String(row + 1));
+      cell.setAttribute("aria-colindex", String(column + 1));
+      cell.setAttribute(
+        "aria-label",
+        `${isHeader ? "Header" : "Cell"} row ${row + 1}, column ${column + 1}${value ? `: ${value}` : ", empty"}`,
+      );
+
+      const background = svgElement("rect");
+      background.classList.add("table-cell-background");
+      background.setAttribute("x", String(x));
+      background.setAttribute("y", String(y));
+      background.setAttribute("width", String(columnWidth));
+      background.setAttribute("height", String(rowHeight));
+      background.setAttribute("fill", isHeader ? style.headerFill : style.fill);
+      background.setAttribute("stroke", style.borderColor);
+      background.setAttribute("stroke-width", "1");
+      background.setAttribute("vector-effect", "non-scaling-stroke");
+      cell.append(background);
+
+      const lines = wrapTableCellText(value, columnWidth, rowHeight, style.fontSize);
+      if (lines.length > 0) {
+        const text = svgElement("text");
+        text.classList.add("table-cell-text");
+        text.setAttribute("x", String(x + TABLE_CELL_PADDING));
+        text.setAttribute("y", String(y + TABLE_CELL_PADDING + style.fontSize));
+        text.setAttribute("fill", style.textColor);
+        text.setAttribute("font-size", String(style.fontSize));
+        text.setAttribute("font-family", "Inter, ui-sans-serif, system-ui, sans-serif");
+        text.setAttribute("font-weight", isHeader ? "700" : "500");
+        text.setAttribute("clip-path", `url(#${clipId})`);
+        text.setAttribute("xml:space", "preserve");
+        lines.forEach((line, index) => {
+          const span = svgElement("tspan");
+          span.setAttribute("x", String(x + TABLE_CELL_PADDING));
+          if (index > 0) span.setAttribute("dy", `${TABLE_LINE_HEIGHT}em`);
+          span.textContent = line || " ";
+          text.append(span);
+        });
+        cell.append(text);
+      }
+      rowGroup.append(cell);
+      x += columnWidth;
+    }
+    node.append(rowGroup);
+    y += rowHeight;
+  }
+  return node;
+}
+
+export function wrapTableCellText(
+  value: string,
+  width: number,
+  height: number,
+  fontSize: number,
+): string[] {
+  if (!value) return [];
+  const maxCharacters = Math.max(
+    1,
+    Math.floor(
+      Math.max(1, width - TABLE_CELL_PADDING * 2) / Math.max(1, fontSize * TABLE_CHARACTER_WIDTH),
+    ),
+  );
+  const maxLines = Math.max(
+    1,
+    Math.floor(
+      Math.max(1, height - TABLE_CELL_PADDING * 2) / Math.max(1, fontSize * TABLE_LINE_HEIGHT),
+    ),
+  );
+  const lines: string[] = [];
+  for (const paragraph of value.split(/\r\n?|\n/u)) {
+    if (!paragraph) {
+      lines.push("");
+      continue;
+    }
+    const words = paragraph.split(/\s+/u).filter(Boolean);
+    let current = "";
+    for (const word of words) {
+      const points = [...word];
+      const chunks: string[] = [];
+      for (let index = 0; index < points.length; index += maxCharacters) {
+        chunks.push(points.slice(index, index + maxCharacters).join(""));
+      }
+      for (const chunk of chunks) {
+        const candidate = current ? `${current} ${chunk}` : chunk;
+        if ([...candidate].length <= maxCharacters) current = candidate;
+        else {
+          if (current) lines.push(current);
+          current = chunk;
+        }
+      }
+    }
+    if (current) lines.push(current);
+  }
+  return lines.slice(0, maxLines);
 }
 
 function imageNode(

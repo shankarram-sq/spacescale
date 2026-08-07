@@ -426,7 +426,8 @@ function itemKind(value: unknown): BoardItemKind {
     value === "ellipse" ||
     value === "text" ||
     value === "sticky" ||
-    value === "stamp"
+    value === "stamp" ||
+    value === "table"
   ) {
     return value;
   }

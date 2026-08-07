@@ -270,6 +270,50 @@ function createImageCommit(
   };
 }
 
+function createTableCommit(
+  commandId: string,
+  actionId: string,
+  itemId: string,
+  firstCell = "Know <this>",
+) {
+  return {
+    v: 1,
+    t: "client.commit",
+    commandId,
+    actionId,
+    baseSeq: 0,
+    op: {
+      kind: "item.create",
+      item: {
+        id: itemId,
+        kind: "table",
+        style: {
+          kind: "table",
+          borderColor: "#64748b",
+          fill: "#ffffff",
+          headerFill: "#e2e8f0",
+          textColor: "#0f172a",
+          fontSize: 18,
+          opacity: 1,
+        },
+        transform: [1, 0, 0, 1, 0, 0],
+        geometry: {
+          x: 10,
+          y: 20,
+          columnWidths: [120, 120, 120],
+          rowHeights: [48, 48, 48],
+          cells: [
+            [firstCell, "Want", "Learned"],
+            ["", "", ""],
+            ["", "", ""],
+          ],
+          headerRow: true,
+        },
+      },
+    },
+  };
+}
+
 function seedActionRows(
   sql: SqlStorage,
   count: number,
@@ -3006,6 +3050,244 @@ describe("BoardRoom initialization", () => {
       expect(state).toEqual({ latestSeq: 0, actions: 0, receipts: 0 });
     },
   );
+});
+
+describe("BoardRoom table collaboration", () => {
+  afterEach(async () => reset());
+
+  it("attributes and durably replays tables while enforcing admission and classroom controls", async () => {
+    const typedEnv = env as unknown as Env;
+    const stub = typedEnv.BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    await runInDurableObject(stub, (_instance, durableState) => {
+      const now = Date.now();
+      durableState.storage.transactionSync(() => {
+        durableState.storage.sql.exec(
+          `INSERT INTO members(actor_id, role, display_name, created_at_ms, updated_at_ms)
+           VALUES (?, 'viewer', 'Viewer', ?, ?)`,
+          studentId,
+          now,
+          now,
+        );
+        durableState.storage.sql.exec("UPDATE board SET acl_version = 3");
+      });
+    });
+
+    const owner = await connect(stub, actorId);
+    const editor = await connect(stub, editorId);
+    const viewer = await connect(stub, studentId);
+
+    const malformed = createTableCommit(
+      "018f0000-0000-7000-8000-000000000920",
+      "018f0000-0000-7000-8000-000000000921",
+      "018f0000-0000-7000-8000-000000000922",
+    );
+    malformed.op.item.geometry.cells[1] = ["ragged"];
+    owner.socket.send(JSON.stringify(malformed));
+    expect(
+      await owner.next((frame) => frame.t === "server.rejected" && frame.code === "INVALID_FRAME"),
+    ).toMatchObject({ code: "INVALID_FRAME", latestSeq: 0 });
+    const afterMalformed = await runInDurableObject(stub, (_instance, durableState) => ({
+      latestSeq: durableState.storage.sql
+        .exec<{ latest_seq: number }>("SELECT latest_seq FROM board")
+        .one().latest_seq,
+      actions: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM actions")
+        .one().count,
+      items: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM items")
+        .one().count,
+    }));
+    expect(afterMalformed).toEqual({ latestSeq: 0, actions: 0, items: 0 });
+
+    const ownerCreate = createTableCommit(
+      "018f0000-0000-7000-8000-000000000923",
+      "018f0000-0000-7000-8000-000000000924",
+      "018f0000-0000-7000-8000-000000000925",
+    );
+    owner.socket.send(JSON.stringify(ownerCreate));
+    expect(
+      await owner.next(
+        (frame) => frame.t === "server.action" && frame.commandId === ownerCreate.commandId,
+      ),
+    ).toMatchObject({
+      seq: 1,
+      actor: { id: actorId, displayName: "Owner 1" },
+      op: {
+        kind: "item.create",
+        item: { ...ownerCreate.op.item, z: 1, version: 1, createdBy: actorId },
+      },
+    });
+
+    const editorCreate = createTableCommit(
+      "018f0000-0000-7000-8000-000000000926",
+      "018f0000-0000-7000-8000-000000000927",
+      "018f0000-0000-7000-8000-000000000928",
+      "Editor observation",
+    );
+    editorCreate.baseSeq = 1;
+    editorCreate.op.item.geometry.x = 410;
+    editor.socket.send(JSON.stringify(editorCreate));
+    expect(
+      await editor.next(
+        (frame) => frame.t === "server.action" && frame.commandId === editorCreate.commandId,
+      ),
+    ).toMatchObject({
+      seq: 2,
+      actor: { id: editorId, displayName: "Editor" },
+      op: {
+        kind: "item.create",
+        item: { ...editorCreate.op.item, z: 2, version: 2, createdBy: editorId },
+      },
+    });
+
+    const viewerCreate = createTableCommit(
+      "018f0000-0000-7000-8000-000000000929",
+      "018f0000-0000-7000-8000-00000000092a",
+      "018f0000-0000-7000-8000-00000000092b",
+    );
+    viewerCreate.baseSeq = 2;
+    viewer.socket.send(JSON.stringify(viewerCreate));
+    expect(
+      await viewer.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === viewerCreate.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 2 });
+
+    const activity = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/activity?afterSeq=0&limit=10`),
+    );
+    expect(activity.status).toBe(200);
+    expect(await activity.json()).toMatchObject({
+      events: [
+        {
+          seq: 1,
+          actor: { id: actorId, displayName: "Owner 1" },
+          kind: "item.create",
+          itemIds: [ownerCreate.op.item.id],
+        },
+        {
+          seq: 2,
+          actor: { id: editorId, displayName: "Editor" },
+          kind: "item.create",
+          itemIds: [editorCreate.op.item.id],
+        },
+      ],
+    });
+
+    const named = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/snapshots`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "table-durability-snapshot-0001",
+        },
+        body: JSON.stringify({ label: "Classroom tables" }),
+      }),
+    );
+    expect(named.status).toBe(201);
+    expect(await named.json()).toMatchObject({
+      snapshot: { seq: 2, kind: "named", label: "Classroom tables", itemCount: 2 },
+    });
+    const snapshotKey = await runInDurableObject(
+      stub,
+      (_instance, durableState) =>
+        durableState.storage.sql
+          .exec<{ r2_json_key: string }>("SELECT r2_json_key FROM snapshots WHERE seq = 2")
+          .one().r2_json_key,
+    );
+
+    const lock = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ drawingPolicy: "locked", expectedAclVersion: 3 }),
+      }),
+    );
+    expect(lock.status).toBe(200);
+    await editor.next((frame) => frame.t === "access.changed" && frame.drawingPolicy === "locked");
+
+    const lockedEditorCreate = createTableCommit(
+      "018f0000-0000-7000-8000-00000000092c",
+      "018f0000-0000-7000-8000-00000000092d",
+      "018f0000-0000-7000-8000-00000000092e",
+    );
+    lockedEditorCreate.baseSeq = 2;
+    editor.socket.send(JSON.stringify(lockedEditorCreate));
+    expect(
+      await editor.next(
+        (frame) =>
+          frame.t === "server.rejected" && frame.commandId === lockedEditorCreate.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 2 });
+
+    owner.socket.close(1000, "reconnect");
+    editor.socket.close(1000, "reconnect");
+    viewer.socket.close(1000, "reconnect");
+    const snapshotObject = await typedEnv.BOARD_SNAPSHOTS.get(snapshotKey);
+    if (snapshotObject === null) throw new Error("Expected the named table snapshot in R2.");
+    const storedSnapshot = JSON.parse(await snapshotObject.text()) as {
+      seq: number;
+      items: unknown[];
+    };
+    expect(storedSnapshot).toMatchObject({
+      seq: 2,
+      items: [
+        { kind: "table", createdBy: actorId, geometry: ownerCreate.op.item.geometry },
+        { kind: "table", createdBy: editorId, geometry: editorCreate.op.item.geometry },
+      ],
+    });
+    const replayed = await connect(stub, actorId, 0);
+    const replay = await replayed.next((frame) => frame.t === "server.replay");
+    expect(replay).toMatchObject({
+      fromExclusive: 0,
+      toInclusive: 2,
+      actions: [
+        { seq: 1, actor: { id: actorId }, op: { item: { kind: "table" } } },
+        { seq: 2, actor: { id: editorId }, op: { item: { kind: "table" } } },
+      ],
+    });
+
+    const exportedResponse = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/export.json`),
+    );
+    expect(exportedResponse.status).toBe(200);
+    expect(exportedResponse.headers.get("X-Whiteboard-Seq")).toBe("2");
+    const exported = (await exportedResponse.json()) as { seq: number; items: unknown[] };
+    expect(exported).toMatchObject({
+      seq: 2,
+      items: [
+        { kind: "table", createdBy: actorId, geometry: ownerCreate.op.item.geometry },
+        { kind: "table", createdBy: editorId, geometry: editorCreate.op.item.geometry },
+      ],
+    });
+
+    const svgResponse = await stub.fetch(internalRequest(`/api/v1/boards/${boardId}/export.svg`));
+    expect(svgResponse.status).toBe(200);
+    expect(svgResponse.headers.get("X-Whiteboard-Seq")).toBe("2");
+    const svg = await svgResponse.text();
+    expect(svg).toContain("Know &lt;this&gt;");
+    expect(svg).toContain("Editor observation");
+    expect(svg).not.toContain("Know <this>");
+
+    const finalState = await runInDurableObject(stub, (_instance, durableState) => ({
+      latestSeq: durableState.storage.sql
+        .exec<{ latest_seq: number }>("SELECT latest_seq FROM board")
+        .one().latest_seq,
+      actions: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM actions")
+        .one().count,
+      liveTables: durableState.storage.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM items WHERE deleted = 0 AND kind = 'table'",
+        )
+        .one().count,
+    }));
+    expect(finalState).toEqual({ latestSeq: 2, actions: 2, liveTables: 2 });
+
+    replayed.socket.close(1000, "done");
+  }, 45_000);
 });
 
 function loggedEvents(

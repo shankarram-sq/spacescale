@@ -15,6 +15,7 @@ export type ToolName =
   | "sticky"
   | "stamp"
   | "image"
+  | "table"
   | "eraser"
   | "pan";
 
@@ -57,7 +58,23 @@ export type ImageStyle = {
   radius: number;
 };
 
-export type ItemStyle = StrokeStyle | TextStyle | StickyStyle | StampStyle | ImageStyle;
+export type TableStyle = {
+  kind: "table";
+  borderColor: string;
+  fill: string;
+  headerFill: string;
+  textColor: string;
+  fontSize: number;
+  opacity: number;
+};
+
+export type ItemStyle =
+  | StrokeStyle
+  | TextStyle
+  | StickyStyle
+  | StampStyle
+  | ImageStyle
+  | TableStyle;
 export type PencilGeometry = { points: Point[] };
 export type LineGeometry = { x1: number; y1: number; x2: number; y2: number };
 export type BoxGeometry = { x: number; y: number; width: number; height: number };
@@ -81,6 +98,15 @@ export type ImageGeometry = {
   mimeType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
   intrinsicWidth: number;
   intrinsicHeight: number;
+};
+
+export type TableGeometry = {
+  x: number;
+  y: number;
+  columnWidths: number[];
+  rowHeights: number[];
+  cells: string[][];
+  headerRow?: boolean;
 };
 
 type ItemBase = {
@@ -131,6 +157,11 @@ export type ImageItem = ItemBase & {
   style: ImageStyle;
   geometry: ImageGeometry;
 };
+export type TableItem = ItemBase & {
+  kind: "table";
+  style: TableStyle;
+  geometry: TableGeometry;
+};
 export type BoardItem =
   | PencilItem
   | LineItem
@@ -139,7 +170,8 @@ export type BoardItem =
   | TextItem
   | StickyItem
   | StampItem
-  | ImageItem;
+  | ImageItem
+  | TableItem;
 
 type WithoutServerFields<T> = T extends BoardItem ? Omit<T, "z" | "version" | "createdBy"> : never;
 export type NewBoardItem = WithoutServerFields<BoardItem>;
@@ -153,7 +185,8 @@ export type ItemPatch = {
     | TextGeometry
     | StickyGeometry
     | StampGeometry
-    | ImageGeometry;
+    | ImageGeometry
+    | TableGeometry;
 };
 
 export type BatchItemOperation =
@@ -301,9 +334,17 @@ export function isBoardItem(value: unknown): value is BoardItem {
   return (
     typeof item.id === "string" &&
     typeof item.kind === "string" &&
-    ["pencil", "line", "rectangle", "ellipse", "text", "sticky", "stamp", "image"].includes(
-      item.kind,
-    ) &&
+    [
+      "pencil",
+      "line",
+      "rectangle",
+      "ellipse",
+      "text",
+      "sticky",
+      "stamp",
+      "image",
+      "table",
+    ].includes(item.kind) &&
     typeof item.z === "number" &&
     typeof item.version === "number" &&
     Array.isArray(item.transform) &&

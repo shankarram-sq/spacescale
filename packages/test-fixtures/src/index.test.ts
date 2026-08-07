@@ -10,6 +10,7 @@ import {
   newRectangleItem,
   newStampItem,
   newStickyItem,
+  newTableItem,
   serverCreateAction,
 } from "./index.js";
 
@@ -25,6 +26,9 @@ describe("deterministic shared fixtures", () => {
     );
     expect(validateClientFrame(createCommitFrame(newImageItem()))).toEqual(
       createCommitFrame(newImageItem()),
+    );
+    expect(validateClientFrame(createCommitFrame(newTableItem()))).toEqual(
+      createCommitFrame(newTableItem()),
     );
   });
 

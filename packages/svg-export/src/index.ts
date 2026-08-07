@@ -38,6 +38,7 @@ type StrokeBoardItem = Extract<BoardItem, { kind: "pencil" | "line" | "rectangle
 type StickyBoardItem = Extract<BoardItem, { kind: "sticky" }>;
 type ImageBoardItem = Extract<BoardItem, { kind: "image" }>;
 type StampBoardItem = Extract<BoardItem, { kind: "stamp" }>;
+type TableBoardItem = Extract<BoardItem, { kind: "table" }>;
 
 export interface SvgExportInput {
   boardId: string;
@@ -316,6 +317,96 @@ function renderStamp(item: StampBoardItem): string {
   return `<g ${attributes}><g transform="${symbolTransform}">${symbol}</g></g>`;
 }
 
+const TABLE_CELL_PADDING = 8;
+const TABLE_LINE_HEIGHT = 1.2;
+const TABLE_CODE_POINT_WIDTH = 0.56;
+
+function tableCellTextLines(
+  text: string,
+  width: number,
+  height: number,
+  fontSize: number,
+): string[] {
+  const contentWidth = width - TABLE_CELL_PADDING * 2;
+  const contentHeight = height - TABLE_CELL_PADDING * 2;
+  if (text.length === 0 || contentWidth <= 0 || contentHeight <= 0) return [];
+  const maxCharacters = Math.max(1, Math.floor(contentWidth / (fontSize * TABLE_CODE_POINT_WIDTH)));
+  const maxLines = Math.max(1, Math.floor(contentHeight / (fontSize * TABLE_LINE_HEIGHT)));
+  const lines: string[] = [];
+  let paragraphStart = 0;
+  while (paragraphStart <= text.length && lines.length < maxLines) {
+    const nextParagraph = appendStickyParagraphLines(
+      text,
+      paragraphStart,
+      maxCharacters,
+      maxLines,
+      lines,
+    );
+    if (nextParagraph === null) break;
+    paragraphStart = nextParagraph;
+  }
+  return lines;
+}
+
+function renderTable(item: TableBoardItem): string {
+  const { x, y, columnWidths, rowHeights, cells, headerRow } = item.geometry;
+  const attributes = [
+    `transform="${transformAttribute(item)}"`,
+    `opacity="${number(item.style.opacity)}"`,
+    `data-item-id="${escapeXmlAttribute(item.id)}"`,
+    `role="table"`,
+  ].join(" ");
+  const clips: string[] = [];
+  const content: string[] = [];
+  let cellY = y;
+  for (let rowIndex = 0; rowIndex < rowHeights.length; rowIndex += 1) {
+    const height = rowHeights[rowIndex];
+    const row = cells[rowIndex];
+    if (height === undefined || row === undefined) {
+      exportFail("A canonical table must contain matching row heights and cells.");
+    }
+    let cellX = x;
+    for (let columnIndex = 0; columnIndex < columnWidths.length; columnIndex += 1) {
+      const width = columnWidths[columnIndex];
+      const text = row[columnIndex];
+      if (width === undefined || text === undefined) {
+        exportFail("A canonical table must contain matching column widths and cells.");
+      }
+      const isHeader = headerRow === true && rowIndex === 0;
+      const fill = isHeader ? item.style.headerFill : item.style.fill;
+      const cellRole = isHeader ? "columnheader" : "cell";
+      const rectangle = `<rect x="${number(cellX)}" y="${number(cellY)}" width="${number(width)}" height="${number(height)}" fill="${escapeXmlAttribute(fill)}" stroke="${escapeXmlAttribute(item.style.borderColor)}" stroke-width="1" />`;
+      const textLines = tableCellTextLines(text, width, height, item.style.fontSize);
+      let renderedText = "";
+      if (textLines.length > 0) {
+        const clipId = `table-clip-${item.id}-${rowIndex}-${columnIndex}`;
+        const contentX = cellX + TABLE_CELL_PADDING;
+        const contentY = cellY + TABLE_CELL_PADDING;
+        const contentWidth = Math.max(0, width - TABLE_CELL_PADDING * 2);
+        const contentHeight = Math.max(0, height - TABLE_CELL_PADDING * 2);
+        clips.push(
+          `<clipPath id="${escapeXmlAttribute(clipId)}" clipPathUnits="userSpaceOnUse"><rect x="${number(contentX)}" y="${number(contentY)}" width="${number(contentWidth)}" height="${number(contentHeight)}" /></clipPath>`,
+        );
+        const lineHeight = number(item.style.fontSize * TABLE_LINE_HEIGHT);
+        const spans = textLines
+          .map(
+            (line, index) =>
+              `<tspan x="${number(contentX)}" dy="${index === 0 ? "0" : lineHeight}">${escapeXmlText(line || " ")}</tspan>`,
+          )
+          .join("");
+        renderedText = `<text x="${number(contentX)}" y="${number(contentY + item.style.fontSize)}" fill="${escapeXmlAttribute(item.style.textColor)}" font-size="${number(item.style.fontSize)}" font-family="Inter, ui-sans-serif, system-ui, sans-serif" xml:space="preserve" clip-path="url(#${escapeXmlAttribute(clipId)})">${spans}</text>`;
+      }
+      content.push(
+        `<g role="${cellRole}" aria-label="${escapeXmlAttribute(text)}">${rectangle}${renderedText}</g>`,
+      );
+      cellX += width;
+    }
+    cellY += height;
+  }
+  const definitions = clips.length === 0 ? "" : `<defs>${clips.join("")}</defs>`;
+  return `<g ${attributes}>${definitions}${content.join("")}</g>`;
+}
+
 function renderText(item: Extract<BoardItem, { kind: "text" }>): string {
   const lines = item.geometry.text.split(/\r\n?|\n/u);
   const attributes = [
@@ -365,6 +456,8 @@ export function renderSvgItem(item: BoardItem): string {
       return renderImagePlaceholder(item);
     case "stamp":
       return renderStamp(item);
+    case "table":
+      return renderTable(item);
   }
 }
 

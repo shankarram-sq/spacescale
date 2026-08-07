@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { BoardSnapshot } from "../types";
+import type { BoardItem, BoardSnapshot, DurableOperation } from "../types";
 import {
   boardIdFromPath,
   clampImageAlt,
@@ -9,6 +9,7 @@ import {
   MAX_IMAGE_UPLOAD_BYTES,
   STAMP_CHOICES,
   STICKY_COLORS,
+  tableCellDraftFromOperation,
 } from "./app";
 
 const boardId = "b_1234567890123456789012";
@@ -130,6 +131,57 @@ describe("image card UI validation", () => {
 
   it("limits alt text by Unicode code point", () => {
     expect(clampImageAlt(`${"😀".repeat(500)}overflow`)).toBe("😀".repeat(500));
+  });
+});
+
+describe("table cell draft recovery", () => {
+  it("recovers the exact single-cell text from a rejected whole-geometry update", () => {
+    const item: Extract<BoardItem, { kind: "table" }> = {
+      id: "018f47a1-7a2b-7c3d-8e4f-123456789ac1",
+      kind: "table",
+      z: 1,
+      version: 7,
+      createdBy: "018f47a1-7a2b-7c3d-8e4f-123456789abc",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "table",
+        borderColor: "#a8a59d",
+        fill: "#fffefa",
+        headerFill: "#e8edff",
+        textColor: "#20201e",
+        fontSize: 16,
+        opacity: 1,
+      },
+      geometry: {
+        x: 10,
+        y: 20,
+        columnWidths: [120, 120],
+        rowHeights: [48, 48],
+        cells: [
+          ["Topic", "Evidence"],
+          ["Before", ""],
+        ],
+      },
+    };
+    const geometry = structuredClone(item.geometry);
+    const editedRow = geometry.cells[1];
+    if (!editedRow) throw new Error("Expected the second table row.");
+    editedRow[0] = "Student draft must survive exactly <&> 😀";
+    const operation: DurableOperation = {
+      kind: "item.update",
+      itemId: item.id,
+      expectedVersion: item.version,
+      patch: { geometry },
+    };
+
+    expect(tableCellDraftFromOperation(operation, new Map([[item.id, item]]))).toEqual({
+      itemId: item.id,
+      row: 1,
+      column: 0,
+      text: "Student draft must survive exactly <&> 😀",
+      selectionStart: 41,
+      selectionEnd: 41,
+    });
   });
 });
 
