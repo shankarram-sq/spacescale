@@ -611,7 +611,12 @@ export function itemBounds(item: BoardItem): Bounds {
   const minY = Math.min(...transformed.map((point) => point[1]));
   const maxX = Math.max(...transformed.map((point) => point[0]));
   const maxY = Math.max(...transformed.map((point) => point[1]));
-  const padding = item.kind === "text" ? 2 : item.kind === "sticky" ? 0 : item.style.width / 2;
+  const padding =
+    item.kind === "text"
+      ? 2
+      : item.kind === "sticky" || item.kind === "stamp"
+        ? 0
+        : item.style.width / 2;
   return { minX: minX - padding, minY: minY - padding, maxX: maxX + padding, maxY: maxY + padding };
 }
 
@@ -638,6 +643,8 @@ function geometryBounds(item: BoardItem): Bounds {
     case "ellipse":
     case "sticky":
       return boxBounds(item.geometry);
+    case "stamp":
+      return stampBounds(item.geometry);
     case "text": {
       const lines = item.geometry.text.split("\n");
       const width =
@@ -655,6 +662,16 @@ function geometryBounds(item: BoardItem): Bounds {
 
 function boxBounds(box: BoxGeometry): Bounds {
   return { minX: box.x, minY: box.y, maxX: box.x + box.width, maxY: box.y + box.height };
+}
+
+function stampBounds(stamp: Extract<BoardItem, { kind: "stamp" }>["geometry"]): Bounds {
+  const half = stamp.size / 2;
+  return {
+    minX: stamp.x - half,
+    minY: stamp.y - half,
+    maxX: stamp.x + half,
+    maxY: stamp.y + half,
+  };
 }
 
 function preciseHit(item: BoardItem, point: Point, extra: number): boolean {
@@ -681,6 +698,9 @@ function preciseHit(item: BoardItem, point: Point, extra: number): boolean {
   }
   if (item.kind === "sticky") {
     return containsPoint(expandBounds(boxBounds(item.geometry), extra), local);
+  }
+  if (item.kind === "stamp") {
+    return containsPoint(expandBounds(stampBounds(item.geometry), extra), local);
   }
   return true;
 }

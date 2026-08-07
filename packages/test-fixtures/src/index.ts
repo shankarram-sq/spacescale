@@ -23,6 +23,7 @@ export const FIXTURE_IDS = {
   text: "018f0000-0000-7000-8000-000000000005",
   copy: "018f0000-0000-7000-8000-000000000006",
   sticky: "018f0000-0000-7000-8000-000000000007",
+  stamp: "018f0000-0000-7000-8000-000000000008",
 } as const;
 
 export const FIXTURE_TIME = 1_785_840_000_000;
@@ -99,6 +100,17 @@ export function newStickyItem(overrides: Partial<NewBoardItem> = {}): NewBoardIt
     },
     transform: [1, 0, 0, 1, 0, 0],
     geometry: { x: 10, y: 20, width: 180, height: 140, text: "Fixture sticky" },
+    ...overrides,
+  } as NewBoardItem;
+}
+
+export function newStampItem(overrides: Partial<NewBoardItem> = {}): NewBoardItem {
+  return {
+    id: FIXTURE_IDS.stamp,
+    kind: "stamp",
+    style: { kind: "stamp", color: "#e11d48", opacity: 1 },
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: { x: 60, y: 70, size: 72, stamp: "heart" },
     ...overrides,
   } as NewBoardItem;
 }

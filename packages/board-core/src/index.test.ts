@@ -47,6 +47,16 @@ function sticky(id = RECTANGLE_ID) {
   };
 }
 
+function stamp(id = RECTANGLE_ID) {
+  return {
+    id,
+    kind: "stamp" as const,
+    style: { kind: "stamp" as const, color: "#e11d48", opacity: 1 },
+    transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+    geometry: { x: 40, y: 50, size: 72, stamp: "heart" as const },
+  };
+}
+
 describe("normal board reductions", () => {
   it("assigns paint order/server fields and emits complete before/after effects", () => {
     const original = createBoardState();
@@ -300,6 +310,113 @@ describe("normal board reductions", () => {
           itemId: RECTANGLE_ID,
           expectedVersion: 1,
           patch: { geometry: { x: 1, y: 2, text: "ordinary text" } },
+        },
+        { seq: 2, actorId: ALICE },
+      ),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_FRAME" }));
+  });
+
+  it("persists stamp create, update, copy, delete, history, and snapshots", () => {
+    const created = applyDurableOperation(
+      createBoardState(),
+      { kind: "item.create", item: stamp() },
+      { seq: 1, actorId: ALICE },
+    );
+    const updated = applyDurableOperation(
+      created.state,
+      {
+        kind: "item.update",
+        itemId: RECTANGLE_ID,
+        expectedVersion: 1,
+        patch: {
+          style: { kind: "stamp", color: "#2563eb", opacity: 0.8 },
+          geometry: { x: 42, y: 54, size: 80, stamp: "sparkle" },
+        },
+      },
+      { seq: 2, actorId: ALICE },
+    );
+    expect(updated.state.items.get(RECTANGLE_ID)?.item).toMatchObject({
+      kind: "stamp",
+      version: 2,
+      style: { kind: "stamp", color: "#2563eb", opacity: 0.8 },
+      geometry: { x: 42, y: 54, size: 80, stamp: "sparkle" },
+    });
+
+    const snapshot = JSON.parse(
+      serializeCanonicalSnapshot({
+        boardId: "018f0000-0000-7000-8000-0000000000ff",
+        seq: 2,
+        createdAt: 1_785_840_000_000,
+        settings: { title: "Stamp check-in" },
+        items: liveItemsInPaintOrder(updated.state),
+      }),
+    ) as { items: unknown[] };
+    expect(snapshot.items).toEqual([
+      expect.objectContaining({
+        kind: "stamp",
+        style: { kind: "stamp", color: "#2563eb", opacity: 0.8 },
+        geometry: { x: 42, y: 54, size: 80, stamp: "sparkle" },
+      }),
+    ]);
+
+    const copied = applyDurableOperation(
+      updated.state,
+      {
+        kind: "item.copy",
+        sourceItemId: RECTANGLE_ID,
+        expectedVersion: 2,
+        newItemId: COPY_ID,
+        translate: { x: 10, y: -5 },
+      },
+      { seq: 3, actorId: BOB },
+    );
+    expect(copied.state.items.get(COPY_ID)?.item).toMatchObject({
+      kind: "stamp",
+      createdBy: BOB,
+      transform: [1, 0, 0, 1, 10, -5],
+      geometry: { stamp: "sparkle" },
+    });
+
+    const deleted = applyDurableOperation(
+      copied.state,
+      { kind: "item.delete", itemId: RECTANGLE_ID, expectedVersion: 2 },
+      { seq: 4, actorId: ALICE },
+    );
+    expect(deleted.state.items.get(RECTANGLE_ID)?.exists).toBe(false);
+    const undone = applyUndoEffects(deleted.state, deleted.effects, {
+      seq: 5,
+      targetActionId: ACTION_2,
+    });
+    expect(undone.state.items.get(RECTANGLE_ID)).toMatchObject({
+      exists: true,
+      item: { kind: "stamp", version: 5, geometry: { stamp: "sparkle" } },
+    });
+    const redone = applyRedoEffects(undone.state, deleted.effects, {
+      seq: 6,
+      targetActionId: ACTION_2,
+    });
+    expect(redone.state.items.get(RECTANGLE_ID)).toMatchObject({ exists: false });
+
+    expect(() =>
+      applyDurableOperation(
+        created.state,
+        {
+          kind: "item.update",
+          itemId: RECTANGLE_ID,
+          expectedVersion: 1,
+          patch: { style: { kind: "text", color: "#123456", fontSize: 16, opacity: 1 } },
+        },
+        { seq: 2, actorId: ALICE },
+      ),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_FRAME" }));
+    expect(() =>
+      applyDurableOperation(
+        created.state,
+        {
+          kind: "item.update",
+          itemId: RECTANGLE_ID,
+          expectedVersion: 1,
+          patch: { geometry: { x: 1, y: 2, text: "wrong geometry" } },
         },
         { seq: 2, actorId: ALICE },
       ),

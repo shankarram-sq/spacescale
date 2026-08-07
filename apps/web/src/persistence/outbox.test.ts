@@ -187,4 +187,34 @@ describe("durable outbox identity scoping", () => {
     expect(restored.active).toHaveLength(1);
     expect(restored.active[0]?.command).toEqual(stickyCommand);
   });
+
+  it("round-trips a stamp create for later offline restore", async () => {
+    installIndexedDb();
+    const outbox = new DurableOutbox();
+    const boardId = "b_1234567890123456789012";
+    const actorId = "a_1111111111111111111111";
+    const stampCommand: CommitFrame = {
+      v: PROTOCOL_VERSION,
+      t: "client.commit",
+      commandId: "stamp-command",
+      actionId: "stamp-action",
+      baseSeq: 8,
+      op: {
+        kind: "item.create",
+        item: {
+          id: "018f47a1-7a2b-7c3d-8e4f-123456789abe",
+          kind: "stamp",
+          style: { kind: "stamp", color: "#e5484d", opacity: 1 },
+          transform: [1, 0, 0, 1, 0, 0],
+          geometry: { x: 120, y: 90, size: 72, stamp: "heart" },
+        },
+      },
+    };
+
+    await outbox.put(boardId, actorId, stampCommand);
+    const restored = await outbox.contents(boardId, actorId);
+
+    expect(restored.expired).toEqual([]);
+    expect(restored.active[0]?.command).toEqual(stampCommand);
+  });
 });

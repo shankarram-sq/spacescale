@@ -9,6 +9,8 @@ import type {
   LineGeometry,
   Matrix,
   Point,
+  StampKind,
+  StampStyle,
   StickyGeometry,
   StickyStyle,
   StrokeStyle,
@@ -26,10 +28,14 @@ type StyleState = {
   stickyTextColor: string;
   stickyFontSize: number;
   stickyOpacity: number;
+  stampKind: StampKind;
+  stampColor: string;
+  stampOpacity: number;
 };
 
 export const DEFAULT_STICKY_WIDTH = 180;
 export const DEFAULT_STICKY_HEIGHT = 140;
+export const DEFAULT_STAMP_SIZE = 72;
 
 const TOOL_SHORTCUTS: Partial<Record<string, ToolName>> = {
   v: "select",
@@ -39,6 +45,7 @@ const TOOL_SHORTCUTS: Partial<Record<string, ToolName>> = {
   o: "ellipse",
   t: "text",
   n: "sticky",
+  k: "stamp",
   e: "eraser",
   h: "pan",
 };
@@ -50,6 +57,7 @@ const SHORTCUT_DRAW_TOOLS = new Set<ToolName>([
   "ellipse",
   "text",
   "sticky",
+  "stamp",
   "eraser",
 ]);
 
@@ -147,6 +155,33 @@ export function buildStickyCreateOperation(
   };
 }
 
+export function buildStampCreateOperation(
+  itemId: string,
+  point: Point,
+  style: Pick<StyleState, "stampKind" | "stampColor" | "stampOpacity">,
+): BatchItemOperation {
+  const stampStyle: StampStyle = {
+    kind: "stamp",
+    color: style.stampColor,
+    opacity: style.stampOpacity,
+  };
+  return {
+    kind: "item.create",
+    item: {
+      id: itemId,
+      kind: "stamp",
+      style: stampStyle,
+      transform: identityMatrix(),
+      geometry: {
+        x: point[0],
+        y: point[1],
+        size: DEFAULT_STAMP_SIZE,
+        stamp: style.stampKind,
+      },
+    },
+  };
+}
+
 export type ToolControllerOptions = {
   model: BoardModel;
   renderer: BoardRenderer;
@@ -167,6 +202,7 @@ export type ToolControllerOptions = {
   presence: (cursor: { x: number; y: number } | null, tool: ToolName) => void;
   editText: (point: Point, item?: BoardItem) => void;
   onToolChanged: (tool: ToolName) => void;
+  onToolReactivated: (tool: ToolName) => void;
   onSelectionChanged: (ids: ReadonlySet<string>) => void;
   notify: (message: string, kind?: "info" | "warning" | "error") => void;
 };
@@ -222,6 +258,14 @@ type Gesture =
       start: Point;
       current: Point;
       item?: Extract<BoardItem, { kind: "sticky" }>;
+    }
+  | {
+      kind: "stamp";
+      pointerId: number;
+      pointerType: string;
+      start: Point;
+      current: Point;
+      operation: BatchItemOperation;
     };
 
 type PinchState = {
@@ -477,6 +521,25 @@ export class ToolController {
       }
       this.options.editText(point, sticky);
       event.preventDefault();
+      return;
+    }
+
+    if (this.toolValue === "stamp") {
+      const operation = buildStampCreateOperation(createId(), point, style);
+      if (event.pointerType === "touch") {
+        this.gesture = {
+          kind: "stamp",
+          pointerId: event.pointerId,
+          pointerType: event.pointerType,
+          start: point,
+          current: point,
+          operation,
+        };
+      } else {
+        void this.options.commit(operation);
+      }
+      event.preventDefault();
+      return;
     }
   };
 
@@ -564,7 +627,7 @@ export class ToolController {
       this.options.renderer.showMarquee(pointsBounds(gesture.start, gesture.current));
     } else if (gesture.kind === "eraser") {
       this.collectEraser(boardPoint(event, this.options.renderer), gesture);
-    } else if (gesture.kind === "sticky") {
+    } else if (gesture.kind === "sticky" || gesture.kind === "stamp") {
       gesture.current = boardPoint(event, this.options.renderer);
     }
     event.preventDefault();
@@ -669,7 +732,11 @@ export class ToolController {
     const shortcutKey = event.key.toLowerCase();
     if (TOOL_SHORTCUTS[shortcutKey]) {
       const tool = toolFromShortcut(shortcutKey, this.options.canDraw());
-      if (tool) this.setTool(tool);
+      if (tool) {
+        const wasActive = this.toolValue === tool;
+        this.setTool(tool);
+        if (wasActive) this.options.onToolReactivated(tool);
+      }
       event.preventDefault();
     }
   };
@@ -762,6 +829,16 @@ export class ToolController {
       if (point === gesture.start) this.options.editText(gesture.start, gesture.item);
       return;
     }
+    if (gesture.kind === "stamp") {
+      const point = tapAdjustedMovePoint(
+        gesture.start,
+        gesture.current,
+        gesture.pointerType,
+        this.options.renderer.viewport.zoom,
+      );
+      if (point === gesture.start) await this.options.commit(gesture.operation);
+      return;
+    }
     if (gesture.kind === "pan") return;
     if (gesture.kind === "pencil") {
       if (gesture.animationFrame !== null) cancelAnimationFrame(gesture.animationFrame);
@@ -847,7 +924,8 @@ export class ToolController {
       !gesture ||
       gesture.kind === "pan" ||
       gesture.kind === "marquee" ||
-      gesture.kind === "sticky"
+      gesture.kind === "sticky" ||
+      gesture.kind === "stamp"
     ) {
       this.options.renderer.clearLocalPreview();
       return;

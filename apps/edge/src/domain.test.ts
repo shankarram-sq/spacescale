@@ -56,6 +56,26 @@ function createStickyFrame(text = "") {
   };
 }
 
+function createStampFrame(stamp = "check") {
+  return {
+    v: 1,
+    t: "client.commit",
+    commandId: "018f0000-0000-7000-8000-000000000010",
+    actionId: "018f0000-0000-7000-8000-000000000011",
+    baseSeq: 0,
+    op: {
+      kind: "item.create",
+      item: {
+        id: itemId,
+        kind: "stamp",
+        style: { kind: "stamp", color: "#16a34a", opacity: 0.75 },
+        transform: [1, 0, 0, 1, 0, 0],
+        geometry: { x: 60, y: 70, size: 72, stamp },
+      },
+    },
+  };
+}
+
 describe("edge domain admission", () => {
   it("normalizes and prepares a canonical create with private lineage", () => {
     const parsed = parseCommitFrame(createFrame());
@@ -95,6 +115,38 @@ describe("edge domain admission", () => {
       geometry: { x: 10, y: 20, width: 180, height: 140, text: "" },
     });
     expect(write?.bounds).toEqual({ minX: 10, minY: 20, maxX: 190, maxY: 160 });
+  });
+
+  it("admits every stamp, stores it canonically, and computes centered square bounds", () => {
+    for (const stamp of ["star", "check", "heart", "question", "smile", "sparkle"]) {
+      expect(parseCommitFrame(createStampFrame(stamp)).op).toMatchObject({
+        kind: "item.create",
+        item: { kind: "stamp", geometry: { stamp } },
+      });
+    }
+    const parsed = parseCommitFrame(createStampFrame("check"));
+    if (parsed.op.kind !== "item.create") throw new Error("unexpected operation");
+    const prepared = prepareItemOperation(parsed.op, new Map(), {
+      seq: 1,
+      actorId,
+      nextZ: 1,
+      liveCount: 0,
+      tokenFactory: () => "stamp-state",
+    });
+    const write = prepared.writes.get(itemId);
+    expect(write?.item).toMatchObject({
+      kind: "stamp",
+      style: { kind: "stamp", color: "#16a34a", opacity: 0.75 },
+      geometry: { x: 60, y: 70, size: 72, stamp: "check" },
+    });
+    expect(write?.bounds).toEqual({ minX: 24, minY: 34, maxX: 96, maxY: 106 });
+    expect(canonicalItemFromUnknown(JSON.parse(JSON.stringify(write?.item)))).toEqual(write?.item);
+
+    const unknown = createStampFrame("award");
+    expect(() => parseCommitFrame(unknown)).toThrow(BoardDomainError);
+    const unsafeColor = createStampFrame();
+    unsafeColor.op.item.style.color = "#16A34A";
+    expect(() => parseCommitFrame(unsafeColor)).toThrow(BoardDomainError);
   });
 
   it("rejects sticky content beyond its classroom-safe limit", () => {

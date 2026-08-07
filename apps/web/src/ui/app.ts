@@ -41,6 +41,7 @@ import type {
   RemotePreview,
   ServerAction,
   ServerFrame,
+  StampKind,
   ToolName,
 } from "../types";
 import { canRoleDraw, createId, PROTOCOL_VERSION } from "../types";
@@ -54,6 +55,7 @@ const TOOL_DEFINITIONS: Array<{ name: ToolName; label: string; shortcut: string;
     { name: "ellipse", label: "Ellipse", shortcut: "O", glyph: "○" },
     { name: "text", label: "Text", shortcut: "T", glyph: "T" },
     { name: "sticky", label: "Sticky note", shortcut: "N", glyph: "▣" },
+    { name: "stamp", label: "Stamp", shortcut: "K", glyph: "★" },
     { name: "eraser", label: "Eraser", shortcut: "E", glyph: "◇" },
     { name: "pan", label: "Pan canvas", shortcut: "H", glyph: "✋" },
   ];
@@ -65,6 +67,7 @@ const DRAW_TOOLS = new Set<ToolName>([
   "ellipse",
   "text",
   "sticky",
+  "stamp",
   "eraser",
 ]);
 
@@ -77,6 +80,9 @@ type StyleState = {
   stickyTextColor: string;
   stickyFontSize: number;
   stickyOpacity: number;
+  stampKind: StampKind;
+  stampColor: string;
+  stampOpacity: number;
 };
 
 type StickyDraftRecovery = {
@@ -97,6 +103,15 @@ export const STICKY_COLORS = [
   { name: "Orange", value: "#fed7aa" },
 ] as const;
 
+export const STAMP_CHOICES: ReadonlyArray<{ kind: StampKind; name: string; glyph: string }> = [
+  { kind: "star", name: "Star", glyph: "★" },
+  { kind: "check", name: "Check", glyph: "✓" },
+  { kind: "heart", name: "Heart", glyph: "♥" },
+  { kind: "question", name: "Question mark", glyph: "?" },
+  { kind: "smile", name: "Smile", glyph: "☺" },
+  { kind: "sparkle", name: "Sparkle", glyph: "✦" },
+];
+
 export class BoardApp {
   private readonly model = new BoardModel();
   private readonly outbox = new DurableOutbox();
@@ -115,6 +130,9 @@ export class BoardApp {
     stickyTextColor: "#292524",
     stickyFontSize: 20,
     stickyOpacity: 1,
+    stampKind: "star",
+    stampColor: "#e5484d",
+    stampOpacity: 1,
   };
   private readonly remotePreviews = new Map<string, RemotePreview>();
   private readonly presences = new Map<string, Presence>();
@@ -211,7 +229,11 @@ export class BoardApp {
         this.socket.sendPresence(cursor, tool);
       },
       editText: (point, item) => this.openTextEditor(point, item),
-      onToolChanged: (tool) => this.setActiveToolButton(tool),
+      onToolChanged: (tool) => {
+        this.setActiveToolButton(tool);
+        if (tool === "stamp") this.setStylePopoverOpen(true);
+      },
+      onToolReactivated: (tool) => this.reactivateTool(tool),
       onSelectionChanged: (ids) => this.updateSelectionActions(ids),
       notify: (message, kind) => this.notify(message, kind),
     });
@@ -357,6 +379,10 @@ export class BoardApp {
           </button>
           <section class="style-popover" data-testid="style-popover" id="style-popover" aria-label="Drawing style" hidden>
             <div class="popover-heading"><strong>Style</strong><span data-style-heading-context>New marks</span></div>
+            <fieldset class="stamp-fieldset" data-stamp-fieldset hidden>
+              <legend>Stamp</legend>
+              <div class="stamp-grid" data-stamp-grid></div>
+            </fieldset>
             <fieldset class="color-fieldset">
               <legend data-style-color-label>Colour</legend>
               <div class="color-grid" data-color-grid></div>
@@ -365,7 +391,7 @@ export class BoardApp {
             </fieldset>
             <label class="range-row" data-style-stroke-row><span>Stroke</span><output data-width-output>4</output><input type="range" min="1" max="32" value="4" step="1" data-style-stroke /></label>
             <label class="range-row"><span>Opacity</span><output data-opacity-output>100%</output><input type="range" min="10" max="100" value="100" step="5" data-style-opacity /></label>
-            <label class="range-row"><span>Text</span><output data-font-output>28</output><input type="range" min="8" max="96" value="28" step="1" data-style-font /></label>
+            <label class="range-row" data-style-font-row><span>Text</span><output data-font-output>28</output><input type="range" min="8" max="96" value="28" step="1" data-style-font /></label>
           </section>
         </div>
 
@@ -451,11 +477,26 @@ export class BoardApp {
       button.style.setProperty("--choice-color", value);
       stickyColorGrid.append(button);
     });
+    const stampGrid = query(this.root, "[data-stamp-grid]", HTMLElement);
+    STAMP_CHOICES.forEach(({ kind, name, glyph }) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "stamp-choice";
+      button.dataset.stampKind = kind;
+      button.dataset.testid = `stamp-choice-${kind}`;
+      button.setAttribute("aria-label", `Use ${name.toLowerCase()} stamp`);
+      button.setAttribute("aria-pressed", String(kind === this.style.stampKind));
+      const mark = document.createElement("span");
+      mark.setAttribute("aria-hidden", "true");
+      mark.textContent = glyph;
+      button.append(mark);
+      stampGrid.append(button);
+    });
   }
 
   private bindShellEvents(): void {
-    for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-tool]")) {
-      button.addEventListener("click", () => this.tools.setTool(button.dataset.tool as ToolName));
+    for (const button of this.root.querySelectorAll<HTMLButtonElement>("button[data-tool]")) {
+      button.addEventListener("click", () => this.activateTool(button.dataset.tool as ToolName));
     }
     const toggleStyle = (): void =>
       this.togglePopover(
@@ -470,7 +511,9 @@ export class BoardApp {
 
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-color]")) {
       button.addEventListener("click", () => {
-        this.style.color = button.dataset.color ?? this.style.color;
+        const next = button.dataset.color ?? this.style.color;
+        if (this.tools.tool === "stamp") this.style.stampColor = next;
+        else this.style.color = next;
         this.updateStyleControls();
       });
     }
@@ -480,9 +523,18 @@ export class BoardApp {
         this.updateStyleControls();
       });
     }
+    for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-stamp-kind]")) {
+      button.addEventListener("click", () => {
+        const kind = button.dataset.stampKind as StampKind | undefined;
+        if (kind) this.style.stampKind = kind;
+        this.updateStyleControls();
+      });
+    }
     const color = query(this.root, "[data-style-color]", HTMLInputElement);
     color.addEventListener("input", () => {
-      this.style.color = color.value.toLowerCase();
+      const next = color.value.toLowerCase();
+      if (this.tools.tool === "stamp") this.style.stampColor = next;
+      else this.style.color = next;
       this.updateStyleControls();
     });
     const stroke = query(this.root, "[data-style-stroke]", HTMLInputElement);
@@ -493,6 +545,7 @@ export class BoardApp {
     const opacity = query(this.root, "[data-style-opacity]", HTMLInputElement);
     opacity.addEventListener("input", () => {
       if (this.tools.tool === "sticky") this.style.stickyOpacity = Number(opacity.value) / 100;
+      else if (this.tools.tool === "stamp") this.style.stampOpacity = Number(opacity.value) / 100;
       else this.style.opacity = Number(opacity.value) / 100;
       this.updateStyleControls();
     });
@@ -581,7 +634,7 @@ export class BoardApp {
         !this.stylePopover.contains(target) &&
         !query(this.root, "[data-testid='style-button']", HTMLElement).contains(target)
       ) {
-        this.stylePopover.hidden = true;
+        this.setStylePopoverOpen(false);
       }
       if (
         !this.exportMenu.hidden &&
@@ -2032,15 +2085,26 @@ export class BoardApp {
 
   private updateStyleControls(): void {
     const sticky = this.tools.tool === "sticky";
-    const activeColor = sticky ? this.style.stickyFill : this.style.color;
-    const activeOpacity = sticky ? this.style.stickyOpacity : this.style.opacity;
+    const stamp = this.tools.tool === "stamp";
+    const activeColor = sticky
+      ? this.style.stickyFill
+      : stamp
+        ? this.style.stampColor
+        : this.style.color;
+    const activeOpacity = sticky
+      ? this.style.stickyOpacity
+      : stamp
+        ? this.style.stampOpacity
+        : this.style.opacity;
     const activeFontSize = sticky ? this.style.stickyFontSize : this.style.fontSize;
     query(this.root, "[data-style-swatch]", HTMLElement).style.background = activeColor;
     query(this.root, "[data-style-width]", HTMLElement).style.height =
       `${Math.min(8, Math.max(2, this.style.width / 3))}px`;
-    query(this.root, "[data-style-width]", HTMLElement).hidden = sticky;
+    query(this.root, "[data-style-width]", HTMLElement).hidden = sticky || stamp;
     query(this.root, ".rail-color-dot", HTMLElement).style.background = activeColor;
-    query(this.root, "[data-style-color]", HTMLInputElement).value = this.style.color;
+    query(this.root, "[data-style-color]", HTMLInputElement).value = stamp
+      ? this.style.stampColor
+      : this.style.color;
     query(this.root, "[data-style-stroke]", HTMLInputElement).value = String(this.style.width);
     query(this.root, "[data-style-opacity]", HTMLInputElement).value = String(activeOpacity * 100);
     query(this.root, "[data-style-font]", HTMLInputElement).value = String(activeFontSize);
@@ -2050,25 +2114,37 @@ export class BoardApp {
     query(this.root, "[data-font-output]", HTMLOutputElement).value = String(activeFontSize);
     query(this.root, "[data-color-grid]", HTMLElement).hidden = sticky;
     query(this.root, "[data-sticky-color-grid]", HTMLElement).hidden = !sticky;
+    query(this.root, "[data-stamp-fieldset]", HTMLElement).hidden = !stamp;
     query(this.root, "[data-custom-color]", HTMLElement).hidden = sticky;
-    query(this.root, "[data-style-stroke-row]", HTMLElement).hidden = sticky;
+    query(this.root, "[data-style-stroke-row]", HTMLElement).hidden = sticky || stamp;
+    query(this.root, "[data-style-font-row]", HTMLElement).hidden = stamp;
     query(this.root, "[data-style-color-label]", HTMLElement).textContent = sticky
       ? "Sticky colour"
-      : "Colour";
+      : stamp
+        ? "Stamp colour"
+        : "Colour";
     query(this.root, "[data-style-heading-context]", HTMLElement).textContent = sticky
       ? "New sticky notes"
-      : "New marks";
+      : stamp
+        ? "New stamps"
+        : "New marks";
     query(this.root, "[data-testid='style-button']", HTMLButtonElement).setAttribute(
       "aria-label",
-      sticky ? "Open sticky note style" : "Open drawing style",
+      sticky ? "Open sticky note style" : stamp ? "Open stamp style" : "Open drawing style",
     );
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-color]")) {
-      button.setAttribute("aria-pressed", String(button.dataset.color === this.style.color));
+      button.setAttribute("aria-pressed", String(button.dataset.color === activeColor));
     }
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-sticky-color]")) {
       button.setAttribute(
         "aria-pressed",
         String(button.dataset.stickyColor === this.style.stickyFill),
+      );
+    }
+    for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-stamp-kind]")) {
+      button.setAttribute(
+        "aria-pressed",
+        String(button.dataset.stampKind === this.style.stampKind),
       );
     }
   }
@@ -2095,12 +2171,42 @@ export class BoardApp {
     );
   }
 
+  private activateTool(tool: ToolName): void {
+    if (this.tools.tool === tool) {
+      this.reactivateTool(tool);
+      return;
+    }
+    this.tools.setTool(tool);
+  }
+
+  private reactivateTool(tool: ToolName): void {
+    if (tool === "stamp") this.setStylePopoverOpen(true);
+  }
+
   private togglePopover(popover: HTMLElement, trigger: HTMLButtonElement): void {
     const open = popover.hidden;
-    this.stylePopover.hidden = true;
+    this.setStylePopoverOpen(false);
     this.exportMenu.hidden = true;
+    query(this.root, "[data-testid='export-button']", HTMLButtonElement).setAttribute(
+      "aria-expanded",
+      "false",
+    );
     popover.hidden = !open;
     trigger.setAttribute("aria-expanded", String(open));
+  }
+
+  private setStylePopoverOpen(open: boolean): void {
+    this.stylePopover.hidden = !open;
+    query(this.root, "[data-testid='style-button']", HTMLButtonElement).setAttribute(
+      "aria-expanded",
+      String(open),
+    );
+    if (!open) return;
+    this.exportMenu.hidden = true;
+    query(this.root, "[data-testid='export-button']", HTMLButtonElement).setAttribute(
+      "aria-expanded",
+      "false",
+    );
   }
 
   private toggleDrawer(drawer: HTMLElement, trigger: HTMLButtonElement): void {

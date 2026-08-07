@@ -4,6 +4,7 @@ import {
   buildCapturedDeleteOperations,
   buildCapturedMoveOperations,
   buildCapturedTextUpdate,
+  buildStampCreateOperation,
   buildStickyCreateOperation,
   type CapturedMoveItem,
   stickyTapMoveThreshold,
@@ -26,9 +27,17 @@ describe("captured gesture operations", () => {
     expect(tapAdjustedMovePoint(start, [23.1, 30], "mouse", 1)).toEqual([23.1, 30]);
   });
 
+  it("distinguishes a touch stamp tap from a drag at the current zoom", () => {
+    const start = [40, 50] as const;
+    expect(tapAdjustedMovePoint(start, [44.9, 50], "touch", 2)).toBe(start);
+    expect(tapAdjustedMovePoint(start, [45.1, 50], "touch", 2)).toEqual([45.1, 50]);
+  });
+
   it("does not activate editing shortcuts while drawing is read only", () => {
     expect(toolFromShortcut("n", false)).toBeUndefined();
     expect(toolFromShortcut("N", true)).toBe("sticky");
+    expect(toolFromShortcut("k", false)).toBeUndefined();
+    expect(toolFromShortcut("K", true)).toBe("stamp");
     expect(toolFromShortcut("v", false)).toBe("select");
     expect(toolFromShortcut("h", false)).toBe("pan");
   });
@@ -118,6 +127,25 @@ describe("captured gesture operations", () => {
       expectedVersion: 9,
       patch: {
         geometry: { x: 12, y: 34, width: 180, height: 140, text: "group idea" },
+      },
+    });
+  });
+
+  it("creates a centered default-sized stamp with the selected design and colour", () => {
+    expect(
+      buildStampCreateOperation(ITEM_ID, [72, 96], {
+        stampKind: "sparkle",
+        stampColor: "#8e4ec6",
+        stampOpacity: 0.75,
+      }),
+    ).toEqual({
+      kind: "item.create",
+      item: {
+        id: ITEM_ID,
+        kind: "stamp",
+        style: { kind: "stamp", color: "#8e4ec6", opacity: 0.75 },
+        transform: [1, 0, 0, 1, 0, 0],
+        geometry: { x: 72, y: 96, size: 72, stamp: "sparkle" },
       },
     });
   });

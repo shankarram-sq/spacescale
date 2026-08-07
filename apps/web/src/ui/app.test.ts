@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BoardSnapshot } from "../types";
-import { boardIdFromPath, clampStickyText, localSvg, STICKY_COLORS } from "./app";
+import { boardIdFromPath, clampStickyText, localSvg, STAMP_CHOICES, STICKY_COLORS } from "./app";
 
 const boardId = "b_1234567890123456789012";
 
@@ -104,5 +104,49 @@ describe("sticky note UI configuration", () => {
     };
 
     expect(localSvg(snapshot, "Rotated sticky")).toContain('viewBox="118 -22 114 164"');
+  });
+});
+
+describe("stamp UI configuration", () => {
+  it("offers the six classroom stamp designs", () => {
+    expect(STAMP_CHOICES.map(({ kind }) => kind)).toEqual([
+      "star",
+      "check",
+      "heart",
+      "question",
+      "smile",
+      "sparkle",
+    ]);
+    expect(new Set(STAMP_CHOICES.map(({ glyph }) => glyph)).size).toBe(6);
+  });
+
+  it("exports a centered stamp using the shared deterministic SVG path", () => {
+    const itemId = "018f47a1-7a2b-7c3d-8e4f-123456789abf";
+    const snapshot: BoardSnapshot = {
+      format: "cf-whiteboard-json",
+      version: 1,
+      seq: 5,
+      items: [
+        {
+          id: itemId,
+          kind: "stamp",
+          z: 1,
+          version: 1,
+          createdBy: "018f47a1-7a2b-7c3d-8e4f-123456789abc",
+          transform: [1, 0, 0, 1, 0, 0],
+          style: { kind: "stamp", color: "#8e4ec6", opacity: 0.75 },
+          geometry: { x: 100, y: 80, size: 72, stamp: "star" },
+        },
+      ],
+    };
+
+    const svg = localSvg(snapshot, "Stamp feedback");
+
+    expect(svg).toContain('viewBox="32 12 136 136"');
+    expect(svg).toContain(`data-item-id="${itemId}"`);
+    expect(svg).toContain('transform="translate(64 44) scale(3)"');
+    expect(svg).toContain('fill="#8e4ec6"');
+    expect(svg).toContain('opacity="0.75"');
+    expect(svg).not.toContain("<text");
   });
 });

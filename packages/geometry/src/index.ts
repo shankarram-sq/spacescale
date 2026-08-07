@@ -36,14 +36,32 @@ export interface StickyGeometry extends BoxGeometry {
   text: string;
 }
 
+export const STAMP_KINDS = ["star", "check", "heart", "question", "smile", "sparkle"] as const;
+export type StampKind = (typeof STAMP_KINDS)[number];
+
+export interface StampGeometry {
+  x: number;
+  y: number;
+  size: number;
+  stamp: StampKind;
+}
+
 export type ItemGeometry =
   | PencilGeometry
   | LineGeometry
   | BoxGeometry
   | TextGeometry
-  | StickyGeometry;
+  | StickyGeometry
+  | StampGeometry;
 
-export type GeometryKind = "pencil" | "line" | "rectangle" | "ellipse" | "text" | "sticky";
+export type GeometryKind =
+  | "pencil"
+  | "line"
+  | "rectangle"
+  | "ellipse"
+  | "text"
+  | "sticky"
+  | "stamp";
 
 export interface Bounds {
   minX: number;
@@ -59,7 +77,8 @@ export interface BoundsItem {
   style:
     | { kind: "stroke"; width: number }
     | { kind: "text"; fontSize: number }
-    | { kind: "sticky"; fontSize: number };
+    | { kind: "sticky"; fontSize: number }
+    | { kind: "stamp" };
 }
 
 export class GeometryValidationError extends Error {
@@ -289,6 +308,29 @@ export function normalizeStickyGeometry(value: unknown, path = "$geometry"): Sti
   return { ...box, text: object.text };
 }
 
+export function normalizeStampGeometry(value: unknown, path = "$geometry"): StampGeometry {
+  const object = expectRecord(value, path);
+  expectOnlyKeys(object, ["x", "y", "size", "stamp"], path);
+  const x = normalizeCoordinate(object.x, `${path}.x`);
+  const y = normalizeCoordinate(object.y, `${path}.y`);
+  const size = normalizeDimension(object.size, `${path}.size`);
+  if (size === 0) {
+    throw new GeometryValidationError("Stamp size must be greater than 0", `${path}.size`);
+  }
+  if (typeof object.stamp !== "string" || !STAMP_KINDS.includes(object.stamp as StampKind)) {
+    throw new GeometryValidationError(
+      `Stamp must be one of ${STAMP_KINDS.map((stamp) => JSON.stringify(stamp)).join(", ")}`,
+      `${path}.stamp`,
+    );
+  }
+  const halfSize = size / 2;
+  normalizeCoordinate(x - halfSize, `${path}.x-size/2`);
+  normalizeCoordinate(x + halfSize, `${path}.x+size/2`);
+  normalizeCoordinate(y - halfSize, `${path}.y-size/2`);
+  normalizeCoordinate(y + halfSize, `${path}.y+size/2`);
+  return { x, y, size, stamp: object.stamp as StampKind };
+}
+
 export function normalizeGeometry(kind: "pencil", value: unknown, path?: string): PencilGeometry;
 export function normalizeGeometry(kind: "line", value: unknown, path?: string): LineGeometry;
 export function normalizeGeometry(
@@ -298,6 +340,7 @@ export function normalizeGeometry(
 ): BoxGeometry;
 export function normalizeGeometry(kind: "text", value: unknown, path?: string): TextGeometry;
 export function normalizeGeometry(kind: "sticky", value: unknown, path?: string): StickyGeometry;
+export function normalizeGeometry(kind: "stamp", value: unknown, path?: string): StampGeometry;
 export function normalizeGeometry(kind: GeometryKind, value: unknown, path?: string): ItemGeometry;
 export function normalizeGeometry(
   kind: GeometryKind,
@@ -316,6 +359,8 @@ export function normalizeGeometry(
       return normalizeTextGeometry(value, path);
     case "sticky":
       return normalizeStickyGeometry(value, path);
+    case "stamp":
+      return normalizeStampGeometry(value, path);
   }
 }
 
@@ -323,6 +368,7 @@ export function inferAndNormalizeGeometry(value: unknown, path = "$geometry"): I
   const object = expectRecord(value, path);
   if (own.call(object, "points")) return normalizePencilGeometry(object, path);
   if (own.call(object, "x1")) return normalizeLineGeometry(object, path);
+  if (own.call(object, "stamp")) return normalizeStampGeometry(object, path);
   if (own.call(object, "width") && own.call(object, "text")) {
     return normalizeStickyGeometry(object, path);
   }
@@ -401,6 +447,16 @@ export function geometryBounds(
         minY: box.y,
         maxX: box.x + box.width,
         maxY: box.y + box.height,
+      };
+    }
+    case "stamp": {
+      const stamp = geometry as StampGeometry;
+      const halfSize = stamp.size / 2;
+      return {
+        minX: stamp.x - halfSize,
+        minY: stamp.y - halfSize,
+        maxX: stamp.x + halfSize,
+        maxY: stamp.y + halfSize,
       };
     }
     case "text": {

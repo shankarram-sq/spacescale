@@ -40,6 +40,19 @@ function sticky(version = 1): BoardItem {
   };
 }
 
+function stamp(version = 1): BoardItem {
+  return {
+    id: ITEM_ID,
+    kind: "stamp",
+    z: 2,
+    version,
+    createdBy: ACTOR_ID,
+    style: { kind: "stamp", color: "#e5484d", opacity: 0.8 },
+    transform: [1, 0, 0, 1, 10, -5],
+    geometry: { x: 100, y: 80, size: 72, stamp: "star" },
+  };
+}
+
 function snapshot(items: BoardItem[] = [], seq = 0): BoardSnapshot {
   return { format: "cf-whiteboard-json", version: 1, seq, items };
 }
@@ -153,6 +166,18 @@ describe("BoardModel", () => {
 
     expect(model.hitTest([0, 70], 0)?.id).toBe(ITEM_ID);
     expect(model.hitTest([-65, 5], 0)).toBeUndefined();
+  });
+
+  it("loads stamps from snapshots and uses their centered square for bounds and hits", () => {
+    const item = stamp();
+    expect(itemBounds(item)).toEqual({ minX: 74, minY: 39, maxX: 146, maxY: 111 });
+
+    const model = new BoardModel();
+    model.load(snapshot([item], 4));
+
+    expect(model.getItem(ITEM_ID)).toEqual(item);
+    expect(model.hitTest([75, 40], 0)?.kind).toBe("stamp");
+    expect(model.hitTest([73, 38], 0)).toBeUndefined();
   });
 
   it("retains the optimistic journal when a remote action makes rebase unsafe", () => {

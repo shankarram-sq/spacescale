@@ -11,6 +11,7 @@ import {
   normalizeTransform,
   type PencilGeometry,
   type Point,
+  type StampGeometry,
   type StickyGeometry,
   type TextGeometry,
   type Transform,
@@ -24,10 +25,13 @@ export type {
   LineGeometry,
   PencilGeometry,
   Point,
+  StampGeometry,
+  StampKind,
   StickyGeometry,
   TextGeometry,
   Transform,
 } from "@collab/geometry";
+export { STAMP_KINDS } from "@collab/geometry";
 
 export const PROTOCOL_VERSION = 1 as const;
 export const MAX_ORDINARY_FRAME_BYTES = 64 * 1024;
@@ -41,7 +45,15 @@ export const MAX_PUBLIC_RESULT_BYTES = 512 * 1024;
 export const MAX_ACTION_PAYLOAD_BYTES = 1.5 * 1024 * 1024;
 export const MAX_SNAPSHOT_BYTES = 20 * 1024 * 1024;
 
-export const ITEM_KINDS = ["pencil", "line", "rectangle", "ellipse", "text", "sticky"] as const;
+export const ITEM_KINDS = [
+  "pencil",
+  "line",
+  "rectangle",
+  "ellipse",
+  "text",
+  "sticky",
+  "stamp",
+] as const;
 export const BOARD_ROLES = ["viewer", "editor", "owner"] as const;
 export const DRAWING_POLICIES = ["editors_enabled", "owner_only", "locked"] as const;
 export const ACCESS_MODES = ["private", "link_view"] as const;
@@ -81,7 +93,13 @@ export interface StickyStyle {
   opacity: number;
 }
 
-export type ItemStyle = StrokeStyle | TextStyle | StickyStyle;
+export interface StampStyle {
+  kind: "stamp";
+  color: string;
+  opacity: number;
+}
+
+export type ItemStyle = StrokeStyle | TextStyle | StickyStyle | StampStyle;
 
 interface BoardItemBase {
   id: string;
@@ -127,7 +145,20 @@ export interface StickyItem extends BoardItemBase {
   geometry: StickyGeometry;
 }
 
-export type BoardItem = PencilItem | LineItem | RectangleItem | EllipseItem | TextItem | StickyItem;
+export interface StampItem extends BoardItemBase {
+  kind: "stamp";
+  style: StampStyle;
+  geometry: StampGeometry;
+}
+
+export type BoardItem =
+  | PencilItem
+  | LineItem
+  | RectangleItem
+  | EllipseItem
+  | TextItem
+  | StickyItem
+  | StampItem;
 
 type WithoutServerFields<T> = T extends BoardItem ? Omit<T, "z" | "version" | "createdBy"> : never;
 
@@ -337,6 +368,7 @@ export const ACTIVE_TOOLS = [
   "ellipse",
   "text",
   "sticky",
+  "stamp",
   "eraser",
   "select",
   "pan",
@@ -600,12 +632,24 @@ export function normalizeStickyStyle(value: unknown, path = "$style"): StickySty
   };
 }
 
+export function normalizeStampStyle(value: unknown, path = "$style"): StampStyle {
+  const object = expectRecord(value, path);
+  if (object.kind !== "stamp") fail('Expected style kind "stamp"', `${path}.kind`);
+  expectExactKeys(object, ["kind", "color", "opacity"], [], path);
+  return {
+    kind: "stamp",
+    color: normalizeColor(object.color, `${path}.color`),
+    opacity: normalizeOpacity(object.opacity, `${path}.opacity`),
+  };
+}
+
 export function normalizeItemStyle(value: unknown, path = "$style"): ItemStyle {
   const object = expectRecord(value, path);
   if (object.kind === "stroke") return normalizeStrokeStyle(object, path);
   if (object.kind === "text") return normalizeTextStyle(object, path);
   if (object.kind === "sticky") return normalizeStickyStyle(object, path);
-  fail('Style kind must be "stroke", "text", or "sticky"', `${path}.kind`);
+  if (object.kind === "stamp") return normalizeStampStyle(object, path);
+  fail('Style kind must be "stroke", "text", "sticky", or "stamp"', `${path}.kind`);
 }
 
 function isValidXmlCodePoint(codePoint: number): boolean {
@@ -680,6 +724,7 @@ function normalizeGeometryForItem(kind: ItemKind, value: unknown, path: string):
 function normalizeStyleForKind(kind: ItemKind, value: unknown, path: string): ItemStyle {
   if (kind === "text") return normalizeTextStyle(value, path);
   if (kind === "sticky") return normalizeStickyStyle(value, path);
+  if (kind === "stamp") return normalizeStampStyle(value, path);
   return normalizeStrokeStyle(value, path);
 }
 

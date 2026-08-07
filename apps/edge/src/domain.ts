@@ -425,7 +425,8 @@ function itemKind(value: unknown): BoardItemKind {
     value === "rectangle" ||
     value === "ellipse" ||
     value === "text" ||
-    value === "sticky"
+    value === "sticky" ||
+    value === "stamp"
   ) {
     return value;
   }

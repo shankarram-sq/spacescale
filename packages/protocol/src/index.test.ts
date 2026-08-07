@@ -40,6 +40,16 @@ function sticky(id = ID_1) {
   };
 }
 
+function stamp(id = ID_1, stampKind = "star") {
+  return {
+    id,
+    kind: "stamp",
+    style: { kind: "stamp", color: "#e11d48", opacity: 0.555 },
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: { x: 12.345, y: -7.555, size: 71.999, stamp: stampKind },
+  };
+}
+
 describe("durable operation validation", () => {
   it("normalizes a valid create and rejects server-owned fields", () => {
     expect(validateDurableOperation({ kind: "item.create", item: rectangle() })).toEqual({
@@ -143,6 +153,57 @@ describe("durable operation validation", () => {
         },
       }),
     ).toThrow(/must not be empty/);
+  });
+
+  it("normalizes every durable stamp and rejects unsafe geometry and styles", () => {
+    for (const stampKind of ["star", "check", "heart", "question", "smile", "sparkle"]) {
+      expect(
+        validateDurableOperation({ kind: "item.create", item: stamp(ID_1, stampKind) }),
+      ).toEqual({
+        kind: "item.create",
+        item: {
+          id: ID_1,
+          kind: "stamp",
+          style: { kind: "stamp", color: "#e11d48", opacity: 0.56 },
+          transform: [1, 0, 0, 1, 0, 0],
+          geometry: { x: 12.35, y: -7.56, size: 72, stamp: stampKind },
+        },
+      });
+    }
+    expect(() =>
+      validateDurableOperation({
+        kind: "item.create",
+        item: { ...stamp(), geometry: { x: 0, y: 0, size: 0, stamp: "star" } },
+      }),
+    ).toThrow(/greater than 0/);
+    expect(() =>
+      validateDurableOperation({
+        kind: "item.create",
+        item: { ...stamp(), geometry: { x: 0, y: 0, size: 72, stamp: "award" } },
+      }),
+    ).toThrow(/Stamp must be one of/);
+    expect(() =>
+      validateDurableOperation({
+        kind: "item.create",
+        item: { ...stamp(), style: { kind: "stamp", color: "#E11D48", opacity: 1 } },
+      }),
+    ).toThrow(/lowercase/);
+    expect(() =>
+      validateDurableOperation({
+        kind: "item.create",
+        item: { ...stamp(), style: { kind: "stamp", color: "#e11d48", opacity: 0 } },
+      }),
+    ).toThrow(/between 0.1 and 1/);
+    expect(
+      validateDurableOperation({
+        kind: "item.update",
+        itemId: ID_1,
+        expectedVersion: 1,
+        patch: { geometry: { x: 20, y: 30, size: 80, stamp: "check" } },
+      }),
+    ).toMatchObject({
+      patch: { geometry: { x: 20, y: 30, size: 80, stamp: "check" } },
+    });
   });
 
   it("rejects nested batches, unknown patch fields, and duplicate affected IDs", () => {

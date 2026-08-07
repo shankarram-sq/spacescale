@@ -394,6 +394,15 @@ button:disabled {
   color: #fde68a;
 }
 
+.tool-glyph-stamp {
+  color: #e5484d;
+  font-size: 20px;
+}
+
+.tool-rail button[aria-pressed="true"] .tool-glyph-stamp {
+  color: #fff;
+}
+
 .tool-glyph-line {
   font-size: 26px;
 }
@@ -457,7 +466,8 @@ button:disabled {
 .board-canvas[data-tool="text"] {
   cursor: text;
 }
-.board-canvas[data-tool="sticky"] {
+.board-canvas[data-tool="sticky"],
+.board-canvas[data-tool="stamp"] {
   cursor: crosshair;
 }
 .board-canvas[data-tool="eraser"] {
@@ -496,6 +506,15 @@ button:disabled {
 .board-item-sticky .sticky-text {
   pointer-events: none;
   user-select: none;
+}
+
+.board-item-stamp .stamp-art {
+  filter: drop-shadow(0 2px 1.5px rgb(32 32 30 / 18%));
+}
+
+.board-item-stamp path,
+.board-item-stamp circle {
+  pointer-events: none;
 }
 
 .board-item.erase-target {
@@ -660,7 +679,18 @@ button:disabled {
   left: 0;
   bottom: 51px;
   width: min(280px, calc(100vw - 74px));
+  max-height: calc(100vh - 80px);
   padding: 16px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+@supports (height: 100dvh) {
+  .style-popover {
+    max-height: calc(100dvh - 80px - env(safe-area-inset-bottom));
+  }
 }
 
 .popover-heading,
@@ -679,6 +709,55 @@ button:disabled {
 .section-heading span {
   color: var(--muted);
   font-size: 11px;
+}
+
+.stamp-fieldset {
+  min-width: 0;
+  padding: 0;
+  margin: 0 0 18px;
+  border: 0;
+}
+
+.stamp-fieldset legend {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.stamp-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 7px;
+}
+
+.stamp-choice {
+  height: 40px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #faf9f6;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.stamp-choice span {
+  font-size: 23px;
+  line-height: 1;
+}
+
+.stamp-choice:hover {
+  border-color: var(--line-strong);
+  background: #f1efe9;
+}
+
+.stamp-choice[aria-pressed="true"] {
+  border-color: #e5484d;
+  background: #fff1f0;
+  color: #b4232a;
+  box-shadow: 0 0 0 2px rgb(229 72 77 / 12%);
 }
 
 .color-fieldset {

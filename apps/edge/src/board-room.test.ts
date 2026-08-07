@@ -213,6 +213,26 @@ function createStickyCommit(commandId: string, actionId: string, itemId: string)
   };
 }
 
+function createStampCommit(commandId: string, actionId: string, itemId: string) {
+  return {
+    v: 1,
+    t: "client.commit",
+    commandId,
+    actionId,
+    baseSeq: 0,
+    op: {
+      kind: "item.create",
+      item: {
+        id: itemId,
+        kind: "stamp",
+        style: { kind: "stamp", color: "#e11d48", opacity: 0.8 },
+        transform: [1, 0, 0, 1, 0, 0],
+        geometry: { x: 120, y: 160, size: 72, stamp: "star" },
+      },
+    },
+  };
+}
+
 function seedActionRows(
   sql: SqlStorage,
   count: number,
@@ -1505,6 +1525,102 @@ describe("BoardRoom initialization", () => {
     expect(afterClear.stored).toEqual({ itemCount: 0, itemBytes: 0 });
     expect(afterClear.decomposedBytes).toBe(afterClear.serializedBytes);
     connected.socket.close(1000, "done");
+  });
+
+  it("enforces stamp roles and keeps the attributed owner stamp after object wake", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    await runInDurableObject(stub, (_instance, durableState) => {
+      const now = Date.now();
+      durableState.storage.transactionSync(() => {
+        durableState.storage.sql.exec(
+          `INSERT INTO members(actor_id, role, display_name, created_at_ms, updated_at_ms)
+           VALUES (?, 'viewer', 'Viewer', ?, ?)`,
+          studentId,
+          now,
+          now,
+        );
+        durableState.storage.sql.exec("UPDATE board SET acl_version = 3");
+      });
+    });
+
+    const owner = await connect(stub, actorId);
+    const editor = await connect(stub, editorId);
+    const viewer = await connect(stub, studentId);
+    const ownerCreate = createStampCommit(
+      "018f0000-0000-7000-8000-000000000870",
+      "018f0000-0000-7000-8000-000000000871",
+      "018f0000-0000-7000-8000-000000000872",
+    );
+    owner.socket.send(JSON.stringify(ownerCreate));
+    expect(
+      await owner.next(
+        (frame) => frame.t === "server.action" && frame.commandId === ownerCreate.commandId,
+      ),
+    ).toMatchObject({
+      seq: 1,
+      actor: { id: actorId, displayName: "Owner 1" },
+      op: {
+        kind: "item.create",
+        item: { ...ownerCreate.op.item, z: 1, version: 1, createdBy: actorId },
+      },
+    });
+
+    const viewerCreate = createStampCommit(
+      "018f0000-0000-7000-8000-000000000873",
+      "018f0000-0000-7000-8000-000000000874",
+      "018f0000-0000-7000-8000-000000000875",
+    );
+    viewerCreate.baseSeq = 1;
+    viewer.socket.send(JSON.stringify(viewerCreate));
+    expect(
+      await viewer.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === viewerCreate.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 1 });
+
+    const lock = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ drawingPolicy: "locked", expectedAclVersion: 3 }),
+      }),
+    );
+    expect(lock.status).toBe(200);
+    expect(await lock.json()).toMatchObject({
+      board: { drawingPolicy: "locked", aclVersion: 4 },
+    });
+    await editor.next((frame) => frame.t === "access.changed" && frame.drawingPolicy === "locked");
+
+    const editorCreate = createStampCommit(
+      "018f0000-0000-7000-8000-000000000876",
+      "018f0000-0000-7000-8000-000000000877",
+      "018f0000-0000-7000-8000-000000000878",
+    );
+    editorCreate.baseSeq = 1;
+    editor.socket.send(JSON.stringify(editorCreate));
+    expect(
+      await editor.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === editorCreate.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 1 });
+
+    await evictDurableObject(stub, { webSockets: "hibernate" });
+    const exportedResponse = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/export.json`),
+    );
+    expect(exportedResponse.status).toBe(200);
+    expect(exportedResponse.headers.get("X-Whiteboard-Seq")).toBe("1");
+    const exported = (await exportedResponse.json()) as { seq: number; items: unknown[] };
+    expect(exported.seq).toBe(1);
+    expect(exported.items).toEqual([
+      { ...ownerCreate.op.item, z: 1, version: 1, createdBy: actorId },
+    ]);
+
+    owner.socket.close(1000, "done");
+    editor.socket.close(1000, "done");
+    viewer.socket.close(1000, "done");
   });
 
   it("keeps attributed sticky content durable through history, R2 restore, and hibernation", async () => {

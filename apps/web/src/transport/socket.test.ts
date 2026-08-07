@@ -173,7 +173,7 @@ describe("protocol rollout handling", () => {
     expect(fakeSockets[0]?.protocols).toBeUndefined();
   });
 
-  it("preserves sticky as a peer's active presence tool", () => {
+  it("preserves classroom object tools in peer presence", () => {
     const socketHooks = hooks();
     const boardSocket = new BoardSocket("b_test", socketHooks);
     boardSocket.connect();
@@ -192,6 +192,19 @@ describe("protocol rollout handling", () => {
 
     expect(socketHooks.onPresence).toHaveBeenCalledWith(
       [expect.objectContaining({ activeTool: "sticky", cursor: { x: 12, y: 34 } })],
+      false,
+    );
+
+    socket.emitMessage({
+      v: 1,
+      t: "server.presence",
+      actor: { id: "a_1234567890123456789012", displayName: "Student" },
+      cursor: { x: 44, y: 55 },
+      activeTool: "stamp",
+    });
+
+    expect(socketHooks.onPresence).toHaveBeenLastCalledWith(
+      [expect.objectContaining({ activeTool: "stamp", cursor: { x: 44, y: 55 } })],
       false,
     );
   });

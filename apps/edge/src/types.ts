@@ -99,7 +99,13 @@ export type StickyStyle = {
   opacity: number;
 };
 
-export type ItemStyle = StrokeStyle | TextStyle | StickyStyle;
+export type StampStyle = {
+  kind: "stamp";
+  color: string;
+  opacity: number;
+};
+
+export type ItemStyle = StrokeStyle | TextStyle | StickyStyle | StampStyle;
 export type Matrix = [number, number, number, number, number, number];
 
 export type PencilGeometry = { points: Array<[number, number]> };
@@ -107,13 +113,28 @@ export type LineGeometry = { x1: number; y1: number; x2: number; y2: number };
 export type BoxGeometry = { x: number; y: number; width: number; height: number };
 export type TextGeometry = { x: number; y: number; text: string };
 export type StickyGeometry = BoxGeometry & { text: string };
+export type StampKind = "star" | "check" | "heart" | "question" | "smile" | "sparkle";
+export type StampGeometry = {
+  x: number;
+  y: number;
+  size: number;
+  stamp: StampKind;
+};
 export type ItemGeometry =
   | PencilGeometry
   | LineGeometry
   | BoxGeometry
   | TextGeometry
-  | StickyGeometry;
-export type BoardItemKind = "pencil" | "line" | "rectangle" | "ellipse" | "text" | "sticky";
+  | StickyGeometry
+  | StampGeometry;
+export type BoardItemKind =
+  | "pencil"
+  | "line"
+  | "rectangle"
+  | "ellipse"
+  | "text"
+  | "sticky"
+  | "stamp";
 
 export interface BoardItem {
   id: string;

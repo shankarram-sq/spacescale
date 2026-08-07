@@ -7,6 +7,7 @@ import {
   itemBounds,
   normalizeBoxGeometry,
   normalizePencilGeometry,
+  normalizeStampGeometry,
   normalizeStickyGeometry,
   normalizeTransform,
   transformBounds,
@@ -61,6 +62,29 @@ describe("geometry normalization", () => {
     ).toThrow(/Unknown field/);
   });
 
+  it("canonicalizes every stamp kind and rejects unsafe centered extents", () => {
+    for (const stamp of ["star", "check", "heart", "question", "smile", "sparkle"] as const) {
+      expect(normalizeStampGeometry({ x: 1.234, y: -2.345, size: 71.999, stamp })).toEqual({
+        x: 1.23,
+        y: -2.35,
+        size: 72,
+        stamp,
+      });
+    }
+    expect(() => normalizeStampGeometry({ x: 0, y: 0, size: 0, stamp: "star" })).toThrow(
+      /greater than 0/,
+    );
+    expect(() => normalizeStampGeometry({ x: 0, y: 0, size: 72, stamp: "award" })).toThrow(
+      /Stamp must be one of/,
+    );
+    expect(() =>
+      normalizeStampGeometry({ x: 0, y: 0, size: 72, stamp: "star", extra: true }),
+    ).toThrow(/Unknown field/);
+    expect(() => normalizeStampGeometry({ x: 1_000_000, y: 0, size: 2, stamp: "star" })).toThrow(
+      /Coordinate/,
+    );
+  });
+
   it("rejects non-finite, out-of-range, and unknown input", () => {
     expect(() => normalizeTransform([1, 0, 0, 1, Number.NaN, 0])).toThrow(GeometryValidationError);
     expect(() => normalizeTransform([1_000_001, 0, 0, 1, 0, 0])).toThrow(/Transform component/);
@@ -100,6 +124,17 @@ describe("bounds and transforms", () => {
         style: { kind: "sticky", fontSize: 16 },
       }),
     ).toEqual({ minX: 7, minY: 10, maxX: 27, maxY: 20 });
+  });
+
+  it("uses the transformed square centered on the stamp anchor", () => {
+    expect(
+      itemBounds({
+        kind: "stamp",
+        geometry: { x: 10, y: 20, size: 8, stamp: "star" },
+        transform: [0, 1, -1, 0, 100, 0],
+        style: { kind: "stamp" },
+      }),
+    ).toEqual({ minX: 76, minY: 6, maxX: 84, maxY: 14 });
   });
 
   it("rejects transformed sticky bounds outside the finite world envelope", () => {

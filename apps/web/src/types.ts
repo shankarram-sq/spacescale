@@ -13,6 +13,7 @@ export type ToolName =
   | "ellipse"
   | "text"
   | "sticky"
+  | "stamp"
   | "eraser"
   | "pan";
 
@@ -41,7 +42,15 @@ export type StickyStyle = {
   opacity: number;
 };
 
-export type ItemStyle = StrokeStyle | TextStyle | StickyStyle;
+export type StampKind = "star" | "check" | "heart" | "question" | "smile" | "sparkle";
+
+export type StampStyle = {
+  kind: "stamp";
+  color: string;
+  opacity: number;
+};
+
+export type ItemStyle = StrokeStyle | TextStyle | StickyStyle | StampStyle;
 export type PencilGeometry = { points: Point[] };
 export type LineGeometry = { x1: number; y1: number; x2: number; y2: number };
 export type BoxGeometry = { x: number; y: number; width: number; height: number };
@@ -53,6 +62,7 @@ export type StickyGeometry = {
   height: number;
   text: string;
 };
+export type StampGeometry = { x: number; y: number; size: number; stamp: StampKind };
 
 type ItemBase = {
   id: string;
@@ -92,14 +102,32 @@ export type StickyItem = ItemBase & {
   style: StickyStyle;
   geometry: StickyGeometry;
 };
-export type BoardItem = PencilItem | LineItem | RectangleItem | EllipseItem | TextItem | StickyItem;
+export type StampItem = ItemBase & {
+  kind: "stamp";
+  style: StampStyle;
+  geometry: StampGeometry;
+};
+export type BoardItem =
+  | PencilItem
+  | LineItem
+  | RectangleItem
+  | EllipseItem
+  | TextItem
+  | StickyItem
+  | StampItem;
 
 type WithoutServerFields<T> = T extends BoardItem ? Omit<T, "z" | "version" | "createdBy"> : never;
 export type NewBoardItem = WithoutServerFields<BoardItem>;
 export type ItemPatch = {
   style?: ItemStyle;
   transform?: Matrix;
-  geometry?: PencilGeometry | LineGeometry | BoxGeometry | TextGeometry | StickyGeometry;
+  geometry?:
+    | PencilGeometry
+    | LineGeometry
+    | BoxGeometry
+    | TextGeometry
+    | StickyGeometry
+    | StampGeometry;
 };
 
 export type BatchItemOperation =
@@ -246,7 +274,7 @@ export function isBoardItem(value: unknown): value is BoardItem {
   return (
     typeof item.id === "string" &&
     typeof item.kind === "string" &&
-    ["pencil", "line", "rectangle", "ellipse", "text", "sticky"].includes(item.kind) &&
+    ["pencil", "line", "rectangle", "ellipse", "text", "sticky", "stamp"].includes(item.kind) &&
     typeof item.z === "number" &&
     typeof item.version === "number" &&
     Array.isArray(item.transform) &&

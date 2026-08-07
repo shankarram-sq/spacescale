@@ -24,8 +24,19 @@ const STICKY_LINE_HEIGHT = 1.2;
 const STICKY_CODE_POINT_WIDTH = 0.56;
 const STICKY_WHITESPACE = /\s/u;
 
+export const STAMP_SVG_PATHS = {
+  star: "M12 2.5 14.9 8.6 21.5 9.5 16.7 14.1 17.9 20.7 12 17.5 6.1 20.7 7.3 14.1 2.5 9.5 9.1 8.6Z",
+  heart: "M12 21S3 15.5 3 9.5C3 5 8.5 3 12 7c3.5-4 9-2 9 2.5C21 15.5 12 21 12 21Z",
+  check: "M4 12.5 9.2 17.5 20 6.5",
+  question: "M9.4 8.2a2.8 2.8 0 1 1 4.9 1.9c-.9.9-2.3 1.5-2.3 3.1",
+  smileMouth: "M8 14.2c1.1 2 2.4 2.8 4 2.8s2.9-.8 4-2.8",
+  sparkle:
+    "M12 2 14.2 8.2 20.5 10.5 14.2 12.8 12 19 9.8 12.8 3.5 10.5 9.8 8.2Z M19 15.5 20 18 22.5 19 20 20 19 22.5 18 20 15.5 19 18 18Z",
+} as const;
+
 type StrokeBoardItem = Extract<BoardItem, { kind: "pencil" | "line" | "rectangle" | "ellipse" }>;
 type StickyBoardItem = Extract<BoardItem, { kind: "sticky" }>;
+type StampBoardItem = Extract<BoardItem, { kind: "stamp" }>;
 
 export interface SvgExportInput {
   boardId: string;
@@ -249,6 +260,39 @@ function renderSticky(item: StickyBoardItem): string {
   return `<g ${attributes}>${clip}${rectangle}${renderedText}</g>`;
 }
 
+function renderStamp(item: StampBoardItem): string {
+  const { x, y, size, stamp } = item.geometry;
+  const color = escapeXmlAttribute(item.style.color);
+  const symbolTransform = `translate(${number(x - size / 2)} ${number(y - size / 2)}) scale(${number(size / 24)})`;
+  let symbol: string;
+  switch (stamp) {
+    case "star":
+      symbol = `<path d="${STAMP_SVG_PATHS.star}" fill="${color}" />`;
+      break;
+    case "heart":
+      symbol = `<path d="${STAMP_SVG_PATHS.heart}" fill="${color}" />`;
+      break;
+    case "check":
+      symbol = `<path d="${STAMP_SVG_PATHS.check}" fill="none" stroke="${color}" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" />`;
+      break;
+    case "question":
+      symbol = `<path d="${STAMP_SVG_PATHS.question}" fill="none" stroke="${color}" stroke-width="2.4" stroke-linecap="round" /><circle cx="12" cy="17.6" r="1.2" fill="${color}" />`;
+      break;
+    case "smile":
+      symbol = `<circle cx="12" cy="12" r="9" fill="none" stroke="${color}" stroke-width="2" /><circle cx="8.5" cy="10" r="1.2" fill="${color}" /><circle cx="15.5" cy="10" r="1.2" fill="${color}" /><path d="${STAMP_SVG_PATHS.smileMouth}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" />`;
+      break;
+    case "sparkle":
+      symbol = `<path d="${STAMP_SVG_PATHS.sparkle}" fill="${color}" />`;
+      break;
+  }
+  const attributes = [
+    `transform="${transformAttribute(item)}"`,
+    `opacity="${number(item.style.opacity)}"`,
+    `data-item-id="${escapeXmlAttribute(item.id)}"`,
+  ].join(" ");
+  return `<g ${attributes}><g transform="${symbolTransform}">${symbol}</g></g>`;
+}
+
 function renderText(item: Extract<BoardItem, { kind: "text" }>): string {
   const lines = item.geometry.text.split(/\r\n?|\n/u);
   const attributes = [
@@ -294,6 +338,8 @@ export function renderSvgItem(item: BoardItem): string {
       return renderText(item);
     case "sticky":
       return renderSticky(item);
+    case "stamp":
+      return renderStamp(item);
   }
 }
 

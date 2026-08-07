@@ -7,6 +7,7 @@ import {
   FIXTURE_IDS,
   newPencilItem,
   newRectangleItem,
+  newStampItem,
   newStickyItem,
   serverCreateAction,
 } from "./index.js";
@@ -17,6 +18,9 @@ describe("deterministic shared fixtures", () => {
     expect(validateClientFrame(createCommitFrame(newPencilItem())).t).toBe("client.commit");
     expect(validateClientFrame(createCommitFrame(newStickyItem()))).toEqual(
       createCommitFrame(newStickyItem()),
+    );
+    expect(validateClientFrame(createCommitFrame(newStampItem()))).toEqual(
+      createCommitFrame(newStampItem()),
     );
   });
 

@@ -22,6 +22,15 @@ redone, restored from snapshots, replayed from the offline outbox, and exported
 to canonical JSON or safe SVG. Double-click a note—or double-tap it with the
 select tool—to edit its wrapped text.
 
+For quick visual feedback, choose **Stamp** or press `K`. Pick a star, check,
+heart, question mark, smile, or sparkle in the palette, choose a colour, then
+click or tap the board to place a readable 72-unit stamp. Stamps are local SVG
+marks with accessible labels and no external image dependency.
+
+Stamps are durable board items too: every participant sees them in real time,
+and they support selection, movement, copy/delete, undo/redo, offline recovery,
+snapshots, and JSON/SVG export.
+
 ## Local development
 
 Requirements: Node.js 22.19 or newer. Local development uses Miniflare-backed

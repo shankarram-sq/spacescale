@@ -251,13 +251,21 @@ function geometryMatchesKind(item: BoardItem, geometry: ItemGeometry): boolean {
       return "text" in geometry && !("width" in geometry);
     case "sticky":
       return "width" in geometry && "text" in geometry;
+    case "stamp":
+      return "stamp" in geometry;
   }
 }
 
 function validatePatchForItem(item: BoardItem, patch: ItemPatch): void {
   if (patch.style !== undefined) {
     const expectedKind =
-      item.kind === "text" ? "text" : item.kind === "sticky" ? "sticky" : "stroke";
+      item.kind === "text"
+        ? "text"
+        : item.kind === "sticky"
+          ? "sticky"
+          : item.kind === "stamp"
+            ? "stamp"
+            : "stroke";
     if (patch.style.kind !== expectedKind) {
       coreFail("INVALID_FRAME", `The patch style does not match the stored ${item.kind} item.`);
     }
@@ -893,13 +901,19 @@ function canonicalItem(item: BoardItem): BoardItem {
             fontSize: normalized.style.fontSize,
             opacity: normalized.style.opacity,
           }
-        : {
-            kind: "sticky" as const,
-            fill: normalized.style.fill,
-            textColor: normalized.style.textColor,
-            fontSize: normalized.style.fontSize,
-            opacity: normalized.style.opacity,
-          };
+        : normalized.style.kind === "sticky"
+          ? {
+              kind: "sticky" as const,
+              fill: normalized.style.fill,
+              textColor: normalized.style.textColor,
+              fontSize: normalized.style.fontSize,
+              opacity: normalized.style.opacity,
+            }
+          : {
+              kind: "stamp" as const,
+              color: normalized.style.color,
+              opacity: normalized.style.opacity,
+            };
   const geometry =
     normalized.kind === "pencil"
       ? { points: normalized.geometry.points.map(([x, y]) => [x, y] as [number, number]) }
@@ -920,12 +934,19 @@ function canonicalItem(item: BoardItem): BoardItem {
                 height: normalized.geometry.height,
                 text: normalized.geometry.text,
               }
-            : {
-                x: normalized.geometry.x,
-                y: normalized.geometry.y,
-                width: normalized.geometry.width,
-                height: normalized.geometry.height,
-              };
+            : normalized.kind === "stamp"
+              ? {
+                  x: normalized.geometry.x,
+                  y: normalized.geometry.y,
+                  size: normalized.geometry.size,
+                  stamp: normalized.geometry.stamp,
+                }
+              : {
+                  x: normalized.geometry.x,
+                  y: normalized.geometry.y,
+                  width: normalized.geometry.width,
+                  height: normalized.geometry.height,
+                };
   return {
     id: normalized.id,
     kind: normalized.kind,

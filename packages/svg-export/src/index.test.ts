@@ -1,6 +1,12 @@
 import { type BoardItem, MAX_STICKY_TEXT_CODE_POINTS } from "@collab/protocol";
 import { describe, expect, it } from "vitest";
-import { createSvgExport, SvgExportError, serializeSvg, svgDownloadHeaders } from "./index.js";
+import {
+  createSvgExport,
+  STAMP_SVG_PATHS,
+  SvgExportError,
+  serializeSvg,
+  svgDownloadHeaders,
+} from "./index.js";
 
 const ACTOR = "018f0000-0000-7000-8000-0000000000a1";
 const BOARD = "018f0000-0000-7000-8000-0000000000ff";
@@ -34,6 +40,22 @@ function sticky(id: string, text: string): Extract<BoardItem, { kind: "sticky" }
     },
     transform: [1, 0, 0, 1, 0, 0],
     geometry: { x: 10, y: 20, width: 180, height: 140, text },
+  };
+}
+
+function stampItem(
+  id: string,
+  stamp: Extract<BoardItem, { kind: "stamp" }>["geometry"]["stamp"],
+): Extract<BoardItem, { kind: "stamp" }> {
+  return {
+    id,
+    kind: "stamp",
+    z: 5,
+    version: 1,
+    createdBy: ACTOR,
+    style: { kind: "stamp", color: "#e11d48", opacity: 0.8 },
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: { x: 50, y: 60, size: 48, stamp },
   };
 }
 
@@ -157,6 +179,30 @@ describe("safe SVG serialization", () => {
     expect(svg).toContain('<rect x="10" y="20" width="180" height="140" rx="12"');
     expect(svg).not.toContain("<clipPath");
     expect(svg).not.toContain("<text ");
+  });
+
+  it("renders every stamp with deterministic local SVG primitives and centered bounds", () => {
+    const variants = ["star", "check", "heart", "question", "smile", "sparkle"] as const;
+    const rendered = new Map<string, string>();
+    for (const stamp of variants) {
+      const item = stampItem("018f0000-0000-7000-8000-000000000008", stamp);
+      const first = createSvgExport({ boardId: BOARD, seq: 8, padding: 0, items: [item] });
+      const second = createSvgExport({ boardId: BOARD, seq: 8, padding: 0, items: [item] });
+      expect(first.svg).toBe(second.svg);
+      expect(first.viewBox).toEqual({ minX: 26, minY: 36, maxX: 74, maxY: 84 });
+      expect(first.svg).toContain('opacity="0.8"');
+      expect(first.svg).toContain('transform="translate(26 36) scale(2)"');
+      expect(first.svg).not.toMatch(/<image|href=|foreignObject|😀/u);
+      rendered.set(stamp, first.svg);
+    }
+    expect(rendered.get("star")).toContain(`d="${STAMP_SVG_PATHS.star}" fill="#e11d48"`);
+    expect(rendered.get("heart")).toContain(`d="${STAMP_SVG_PATHS.heart}" fill="#e11d48"`);
+    expect(rendered.get("check")).toContain(
+      `d="${STAMP_SVG_PATHS.check}" fill="none" stroke="#e11d48" stroke-width="2.8"`,
+    );
+    expect(rendered.get("question")).toContain('<circle cx="12" cy="17.6" r="1.2"');
+    expect(rendered.get("smile")).toContain('<circle cx="12" cy="12" r="9"');
+    expect(rendered.get("sparkle")).toContain(`d="${STAMP_SVG_PATHS.sparkle}" fill="#e11d48"`);
   });
 
   it("rejects unrecognized/non-canonical items rather than serializing arbitrary data", () => {

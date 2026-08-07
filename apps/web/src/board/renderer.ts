@@ -1,3 +1,4 @@
+import { STAMP_SVG_PATHS } from "@collab/svg-export";
 import type {
   BoardItem,
   BoxGeometry,
@@ -6,6 +7,9 @@ import type {
   Point,
   Presence,
   RemotePreview,
+  StampGeometry,
+  StampKind,
+  StampStyle,
   StickyGeometry,
   StickyStyle,
   StrokeStyle,
@@ -507,6 +511,9 @@ function itemNode(item: BoardItem): SVGGraphicsElement {
     case "sticky":
       node = stickyNode(item.geometry, item.style);
       break;
+    case "stamp":
+      node = stampNode(item.geometry, item.style);
+      break;
   }
   node.dataset.itemId = item.id;
   node.dataset.z = String(item.z);
@@ -556,6 +563,96 @@ function stickyNode(geometry: StickyGeometry, style: StickyStyle): SVGSVGElement
   node.setAttribute("opacity", String(style.opacity));
   node.append(background, text);
   return node;
+}
+
+export function stampNode(geometry: StampGeometry, style: StampStyle): SVGGElement {
+  const node = svgElement("g");
+  node.setAttribute("role", "img");
+  node.setAttribute("aria-label", `${stampLabel(geometry.stamp)} stamp`);
+  node.setAttribute("opacity", String(style.opacity));
+
+  const art = svgElement("g");
+  const scale = geometry.size / 24;
+  art.classList.add("stamp-art", `stamp-art-${geometry.stamp}`);
+  art.setAttribute(
+    "transform",
+    `translate(${geometry.x - geometry.size / 2} ${geometry.y - geometry.size / 2}) scale(${scale})`,
+  );
+
+  if (geometry.stamp === "star") {
+    art.append(filledStampPath(STAMP_SVG_PATHS.star, style.color));
+  } else if (geometry.stamp === "heart") {
+    art.append(filledStampPath(STAMP_SVG_PATHS.heart, style.color));
+  } else if (geometry.stamp === "check") {
+    art.append(strokedStampPath(STAMP_SVG_PATHS.check, style.color, "2.8"));
+  } else if (geometry.stamp === "question") {
+    art.append(strokedStampPath(STAMP_SVG_PATHS.question, style.color, "2.4"));
+    const dot = svgElement("circle");
+    dot.setAttribute("cx", "12");
+    dot.setAttribute("cy", "17.6");
+    dot.setAttribute("r", "1.2");
+    dot.setAttribute("fill", style.color);
+    art.append(dot);
+  } else if (geometry.stamp === "smile") {
+    const face = svgElement("circle");
+    face.setAttribute("cx", "12");
+    face.setAttribute("cy", "12");
+    face.setAttribute("r", "9");
+    face.setAttribute("fill", "none");
+    face.setAttribute("stroke", style.color);
+    face.setAttribute("stroke-width", "2");
+    const leftEye = svgElement("circle");
+    leftEye.setAttribute("cx", "8.5");
+    leftEye.setAttribute("cy", "10");
+    leftEye.setAttribute("r", "1.2");
+    leftEye.setAttribute("fill", style.color);
+    const rightEye = svgElement("circle");
+    rightEye.setAttribute("cx", "15.5");
+    rightEye.setAttribute("cy", "10");
+    rightEye.setAttribute("r", "1.2");
+    rightEye.setAttribute("fill", style.color);
+    art.append(
+      face,
+      leftEye,
+      rightEye,
+      strokedStampPath(STAMP_SVG_PATHS.smileMouth, style.color, "2"),
+    );
+  } else {
+    art.append(filledStampPath(STAMP_SVG_PATHS.sparkle, style.color));
+  }
+
+  node.append(art);
+  return node;
+}
+
+function filledStampPath(data: string, color: string): SVGPathElement {
+  const path = svgElement("path");
+  path.setAttribute("d", data);
+  path.setAttribute("fill", color);
+  return path;
+}
+
+function strokedStampPath(data: string, color: string, width: string): SVGPathElement {
+  const path = svgElement("path");
+  path.setAttribute("d", data);
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", color);
+  path.setAttribute("stroke-width", width);
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  return path;
+}
+
+function stampLabel(stamp: StampKind): string {
+  const labels: Record<StampKind, string> = {
+    star: "Star",
+    check: "Check",
+    heart: "Heart",
+    question: "Question mark",
+    smile: "Smile",
+    sparkle: "Sparkle",
+  };
+  return labels[stamp];
 }
 
 export function wrapStickyText(
