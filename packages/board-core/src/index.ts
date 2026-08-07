@@ -246,15 +246,18 @@ function geometryMatchesKind(item: BoardItem, geometry: ItemGeometry): boolean {
       return "x1" in geometry;
     case "rectangle":
     case "ellipse":
-      return "width" in geometry;
+      return "width" in geometry && !("text" in geometry);
     case "text":
-      return "text" in geometry;
+      return "text" in geometry && !("width" in geometry);
+    case "sticky":
+      return "width" in geometry && "text" in geometry;
   }
 }
 
 function validatePatchForItem(item: BoardItem, patch: ItemPatch): void {
   if (patch.style !== undefined) {
-    const expectedKind = item.kind === "text" ? "text" : "stroke";
+    const expectedKind =
+      item.kind === "text" ? "text" : item.kind === "sticky" ? "sticky" : "stroke";
     if (patch.style.kind !== expectedKind) {
       coreFail("INVALID_FRAME", `The patch style does not match the stored ${item.kind} item.`);
     }
@@ -883,12 +886,20 @@ function canonicalItem(item: BoardItem): BoardItem {
           width: normalized.style.width,
           opacity: normalized.style.opacity,
         }
-      : {
-          kind: "text" as const,
-          color: normalized.style.color,
-          fontSize: normalized.style.fontSize,
-          opacity: normalized.style.opacity,
-        };
+      : normalized.style.kind === "text"
+        ? {
+            kind: "text" as const,
+            color: normalized.style.color,
+            fontSize: normalized.style.fontSize,
+            opacity: normalized.style.opacity,
+          }
+        : {
+            kind: "sticky" as const,
+            fill: normalized.style.fill,
+            textColor: normalized.style.textColor,
+            fontSize: normalized.style.fontSize,
+            opacity: normalized.style.opacity,
+          };
   const geometry =
     normalized.kind === "pencil"
       ? { points: normalized.geometry.points.map(([x, y]) => [x, y] as [number, number]) }
@@ -901,12 +912,20 @@ function canonicalItem(item: BoardItem): BoardItem {
           }
         : normalized.kind === "text"
           ? { x: normalized.geometry.x, y: normalized.geometry.y, text: normalized.geometry.text }
-          : {
-              x: normalized.geometry.x,
-              y: normalized.geometry.y,
-              width: normalized.geometry.width,
-              height: normalized.geometry.height,
-            };
+          : normalized.kind === "sticky"
+            ? {
+                x: normalized.geometry.x,
+                y: normalized.geometry.y,
+                width: normalized.geometry.width,
+                height: normalized.geometry.height,
+                text: normalized.geometry.text,
+              }
+            : {
+                x: normalized.geometry.x,
+                y: normalized.geometry.y,
+                width: normalized.geometry.width,
+                height: normalized.geometry.height,
+              };
   return {
     id: normalized.id,
     kind: normalized.kind,

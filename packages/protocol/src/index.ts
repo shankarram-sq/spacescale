@@ -11,6 +11,7 @@ import {
   normalizeTransform,
   type PencilGeometry,
   type Point,
+  type StickyGeometry,
   type TextGeometry,
   type Transform,
 } from "@collab/geometry";
@@ -23,6 +24,7 @@ export type {
   LineGeometry,
   PencilGeometry,
   Point,
+  StickyGeometry,
   TextGeometry,
   Transform,
 } from "@collab/geometry";
@@ -34,11 +36,12 @@ export const MAX_FRAME_DEPTH = 8;
 export const MAX_BATCH_OPERATIONS = 100;
 export const MAX_LIVE_ITEMS = 10_000;
 export const MAX_TEXT_CODE_POINTS = 5_000;
+export const MAX_STICKY_TEXT_CODE_POINTS = 1_000;
 export const MAX_PUBLIC_RESULT_BYTES = 512 * 1024;
 export const MAX_ACTION_PAYLOAD_BYTES = 1.5 * 1024 * 1024;
 export const MAX_SNAPSHOT_BYTES = 20 * 1024 * 1024;
 
-export const ITEM_KINDS = ["pencil", "line", "rectangle", "ellipse", "text"] as const;
+export const ITEM_KINDS = ["pencil", "line", "rectangle", "ellipse", "text", "sticky"] as const;
 export const BOARD_ROLES = ["viewer", "editor", "owner"] as const;
 export const DRAWING_POLICIES = ["editors_enabled", "owner_only", "locked"] as const;
 export const ACCESS_MODES = ["private", "link_view"] as const;
@@ -70,7 +73,15 @@ export interface TextStyle {
   opacity: number;
 }
 
-export type ItemStyle = StrokeStyle | TextStyle;
+export interface StickyStyle {
+  kind: "sticky";
+  fill: string;
+  textColor: string;
+  fontSize: number;
+  opacity: number;
+}
+
+export type ItemStyle = StrokeStyle | TextStyle | StickyStyle;
 
 interface BoardItemBase {
   id: string;
@@ -110,7 +121,13 @@ export interface TextItem extends BoardItemBase {
   geometry: TextGeometry;
 }
 
-export type BoardItem = PencilItem | LineItem | RectangleItem | EllipseItem | TextItem;
+export interface StickyItem extends BoardItemBase {
+  kind: "sticky";
+  style: StickyStyle;
+  geometry: StickyGeometry;
+}
+
+export type BoardItem = PencilItem | LineItem | RectangleItem | EllipseItem | TextItem | StickyItem;
 
 type WithoutServerFields<T> = T extends BoardItem ? Omit<T, "z" | "version" | "createdBy"> : never;
 
@@ -319,6 +336,7 @@ export const ACTIVE_TOOLS = [
   "rectangle",
   "ellipse",
   "text",
+  "sticky",
   "eraser",
   "select",
   "pan",
@@ -562,11 +580,32 @@ export function normalizeTextStyle(value: unknown, path = "$style"): TextStyle {
   };
 }
 
+export function normalizeStickyStyle(value: unknown, path = "$style"): StickyStyle {
+  const object = expectRecord(value, path);
+  if (object.kind !== "sticky") fail('Expected style kind "sticky"', `${path}.kind`);
+  expectExactKeys(object, ["kind", "fill", "textColor", "fontSize", "opacity"], [], path);
+  if (typeof object.fontSize !== "number" || !Number.isFinite(object.fontSize)) {
+    fail("Font size must be a finite number", `${path}.fontSize`);
+  }
+  const fontSize = canonicalNumber(object.fontSize, 2);
+  if (fontSize < 8 || fontSize > 256) {
+    fail("Font size must be between 8 and 256", `${path}.fontSize`);
+  }
+  return {
+    kind: "sticky",
+    fill: normalizeColor(object.fill, `${path}.fill`),
+    textColor: normalizeColor(object.textColor, `${path}.textColor`),
+    fontSize,
+    opacity: normalizeOpacity(object.opacity, `${path}.opacity`),
+  };
+}
+
 export function normalizeItemStyle(value: unknown, path = "$style"): ItemStyle {
   const object = expectRecord(value, path);
   if (object.kind === "stroke") return normalizeStrokeStyle(object, path);
   if (object.kind === "text") return normalizeTextStyle(object, path);
-  fail('Style kind must be "stroke" or "text"', `${path}.kind`);
+  if (object.kind === "sticky") return normalizeStickyStyle(object, path);
+  fail('Style kind must be "stroke", "text", or "sticky"', `${path}.kind`);
 }
 
 function isValidXmlCodePoint(codePoint: number): boolean {
@@ -574,13 +613,20 @@ function isValidXmlCodePoint(codePoint: number): boolean {
     codePoint === 0x9 ||
     codePoint === 0xa ||
     codePoint === 0xd ||
-    (codePoint >= 0x20 && codePoint <= 0xd7ff) ||
+    (codePoint >= 0x20 && codePoint <= 0x7e) ||
+    (codePoint >= 0xa0 && codePoint <= 0xd7ff) ||
     (codePoint >= 0xe000 && codePoint <= 0xfffd) ||
     (codePoint >= 0x10000 && codePoint <= 0x10ffff)
   );
 }
 
-export function validatePlainText(value: unknown, path = "$text"): string {
+function validateText(
+  value: unknown,
+  path: string,
+  maximumCodePoints: number,
+  allowEmpty: boolean,
+  label: string,
+): string {
   if (typeof value !== "string") fail("Expected plain text", path);
   let count = 0;
   for (let index = 0; index < value.length; index += 1) {
@@ -598,12 +644,20 @@ export function validatePlainText(value: unknown, path = "$text"): string {
     }
     if (!isValidXmlCodePoint(codePoint)) fail("Text contains a disallowed control character", path);
     count += 1;
-    if (count > MAX_TEXT_CODE_POINTS) {
-      fail(`Text may contain at most ${MAX_TEXT_CODE_POINTS} Unicode code points`, path);
+    if (count > maximumCodePoints) {
+      fail(`${label} may contain at most ${maximumCodePoints} Unicode code points`, path);
     }
   }
-  if (count === 0) fail("Text must not be empty", path);
+  if (!allowEmpty && count === 0) fail("Text must not be empty", path);
   return value;
+}
+
+export function validatePlainText(value: unknown, path = "$text"): string {
+  return validateText(value, path, MAX_TEXT_CODE_POINTS, false, "Text");
+}
+
+export function validateStickyText(value: unknown, path = "$text"): string {
+  return validateText(value, path, MAX_STICKY_TEXT_CODE_POINTS, true, "Sticky text");
 }
 
 function normalizeGeometryForItem(kind: ItemKind, value: unknown, path: string): ItemGeometry {
@@ -614,11 +668,19 @@ function normalizeGeometryForItem(kind: ItemKind, value: unknown, path: string):
       text: validatePlainText((geometry as TextGeometry).text, `${path}.text`),
     };
   }
+  if (kind === "sticky") {
+    return {
+      ...(geometry as StickyGeometry),
+      text: validateStickyText((geometry as StickyGeometry).text, `${path}.text`),
+    };
+  }
   return geometry;
 }
 
 function normalizeStyleForKind(kind: ItemKind, value: unknown, path: string): ItemStyle {
-  return kind === "text" ? normalizeTextStyle(value, path) : normalizeStrokeStyle(value, path);
+  if (kind === "text") return normalizeTextStyle(value, path);
+  if (kind === "sticky") return normalizeStickyStyle(value, path);
+  return normalizeStrokeStyle(value, path);
 }
 
 export function normalizeNewBoardItem(value: unknown, path = "$item"): NewBoardItem {
@@ -676,7 +738,10 @@ export function normalizeItemPatch(value: unknown, path = "$patch"): ItemPatch {
     if ("text" in patch.geometry) {
       patch.geometry = {
         ...patch.geometry,
-        text: validatePlainText(patch.geometry.text, `${path}.geometry.text`),
+        text:
+          "width" in patch.geometry
+            ? validateStickyText(patch.geometry.text, `${path}.geometry.text`)
+            : validatePlainText(patch.geometry.text, `${path}.geometry.text`),
       };
     }
   }

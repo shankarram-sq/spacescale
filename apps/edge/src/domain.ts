@@ -7,13 +7,13 @@ import {
 import {
   type Bounds,
   canonicalNumber,
+  GeometryValidationError,
   itemBounds,
-  normalizeGeometry,
-  normalizeTransform,
 } from "@collab/geometry";
 import {
   type ClientCommitFrame,
   type DurableOperation,
+  normalizeBoardItem,
   type BoardItem as ProtocolBoardItem,
   ProtocolValidationError,
   validateClientFrame,
@@ -340,27 +340,18 @@ export function prepareItemOperation(
 }
 
 export function canonicalItemFromUnknown(value: unknown): BoardItem {
-  const item = record(value, "item");
-  exact(
-    item,
-    ["id", "kind", "z", "version", "createdBy", "style", "transform", "geometry"],
-    "item",
-  );
-  const kind = itemKind(item.kind);
-  return canonicalItem(
-    {
-      id: opaqueId(item.id, "item.id"),
-      kind,
-      style: item.style,
-      transform: item.transform,
-      geometry: item.geometry,
-    },
-    {
-      z: safeInteger(item.z, "item.z", 1, Number.MAX_SAFE_INTEGER),
-      version: safeInteger(item.version, "item.version", 0, Number.MAX_SAFE_INTEGER),
-      createdBy: actorId(item.createdBy),
-    },
-  );
+  try {
+    return normalizeBoardItem(value, "$item") as unknown as BoardItem;
+  } catch (error) {
+    if (error instanceof ProtocolValidationError) {
+      throw new BoardDomainError(
+        error.code,
+        error.message,
+        error.details as Record<string, unknown>,
+      );
+    }
+    throw error;
+  }
 }
 
 export function itemWriteFromState(
@@ -383,77 +374,16 @@ function parseNewItem(value: unknown): NewItem {
   };
 }
 
-function canonicalItem(
-  value: NewItem,
-  server: { z: number; version: number; createdBy: string },
-): BoardItem {
-  const style = normalizeStyle(value.kind, value.style);
-  let geometry: ItemGeometry;
-  try {
-    geometry = normalizeGeometry(value.kind, value.geometry) as ItemGeometry;
-  } catch (error) {
-    throw new BoardDomainError(
-      "INVALID_FRAME",
-      error instanceof Error ? error.message : "Invalid geometry.",
-    );
-  }
-  if (value.kind === "text") {
-    const text = (geometry as { text: string }).text;
-    if ([...text].length < 1 || [...text].length > 5_000 || /[\p{Cc}&&[^\n\t]]/v.test(text)) {
-      throw new BoardDomainError(
-        "INVALID_FRAME",
-        "Text must contain 1 to 5000 plain-text characters.",
-      );
-    }
-  }
-  let transform: Matrix;
-  try {
-    transform = normalizeTransform(value.transform) as Matrix;
-  } catch (error) {
-    throw new BoardDomainError(
-      "INVALID_FRAME",
-      error instanceof Error ? error.message : "Invalid transform.",
-    );
-  }
-  return {
-    id: value.id,
-    kind: value.kind,
-    z: server.z,
-    version: server.version,
-    createdBy: server.createdBy,
-    style,
-    transform,
-    geometry,
-  };
-}
-
-function normalizeStyle(kind: BoardItemKind, value: unknown): ItemStyle {
-  const style = record(value, "style");
-  if (kind === "text") {
-    exact(style, ["kind", "color", "fontSize", "opacity"], "style");
-    if (style.kind !== "text")
-      throw new BoardDomainError("INVALID_FRAME", "Text requires a text style.");
-    return {
-      kind: "text",
-      color: color(style.color),
-      fontSize: finiteRange(style.fontSize, "fontSize", 8, 256),
-      opacity: finiteRange(style.opacity, "opacity", 0.1, 1),
-    };
-  }
-  exact(style, ["kind", "color", "width", "opacity"], "style");
-  if (style.kind !== "stroke")
-    throw new BoardDomainError("INVALID_FRAME", "Stroke items require a stroke style.");
-  return {
-    kind: "stroke",
-    color: color(style.color),
-    width: finiteRange(style.width, "width", 1, 100),
-    opacity: finiteRange(style.opacity, "opacity", 0.1, 1),
-  };
-}
-
 function makeWrite(item: BoardItem, deleted: boolean, stateToken: string): ItemWrite {
-  const bounds = itemBounds(item);
-  return { item, deleted, stateToken, bounds };
+  try {
+    const bounds = itemBounds(item);
+    return { item, deleted, stateToken, bounds };
+  } catch (error) {
+    if (error instanceof GeometryValidationError) {
+      throw new BoardDomainError("INVALID_FRAME", error.message);
+    }
+    throw error;
+  }
 }
 
 function record(value: unknown, path: string): Record<string, unknown> {
@@ -494,7 +424,8 @@ function itemKind(value: unknown): BoardItemKind {
     value === "line" ||
     value === "rectangle" ||
     value === "ellipse" ||
-    value === "text"
+    value === "text" ||
+    value === "sticky"
   ) {
     return value;
   }
@@ -504,13 +435,6 @@ function itemKind(value: unknown): BoardItemKind {
 function opaqueId(value: unknown, path: string): string {
   if (typeof value !== "string" || !OPAQUE_ID_PATTERN.test(value)) {
     throw new BoardDomainError("INVALID_FRAME", `${path} is invalid.`);
-  }
-  return value;
-}
-
-function actorId(value: unknown): string {
-  if (typeof value !== "string" || !/^a_[A-Za-z0-9_-]{22}$/u.test(value)) {
-    throw new BoardDomainError("INVALID_FRAME", "createdBy is invalid.");
   }
   return value;
 }
@@ -532,11 +456,4 @@ function finiteRange(value: unknown, path: string, minimum: number, maximum: num
     throw new BoardDomainError("INVALID_FRAME", `${path} is out of range.`);
   }
   return canonicalNumber(value, 4);
-}
-
-function color(value: unknown): string {
-  if (typeof value !== "string" || !/^#[0-9a-f]{6}$/u.test(value)) {
-    throw new BoardDomainError("INVALID_FRAME", "Colour must be lowercase #rrggbb.");
-  }
-  return value;
 }

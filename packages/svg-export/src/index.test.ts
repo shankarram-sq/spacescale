@@ -1,4 +1,4 @@
-import type { BoardItem } from "@collab/protocol";
+import { type BoardItem, MAX_STICKY_TEXT_CODE_POINTS } from "@collab/protocol";
 import { describe, expect, it } from "vitest";
 import { createSvgExport, SvgExportError, serializeSvg, svgDownloadHeaders } from "./index.js";
 
@@ -15,6 +15,25 @@ function rectangle(id: string, z: number): BoardItem {
     style: { kind: "stroke", color: "#123456", width: 2, opacity: 0.75 },
     transform: [1, 0, 0, 1, 0, 0],
     geometry: { x: 0, y: 0, width: 10, height: 20 },
+  };
+}
+
+function sticky(id: string, text: string): Extract<BoardItem, { kind: "sticky" }> {
+  return {
+    id,
+    kind: "sticky",
+    z: 4,
+    version: 1,
+    createdBy: ACTOR,
+    style: {
+      kind: "sticky",
+      fill: "#fff2a8",
+      textColor: "#27231b",
+      fontSize: 20,
+      opacity: 0.9,
+    },
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: { x: 10, y: 20, width: 180, height: 140, text },
   };
 }
 
@@ -75,6 +94,69 @@ describe("safe SVG serialization", () => {
     expect(serializeSvg({ boardId: BOARD, seq: 2, items: [text] })).toContain(
       '<tspan x="1" dy="12">two</tspan>',
     );
+  });
+
+  it("renders sticky notes with deterministic wrapping, clipping, and escaped text", () => {
+    const item = sticky(
+      "018f0000-0000-7000-8000-000000000004",
+      `one two three four five\n<script> & 😀`,
+    );
+    const first = createSvgExport({ boardId: BOARD, seq: 4, padding: 0, items: [item] });
+    const second = createSvgExport({ boardId: BOARD, seq: 4, padding: 0, items: [item] });
+
+    expect(first.svg).toBe(second.svg);
+    expect(first.viewBox).toEqual({ minX: 10, minY: 20, maxX: 190, maxY: 160 });
+    expect(first.svg).toContain(
+      '<g transform="matrix(1 0 0 1 0 0)" opacity="0.9" data-item-id="018f0000-0000-7000-8000-000000000004">',
+    );
+    expect(first.svg).toContain(
+      '<rect x="10" y="20" width="180" height="140" rx="12" fill="#fff2a8" />',
+    );
+    expect(first.svg).toContain(
+      '<clipPath id="sticky-clip-018f0000-0000-7000-8000-000000000004" clipPathUnits="userSpaceOnUse"><rect x="24" y="34" width="152" height="112" /></clipPath>',
+    );
+    expect(first.svg).toContain(
+      'x="24" y="54" fill="#27231b" font-size="20" font-family="Inter, ui-sans-serif, system-ui, sans-serif"',
+    );
+    expect(first.svg).toContain('<tspan x="24" dy="0">one two three</tspan>');
+    expect(first.svg).toContain('<tspan x="24" dy="24">four five</tspan>');
+    expect(first.svg).toContain("&lt;script&gt; &amp; 😀");
+    expect(first.svg).not.toContain("<script>");
+    expect(first.svg).not.toContain("foreignObject");
+  });
+
+  it("hard-wraps sticky text by Unicode code point and clamps visible lines", () => {
+    const item = sticky("018f0000-0000-7000-8000-000000000005", "😀😀😀😀😀");
+    item.geometry = { x: 0, y: 0, width: 51, height: 52, text: item.geometry.text };
+    item.style = { ...item.style, fontSize: 10 };
+
+    const svg = serializeSvg({ boardId: BOARD, seq: 5, items: [item] });
+    expect(svg).toContain('<tspan x="14" dy="0">😀😀😀😀</tspan>');
+    expect(svg).toContain('<tspan x="14" dy="12">😀</tspan>');
+    expect(svg.match(/<tspan /gu)).toHaveLength(2);
+  });
+
+  it("bounds a max-length hard split to the one visible line of a tiny sticky", () => {
+    const text = `<${"😀".repeat(MAX_STICKY_TEXT_CODE_POINTS - 2)}&`;
+    expect(Array.from(text)).toHaveLength(MAX_STICKY_TEXT_CODE_POINTS);
+    const item = sticky("018f0000-0000-7000-8000-000000000007", text);
+    item.geometry = { x: 0, y: 0, width: 29, height: 29, text };
+    item.style = { ...item.style, fontSize: 10 };
+
+    const svg = serializeSvg({ boardId: BOARD, seq: 7, items: [item] });
+    expect(svg).toContain('<tspan x="14" dy="0">&lt;</tspan>');
+    expect(svg.match(/<tspan /gu)).toHaveLength(1);
+    expect(svg).not.toContain("😀");
+    expect(svg).not.toContain("&amp;");
+    expect(svg.length).toBeLessThan(1_500);
+  });
+
+  it("omits unnecessary sticky text markup for an empty note", () => {
+    const item = sticky("018f0000-0000-7000-8000-000000000006", "");
+    const svg = serializeSvg({ boardId: BOARD, seq: 6, items: [item] });
+    expect(svg).toContain('<rect x="10" y="20" width="180" height="140" rx="12"');
+    expect(svg).not.toContain("<clipPath");
+    expect(svg).not.toContain("<text ");
   });
 
   it("rejects unrecognized/non-canonical items rather than serializing arbitrary data", () => {

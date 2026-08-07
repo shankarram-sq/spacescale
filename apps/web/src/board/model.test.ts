@@ -21,6 +21,25 @@ function rectangle(version = 1): BoardItem {
   };
 }
 
+function sticky(version = 1): BoardItem {
+  return {
+    id: ITEM_ID,
+    kind: "sticky",
+    z: 1,
+    version,
+    createdBy: ACTOR_ID,
+    style: {
+      kind: "sticky",
+      fill: "#fde68a",
+      textColor: "#292524",
+      fontSize: 20,
+      opacity: 1,
+    },
+    transform: [1, 0, 0, 1, 30, -5],
+    geometry: { x: 10, y: 20, width: 180, height: 140, text: "" },
+  };
+}
+
 function snapshot(items: BoardItem[] = [], seq = 0): BoardSnapshot {
   return { format: "cf-whiteboard-json", version: 1, seq, items };
 }
@@ -113,6 +132,27 @@ describe("BoardModel", () => {
     model.load(snapshot([item], 1));
     expect(model.hitTest([50, 30])?.id).toBe(ITEM_ID);
     expect(model.hitTest([400, 300])).toBeUndefined();
+  });
+
+  it("uses the complete sticky rectangle for bounds and hit testing", () => {
+    const item = sticky();
+    expect(itemBounds(item)).toEqual({ minX: 40, minY: 15, maxX: 220, maxY: 155 });
+    const model = new BoardModel();
+    model.load(snapshot([item], 1));
+    expect(model.hitTest([219, 154], 0)?.id).toBe(ITEM_ID);
+    expect(model.hitTest([39, 14], 0)).toBeUndefined();
+  });
+
+  it("does not hit the empty corners of a rotated sticky AABB", () => {
+    const item = sticky();
+    const diagonal = Math.SQRT1_2;
+    item.geometry = { x: 0, y: 0, width: 100, height: 100, text: "" };
+    item.transform = [diagonal, diagonal, -diagonal, diagonal, 0, 0];
+    const model = new BoardModel();
+    model.load(snapshot([item], 1));
+
+    expect(model.hitTest([0, 70], 0)?.id).toBe(ITEM_ID);
+    expect(model.hitTest([-65, 5], 0)).toBeUndefined();
   });
 
   it("retains the optimistic journal when a remote action makes rebase unsafe", () => {

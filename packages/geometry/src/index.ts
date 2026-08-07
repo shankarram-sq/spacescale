@@ -1,5 +1,7 @@
 export const COORDINATE_LIMIT = 1_000_000;
 export const DIMENSION_LIMIT = 2_000_000;
+export const TRANSFORM_LINEAR_COMPONENT_LIMIT = COORDINATE_LIMIT;
+export const WORLD_COORDINATE_LIMIT = DIMENSION_LIMIT;
 export const MAX_PENCIL_POINTS = 10_000;
 export const MIN_PENCIL_POINTS = 2;
 
@@ -30,9 +32,18 @@ export interface TextGeometry {
   text: string;
 }
 
-export type ItemGeometry = PencilGeometry | LineGeometry | BoxGeometry | TextGeometry;
+export interface StickyGeometry extends BoxGeometry {
+  text: string;
+}
 
-export type GeometryKind = "pencil" | "line" | "rectangle" | "ellipse" | "text";
+export type ItemGeometry =
+  | PencilGeometry
+  | LineGeometry
+  | BoxGeometry
+  | TextGeometry
+  | StickyGeometry;
+
+export type GeometryKind = "pencil" | "line" | "rectangle" | "ellipse" | "text" | "sticky";
 
 export interface Bounds {
   minX: number;
@@ -45,7 +56,10 @@ export interface BoundsItem {
   kind: GeometryKind;
   geometry: ItemGeometry;
   transform: Transform;
-  style: { kind: "stroke"; width: number } | { kind: "text"; fontSize: number };
+  style:
+    | { kind: "stroke"; width: number }
+    | { kind: "text"; fontSize: number }
+    | { kind: "sticky"; fontSize: number };
 }
 
 export class GeometryValidationError extends Error {
@@ -152,7 +166,14 @@ export function normalizeTransform(value: unknown, path = "$transform"): Transfo
         `${path}[${index}]`,
       );
     }
-    return canonicalNumber(component, 6);
+    const normalized = canonicalNumber(component, 6);
+    if (Math.abs(normalized) > TRANSFORM_LINEAR_COMPONENT_LIMIT) {
+      throw new GeometryValidationError(
+        `Transform component must be between -${TRANSFORM_LINEAR_COMPONENT_LIMIT} and ${TRANSFORM_LINEAR_COMPONENT_LIMIT}`,
+        `${path}[${index}]`,
+      );
+    }
+    return normalized;
   };
   return [
     normalizeLinearComponent(value[0], 0),
@@ -244,6 +265,30 @@ export function normalizeTextGeometry(value: unknown, path = "$geometry"): TextG
   };
 }
 
+export function normalizeStickyGeometry(value: unknown, path = "$geometry"): StickyGeometry {
+  const object = expectRecord(value, path);
+  expectOnlyKeys(object, ["x", "y", "width", "height", "text"], path);
+  if (typeof object.text !== "string") {
+    throw new GeometryValidationError("Expected text to be a string", `${path}.text`);
+  }
+  const box = normalizeBoxGeometry(
+    {
+      x: object.x,
+      y: object.y,
+      width: object.width,
+      height: object.height,
+    },
+    path,
+  );
+  if (box.width === 0) {
+    throw new GeometryValidationError("Sticky width must be greater than 0", `${path}.width`);
+  }
+  if (box.height === 0) {
+    throw new GeometryValidationError("Sticky height must be greater than 0", `${path}.height`);
+  }
+  return { ...box, text: object.text };
+}
+
 export function normalizeGeometry(kind: "pencil", value: unknown, path?: string): PencilGeometry;
 export function normalizeGeometry(kind: "line", value: unknown, path?: string): LineGeometry;
 export function normalizeGeometry(
@@ -252,6 +297,7 @@ export function normalizeGeometry(
   path?: string,
 ): BoxGeometry;
 export function normalizeGeometry(kind: "text", value: unknown, path?: string): TextGeometry;
+export function normalizeGeometry(kind: "sticky", value: unknown, path?: string): StickyGeometry;
 export function normalizeGeometry(kind: GeometryKind, value: unknown, path?: string): ItemGeometry;
 export function normalizeGeometry(
   kind: GeometryKind,
@@ -268,6 +314,8 @@ export function normalizeGeometry(
       return normalizeBoxGeometry(value, path);
     case "text":
       return normalizeTextGeometry(value, path);
+    case "sticky":
+      return normalizeStickyGeometry(value, path);
   }
 }
 
@@ -275,6 +323,9 @@ export function inferAndNormalizeGeometry(value: unknown, path = "$geometry"): I
   const object = expectRecord(value, path);
   if (own.call(object, "points")) return normalizePencilGeometry(object, path);
   if (own.call(object, "x1")) return normalizeLineGeometry(object, path);
+  if (own.call(object, "width") && own.call(object, "text")) {
+    return normalizeStickyGeometry(object, path);
+  }
   if (own.call(object, "width")) return normalizeBoxGeometry(object, path);
   if (own.call(object, "text")) return normalizeTextGeometry(object, path);
   throw new GeometryValidationError("Unrecognized geometry shape", path);
@@ -342,7 +393,8 @@ export function geometryBounds(
       ]);
     }
     case "rectangle":
-    case "ellipse": {
+    case "ellipse":
+    case "sticky": {
       const box = geometry as BoxGeometry;
       return {
         minX: box.x,
@@ -395,10 +447,19 @@ export function itemBounds(item: BoundsItem): Bounds {
     item.style.kind === "text" ? item.style.fontSize : 16,
   );
   const transformed = transformBounds(local, item.transform);
-  if (item.style.kind === "stroke") {
-    return expandBounds(transformed, (item.style.width / 2) * maximumLinearScale(item.transform));
+  const result =
+    item.style.kind === "stroke"
+      ? expandBounds(transformed, (item.style.width / 2) * maximumLinearScale(item.transform))
+      : transformed;
+  for (const [name, value] of Object.entries(result)) {
+    if (!Number.isFinite(value) || Math.abs(value) > WORLD_COORDINATE_LIMIT) {
+      throw new GeometryValidationError(
+        `Transformed item bounds must remain between -${WORLD_COORDINATE_LIMIT} and ${WORLD_COORDINATE_LIMIT}`,
+        `$bounds.${name}`,
+      );
+    }
   }
-  return transformed;
+  return result;
 }
 
 export function unionBounds(left: Bounds, right: Bounds): Bounds {

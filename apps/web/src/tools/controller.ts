@@ -9,6 +9,8 @@ import type {
   LineGeometry,
   Matrix,
   Point,
+  StickyGeometry,
+  StickyStyle,
   StrokeStyle,
   TextGeometry,
   ToolName,
@@ -20,7 +22,57 @@ type StyleState = {
   width: number;
   opacity: number;
   fontSize: number;
+  stickyFill: string;
+  stickyTextColor: string;
+  stickyFontSize: number;
+  stickyOpacity: number;
 };
+
+export const DEFAULT_STICKY_WIDTH = 180;
+export const DEFAULT_STICKY_HEIGHT = 140;
+
+const TOOL_SHORTCUTS: Partial<Record<string, ToolName>> = {
+  v: "select",
+  p: "pencil",
+  l: "line",
+  r: "rectangle",
+  o: "ellipse",
+  t: "text",
+  n: "sticky",
+  e: "eraser",
+  h: "pan",
+};
+
+const SHORTCUT_DRAW_TOOLS = new Set<ToolName>([
+  "pencil",
+  "line",
+  "rectangle",
+  "ellipse",
+  "text",
+  "sticky",
+  "eraser",
+]);
+
+export function toolFromShortcut(key: string, canDraw: boolean): ToolName | undefined {
+  const tool = TOOL_SHORTCUTS[key.toLowerCase()];
+  return tool && (!SHORTCUT_DRAW_TOOLS.has(tool) || canDraw) ? tool : undefined;
+}
+
+export function stickyTapMoveThreshold(pointerType: string, zoom: number): number {
+  return (pointerType === "touch" ? 10 : 3) / Math.max(0.1, zoom);
+}
+
+export function tapAdjustedMovePoint(
+  start: Point,
+  current: Point,
+  pointerType: string,
+  zoom: number,
+): Point {
+  return Math.hypot(current[0] - start[0], current[1] - start[1]) <=
+    stickyTapMoveThreshold(pointerType, zoom)
+    ? start
+    : current;
+}
 
 export type CapturedMoveItem = {
   transform: Matrix;
@@ -30,7 +82,7 @@ export type CapturedMoveItem = {
 export type CapturedTextEdit = {
   itemId: string;
   expectedVersion: number;
-  geometry: TextGeometry;
+  geometry: TextGeometry | StickyGeometry;
 };
 
 export function buildCapturedMoveOperations(
@@ -61,6 +113,37 @@ export function buildCapturedTextUpdate(edit: CapturedTextEdit, text: string): B
     itemId: edit.itemId,
     expectedVersion: edit.expectedVersion,
     patch: { geometry: { ...edit.geometry, text } },
+  };
+}
+
+export function buildStickyCreateOperation(
+  itemId: string,
+  point: Point,
+  style: Pick<StyleState, "stickyFill" | "stickyTextColor" | "stickyFontSize" | "stickyOpacity">,
+  text: string,
+): BatchItemOperation {
+  const stickyStyle: StickyStyle = {
+    kind: "sticky",
+    fill: style.stickyFill,
+    textColor: style.stickyTextColor,
+    fontSize: style.stickyFontSize,
+    opacity: style.stickyOpacity,
+  };
+  return {
+    kind: "item.create",
+    item: {
+      id: itemId,
+      kind: "sticky",
+      style: stickyStyle,
+      transform: identityMatrix(),
+      geometry: {
+        x: point[0],
+        y: point[1],
+        width: DEFAULT_STICKY_WIDTH,
+        height: DEFAULT_STICKY_HEIGHT,
+        text,
+      },
+    },
   };
 }
 
@@ -131,6 +214,14 @@ type Gesture =
       pointerId: number;
       gestureId: string;
       versions: Map<string, number>;
+    }
+  | {
+      kind: "sticky";
+      pointerId: number;
+      pointerType: string;
+      start: Point;
+      current: Point;
+      item?: Extract<BoardItem, { kind: "sticky" }>;
     };
 
 type PinchState = {
@@ -148,6 +239,7 @@ export class ToolController {
   private readonly pointers = new Map<number, Point>();
   private pinch: PinchState | null = null;
   private lastPresenceAt = 0;
+  private lastStickyTap: { itemId: string; at: number } | null = null;
 
   constructor(private readonly options: ToolControllerOptions) {
     const { svg } = options.renderer;
@@ -174,6 +266,7 @@ export class ToolController {
   setTool(tool: ToolName): void {
     if (this.toolValue === tool) return;
     this.cancelGesture();
+    this.lastStickyTap = null;
     this.toolValue = tool;
     this.options.renderer.setCursor(tool, this.spaceHeld);
     this.options.onToolChanged(tool);
@@ -364,6 +457,26 @@ export class ToolController {
       const hit = this.options.model.hitTest(point, 4);
       this.options.editText(point, hit?.kind === "text" ? hit : undefined);
       event.preventDefault();
+      return;
+    }
+
+    if (this.toolValue === "sticky") {
+      const hit = this.options.model.hitTest(point, 0);
+      const sticky = hit?.kind === "sticky" ? hit : undefined;
+      if (event.pointerType === "touch") {
+        this.gesture = {
+          kind: "sticky",
+          pointerId: event.pointerId,
+          pointerType: event.pointerType,
+          start: point,
+          current: point,
+          item: sticky,
+        };
+        event.preventDefault();
+        return;
+      }
+      this.options.editText(point, sticky);
+      event.preventDefault();
     }
   };
 
@@ -451,6 +564,8 @@ export class ToolController {
       this.options.renderer.showMarquee(pointsBounds(gesture.start, gesture.current));
     } else if (gesture.kind === "eraser") {
       this.collectEraser(boardPoint(event, this.options.renderer), gesture);
+    } else if (gesture.kind === "sticky") {
+      gesture.current = boardPoint(event, this.options.renderer);
     }
     event.preventDefault();
   };
@@ -470,7 +585,25 @@ export class ToolController {
     }
     this.gesture = null;
     safeReleaseCapture(this.options.renderer.svg, event.pointerId);
+    const adjustedMovePoint =
+      gesture.kind === "move"
+        ? tapAdjustedMovePoint(
+            gesture.start,
+            gesture.current,
+            event.pointerType,
+            this.options.renderer.viewport.zoom,
+          )
+        : undefined;
+    const isItemTap = gesture.kind === "move" && adjustedMovePoint === gesture.start;
+    const tappedItem = isItemTap
+      ? this.options.model.hitTest(boardPoint(event, this.options.renderer), 0)
+      : undefined;
+    if (isItemTap && gesture.kind === "move" && adjustedMovePoint) {
+      gesture.current = adjustedMovePoint;
+    }
     void this.finishGesture(gesture);
+    if (tappedItem?.kind === "sticky") this.handleStickyTap(tappedItem, pointFromItem(tappedItem));
+    else this.lastStickyTap = null;
     event.preventDefault();
   };
 
@@ -522,20 +655,21 @@ export class ToolController {
       void this.copySelection();
       return;
     }
+    if ((event.key === "Enter" || event.key === "F2") && this.selected.size === 1) {
+      const [selectedId] = this.selected;
+      const item = selectedId === undefined ? undefined : this.options.model.getItem(selectedId);
+      if (item?.kind === "sticky" && this.options.canDraw()) {
+        event.preventDefault();
+        this.lastStickyTap = null;
+        this.options.editText(pointFromItem(item), item);
+        return;
+      }
+    }
     if (event.metaKey || event.ctrlKey || event.altKey) return;
-    const shortcut: Partial<Record<string, ToolName>> = {
-      v: "select",
-      p: "pencil",
-      l: "line",
-      r: "rectangle",
-      o: "ellipse",
-      t: "text",
-      e: "eraser",
-      h: "pan",
-    };
-    const tool = shortcut[event.key.toLowerCase()];
-    if (tool) {
-      this.setTool(tool);
+    const shortcutKey = event.key.toLowerCase();
+    if (TOOL_SHORTCUTS[shortcutKey]) {
+      const tool = toolFromShortcut(shortcutKey, this.options.canDraw());
+      if (tool) this.setTool(tool);
       event.preventDefault();
     }
   };
@@ -548,6 +682,7 @@ export class ToolController {
 
   private beginSelection(event: PointerEvent, point: Point): void {
     const hit = this.options.model.hitTest(point, 5 / this.options.renderer.viewport.zoom);
+    if (hit?.kind !== "sticky") this.lastStickyTap = null;
     if (hit) {
       if (!this.selected.has(hit.id))
         this.selectOnly(event.shiftKey ? [...this.selected, hit.id] : [hit.id]);
@@ -617,6 +752,16 @@ export class ToolController {
   }
 
   private async finishGesture(gesture: Gesture): Promise<void> {
+    if (gesture.kind === "sticky") {
+      const point = tapAdjustedMovePoint(
+        gesture.start,
+        gesture.current,
+        gesture.pointerType,
+        this.options.renderer.viewport.zoom,
+      );
+      if (point === gesture.start) this.options.editText(gesture.start, gesture.item);
+      return;
+    }
     if (gesture.kind === "pan") return;
     if (gesture.kind === "pencil") {
       if (gesture.animationFrame !== null) cancelAnimationFrame(gesture.animationFrame);
@@ -664,16 +809,7 @@ export class ToolController {
         return;
       }
       await this.options.commit(
-        {
-          kind: "item.create",
-          item: {
-            id: gesture.itemId,
-            kind: gesture.shape,
-            style: gesture.style,
-            transform: identityMatrix(),
-            geometry,
-          },
-        },
+        buildShapeCreateOperation(gesture.itemId, gesture.shape, geometry, gesture.style),
         gesture.gestureId,
       );
       return;
@@ -707,7 +843,12 @@ export class ToolController {
   private cancelGesture(): void {
     const gesture = this.gesture;
     this.gesture = null;
-    if (!gesture || gesture.kind === "pan" || gesture.kind === "marquee") {
+    if (
+      !gesture ||
+      gesture.kind === "pan" ||
+      gesture.kind === "marquee" ||
+      gesture.kind === "sticky"
+    ) {
       this.options.renderer.clearLocalPreview();
       return;
     }
@@ -719,6 +860,16 @@ export class ToolController {
       "gesture.cancel",
     );
     this.options.renderer.clearLocalPreview();
+  }
+
+  private handleStickyTap(item: Extract<BoardItem, { kind: "sticky" }>, point: Point): void {
+    const now = performance.now();
+    if (this.lastStickyTap?.itemId === item.id && now - this.lastStickyTap.at <= 450) {
+      this.lastStickyTap = null;
+      this.options.editText(point, item);
+      return;
+    }
+    this.lastStickyTap = { itemId: item.id, at: now };
   }
 }
 
@@ -798,6 +949,54 @@ function midpoint(a: Point, b: Point): Point {
 
 function identityMatrix(): Matrix {
   return [1, 0, 0, 1, 0, 0];
+}
+
+function buildShapeCreateOperation(
+  itemId: string,
+  shape: "line" | "rectangle" | "ellipse",
+  geometry: LineGeometry | BoxGeometry,
+  style: StrokeStyle,
+): BatchItemOperation {
+  if (shape === "line") {
+    if (!("x1" in geometry)) throw new Error("Line geometry is invalid.");
+    return {
+      kind: "item.create",
+      item: {
+        id: itemId,
+        kind: "line",
+        style,
+        transform: identityMatrix(),
+        geometry,
+      },
+    };
+  }
+  if (!("width" in geometry)) throw new Error("Box geometry is invalid.");
+  if (shape === "rectangle") {
+    return {
+      kind: "item.create",
+      item: {
+        id: itemId,
+        kind: "rectangle",
+        style,
+        transform: identityMatrix(),
+        geometry,
+      },
+    };
+  }
+  return {
+    kind: "item.create",
+    item: {
+      id: itemId,
+      kind: "ellipse",
+      style,
+      transform: identityMatrix(),
+      geometry,
+    },
+  };
+}
+
+function pointFromItem(item: Extract<BoardItem, { kind: "sticky" }>): Point {
+  return [item.geometry.x, item.geometry.y];
 }
 
 function isEditingTarget(target: EventTarget | null): boolean {

@@ -181,6 +181,38 @@ function createCommit(commandId: string, actionId: string, itemId: string) {
   };
 }
 
+function createStickyCommit(commandId: string, actionId: string, itemId: string) {
+  return {
+    v: 1,
+    t: "client.commit",
+    commandId,
+    actionId,
+    baseSeq: 0,
+    op: {
+      kind: "item.create",
+      item: {
+        id: itemId,
+        kind: "sticky",
+        style: {
+          kind: "sticky",
+          fill: "#fff2a8",
+          textColor: "#27231b",
+          fontSize: 20,
+          opacity: 1,
+        },
+        transform: [1, 0, 0, 1, 12, 18],
+        geometry: {
+          x: 40,
+          y: 55,
+          width: 220,
+          height: 160,
+          text: "Original classroom idea\nSecond line",
+        },
+      },
+    },
+  };
+}
+
 function seedActionRows(
   sql: SqlStorage,
   count: number,
@@ -1474,6 +1506,205 @@ describe("BoardRoom initialization", () => {
     expect(afterClear.decomposedBytes).toBe(afterClear.serializedBytes);
     connected.socket.close(1000, "done");
   });
+
+  it("keeps attributed sticky content durable through history, R2 restore, and hibernation", async () => {
+    const typedEnv = env as unknown as Env;
+    const stub = typedEnv.BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const connected = await connect(stub, actorId);
+    const commandId = "018f0000-0000-7000-8000-000000000860";
+    const actionId = "018f0000-0000-7000-8000-000000000861";
+    const itemId = "018f0000-0000-7000-8000-000000000862";
+    const create = createStickyCommit(commandId, actionId, itemId);
+
+    connected.socket.send(JSON.stringify(create));
+    const created = await connected.next((frame) => frame.t === "server.action" && frame.seq === 1);
+    expect(created).toMatchObject({
+      seq: 1,
+      actionId,
+      actor: { id: actorId, displayName: "Owner 1" },
+      op: {
+        kind: "item.create",
+        item: {
+          ...create.op.item,
+          z: 1,
+          version: 1,
+          createdBy: actorId,
+        },
+      },
+    });
+
+    const activity = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/activity?afterSeq=0&limit=1`),
+    );
+    expect(activity.status).toBe(200);
+    expect(await activity.json()).toEqual({
+      events: [
+        {
+          seq: 1,
+          actionId,
+          actor: { id: actorId, displayName: "Owner 1" },
+          kind: "item.create",
+          itemIds: [itemId],
+          acceptedAt: expect.any(Number),
+        },
+      ],
+      nextAfterSeq: 1,
+      hasMore: false,
+    });
+
+    connected.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000863",
+        actionId: "018f0000-0000-7000-8000-000000000864",
+        baseSeq: 1,
+        op: {
+          kind: "history.undo",
+          expectedHistoryVersion: 1,
+          targetActionId: actionId,
+        },
+      }),
+    );
+    await connected.next((frame) => frame.t === "server.action" && frame.seq === 2);
+
+    connected.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000865",
+        actionId: "018f0000-0000-7000-8000-000000000866",
+        baseSeq: 2,
+        op: {
+          kind: "history.redo",
+          expectedHistoryVersion: 2,
+          targetActionId: actionId,
+        },
+      }),
+    );
+    await connected.next((frame) => frame.t === "server.action" && frame.seq === 3);
+
+    const named = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/snapshots`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "sticky-durability-snapshot-0001",
+        },
+        body: JSON.stringify({ label: "Sticky before edit" }),
+      }),
+    );
+    expect(named.status).toBe(201);
+    expect(await named.json()).toMatchObject({
+      snapshot: {
+        seq: 3,
+        kind: "named",
+        label: "Sticky before edit",
+        itemCount: 1,
+      },
+    });
+
+    const snapshotKey = await runInDurableObject(
+      stub,
+      (_instance, durableState) =>
+        durableState.storage.sql
+          .exec<{ r2_json_key: string }>("SELECT r2_json_key FROM snapshots WHERE seq = 3")
+          .one().r2_json_key,
+    );
+    const snapshotObject = await typedEnv.BOARD_SNAPSHOTS.get(snapshotKey);
+    if (snapshotObject === null) throw new Error("Expected the named sticky snapshot in R2.");
+    const storedSnapshot = JSON.parse(await snapshotObject.text()) as {
+      seq: number;
+      items: unknown[];
+    };
+    expect(storedSnapshot.seq).toBe(3);
+    expect(storedSnapshot.items).toEqual([
+      {
+        ...create.op.item,
+        z: 1,
+        version: 3,
+        createdBy: actorId,
+      },
+    ]);
+
+    connected.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000867",
+        actionId: "018f0000-0000-7000-8000-000000000868",
+        baseSeq: 3,
+        op: {
+          kind: "item.update",
+          itemId,
+          expectedVersion: 3,
+          patch: {
+            style: {
+              kind: "sticky",
+              fill: "#f8bbd0",
+              textColor: "#1f2937",
+              fontSize: 24,
+              opacity: 0.9,
+            },
+            geometry: {
+              x: 40,
+              y: 55,
+              width: 220,
+              height: 160,
+              text: "Temporary edit that must not survive restore",
+            },
+          },
+        },
+      }),
+    );
+    await connected.next((frame) => frame.t === "server.action" && frame.seq === 4);
+
+    connected.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000869",
+        actionId: "018f0000-0000-7000-8000-00000000086a",
+        baseSeq: 4,
+        op: { kind: "item.delete", itemId, expectedVersion: 4 },
+      }),
+    );
+    await connected.next((frame) => frame.t === "server.action" && frame.seq === 5);
+
+    const restored = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/restore/3`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "sticky-durability-restore-0002",
+        },
+        body: JSON.stringify({ expectedBoardSeq: 5 }),
+      }),
+    );
+    expect(restored.status).toBe(200);
+    expect(await restored.json()).toEqual({ restoredFromSeq: 3, seq: 6, requiresResync: false });
+    await connected.next((frame) => frame.t === "server.action" && frame.seq === 6);
+
+    await evictDurableObject(stub, { webSockets: "hibernate" });
+    const bootstrap = await stub.fetch(internalRequest(`/api/v1/boards/${boardId}/bootstrap`));
+    expect(bootstrap.status).toBe(200);
+    const bootstrapped = (await bootstrap.json()) as {
+      board: { latestSeq: number; snapshotSeq: number };
+      snapshot: { seq: number; items: unknown[] };
+    };
+    expect(bootstrapped.board).toMatchObject({ latestSeq: 6, snapshotSeq: 6 });
+    expect(bootstrapped.snapshot.seq).toBe(6);
+    expect(bootstrapped.snapshot.items).toEqual([
+      {
+        ...create.op.item,
+        z: 1,
+        version: 6,
+        createdBy: actorId,
+      },
+    ]);
+    connected.socket.close(1000, "done");
+  }, 45_000);
 
   it("reconstructs hibernated socket attachments after forced Durable Object eviction", async () => {
     const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);

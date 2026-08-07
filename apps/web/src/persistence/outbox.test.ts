@@ -150,4 +150,41 @@ describe("durable outbox identity scoping", () => {
     expect((await outbox.contents(boardId, firstActor)).active).toHaveLength(0);
     expect((await outbox.contents(boardId, secondActor)).active).toHaveLength(1);
   });
+
+  it("round-trips a sticky create for later offline restore", async () => {
+    installIndexedDb();
+    const outbox = new DurableOutbox();
+    const boardId = "b_1234567890123456789012";
+    const actorId = "a_1111111111111111111111";
+    const stickyCommand: CommitFrame = {
+      v: PROTOCOL_VERSION,
+      t: "client.commit",
+      commandId: "sticky-command",
+      actionId: "sticky-action",
+      baseSeq: 7,
+      op: {
+        kind: "item.create",
+        item: {
+          id: "018f47a1-7a2b-7c3d-8e4f-123456789abd",
+          kind: "sticky",
+          style: {
+            kind: "sticky",
+            fill: "#fde68a",
+            textColor: "#292524",
+            fontSize: 20,
+            opacity: 1,
+          },
+          transform: [1, 0, 0, 1, 0, 0],
+          geometry: { x: 40, y: 60, width: 180, height: 140, text: "Remember this" },
+        },
+      },
+    };
+
+    await outbox.put(boardId, actorId, stickyCommand);
+    const restored = await outbox.contents(boardId, actorId);
+
+    expect(restored.expired).toEqual([]);
+    expect(restored.active).toHaveLength(1);
+    expect(restored.active[0]?.command).toEqual(stickyCommand);
+  });
 });

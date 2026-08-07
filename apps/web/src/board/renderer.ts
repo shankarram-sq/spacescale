@@ -6,12 +6,18 @@ import type {
   Point,
   Presence,
   RemotePreview,
+  StickyGeometry,
+  StickyStyle,
   StrokeStyle,
   ToolName,
 } from "../types";
 import type { BoardModel, Bounds } from "./model";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
+export const STICKY_PADDING = 14;
+export const STICKY_CORNER_RADIUS = 12;
+export const STICKY_LINE_HEIGHT = 1.2;
+export const STICKY_CHARACTER_WIDTH = 0.56;
 
 export class BoardRenderer {
   readonly svg: SVGSVGElement;
@@ -168,6 +174,18 @@ export class BoardRenderer {
       text.append(span);
     });
     this.localLayer.append(text);
+  }
+
+  showLocalSticky(
+    geometry: StickyGeometry,
+    style: StickyStyle,
+    transform: Matrix = [1, 0, 0, 1, 0, 0],
+  ): void {
+    this.localLayer.replaceChildren();
+    const sticky = stickyNode(geometry, style);
+    sticky.classList.add("local-preview", "sticky-preview");
+    sticky.setAttribute("transform", matrixAttribute(transform));
+    this.localLayer.append(sticky);
   }
 
   showMovePreview(ids: Iterable<string>, x: number, y: number): void {
@@ -486,12 +504,105 @@ function itemNode(item: BoardItem): SVGGraphicsElement {
       node = text;
       break;
     }
+    case "sticky":
+      node = stickyNode(item.geometry, item.style);
+      break;
   }
   node.dataset.itemId = item.id;
   node.dataset.z = String(item.z);
   node.classList.add("board-item", `board-item-${item.kind}`);
   node.setAttribute("transform", matrixAttribute(item.transform));
   return node;
+}
+
+function stickyNode(geometry: StickyGeometry, style: StickyStyle): SVGSVGElement {
+  const node = svgElement("svg");
+  node.setAttribute("x", String(geometry.x));
+  node.setAttribute("y", String(geometry.y));
+  node.setAttribute("width", String(geometry.width));
+  node.setAttribute("height", String(geometry.height));
+  node.setAttribute("viewBox", `0 0 ${geometry.width} ${geometry.height}`);
+  node.setAttribute("overflow", "hidden");
+
+  const background = svgElement("rect");
+  background.classList.add("sticky-background");
+  background.setAttribute("x", "0");
+  background.setAttribute("y", "0");
+  background.setAttribute("width", String(geometry.width));
+  background.setAttribute("height", String(geometry.height));
+  background.setAttribute("rx", String(STICKY_CORNER_RADIUS));
+  background.setAttribute("fill", style.fill);
+
+  const text = svgElement("text");
+  text.classList.add("sticky-text");
+  text.setAttribute("x", String(STICKY_PADDING));
+  text.setAttribute("y", String(STICKY_PADDING + style.fontSize));
+  text.setAttribute("fill", style.textColor);
+  text.setAttribute("font-size", String(style.fontSize));
+  text.setAttribute("font-family", "Inter, ui-sans-serif, system-ui, sans-serif");
+  text.setAttribute("xml:space", "preserve");
+  for (const [index, line] of wrapStickyText(
+    geometry.text,
+    geometry.width,
+    geometry.height,
+    style.fontSize,
+  ).entries()) {
+    const span = svgElement("tspan");
+    span.setAttribute("x", String(STICKY_PADDING));
+    if (index > 0) span.setAttribute("dy", `${STICKY_LINE_HEIGHT}em`);
+    span.textContent = line || " ";
+    text.append(span);
+  }
+  node.setAttribute("opacity", String(style.opacity));
+  node.append(background, text);
+  return node;
+}
+
+export function wrapStickyText(
+  value: string,
+  width: number,
+  height: number,
+  fontSize: number,
+): string[] {
+  const maxCharacters = Math.max(
+    1,
+    Math.floor(
+      Math.max(1, width - STICKY_PADDING * 2) / Math.max(1, fontSize * STICKY_CHARACTER_WIDTH),
+    ),
+  );
+  const maxLines = Math.max(
+    1,
+    Math.floor(
+      Math.max(1, height - STICKY_PADDING * 2) / Math.max(1, fontSize * STICKY_LINE_HEIGHT),
+    ),
+  );
+  const lines: string[] = [];
+  for (const paragraph of value.split(/\r\n?|\n/u)) {
+    const words = paragraph.trim().split(/\s+/u).filter(Boolean);
+    if (words.length === 0) {
+      lines.push("");
+      continue;
+    }
+    let current = "";
+    for (const word of words) {
+      const codePoints = [...word];
+      const chunks: string[] = [];
+      for (let index = 0; index < codePoints.length; index += maxCharacters) {
+        chunks.push(codePoints.slice(index, index + maxCharacters).join(""));
+      }
+      for (const chunk of chunks) {
+        const candidate = current ? `${current} ${chunk}` : chunk;
+        if ([...candidate].length <= maxCharacters) {
+          current = candidate;
+        } else {
+          if (current) lines.push(current);
+          current = chunk;
+        }
+      }
+    }
+    if (current) lines.push(current);
+  }
+  return lines.slice(0, maxLines);
 }
 
 function shapeNode(

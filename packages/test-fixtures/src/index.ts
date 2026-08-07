@@ -22,6 +22,7 @@ export const FIXTURE_IDS = {
   ellipse: "018f0000-0000-7000-8000-000000000004",
   text: "018f0000-0000-7000-8000-000000000005",
   copy: "018f0000-0000-7000-8000-000000000006",
+  sticky: "018f0000-0000-7000-8000-000000000007",
 } as const;
 
 export const FIXTURE_TIME = 1_785_840_000_000;
@@ -81,6 +82,23 @@ export function newTextItem(overrides: Partial<NewBoardItem> = {}): NewBoardItem
     style: textStyle(),
     transform: [1, 0, 0, 1, 0, 0],
     geometry: { x: 25, y: 40, text: "Fixture text" },
+    ...overrides,
+  } as NewBoardItem;
+}
+
+export function newStickyItem(overrides: Partial<NewBoardItem> = {}): NewBoardItem {
+  return {
+    id: FIXTURE_IDS.sticky,
+    kind: "sticky",
+    style: {
+      kind: "sticky",
+      fill: "#fff2a8",
+      textColor: "#27231b",
+      fontSize: 20,
+      opacity: 1,
+    },
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: { x: 10, y: 20, width: 180, height: 140, text: "Fixture sticky" },
     ...overrides,
   } as NewBoardItem;
 }

@@ -1,10 +1,20 @@
-import { validateClientFrame, validateDurableOperation } from "@collab/protocol";
+import { boundsForItems } from "@collab/geometry";
+import {
+  MAX_STICKY_TEXT_CODE_POINTS,
+  normalizeBoardItem,
+  validateClientFrame,
+  validateDurableOperation,
+} from "@collab/protocol";
+import { renderSvgItem } from "@collab/svg-export";
 import { BoardModel, SequenceError } from "../board/model";
-import { BoardRenderer } from "../board/renderer";
+import { BoardRenderer, STICKY_PADDING } from "../board/renderer";
 import { DurableOutbox, type OutboxEntry, OutboxLimitError } from "../persistence/outbox";
 import {
   buildCapturedTextUpdate,
+  buildStickyCreateOperation,
   type CapturedTextEdit,
+  DEFAULT_STICKY_HEIGHT,
+  DEFAULT_STICKY_WIDTH,
   ToolController,
 } from "../tools/controller";
 import {
@@ -43,13 +53,49 @@ const TOOL_DEFINITIONS: Array<{ name: ToolName; label: string; shortcut: string;
     { name: "rectangle", label: "Rectangle", shortcut: "R", glyph: "□" },
     { name: "ellipse", label: "Ellipse", shortcut: "O", glyph: "○" },
     { name: "text", label: "Text", shortcut: "T", glyph: "T" },
+    { name: "sticky", label: "Sticky note", shortcut: "N", glyph: "▣" },
     { name: "eraser", label: "Eraser", shortcut: "E", glyph: "◇" },
     { name: "pan", label: "Pan canvas", shortcut: "H", glyph: "✋" },
   ];
 
-const DRAW_TOOLS = new Set<ToolName>(["pencil", "line", "rectangle", "ellipse", "text", "eraser"]);
+const DRAW_TOOLS = new Set<ToolName>([
+  "pencil",
+  "line",
+  "rectangle",
+  "ellipse",
+  "text",
+  "sticky",
+  "eraser",
+]);
 
-type StyleState = { color: string; width: number; opacity: number; fontSize: number };
+type StyleState = {
+  color: string;
+  width: number;
+  opacity: number;
+  fontSize: number;
+  stickyFill: string;
+  stickyTextColor: string;
+  stickyFontSize: number;
+  stickyOpacity: number;
+};
+
+type StickyDraftRecovery = {
+  itemId?: string;
+  draftItemId: string;
+  point: Point;
+  text: string;
+  selectionStart: number;
+  selectionEnd: number;
+};
+
+export const STICKY_COLORS = [
+  { name: "Yellow", value: "#fde68a" },
+  { name: "Pink", value: "#fecdd3" },
+  { name: "Blue", value: "#bfdbfe" },
+  { name: "Green", value: "#bbf7d0" },
+  { name: "Purple", value: "#ddd6fe" },
+  { name: "Orange", value: "#fed7aa" },
+] as const;
 
 export class BoardApp {
   private readonly model = new BoardModel();
@@ -60,7 +106,16 @@ export class BoardApp {
   private bootstrap: Bootstrap;
   private phase: ConnectionPhase = "idle";
   private history: HistoryState;
-  private style: StyleState = { color: "#20201e", width: 4, opacity: 1, fontSize: 28 };
+  private style: StyleState = {
+    color: "#20201e",
+    width: 4,
+    opacity: 1,
+    fontSize: 28,
+    stickyFill: STICKY_COLORS[0].value,
+    stickyTextColor: "#292524",
+    stickyFontSize: 20,
+    stickyOpacity: 1,
+  };
   private readonly remotePreviews = new Map<string, RemotePreview>();
   private readonly presences = new Map<string, Presence>();
   private expiredRecovery: OutboxEntry[] = [];
@@ -68,13 +123,18 @@ export class BoardApp {
   private textEditor: HTMLTextAreaElement | null = null;
   private textEditorTimer: number | null = null;
   private textEditContext: CapturedTextEdit | null = null;
+  private textEditorMode: "text" | "sticky" | null = null;
+  private textEditorPreview: (() => void) | null = null;
+  private textEditorClosing = false;
+  private textEditorCloseAttempt = 0;
+  private readonly pendingStickyDrafts = new Map<string, StickyDraftRecovery>();
+  private readonly rejectedStickyDrafts: StickyDraftRecovery[] = [];
   private accessMembers: Member[] = [];
   private managedInvitations: ManagedInvitation[];
   private recoverySnapshots: RecoverySnapshot[] = [];
   private outboxAvailable = true;
   private optimisticRecovery = false;
   private archivePending = false;
-
   private readonly titleInput: HTMLInputElement;
   private readonly saveStatus: HTMLElement;
   private readonly saveStatusText: HTMLElement;
@@ -218,6 +278,9 @@ export class BoardApp {
   destroy(): void {
     window.clearInterval(this.previewExpiryTimer);
     if (this.textEditorTimer !== null) window.clearTimeout(this.textEditorTimer);
+    this.pendingStickyDrafts.clear();
+    this.rejectedStickyDrafts.length = 0;
+    void this.closeTextEditor(false);
     this.socket.destroy();
     this.tools.destroy();
     this.renderer.destroy();
@@ -293,13 +356,14 @@ export class BoardApp {
             <span class="style-width" data-style-width aria-hidden="true"></span>
           </button>
           <section class="style-popover" data-testid="style-popover" id="style-popover" aria-label="Drawing style" hidden>
-            <div class="popover-heading"><strong>Style</strong><span>New marks</span></div>
+            <div class="popover-heading"><strong>Style</strong><span data-style-heading-context>New marks</span></div>
             <fieldset class="color-fieldset">
-              <legend>Colour</legend>
+              <legend data-style-color-label>Colour</legend>
               <div class="color-grid" data-color-grid></div>
-              <label class="custom-color" title="Custom colour"><span class="sr-only">Custom colour</span><input type="color" value="#20201e" data-style-color /></label>
+              <div class="color-grid sticky-color-grid" data-sticky-color-grid hidden></div>
+              <label class="custom-color" title="Custom colour" data-custom-color><span class="sr-only">Custom colour</span><input type="color" value="#20201e" data-style-color /></label>
             </fieldset>
-            <label class="range-row"><span>Stroke</span><output data-width-output>4</output><input type="range" min="1" max="32" value="4" step="1" data-style-stroke /></label>
+            <label class="range-row" data-style-stroke-row><span>Stroke</span><output data-width-output>4</output><input type="range" min="1" max="32" value="4" step="1" data-style-stroke /></label>
             <label class="range-row"><span>Opacity</span><output data-opacity-output>100%</output><input type="range" min="10" max="100" value="100" step="5" data-style-opacity /></label>
             <label class="range-row"><span>Text</span><output data-font-output>28</output><input type="range" min="8" max="96" value="28" step="1" data-style-font /></label>
           </section>
@@ -376,6 +440,17 @@ export class BoardApp {
       button.style.setProperty("--choice-color", color);
       colorGrid.append(button);
     });
+    const stickyColorGrid = query(this.root, "[data-sticky-color-grid]", HTMLElement);
+    STICKY_COLORS.forEach(({ name, value }) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "color-choice sticky-color-choice";
+      button.dataset.stickyColor = value;
+      button.setAttribute("aria-label", `Use ${name.toLowerCase()} sticky notes`);
+      button.setAttribute("aria-pressed", String(value === this.style.stickyFill));
+      button.style.setProperty("--choice-color", value);
+      stickyColorGrid.append(button);
+    });
   }
 
   private bindShellEvents(): void {
@@ -399,6 +474,12 @@ export class BoardApp {
         this.updateStyleControls();
       });
     }
+    for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-sticky-color]")) {
+      button.addEventListener("click", () => {
+        this.style.stickyFill = button.dataset.stickyColor ?? this.style.stickyFill;
+        this.updateStyleControls();
+      });
+    }
     const color = query(this.root, "[data-style-color]", HTMLInputElement);
     color.addEventListener("input", () => {
       this.style.color = color.value.toLowerCase();
@@ -411,12 +492,14 @@ export class BoardApp {
     });
     const opacity = query(this.root, "[data-style-opacity]", HTMLInputElement);
     opacity.addEventListener("input", () => {
-      this.style.opacity = Number(opacity.value) / 100;
+      if (this.tools.tool === "sticky") this.style.stickyOpacity = Number(opacity.value) / 100;
+      else this.style.opacity = Number(opacity.value) / 100;
       this.updateStyleControls();
     });
     const font = query(this.root, "[data-style-font]", HTMLInputElement);
     font.addEventListener("input", () => {
-      this.style.fontSize = Number(font.value);
+      if (this.tools.tool === "sticky") this.style.stickyFontSize = Number(font.value);
+      else this.style.fontSize = Number(font.value);
       this.updateStyleControls();
     });
 
@@ -596,7 +679,11 @@ export class BoardApp {
     }
   }
 
-  private async commit(operation: DurableOperation, actionId = createId()): Promise<boolean> {
+  private async commit(
+    operation: DurableOperation,
+    actionId = createId(),
+    onQueued?: (commandId: string) => void,
+  ): Promise<boolean> {
     if (!this.canCommit()) {
       this.notify(
         this.phase === "ready"
@@ -633,6 +720,7 @@ export class BoardApp {
       }
       return false;
     }
+    onQueued?.(commandId);
     this.model.queue(command, this.bootstrap.actor.id);
     this.updateStatus();
     this.socket.sendCommit(command);
@@ -646,6 +734,7 @@ export class BoardApp {
         (command) => command.commandId === action.commandId,
       );
       if (pending) {
+        this.pendingStickyDrafts.delete(action.commandId);
         this.model.reject(action.commandId);
         void this.outbox.remove(this.bootstrap.board.id, this.bootstrap.actor.id, action.commandId);
         this.updateStatus();
@@ -659,6 +748,7 @@ export class BoardApp {
       const result = this.model.applyAction(action);
       this.bootstrap.board.latestSeq = action.seq;
       if (result.acknowledged) {
+        this.pendingStickyDrafts.delete(action.commandId);
         void this.outbox.remove(this.bootstrap.board.id, this.bootstrap.actor.id, action.commandId);
       }
       if (!replay && action.actor.id !== this.bootstrap.actor.id) {
@@ -678,10 +768,19 @@ export class BoardApp {
   private handleRejection(frame: ServerFrame): void {
     const commandId = typeof frame.commandId === "string" ? frame.commandId : null;
     const code = typeof frame.code === "string" ? frame.code : "REJECTED";
+    let stickyDraft: StickyDraftRecovery | undefined;
     if (commandId) {
+      const pendingCommand = this.model.pendingCommands.find(
+        (command) => command.commandId === commandId,
+      );
+      stickyDraft =
+        this.pendingStickyDrafts.get(commandId) ??
+        (pendingCommand ? stickyDraftFromOperation(pendingCommand.op) : undefined);
+      this.pendingStickyDrafts.delete(commandId);
       this.model.reject(commandId);
       void this.outbox.remove(this.bootstrap.board.id, this.bootstrap.actor.id, commandId);
     }
+    if (stickyDraft) this.recoverStickyDraft(stickyDraft);
     if (code === "STALE_HISTORY" && typeof frame.historyVersion === "number") {
       this.history = {
         historyVersion: frame.historyVersion,
@@ -705,9 +804,13 @@ export class BoardApp {
       TEMPORARILY_UNAVAILABLE: "The room is busy, so that edit was not saved.",
       FORBIDDEN: "Your drawing permission changed before that edit was saved.",
     };
-    this.notify(
+    const message =
       friendly[code] ??
-        (typeof frame.message === "string" ? frame.message : "The edit was not saved."),
+      (typeof frame.message === "string" ? frame.message : "The edit was not saved.");
+    this.notify(
+      stickyDraft
+        ? `${message} Your sticky draft was retained${this.canCommit() ? " and reopened" : " until editing is available"}.`
+        : message,
       code === "UNDO_EMPTY" || code === "REDO_EMPTY" ? "info" : "warning",
     );
     this.updateStatus();
@@ -855,38 +958,103 @@ export class BoardApp {
     }
   };
 
-  private openTextEditor(point: Point, item?: BoardItem): void {
+  private openTextEditor(point: Point, item?: BoardItem, recovery?: StickyDraftRecovery): void {
     if (!this.canCommit()) return;
-    this.closeTextEditor(false);
+    void this.closeTextEditor(false);
     const style = this.style;
     const textItem = item?.kind === "text" ? item : undefined;
-    this.textEditContext = textItem
+    const stickyItem = item?.kind === "sticky" ? item : undefined;
+    const mode =
+      recovery || stickyItem || (!item && this.tools.tool === "sticky") ? "sticky" : "text";
+    const editedItem = stickyItem ?? textItem;
+    this.textEditorMode = mode;
+    this.textEditContext = editedItem
       ? {
-          itemId: textItem.id,
-          expectedVersion: textItem.version,
-          geometry: structuredClone(textItem.geometry),
+          itemId: editedItem.id,
+          expectedVersion: editedItem.version,
+          geometry: structuredClone(editedItem.geometry),
         }
       : null;
-    const textPoint: Point = textItem ? [textItem.geometry.x, textItem.geometry.y] : point;
-    const client = this.renderer.viewport.boardToClient(textPoint);
+    const textPoint: Point = editedItem ? [editedItem.geometry.x, editedItem.geometry.y] : point;
+    const transform = editedItem?.transform ?? [1, 0, 0, 1, 0, 0];
+    const transformedPoint: Point = [
+      transform[0] * textPoint[0] + transform[2] * textPoint[1] + transform[4],
+      transform[1] * textPoint[0] + transform[3] * textPoint[1] + transform[5],
+    ];
+    const client = this.renderer.viewport.boardToClient(transformedPoint);
+    const stickyGeometry = stickyItem?.geometry ?? {
+      x: textPoint[0],
+      y: textPoint[1],
+      width: DEFAULT_STICKY_WIDTH,
+      height: DEFAULT_STICKY_HEIGHT,
+      text: "",
+    };
+    const stickyStyle = stickyItem?.style ?? {
+      kind: "sticky" as const,
+      fill: style.stickyFill,
+      textColor: style.stickyTextColor,
+      fontSize: style.stickyFontSize,
+      opacity: style.stickyOpacity,
+    };
     const editor = document.createElement("textarea");
-    editor.className = "canvas-text-editor";
+    editor.className =
+      mode === "sticky" ? "canvas-text-editor canvas-sticky-editor" : "canvas-text-editor";
     editor.dataset.testid = "canvas-text-editor";
-    editor.setAttribute("aria-label", textItem ? "Edit text" : "Add text");
-    editor.maxLength = 5_000;
-    editor.rows = 2;
-    editor.value = textItem?.geometry.text ?? "";
+    editor.dataset.editorKind = mode;
+    editor.setAttribute(
+      "aria-label",
+      mode === "sticky"
+        ? stickyItem
+          ? "Edit sticky note"
+          : "Add sticky note"
+        : textItem
+          ? "Edit text"
+          : "Add text",
+    );
+    editor.maxLength = mode === "sticky" ? MAX_STICKY_TEXT_CODE_POINTS * 2 : 5_000;
+    editor.rows = mode === "sticky" ? 6 : 2;
+    editor.value = recovery?.text ?? editedItem?.geometry.text ?? "";
     editor.dataset.boardX = String(textPoint[0]);
     editor.dataset.boardY = String(textPoint[1]);
-    editor.placeholder = "Type something";
-    editor.style.left = `${Math.min(window.innerWidth - 170, Math.max(8, client[0]))}px`;
-    editor.style.top = `${Math.min(window.innerHeight - 100, Math.max(60, client[1] - (textItem?.style.fontSize ?? style.fontSize)))}px`;
-    editor.style.fontSize = `${Math.max(14, Math.min(48, (textItem?.style.fontSize ?? style.fontSize) * this.renderer.viewport.zoom))}px`;
-    editor.style.color = textItem?.style.color ?? style.color;
+    if (!editedItem) editor.dataset.draftItemId = recovery?.draftItemId ?? createId();
+    editor.placeholder = mode === "sticky" ? "Add an idea…" : "Type something";
+    const zoom = this.renderer.viewport.zoom;
+    if (mode === "sticky") {
+      const editorWidth = Math.min(
+        Math.max(80, window.innerWidth - 16),
+        Math.max(160, stickyGeometry.width * zoom),
+      );
+      const editorHeight = Math.min(
+        Math.max(96, window.innerHeight - 72),
+        Math.max(120, stickyGeometry.height * zoom),
+      );
+      editor.style.width = `${editorWidth}px`;
+      editor.style.height = `${editorHeight}px`;
+      editor.style.left = `${Math.max(8, Math.min(window.innerWidth - editorWidth - 8, client[0]))}px`;
+      editor.style.top = `${Math.max(60, Math.min(window.innerHeight - editorHeight - 8, client[1]))}px`;
+      editor.style.padding = `${Math.max(10, Math.min(18, STICKY_PADDING * zoom))}px`;
+      editor.style.fontSize = `${Math.max(14, Math.min(48, stickyStyle.fontSize * zoom))}px`;
+      editor.style.color = stickyStyle.textColor;
+      editor.style.background = stickyStyle.fill;
+      editor.style.opacity = String(stickyStyle.opacity);
+    } else {
+      editor.style.left = `${Math.min(window.innerWidth - 170, Math.max(8, client[0]))}px`;
+      editor.style.top = `${Math.min(window.innerHeight - 100, Math.max(60, client[1] - (textItem?.style.fontSize ?? style.fontSize)))}px`;
+      editor.style.fontSize = `${Math.max(14, Math.min(48, (textItem?.style.fontSize ?? style.fontSize) * zoom))}px`;
+      editor.style.color = textItem?.style.color ?? style.color;
+    }
     document.body.append(editor);
     this.textEditor = editor;
 
     const preview = (): void => {
+      if (mode === "sticky") {
+        this.renderer.showLocalSticky(
+          { ...stickyGeometry, text: clampStickyText(editor.value) },
+          stickyStyle,
+          stickyItem?.transform,
+        );
+        return;
+      }
       this.renderer.showLocalText(
         textPoint,
         editor.value,
@@ -894,7 +1062,18 @@ export class BoardApp {
         textItem?.transform,
       );
     };
+    this.textEditorPreview = preview;
     const schedule = (): void => {
+      if (mode === "sticky") {
+        const value = clampStickyText(editor.value);
+        if (value !== editor.value) {
+          const cursor = Math.min(value.length, editor.selectionStart);
+          editor.value = value;
+          editor.setSelectionRange(cursor, cursor);
+        }
+        preview();
+        return;
+      }
       preview();
       if (this.textEditorTimer !== null) window.clearTimeout(this.textEditorTimer);
       this.textEditorTimer = window.setTimeout(() => void this.closeTextEditor(true), 500);
@@ -904,7 +1083,7 @@ export class BoardApp {
     editor.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        this.closeTextEditor(false);
+        void this.closeTextEditor(false);
       } else if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
         void this.closeTextEditor(true);
@@ -912,43 +1091,134 @@ export class BoardApp {
     });
     preview();
     editor.focus();
-    editor.setSelectionRange(editor.value.length, editor.value.length);
+    editor.setSelectionRange(
+      recovery?.selectionStart ?? editor.value.length,
+      recovery?.selectionEnd ?? editor.value.length,
+    );
   }
 
   private async closeTextEditor(save: boolean): Promise<void> {
     const editor = this.textEditor;
     if (!editor) return;
+    if (!save) {
+      this.discardTextEditor(editor);
+      return;
+    }
+    if (this.textEditorClosing) return;
+
     const context = this.textEditContext;
-    this.textEditor = null;
-    this.textEditContext = null;
+    const mode = this.textEditorMode;
+    if (mode === null) {
+      this.discardTextEditor(editor);
+      return;
+    }
     if (this.textEditorTimer !== null) window.clearTimeout(this.textEditorTimer);
     this.textEditorTimer = null;
-    const value = editor.value;
-    editor.remove();
-    this.renderer.clearLocalPreview();
-    if (!save || !value) return;
-
-    if (context) {
-      await this.commit(buildCapturedTextUpdate(context, value));
+    const value = mode === "sticky" ? clampStickyText(editor.value) : editor.value;
+    if (mode === "text" && !value) {
+      this.discardTextEditor(editor);
       return;
     }
 
     const point: Point = [Number(editor.dataset.boardX), Number(editor.dataset.boardY)];
-    await this.commit({
-      kind: "item.create",
-      item: {
-        id: createId(),
-        kind: "text",
-        style: {
-          kind: "text",
-          color: this.style.color,
-          fontSize: this.style.fontSize,
-          opacity: this.style.opacity,
-        },
-        transform: [1, 0, 0, 1, 0, 0],
-        geometry: { x: point[0], y: point[1], text: value },
-      },
+    const draftItemId = editor.dataset.draftItemId ?? createId();
+    const operation: DurableOperation = context
+      ? buildCapturedTextUpdate(context, value)
+      : mode === "sticky"
+        ? buildStickyCreateOperation(draftItemId, point, this.style, value)
+        : {
+            kind: "item.create",
+            item: {
+              id: draftItemId,
+              kind: "text",
+              style: {
+                kind: "text",
+                color: this.style.color,
+                fontSize: this.style.fontSize,
+                opacity: this.style.opacity,
+              },
+              transform: [1, 0, 0, 1, 0, 0],
+              geometry: { x: point[0], y: point[1], text: value },
+            },
+          };
+    const attempt = ++this.textEditorCloseAttempt;
+    const selectionStart = editor.selectionStart;
+    const selectionEnd = editor.selectionEnd;
+    const stickyDraft: StickyDraftRecovery | undefined =
+      mode === "sticky"
+        ? {
+            ...(context ? { itemId: context.itemId } : {}),
+            draftItemId: createId(),
+            point,
+            text: value,
+            selectionStart,
+            selectionEnd,
+          }
+        : undefined;
+    this.textEditorClosing = true;
+    editor.readOnly = true;
+    editor.setAttribute("aria-busy", "true");
+
+    let accepted = false;
+    try {
+      accepted = await this.commit(
+        operation,
+        createId(),
+        stickyDraft
+          ? (commandId) => this.pendingStickyDrafts.set(commandId, stickyDraft)
+          : undefined,
+      );
+    } catch {
+      this.notify("The edit could not be saved. Your draft is still open.", "error");
+    }
+
+    if (this.textEditor !== editor || attempt !== this.textEditorCloseAttempt) return;
+    this.textEditorClosing = false;
+    if (accepted) {
+      this.discardTextEditor(editor);
+      return;
+    }
+
+    editor.readOnly = false;
+    editor.removeAttribute("aria-busy");
+    this.textEditorPreview?.();
+    window.requestAnimationFrame(() => {
+      if (this.textEditor !== editor || this.textEditorClosing || !editor.isConnected) return;
+      editor.focus();
+      editor.setSelectionRange(selectionStart, selectionEnd);
     });
+  }
+
+  private discardTextEditor(editor: HTMLTextAreaElement): void {
+    if (this.textEditor !== editor) return;
+    this.textEditorCloseAttempt += 1;
+    this.textEditorClosing = false;
+    this.textEditor = null;
+    this.textEditContext = null;
+    this.textEditorMode = null;
+    this.textEditorPreview = null;
+    if (this.textEditorTimer !== null) window.clearTimeout(this.textEditorTimer);
+    this.textEditorTimer = null;
+    editor.remove();
+    this.renderer.clearLocalPreview();
+    if (this.rejectedStickyDrafts.length > 0) {
+      queueMicrotask(() => this.restoreNextStickyDraft());
+    }
+  }
+
+  private recoverStickyDraft(draft: StickyDraftRecovery): void {
+    this.rejectedStickyDrafts.push(draft);
+    queueMicrotask(() => this.restoreNextStickyDraft());
+  }
+
+  private restoreNextStickyDraft(): void {
+    if (this.textEditor || !this.canCommit()) return;
+    const draft = this.rejectedStickyDrafts.shift();
+    if (!draft) return;
+    const latest = draft.itemId ? this.model.getItem(draft.itemId) : undefined;
+    const sticky = latest?.kind === "sticky" ? latest : undefined;
+    const point: Point = sticky ? [sticky.geometry.x, sticky.geometry.y] : draft.point;
+    this.openTextEditor(point, sticky, draft);
   }
 
   private async updateTitle(): Promise<void> {
@@ -1715,6 +1985,9 @@ export class BoardApp {
     this.renderer.svg.setAttribute("aria-readonly", String(!canEdit));
     this.updateHistoryControls();
     this.updateStatus();
+    if (canEdit && !this.textEditor && this.rejectedStickyDrafts.length > 0) {
+      queueMicrotask(() => this.restoreNextStickyDraft());
+    }
   }
 
   private updateHistoryControls(): void {
@@ -1758,22 +2031,45 @@ export class BoardApp {
   }
 
   private updateStyleControls(): void {
-    query(this.root, "[data-style-swatch]", HTMLElement).style.background = this.style.color;
+    const sticky = this.tools.tool === "sticky";
+    const activeColor = sticky ? this.style.stickyFill : this.style.color;
+    const activeOpacity = sticky ? this.style.stickyOpacity : this.style.opacity;
+    const activeFontSize = sticky ? this.style.stickyFontSize : this.style.fontSize;
+    query(this.root, "[data-style-swatch]", HTMLElement).style.background = activeColor;
     query(this.root, "[data-style-width]", HTMLElement).style.height =
       `${Math.min(8, Math.max(2, this.style.width / 3))}px`;
-    query(this.root, ".rail-color-dot", HTMLElement).style.background = this.style.color;
+    query(this.root, "[data-style-width]", HTMLElement).hidden = sticky;
+    query(this.root, ".rail-color-dot", HTMLElement).style.background = activeColor;
     query(this.root, "[data-style-color]", HTMLInputElement).value = this.style.color;
     query(this.root, "[data-style-stroke]", HTMLInputElement).value = String(this.style.width);
-    query(this.root, "[data-style-opacity]", HTMLInputElement).value = String(
-      this.style.opacity * 100,
-    );
-    query(this.root, "[data-style-font]", HTMLInputElement).value = String(this.style.fontSize);
+    query(this.root, "[data-style-opacity]", HTMLInputElement).value = String(activeOpacity * 100);
+    query(this.root, "[data-style-font]", HTMLInputElement).value = String(activeFontSize);
     query(this.root, "[data-width-output]", HTMLOutputElement).value = String(this.style.width);
     query(this.root, "[data-opacity-output]", HTMLOutputElement).value =
-      `${Math.round(this.style.opacity * 100)}%`;
-    query(this.root, "[data-font-output]", HTMLOutputElement).value = String(this.style.fontSize);
+      `${Math.round(activeOpacity * 100)}%`;
+    query(this.root, "[data-font-output]", HTMLOutputElement).value = String(activeFontSize);
+    query(this.root, "[data-color-grid]", HTMLElement).hidden = sticky;
+    query(this.root, "[data-sticky-color-grid]", HTMLElement).hidden = !sticky;
+    query(this.root, "[data-custom-color]", HTMLElement).hidden = sticky;
+    query(this.root, "[data-style-stroke-row]", HTMLElement).hidden = sticky;
+    query(this.root, "[data-style-color-label]", HTMLElement).textContent = sticky
+      ? "Sticky colour"
+      : "Colour";
+    query(this.root, "[data-style-heading-context]", HTMLElement).textContent = sticky
+      ? "New sticky notes"
+      : "New marks";
+    query(this.root, "[data-testid='style-button']", HTMLButtonElement).setAttribute(
+      "aria-label",
+      sticky ? "Open sticky note style" : "Open drawing style",
+    );
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-color]")) {
       button.setAttribute("aria-pressed", String(button.dataset.color === this.style.color));
+    }
+    for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-sticky-color]")) {
+      button.setAttribute(
+        "aria-pressed",
+        String(button.dataset.stickyColor === this.style.stickyFill),
+      );
     }
   }
 
@@ -1781,6 +2077,7 @@ export class BoardApp {
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-tool]")) {
       button.setAttribute("aria-pressed", String(button.dataset.tool === tool));
     }
+    this.updateStyleControls();
   }
 
   private updateSelectionActions(ids: ReadonlySet<string>): void {
@@ -2114,86 +2411,48 @@ function mountTurnstile(
   }
 }
 
-function localSvg(snapshot: BoardSnapshot, title: string): string {
-  const items = [...snapshot.items].sort((a, b) => a.z - b.z);
+export function localSvg(snapshot: BoardSnapshot, title: string): string {
+  const items = [...snapshot.items]
+    .map((item) => normalizeBoardItem(item))
+    .sort((a, b) => a.z - b.z);
   const bounds = aggregateItemBounds(items);
   const pad = 32;
   const viewBox = bounds
     ? `${bounds.minX - pad} ${bounds.minY - pad} ${Math.max(1, bounds.maxX - bounds.minX + pad * 2)} ${Math.max(1, bounds.maxY - bounds.minY + pad * 2)}`
     : "0 0 1200 800";
-  const content = items.map(svgItem).join("");
+  const content = items.map(renderSvgItem).join("");
   return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" role="img" aria-label="${escapeXml(title)}"><metadata>{&quot;format&quot;:&quot;cf-whiteboard-json&quot;,&quot;seq&quot;:${snapshot.seq}}</metadata><rect x="-1000000" y="-1000000" width="2000000" height="2000000" fill="#ffffff"/>${content}</svg>`;
 }
 
-function svgItem(item: BoardItem): string {
-  const transform = `matrix(${item.transform.join(" ")})`;
-  const opacity = item.style.opacity;
-  const color = escapeXml(item.style.color);
-  if (item.kind === "pencil") {
-    const points = item.geometry.points.map((point) => `${point[0]},${point[1]}`).join(" ");
-    return `<polyline points="${points}" transform="${transform}" fill="none" stroke="${color}" stroke-width="${item.style.width}" opacity="${opacity}" stroke-linecap="round" stroke-linejoin="round"/>`;
-  }
-  if (item.kind === "line")
-    return `<line x1="${item.geometry.x1}" y1="${item.geometry.y1}" x2="${item.geometry.x2}" y2="${item.geometry.y2}" transform="${transform}" fill="none" stroke="${color}" stroke-width="${item.style.width}" opacity="${opacity}" stroke-linecap="round"/>`;
-  if (item.kind === "rectangle")
-    return `<rect x="${item.geometry.x}" y="${item.geometry.y}" width="${item.geometry.width}" height="${item.geometry.height}" transform="${transform}" fill="none" stroke="${color}" stroke-width="${item.style.width}" opacity="${opacity}"/>`;
-  if (item.kind === "ellipse")
-    return `<ellipse cx="${item.geometry.x + item.geometry.width / 2}" cy="${item.geometry.y + item.geometry.height / 2}" rx="${item.geometry.width / 2}" ry="${item.geometry.height / 2}" transform="${transform}" fill="none" stroke="${color}" stroke-width="${item.style.width}" opacity="${opacity}"/>`;
-  const lines = item.geometry.text
-    .split("\n")
-    .map(
-      (line, index) =>
-        `<tspan x="${item.geometry.x}"${index ? ' dy="1.2em"' : ""}>${escapeXml(line || " ")}</tspan>`,
-    )
-    .join("");
-  return `<text x="${item.geometry.x}" y="${item.geometry.y}" transform="${transform}" fill="${color}" font-size="${item.style.fontSize}" opacity="${opacity}" font-family="sans-serif">${lines}</text>`;
+export function clampStickyText(value: string): string {
+  return [...value].slice(0, MAX_STICKY_TEXT_CODE_POINTS).join("");
 }
 
-function aggregateItemBounds(
-  items: BoardItem[],
-): { minX: number; minY: number; maxX: number; maxY: number } | null {
-  if (items.length === 0) return null;
-  const coordinates: Array<[number, number]> = [];
-  for (const item of items) {
-    if (item.kind === "pencil")
-      coordinates.push(
-        ...item.geometry.points.map(
-          (point) =>
-            [point[0] + item.transform[4], point[1] + item.transform[5]] as [number, number],
-        ),
-      );
-    else if (item.kind === "line")
-      coordinates.push(
-        [item.geometry.x1 + item.transform[4], item.geometry.y1 + item.transform[5]],
-        [item.geometry.x2 + item.transform[4], item.geometry.y2 + item.transform[5]],
-      );
-    else if (item.kind === "text")
-      coordinates.push(
-        [
-          item.geometry.x + item.transform[4],
-          item.geometry.y - item.style.fontSize + item.transform[5],
-        ],
-        [
-          item.geometry.x +
-            item.geometry.text.length * item.style.fontSize * 0.65 +
-            item.transform[4],
-          item.geometry.y + item.style.fontSize + item.transform[5],
-        ],
-      );
-    else
-      coordinates.push(
-        [item.geometry.x + item.transform[4], item.geometry.y + item.transform[5]],
-        [
-          item.geometry.x + item.geometry.width + item.transform[4],
-          item.geometry.y + item.geometry.height + item.transform[5],
-        ],
-      );
+function aggregateItemBounds(items: Parameters<typeof boundsForItems>[0]) {
+  return boundsForItems(items);
+}
+
+function stickyDraftFromOperation(operation: DurableOperation): StickyDraftRecovery | undefined {
+  if (operation.kind === "item.create" && operation.item.kind === "sticky") {
+    const { geometry } = operation.item;
+    return {
+      draftItemId: createId(),
+      point: [geometry.x, geometry.y],
+      text: geometry.text,
+      selectionStart: geometry.text.length,
+      selectionEnd: geometry.text.length,
+    };
   }
+  if (operation.kind !== "item.update") return undefined;
+  const geometry = operation.patch.geometry;
+  if (!geometry || !("width" in geometry) || !("text" in geometry)) return undefined;
   return {
-    minX: Math.min(...coordinates.map((point) => point[0])),
-    minY: Math.min(...coordinates.map((point) => point[1])),
-    maxX: Math.max(...coordinates.map((point) => point[0])),
-    maxY: Math.max(...coordinates.map((point) => point[1])),
+    itemId: operation.itemId,
+    draftItemId: createId(),
+    point: [geometry.x, geometry.y],
+    text: geometry.text,
+    selectionStart: geometry.text.length,
+    selectionEnd: geometry.text.length,
   };
 }
 

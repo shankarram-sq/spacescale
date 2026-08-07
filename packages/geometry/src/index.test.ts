@@ -7,6 +7,7 @@ import {
   itemBounds,
   normalizeBoxGeometry,
   normalizePencilGeometry,
+  normalizeStickyGeometry,
   normalizeTransform,
   transformBounds,
   translateTransform,
@@ -39,8 +40,30 @@ describe("geometry normalization", () => {
     });
   });
 
+  it("canonicalizes sticky extents while preserving text", () => {
+    expect(
+      normalizeStickyGeometry({ x: 10, y: 20, width: -4.555, height: -8, text: "Plan" }),
+    ).toEqual({
+      x: 5.44,
+      y: 12,
+      width: 4.56,
+      height: 8,
+      text: "Plan",
+    });
+  });
+
+  it("requires positive, exact-key sticky geometry", () => {
+    expect(() => normalizeStickyGeometry({ x: 0, y: 0, width: 0, height: 10, text: "" })).toThrow(
+      /greater than 0/,
+    );
+    expect(() =>
+      normalizeStickyGeometry({ x: 0, y: 0, width: 10, height: 10, text: "", extra: true }),
+    ).toThrow(/Unknown field/);
+  });
+
   it("rejects non-finite, out-of-range, and unknown input", () => {
     expect(() => normalizeTransform([1, 0, 0, 1, Number.NaN, 0])).toThrow(GeometryValidationError);
+    expect(() => normalizeTransform([1_000_001, 0, 0, 1, 0, 0])).toThrow(/Transform component/);
     expect(() => normalizeBoxGeometry({ x: 1_000_001, y: 0, width: 1, height: 1 })).toThrow(
       /Coordinate/,
     );
@@ -66,6 +89,28 @@ describe("bounds and transforms", () => {
         style: { kind: "stroke", width: 4 },
       }),
     ).toEqual({ minX: 1, minY: 3, maxX: 29, maxY: 11 });
+  });
+
+  it("uses the full transformed sticky rectangle", () => {
+    expect(
+      itemBounds({
+        kind: "sticky",
+        geometry: { x: 2, y: 3, width: 20, height: 10, text: "Wrapped note" },
+        transform: [1, 0, 0, 1, 5, 7],
+        style: { kind: "sticky", fontSize: 16 },
+      }),
+    ).toEqual({ minX: 7, minY: 10, maxX: 27, maxY: 20 });
+  });
+
+  it("rejects transformed sticky bounds outside the finite world envelope", () => {
+    expect(() =>
+      itemBounds({
+        kind: "sticky",
+        geometry: { x: 1_000_000, y: 0, width: 1, height: 1, text: "Bounded" },
+        transform: [2, 0, 0, 1, 0, 0],
+        style: { kind: "sticky", fontSize: 16 },
+      }),
+    ).toThrow(/Transformed item bounds/);
   });
 
   it("unions item bounds and translates only the affine offset", () => {

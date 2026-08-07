@@ -91,15 +91,29 @@ export type TextStyle = {
   opacity: number;
 };
 
-export type ItemStyle = StrokeStyle | TextStyle;
+export type StickyStyle = {
+  kind: "sticky";
+  fill: string;
+  textColor: string;
+  fontSize: number;
+  opacity: number;
+};
+
+export type ItemStyle = StrokeStyle | TextStyle | StickyStyle;
 export type Matrix = [number, number, number, number, number, number];
 
 export type PencilGeometry = { points: Array<[number, number]> };
 export type LineGeometry = { x1: number; y1: number; x2: number; y2: number };
 export type BoxGeometry = { x: number; y: number; width: number; height: number };
 export type TextGeometry = { x: number; y: number; text: string };
-export type ItemGeometry = PencilGeometry | LineGeometry | BoxGeometry | TextGeometry;
-export type BoardItemKind = "pencil" | "line" | "rectangle" | "ellipse" | "text";
+export type StickyGeometry = BoxGeometry & { text: string };
+export type ItemGeometry =
+  | PencilGeometry
+  | LineGeometry
+  | BoxGeometry
+  | TextGeometry
+  | StickyGeometry;
+export type BoardItemKind = "pencil" | "line" | "rectangle" | "ellipse" | "text" | "sticky";
 
 export interface BoardItem {
   id: string;

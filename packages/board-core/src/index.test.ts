@@ -31,6 +31,22 @@ function rectangle(id = RECTANGLE_ID) {
   };
 }
 
+function sticky(id = RECTANGLE_ID) {
+  return {
+    id,
+    kind: "sticky" as const,
+    style: {
+      kind: "sticky" as const,
+      fill: "#ffeb3b",
+      textColor: "#212121",
+      fontSize: 16,
+      opacity: 1,
+    },
+    transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+    geometry: { x: 10, y: 20, width: 180, height: 140, text: "" },
+  };
+}
+
 describe("normal board reductions", () => {
   it("assigns paint order/server fields and emits complete before/after effects", () => {
     const original = createBoardState();
@@ -182,6 +198,112 @@ describe("normal board reductions", () => {
         { seq: 3, actorId: ALICE },
       ),
     ).toThrowError(expect.objectContaining({ code: "DUPLICATE_ITEM_ID" }));
+  });
+
+  it("creates, edits, copies, and deletes sticky notes with matching schemas", () => {
+    const created = applyDurableOperation(
+      createBoardState(),
+      { kind: "item.create", item: sticky() },
+      { seq: 1, actorId: ALICE },
+    );
+    const updated = applyDurableOperation(
+      created.state,
+      {
+        kind: "item.update",
+        itemId: RECTANGLE_ID,
+        expectedVersion: 1,
+        patch: {
+          style: {
+            kind: "sticky",
+            fill: "#f8bbd0",
+            textColor: "#212121",
+            fontSize: 18,
+            opacity: 0.9,
+          },
+          geometry: { x: 10, y: 20, width: 180, height: 140, text: "Group idea" },
+        },
+      },
+      { seq: 2, actorId: ALICE },
+    );
+    expect(updated.state.items.get(RECTANGLE_ID)?.item).toMatchObject({
+      kind: "sticky",
+      version: 2,
+      style: { fill: "#f8bbd0", fontSize: 18, opacity: 0.9 },
+      geometry: { text: "Group idea" },
+    });
+    const snapshot = JSON.parse(
+      serializeCanonicalSnapshot({
+        boardId: "018f0000-0000-7000-8000-0000000000ff",
+        seq: 2,
+        createdAt: 1_785_840_000_000,
+        settings: { title: "Sticky ideas" },
+        items: liveItemsInPaintOrder(updated.state),
+      }),
+    ) as { items: unknown[] };
+    expect(snapshot.items[0]).toMatchObject({
+      kind: "sticky",
+      style: {
+        kind: "sticky",
+        fill: "#f8bbd0",
+        textColor: "#212121",
+        fontSize: 18,
+        opacity: 0.9,
+      },
+      geometry: { x: 10, y: 20, width: 180, height: 140, text: "Group idea" },
+    });
+
+    const copied = applyDurableOperation(
+      updated.state,
+      {
+        kind: "item.copy",
+        sourceItemId: RECTANGLE_ID,
+        expectedVersion: 2,
+        newItemId: COPY_ID,
+        translate: { x: 20, y: 30 },
+      },
+      { seq: 3, actorId: BOB },
+    );
+    expect(copied.state.items.get(COPY_ID)?.item).toMatchObject({
+      kind: "sticky",
+      createdBy: BOB,
+      transform: [1, 0, 0, 1, 20, 30],
+      geometry: { text: "Group idea" },
+    });
+
+    const deleted = applyDurableOperation(
+      copied.state,
+      { kind: "item.delete", itemId: RECTANGLE_ID, expectedVersion: 2 },
+      { seq: 4, actorId: ALICE },
+    );
+    expect(deleted.state.items.get(RECTANGLE_ID)?.exists).toBe(false);
+    expect(deleted.state.items.get(COPY_ID)?.exists).toBe(true);
+
+    expect(() =>
+      applyDurableOperation(
+        created.state,
+        {
+          kind: "item.update",
+          itemId: RECTANGLE_ID,
+          expectedVersion: 1,
+          patch: {
+            style: { kind: "text", color: "#123456", fontSize: 16, opacity: 1 },
+          },
+        },
+        { seq: 2, actorId: ALICE },
+      ),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_FRAME" }));
+    expect(() =>
+      applyDurableOperation(
+        created.state,
+        {
+          kind: "item.update",
+          itemId: RECTANGLE_ID,
+          expectedVersion: 1,
+          patch: { geometry: { x: 1, y: 2, text: "ordinary text" } },
+        },
+        { seq: 2, actorId: ALICE },
+      ),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_FRAME" }));
   });
 
   it("clears all live items only at the exact expected board sequence", () => {

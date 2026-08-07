@@ -141,7 +141,7 @@ test("the complete board remains usable at a 320px viewport", async ({ page }, t
   expect(layout.canvas?.right).toBeLessThanOrEqual(320);
 
   const tools = page.getByTestId("tool-rail").locator("button[data-tool]");
-  await expect(tools).toHaveCount(8);
+  await expect(tools).toHaveCount(9);
   for (const tool of await tools.all()) {
     await tool.scrollIntoViewIfNeeded();
     const bounds = await tool.boundingBox();

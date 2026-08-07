@@ -24,6 +24,22 @@ function rectangle(id = ID_1) {
   };
 }
 
+function sticky(id = ID_1) {
+  return {
+    id,
+    kind: "sticky",
+    style: {
+      kind: "sticky",
+      fill: "#ffeb3b",
+      textColor: "#212121",
+      fontSize: 16.125,
+      opacity: 0.555,
+    },
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: { x: 15.129, y: 17.555, width: -10, height: 14, text: "" },
+  };
+}
+
 describe("durable operation validation", () => {
   it("normalizes a valid create and rejects server-owned fields", () => {
     expect(validateDurableOperation({ kind: "item.create", item: rectangle() })).toEqual({
@@ -42,6 +58,91 @@ describe("durable operation validation", () => {
         item: { ...rectangle(), z: 10 },
       }),
     ).toThrow(/Unknown field/);
+  });
+
+  it("normalizes sticky creates and permits empty sticky text", () => {
+    expect(validateDurableOperation({ kind: "item.create", item: sticky() })).toEqual({
+      kind: "item.create",
+      item: {
+        id: ID_1,
+        kind: "sticky",
+        style: {
+          kind: "sticky",
+          fill: "#ffeb3b",
+          textColor: "#212121",
+          fontSize: 16.13,
+          opacity: 0.56,
+        },
+        transform: [1, 0, 0, 1, 0, 0],
+        geometry: { x: 5.13, y: 17.56, width: 10, height: 14, text: "" },
+      },
+    });
+  });
+
+  it("validates sticky dimensions, styles, text, and patch inference", () => {
+    expect(() =>
+      validateDurableOperation({
+        kind: "item.create",
+        item: { ...sticky(), geometry: { x: 0, y: 0, width: 0, height: 10, text: "" } },
+      }),
+    ).toThrow(/greater than 0/);
+    expect(() =>
+      validateDurableOperation({
+        kind: "item.create",
+        item: { ...sticky(), style: { ...sticky().style, fill: "#FFEB3B" } },
+      }),
+    ).toThrow(/lowercase/);
+    expect(() =>
+      validateDurableOperation({
+        kind: "item.create",
+        item: { ...sticky(), geometry: { ...sticky().geometry, text: "x".repeat(1_001) } },
+      }),
+    ).toThrow(/at most 1000/);
+    for (const text of ["hidden\u007fcontrol", "hidden\u0085control"]) {
+      expect(() =>
+        validateDurableOperation({
+          kind: "item.create",
+          item: { ...sticky(), geometry: { ...sticky().geometry, text } },
+        }),
+      ).toThrow(/control character/);
+    }
+    expect(() =>
+      validateDurableOperation({
+        kind: "item.create",
+        item: { ...sticky(), geometry: { ...sticky().geometry, text: "unpaired\ud800" } },
+      }),
+    ).toThrow(/unpaired surrogate/);
+    expect(() =>
+      validateDurableOperation({
+        kind: "item.create",
+        item: {
+          ...sticky(),
+          transform: [Number.MAX_VALUE, 0, 0, 1, 0, 0],
+        },
+      }),
+    ).toThrow(/Transform component/);
+    expect(
+      validateDurableOperation({
+        kind: "item.update",
+        itemId: ID_1,
+        expectedVersion: 1,
+        patch: { geometry: { x: 1, y: 2, width: 180, height: 140, text: "" } },
+      }),
+    ).toMatchObject({
+      patch: { geometry: { x: 1, y: 2, width: 180, height: 140, text: "" } },
+    });
+    expect(() =>
+      validateDurableOperation({
+        kind: "item.create",
+        item: {
+          id: ID_1,
+          kind: "text",
+          style: { kind: "text", color: "#123456", fontSize: 16, opacity: 1 },
+          transform: [1, 0, 0, 1, 0, 0],
+          geometry: { x: 0, y: 0, text: "" },
+        },
+      }),
+    ).toThrow(/must not be empty/);
   });
 
   it("rejects nested batches, unknown patch fields, and duplicate affected IDs", () => {

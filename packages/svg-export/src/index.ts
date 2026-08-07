@@ -18,6 +18,15 @@ import {
 
 export const DEFAULT_SVG_PADDING = 24;
 
+const STICKY_PADDING = 14;
+const STICKY_CORNER_RADIUS = 12;
+const STICKY_LINE_HEIGHT = 1.2;
+const STICKY_CODE_POINT_WIDTH = 0.56;
+const STICKY_WHITESPACE = /\s/u;
+
+type StrokeBoardItem = Extract<BoardItem, { kind: "pencil" | "line" | "rectangle" | "ellipse" }>;
+type StickyBoardItem = Extract<BoardItem, { kind: "sticky" }>;
+
 export interface SvgExportInput {
   boardId: string;
   seq: number;
@@ -70,7 +79,7 @@ function transformAttribute(item: BoardItem): string {
   return `matrix(${item.transform.map(number).join(" ")})`;
 }
 
-function commonStrokeAttributes(item: Exclude<BoardItem, { kind: "text" }>): string {
+function commonStrokeAttributes(item: StrokeBoardItem): string {
   return [
     `fill="none"`,
     `stroke="${escapeXmlAttribute(item.style.color)}"`,
@@ -81,6 +90,163 @@ function commonStrokeAttributes(item: Exclude<BoardItem, { kind: "text" }>): str
     `transform="${transformAttribute(item)}"`,
     `data-item-id="${escapeXmlAttribute(item.id)}"`,
   ].join(" ");
+}
+
+function codePointWidthAt(value: string, index: number): number {
+  return (value.codePointAt(index) ?? 0) > 0xffff ? 2 : 1;
+}
+
+function isStickyWhitespaceAt(value: string, index: number): boolean {
+  return STICKY_WHITESPACE.test(value[index] ?? "");
+}
+
+function isStickyLineBreakAt(value: string, index: number): boolean {
+  const codeUnit = value.charCodeAt(index);
+  return codeUnit === 0x0a || codeUnit === 0x0d;
+}
+
+interface StickyWordChunk {
+  end: number;
+  codePoints: number;
+  hasMore: boolean;
+}
+
+function scanStickyWordChunk(value: string, start: number, maxCharacters: number): StickyWordChunk {
+  let end = start;
+  let codePoints = 0;
+  while (end < value.length && codePoints < maxCharacters && !isStickyWhitespaceAt(value, end)) {
+    end += codePointWidthAt(value, end);
+    codePoints += 1;
+  }
+  return {
+    end,
+    codePoints,
+    hasMore: end < value.length && !isStickyWhitespaceAt(value, end),
+  };
+}
+
+function appendStickyLine(lines: string[], line: string, maxLines: number): boolean {
+  lines.push(line);
+  return lines.length >= maxLines;
+}
+
+function appendStickyParagraphLines(
+  value: string,
+  start: number,
+  maxCharacters: number,
+  maxLines: number,
+  lines: string[],
+): number | null {
+  let index = start;
+  let sawWord = false;
+  let currentWords: string[] = [];
+  let currentCodePoints = 0;
+
+  while (index < value.length && !isStickyLineBreakAt(value, index)) {
+    while (
+      index < value.length &&
+      !isStickyLineBreakAt(value, index) &&
+      isStickyWhitespaceAt(value, index)
+    ) {
+      index += codePointWidthAt(value, index);
+    }
+    if (index >= value.length || isStickyLineBreakAt(value, index)) break;
+
+    sawWord = true;
+    const wordStart = index;
+    let chunk = scanStickyWordChunk(value, wordStart, maxCharacters);
+    if (!chunk.hasMore) {
+      const word = value.slice(wordStart, chunk.end);
+      if (currentWords.length === 0) {
+        currentWords.push(word);
+        currentCodePoints = chunk.codePoints;
+      } else if (currentCodePoints + 1 + chunk.codePoints <= maxCharacters) {
+        currentWords.push(word);
+        currentCodePoints += 1 + chunk.codePoints;
+      } else {
+        if (appendStickyLine(lines, currentWords.join(" "), maxLines)) return null;
+        currentWords = [word];
+        currentCodePoints = chunk.codePoints;
+      }
+      index = chunk.end;
+      continue;
+    }
+
+    if (currentWords.length > 0) {
+      if (appendStickyLine(lines, currentWords.join(" "), maxLines)) return null;
+      currentWords = [];
+      currentCodePoints = 0;
+    }
+    let chunkStart = wordStart;
+    while (chunk.hasMore) {
+      if (appendStickyLine(lines, value.slice(chunkStart, chunk.end), maxLines)) return null;
+      chunkStart = chunk.end;
+      chunk = scanStickyWordChunk(value, chunkStart, maxCharacters);
+    }
+    currentWords = [value.slice(chunkStart, chunk.end)];
+    currentCodePoints = chunk.codePoints;
+    index = chunk.end;
+  }
+
+  if (appendStickyLine(lines, sawWord ? currentWords.join(" ") : "", maxLines)) return null;
+  if (index >= value.length) return value.length + 1;
+  return value.charCodeAt(index) === 0x0d && value.charCodeAt(index + 1) === 0x0a
+    ? index + 2
+    : index + 1;
+}
+
+function stickyTextLines(item: StickyBoardItem): string[] {
+  const contentWidth = Math.max(0, item.geometry.width - STICKY_PADDING * 2);
+  const contentHeight = Math.max(0, item.geometry.height - STICKY_PADDING * 2);
+  const maxCharacters = Math.max(
+    1,
+    Math.floor(contentWidth / (item.style.fontSize * STICKY_CODE_POINT_WIDTH)),
+  );
+  const maxLines = Math.max(
+    1,
+    Math.floor(contentHeight / (item.style.fontSize * STICKY_LINE_HEIGHT)),
+  );
+  const lines: string[] = [];
+  let paragraphStart = 0;
+  while (paragraphStart <= item.geometry.text.length && lines.length < maxLines) {
+    const nextParagraph = appendStickyParagraphLines(
+      item.geometry.text,
+      paragraphStart,
+      maxCharacters,
+      maxLines,
+      lines,
+    );
+    if (nextParagraph === null) break;
+    paragraphStart = nextParagraph;
+  }
+  return lines;
+}
+
+function renderSticky(item: StickyBoardItem): string {
+  const { x, y, width, height, text } = item.geometry;
+  const clipId = `sticky-clip-${item.id}`;
+  const attributes = [
+    `transform="${transformAttribute(item)}"`,
+    `opacity="${number(item.style.opacity)}"`,
+    `data-item-id="${escapeXmlAttribute(item.id)}"`,
+  ].join(" ");
+  const rectangle = `<rect x="${number(x)}" y="${number(y)}" width="${number(width)}" height="${number(height)}" rx="${number(STICKY_CORNER_RADIUS)}" fill="${escapeXmlAttribute(item.style.fill)}" />`;
+  if (text.length === 0) return `<g ${attributes}>${rectangle}</g>`;
+
+  const contentX = x + STICKY_PADDING;
+  const contentY = y + STICKY_PADDING;
+  const contentWidth = Math.max(0, width - STICKY_PADDING * 2);
+  const contentHeight = Math.max(0, height - STICKY_PADDING * 2);
+  const lineHeight = number(item.style.fontSize * STICKY_LINE_HEIGHT);
+  const spans = stickyTextLines(item)
+    .map(
+      (line, index) =>
+        `<tspan x="${number(contentX)}" dy="${index === 0 ? "0" : lineHeight}">${escapeXmlText(line || " ")}</tspan>`,
+    )
+    .join("");
+  const clip = `<defs><clipPath id="${escapeXmlAttribute(clipId)}" clipPathUnits="userSpaceOnUse"><rect x="${number(contentX)}" y="${number(contentY)}" width="${number(contentWidth)}" height="${number(contentHeight)}" /></clipPath></defs>`;
+  const renderedText = `<text x="${number(contentX)}" y="${number(contentY + item.style.fontSize)}" fill="${escapeXmlAttribute(item.style.textColor)}" font-size="${number(item.style.fontSize)}" font-family="Inter, ui-sans-serif, system-ui, sans-serif" xml:space="preserve" clip-path="url(#${escapeXmlAttribute(clipId)})">${spans}</text>`;
+  return `<g ${attributes}>${clip}${rectangle}${renderedText}</g>`;
 }
 
 function renderText(item: Extract<BoardItem, { kind: "text" }>): string {
@@ -126,6 +292,8 @@ export function renderSvgItem(item: BoardItem): string {
       return `<ellipse cx="${number(item.geometry.x + item.geometry.width / 2)}" cy="${number(item.geometry.y + item.geometry.height / 2)}" rx="${number(item.geometry.width / 2)}" ry="${number(item.geometry.height / 2)}" ${commonStrokeAttributes(item)} />`;
     case "text":
       return renderText(item);
+    case "sticky":
+      return renderSticky(item);
   }
 }
 

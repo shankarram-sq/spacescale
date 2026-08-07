@@ -8,6 +8,20 @@ per board validates, commits, sequences, and broadcasts every durable action
 through the shared board reducer. SQLite is authoritative; private R2 objects
 provide immutable recovery checkpoints and named snapshots.
 
+## Classroom activity tools
+
+Alongside freehand drawing, shapes, and plain text, the board supports durable
+sticky notes for brainstorming, exit tickets, sorting, and feedback. Choose
+**Sticky note** or press `N`, click the board, and type immediately. A note may
+be left empty, uses a 180 × 140 board-unit default size, and can be recolored
+with the six classroom presets in the style popover.
+
+Sticky notes participate in the same authoritative collaboration pipeline as
+every other board item: they can be selected, moved, copied, deleted, undone,
+redone, restored from snapshots, replayed from the offline outbox, and exported
+to canonical JSON or safe SVG. Double-click a note—or double-tap it with the
+select tool—to edit its wrapped text.
+
 ## Local development
 
 Requirements: Node.js 22.19 or newer. Local development uses Miniflare-backed

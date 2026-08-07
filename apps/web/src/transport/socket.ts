@@ -549,9 +549,17 @@ function asPresence(value: unknown): Presence | null {
     cursor,
     activeTool:
       activeTool &&
-      ["select", "pencil", "line", "rectangle", "ellipse", "text", "eraser", "pan"].includes(
-        activeTool,
-      )
+      [
+        "select",
+        "pencil",
+        "line",
+        "rectangle",
+        "ellipse",
+        "text",
+        "sticky",
+        "eraser",
+        "pan",
+      ].includes(activeTool)
         ? (activeTool as ToolName)
         : undefined,
     color: string(value.color) ?? undefined,

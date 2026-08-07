@@ -7,6 +7,7 @@ import {
   FIXTURE_IDS,
   newPencilItem,
   newRectangleItem,
+  newStickyItem,
   serverCreateAction,
 } from "./index.js";
 
@@ -14,6 +15,9 @@ describe("deterministic shared fixtures", () => {
   it("builds protocol-valid commands", () => {
     expect(validateClientFrame(createCommitFrame())).toEqual(createCommitFrame());
     expect(validateClientFrame(createCommitFrame(newPencilItem())).t).toBe("client.commit");
+    expect(validateClientFrame(createCommitFrame(newStickyItem()))).toEqual(
+      createCommitFrame(newStickyItem()),
+    );
   });
 
   it("builds canonical server actions and states without mutable globals", () => {

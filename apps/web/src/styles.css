@@ -385,6 +385,15 @@ button:disabled {
   font-weight: 750;
 }
 
+.tool-glyph-sticky {
+  font-size: 19px;
+  color: #a16207;
+}
+
+.tool-rail button[aria-pressed="true"] .tool-glyph-sticky {
+  color: #fde68a;
+}
+
 .tool-glyph-line {
   font-size: 26px;
 }
@@ -448,6 +457,9 @@ button:disabled {
 .board-canvas[data-tool="text"] {
   cursor: text;
 }
+.board-canvas[data-tool="sticky"] {
+  cursor: crosshair;
+}
 .board-canvas[data-tool="eraser"] {
   cursor: cell;
 }
@@ -470,6 +482,19 @@ button:disabled {
 }
 
 .board-item-text {
+  user-select: none;
+}
+
+.board-item-sticky {
+  overflow: hidden;
+}
+
+.board-item-sticky .sticky-background {
+  filter: drop-shadow(0 2px 2px rgb(66 52 25 / 14%));
+}
+
+.board-item-sticky .sticky-text {
+  pointer-events: none;
   user-select: none;
 }
 
@@ -675,6 +700,10 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(8, 1fr);
   gap: 5px;
+}
+
+.sticky-color-grid {
+  grid-template-columns: repeat(6, 1fr);
 }
 
 .color-choice,
@@ -1392,6 +1421,20 @@ button:disabled {
   background: rgb(255 255 255 / 94%);
   line-height: 1.2;
   box-shadow: 0 6px 18px rgb(41 50 91 / 13%);
+}
+
+.canvas-sticky-editor {
+  box-sizing: border-box;
+  min-height: 96px;
+  resize: none;
+  overflow: auto;
+  border-color: rgb(92 73 34 / 42%);
+  border-radius: 12px;
+  outline: 3px solid rgb(62 99 221 / 18%);
+  outline-offset: 2px;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  line-height: 1.2;
+  box-shadow: 0 8px 24px rgb(66 52 25 / 18%);
 }
 
 .claim-dialog {
