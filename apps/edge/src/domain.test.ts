@@ -56,6 +56,32 @@ function createStickyFrame(text = "") {
   };
 }
 
+function createLineFrame() {
+  return {
+    v: 1,
+    t: "client.commit",
+    commandId: "018f0000-0000-7000-8000-000000000010",
+    actionId: "018f0000-0000-7000-8000-000000000011",
+    baseSeq: 0,
+    op: {
+      kind: "item.create",
+      item: {
+        id: itemId,
+        kind: "line",
+        style: {
+          kind: "line",
+          color: "#112233",
+          width: 4,
+          opacity: 0.75,
+          arrowhead: "arrow",
+        },
+        transform: [1, 0, 0, 1, 0, 0],
+        geometry: { x1: 10, y1: 20, x2: 130, y2: 20 },
+      },
+    },
+  };
+}
+
 function createStampFrame(stamp = "check") {
   return {
     v: 1,
@@ -162,6 +188,35 @@ describe("edge domain admission", () => {
       beforeStateToken: `absent:${itemId}`,
       afterStateToken: "after",
     });
+  });
+
+  it("admits strict arrow connectors and round-trips their canonical edge mirror", () => {
+    const parsed = parseCommitFrame(createLineFrame());
+    if (parsed.op.kind !== "item.create") throw new Error("unexpected operation");
+    const prepared = prepareItemOperation(parsed.op, new Map(), {
+      seq: 1,
+      actorId,
+      nextZ: 1,
+      liveCount: 0,
+      tokenFactory: () => "line-state",
+    });
+    const write = prepared.writes.get(itemId);
+    expect(write?.item).toMatchObject({
+      kind: "line",
+      style: { kind: "line", arrowhead: "arrow" },
+      geometry: { x1: 10, y1: 20, x2: 130, y2: 20 },
+    });
+    expect(write?.bounds).toEqual({ minX: 8, minY: 12.6, maxX: 132, maxY: 27.4 });
+    expect(canonicalItemFromUnknown(JSON.parse(JSON.stringify(write?.item)))).toEqual(write?.item);
+
+    const oldStyle = createLineFrame();
+    oldStyle.op.item.style = {
+      kind: "stroke",
+      color: "#112233",
+      width: 4,
+      opacity: 0.75,
+    } as unknown as typeof oldStyle.op.item.style;
+    expect(() => parseCommitFrame(oldStyle)).toThrow(/line/);
   });
 
   it("accepts an empty sticky draft and computes its full rectangular bounds", () => {

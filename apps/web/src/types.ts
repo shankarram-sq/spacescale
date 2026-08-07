@@ -30,6 +30,16 @@ export type StrokeStyle = {
   opacity: number;
 };
 
+export type LineArrowhead = "none" | "arrow";
+
+export type LineStyle = {
+  kind: "line";
+  color: string;
+  width: number;
+  opacity: number;
+  arrowhead: LineArrowhead;
+};
+
 export type TextStyle = {
   kind: "text";
   color: string;
@@ -80,6 +90,7 @@ export type ZoneStyle = {
 
 export type ItemStyle =
   | StrokeStyle
+  | LineStyle
   | TextStyle
   | StickyStyle
   | StampStyle
@@ -137,7 +148,7 @@ export type PencilItem = ItemBase & {
 };
 export type LineItem = ItemBase & {
   kind: "line";
-  style: StrokeStyle;
+  style: LineStyle;
   geometry: LineGeometry;
 };
 export type RectangleItem = ItemBase & {

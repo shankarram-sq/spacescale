@@ -5,6 +5,7 @@ import {
   boundsWidth,
   expandBounds,
   formatCanonicalNumber,
+  lineArrowheadPoints,
   ZONE_TITLE_PADDING,
   zoneTitleBandHeight,
 } from "@collab/geometry";
@@ -37,6 +38,7 @@ export const STAMP_SVG_PATHS = {
 } as const;
 
 type StrokeBoardItem = Extract<BoardItem, { kind: "pencil" | "line" | "rectangle" | "ellipse" }>;
+type LineBoardItem = Extract<BoardItem, { kind: "line" }>;
 type StickyBoardItem = Extract<BoardItem, { kind: "sticky" }>;
 type ImageBoardItem = Extract<BoardItem, { kind: "image" }>;
 type StampBoardItem = Extract<BoardItem, { kind: "stamp" }>;
@@ -106,6 +108,24 @@ function commonStrokeAttributes(item: StrokeBoardItem): string {
     `transform="${transformAttribute(item)}"`,
     `data-item-id="${escapeXmlAttribute(item.id)}"`,
   ].join(" ");
+}
+
+function renderLine(item: LineBoardItem): string {
+  const { x1, y1, x2, y2 } = item.geometry;
+  const attributes = commonStrokeAttributes(item);
+  if (item.style.arrowhead === "none") {
+    return `<line x1="${number(x1)}" y1="${number(y1)}" x2="${number(x2)}" y2="${number(y2)}" ${attributes} />`;
+  }
+  const arrowhead = lineArrowheadPoints(item.geometry, item.style.width);
+  if (arrowhead === null) {
+    return `<line x1="${number(x1)}" y1="${number(y1)}" x2="${number(x2)}" y2="${number(y2)}" ${attributes} />`;
+  }
+  const [left, tip, right] = arrowhead;
+  const path = [
+    `M ${number(x1)} ${number(y1)} L ${number(x2)} ${number(y2)}`,
+    `M ${number(left[0])} ${number(left[1])} L ${number(tip[0])} ${number(tip[1])} L ${number(right[0])} ${number(right[1])}`,
+  ].join(" ");
+  return `<path d="${path}" ${attributes} />`;
 }
 
 function codePointWidthAt(value: string, index: number): number {
@@ -467,7 +487,7 @@ export function renderSvgItem(item: BoardItem): string {
       return `<path d="${path}" ${commonStrokeAttributes(item)} />`;
     }
     case "line":
-      return `<line x1="${number(item.geometry.x1)}" y1="${number(item.geometry.y1)}" x2="${number(item.geometry.x2)}" y2="${number(item.geometry.y2)}" ${commonStrokeAttributes(item)} />`;
+      return renderLine(item);
     case "rectangle":
       return `<rect x="${number(item.geometry.x)}" y="${number(item.geometry.y)}" width="${number(item.geometry.width)}" height="${number(item.geometry.height)}" ${commonStrokeAttributes(item)} />`;
     case "ellipse":

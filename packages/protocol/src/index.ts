@@ -70,6 +70,7 @@ export const MAX_IMAGE_RADIUS = 256;
 export const MAX_TABLE_CELL_TEXT_CODE_POINTS = 500;
 export const MAX_TABLE_TEXT_CODE_POINTS = 8_000;
 export const MAX_ZONE_TITLE_CODE_POINTS = 120;
+export const LINE_ARROWHEADS = ["none", "arrow"] as const;
 
 export const ITEM_KINDS = [
   "pencil",
@@ -113,6 +114,16 @@ export interface StrokeStyle {
   color: string;
   width: number;
   opacity: number;
+}
+
+export type LineArrowhead = (typeof LINE_ARROWHEADS)[number];
+
+export interface LineStyle {
+  kind: "line";
+  color: string;
+  width: number;
+  opacity: number;
+  arrowhead: LineArrowhead;
 }
 
 export interface TextStyle {
@@ -163,6 +174,7 @@ export interface ZoneStyle {
 
 export type ItemStyle =
   | StrokeStyle
+  | LineStyle
   | TextStyle
   | StickyStyle
   | ImageStyle
@@ -186,7 +198,7 @@ export interface PencilItem extends BoardItemBase {
 
 export interface LineItem extends BoardItemBase {
   kind: "line";
-  style: StrokeStyle;
+  style: LineStyle;
   geometry: LineGeometry;
 }
 
@@ -422,7 +434,7 @@ export interface ShapeGeometryPreview {
     itemId: string;
     itemKind: "line" | "rectangle" | "ellipse";
     geometry: LineGeometry | BoxGeometry;
-    style: StrokeStyle;
+    style: StrokeStyle | LineStyle;
   };
 }
 
@@ -723,20 +735,37 @@ function normalizeColor(value: unknown, path: string): string {
   return value;
 }
 
+function normalizeStrokeWidth(value: unknown, path: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    fail("Stroke width must be a finite number", path);
+  }
+  const width = canonicalNumber(value, 2);
+  if (width < 1 || width > 100) fail("Stroke width must be between 1 and 100", path);
+  return width;
+}
+
 export function normalizeStrokeStyle(value: unknown, path = "$style"): StrokeStyle {
   const object = expectRecord(value, path);
   if (object.kind !== "stroke") fail('Expected style kind "stroke"', `${path}.kind`);
   expectExactKeys(object, ["kind", "color", "width", "opacity"], [], path);
-  if (typeof object.width !== "number" || !Number.isFinite(object.width)) {
-    fail("Stroke width must be a finite number", `${path}.width`);
-  }
-  const width = canonicalNumber(object.width, 2);
-  if (width < 1 || width > 100) fail("Stroke width must be between 1 and 100", `${path}.width`);
   return {
     kind: "stroke",
     color: normalizeColor(object.color, `${path}.color`),
-    width,
+    width: normalizeStrokeWidth(object.width, `${path}.width`),
     opacity: normalizeOpacity(object.opacity, `${path}.opacity`),
+  };
+}
+
+export function normalizeLineStyle(value: unknown, path = "$style"): LineStyle {
+  const object = expectRecord(value, path);
+  if (object.kind !== "line") fail('Expected style kind "line"', `${path}.kind`);
+  expectExactKeys(object, ["kind", "color", "width", "opacity", "arrowhead"], [], path);
+  return {
+    kind: "line",
+    color: normalizeColor(object.color, `${path}.color`),
+    width: normalizeStrokeWidth(object.width, `${path}.width`),
+    opacity: normalizeOpacity(object.opacity, `${path}.opacity`),
+    arrowhead: expectLiteral(object.arrowhead, LINE_ARROWHEADS, `${path}.arrowhead`),
   };
 }
 
@@ -863,6 +892,7 @@ export function normalizeZoneStyle(value: unknown, path = "$style"): ZoneStyle {
 export function normalizeItemStyle(value: unknown, path = "$style"): ItemStyle {
   const object = expectRecord(value, path);
   if (object.kind === "stroke") return normalizeStrokeStyle(object, path);
+  if (object.kind === "line") return normalizeLineStyle(object, path);
   if (object.kind === "text") return normalizeTextStyle(object, path);
   if (object.kind === "sticky") return normalizeStickyStyle(object, path);
   if (object.kind === "image") return normalizeImageStyle(object, path);
@@ -870,7 +900,7 @@ export function normalizeItemStyle(value: unknown, path = "$style"): ItemStyle {
   if (object.kind === "table") return normalizeTableStyle(object, path);
   if (object.kind === "zone") return normalizeZoneStyle(object, path);
   fail(
-    'Style kind must be "stroke", "text", "sticky", "image", "stamp", "table", or "zone"',
+    'Style kind must be "stroke", "line", "text", "sticky", "image", "stamp", "table", or "zone"',
     `${path}.kind`,
   );
 }
@@ -998,6 +1028,7 @@ function normalizeGeometryForItem(kind: ItemKind, value: unknown, path: string):
 }
 
 function normalizeStyleForKind(kind: ItemKind, value: unknown, path: string): ItemStyle {
+  if (kind === "line") return normalizeLineStyle(value, path);
   if (kind === "text") return normalizeTextStyle(value, path);
   if (kind === "sticky") return normalizeStickyStyle(value, path);
   if (kind === "image") return normalizeImageStyle(value, path);
@@ -1264,7 +1295,10 @@ function validatePreviewFrame(object: Record<string, unknown>, path: string): Cl
               ? normalizeGeometry("line", payload.geometry, `${path}.payload.geometry`)
               : normalizeGeometry(itemKind, payload.geometry, `${path}.payload.geometry`),
           ),
-          style: normalizeStrokeStyle(payload.style, `${path}.payload.style`),
+          style:
+            itemKind === "line"
+              ? normalizeLineStyle(payload.style, `${path}.payload.style`)
+              : normalizeStrokeStyle(payload.style, `${path}.payload.style`),
         },
       };
     }

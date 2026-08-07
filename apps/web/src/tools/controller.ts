@@ -1,4 +1,4 @@
-import type { BoardModel, Bounds } from "../board/model";
+import type { BoardModel, Bounds, ConnectorAnchor } from "../board/model";
 import { translateMatrix } from "../board/model";
 import type { BoardRenderer } from "../board/renderer";
 import type {
@@ -7,7 +7,9 @@ import type {
   BoxGeometry,
   DurableOperation,
   ImageGeometry,
+  LineArrowhead,
   LineGeometry,
+  LineStyle,
   Matrix,
   NewBoardItem,
   Point,
@@ -21,10 +23,11 @@ import type {
 } from "../types";
 import { createId, roundBoard } from "../types";
 
-type StyleState = {
+export type StyleState = {
   color: string;
   width: number;
   opacity: number;
+  lineArrowhead: LineArrowhead;
   fontSize: number;
   stickyFill: string;
   stickyTextColor: string;
@@ -47,6 +50,7 @@ export const DEFAULT_TABLE_COLUMN_WIDTH = 120;
 export const DEFAULT_TABLE_ROW_HEIGHT = 48;
 export const DEFAULT_ZONE_WIDTH = 520;
 export const DEFAULT_ZONE_HEIGHT = 320;
+export const CONNECTOR_SNAP_RADIUS_CSS_PX = 16;
 
 const TOOL_SHORTCUTS: Partial<Record<string, ToolName>> = {
   v: "select",
@@ -376,9 +380,11 @@ type Gesture =
       start: Point;
       current: Point;
       constrained: boolean;
+      startAnchor?: ConnectorAnchor;
+      endAnchor?: ConnectorAnchor;
       previewSeq: number;
       lastPreviewAt: number;
-      style: StrokeStyle;
+      style: StrokeStyle | LineStyle;
     }
   | {
       kind: "move";
@@ -635,24 +641,40 @@ export class ToolController {
       this.toolValue === "rectangle" ||
       this.toolValue === "ellipse"
     ) {
-      const strokeStyle: StrokeStyle = {
-        kind: "stroke",
-        color: style.color,
-        width: style.width,
-        opacity: style.opacity,
-      };
+      const shapeStyle: StrokeStyle | LineStyle =
+        this.toolValue === "line"
+          ? {
+              kind: "line",
+              color: style.color,
+              width: style.width,
+              opacity: style.opacity,
+              arrowhead: style.lineArrowhead,
+            }
+          : {
+              kind: "stroke",
+              color: style.color,
+              width: style.width,
+              opacity: style.opacity,
+            };
+      const startAnchor =
+        this.toolValue === "line"
+          ? resolveConnectorEndpoint(this.options.model, point, this.options.renderer.viewport.zoom)
+              .anchor
+          : undefined;
+      const start = startAnchor?.point ?? point;
       this.gesture = {
         kind: "shape",
         pointerId: event.pointerId,
         gestureId: createId(),
         itemId: createId(),
         shape: this.toolValue,
-        start: point,
-        current: point,
+        start,
+        current: start,
         constrained: event.shiftKey,
+        ...(startAnchor ? { startAnchor } : {}),
         previewSeq: 0,
         lastPreviewAt: 0,
-        style: strokeStyle,
+        style: shapeStyle,
       };
       this.renderShapeGesture(this.gesture, true);
       event.preventDefault();
@@ -825,8 +847,16 @@ export class ToolController {
         });
       }
     } else if (gesture.kind === "shape") {
-      gesture.current = boardPoint(event, this.options.renderer);
-      gesture.constrained = event.shiftKey;
+      applyShapePointerState(
+        gesture,
+        resolveShapePointerState(
+          gesture.shape,
+          boardPoint(event, this.options.renderer),
+          event.shiftKey,
+          this.options.model,
+          this.options.renderer.viewport.zoom,
+        ),
+      );
       this.renderShapeGesture(gesture, false);
     } else if (gesture.kind === "move") {
       gesture.current = boardPoint(event, this.options.renderer);
@@ -869,6 +899,19 @@ export class ToolController {
       safeReleaseCapture(this.options.renderer.svg, event.pointerId);
       return;
     }
+    const tapPoint = boardPoint(event, this.options.renderer);
+    if (gesture.kind === "shape") {
+      applyShapePointerState(
+        gesture,
+        resolveShapePointerState(
+          gesture.shape,
+          tapPoint,
+          event.shiftKey,
+          this.options.model,
+          this.options.renderer.viewport.zoom,
+        ),
+      );
+    }
     this.gesture = null;
     safeReleaseCapture(this.options.renderer.svg, event.pointerId);
     const adjustedMovePoint =
@@ -881,7 +924,6 @@ export class ToolController {
           )
         : undefined;
     const isItemTap = gesture.kind === "move" && adjustedMovePoint === gesture.start;
-    const tapPoint = boardPoint(event, this.options.renderer);
     const tappedItem = isItemTap ? this.options.model.hitTest(tapPoint, 0) : undefined;
     if (isItemTap && gesture.kind === "move" && adjustedMovePoint) {
       gesture.current = adjustedMovePoint;
@@ -1040,8 +1082,12 @@ export class ToolController {
       gesture.start,
       gesture.current,
       gesture.constrained,
+      gesture.endAnchor !== undefined,
     );
-    this.options.renderer.showLocalShape(gesture.shape, geometry, gesture.style);
+    const snapPoints = [gesture.startAnchor?.point, gesture.endAnchor?.point].filter(
+      (point): point is Point => point !== undefined,
+    );
+    this.options.renderer.showLocalShape(gesture.shape, geometry, gesture.style, snapPoints);
     const now = performance.now();
     if (!forcePreview && now - gesture.lastPreviewAt < 75) return;
     gesture.previewSeq += 1;
@@ -1138,6 +1184,7 @@ export class ToolController {
         gesture.start,
         gesture.current,
         gesture.constrained,
+        gesture.endAnchor !== undefined,
       );
       const isEmpty =
         gesture.shape === "line"
@@ -1269,6 +1316,46 @@ function boardPoint(
   return [roundBoard(point[0]), roundBoard(point[1])];
 }
 
+export function resolveConnectorEndpoint(
+  model: Pick<BoardModel, "nearestConnectorAnchor">,
+  point: Point,
+  zoom: number,
+): { point: Point; anchor?: ConnectorAnchor } {
+  const threshold = CONNECTOR_SNAP_RADIUS_CSS_PX / Math.max(0.1, zoom);
+  const anchor = model.nearestConnectorAnchor(point, threshold);
+  return anchor ? { point: anchor.point, anchor } : { point };
+}
+
+export type ResolvedShapePointerState = {
+  current: Point;
+  constrained: boolean;
+  endAnchor?: ConnectorAnchor;
+};
+
+export function resolveShapePointerState(
+  shape: "line" | "rectangle" | "ellipse",
+  point: Point,
+  constrained: boolean,
+  model: Pick<BoardModel, "nearestConnectorAnchor">,
+  zoom: number,
+): ResolvedShapePointerState {
+  if (shape !== "line") return { current: point, constrained };
+  const resolved = resolveConnectorEndpoint(model, point, zoom);
+  return resolved.anchor
+    ? { current: resolved.point, constrained, endAnchor: resolved.anchor }
+    : { current: point, constrained };
+}
+
+function applyShapePointerState(
+  gesture: Extract<Gesture, { kind: "shape" }>,
+  state: ResolvedShapePointerState,
+): void {
+  gesture.current = state.current;
+  gesture.constrained = state.constrained;
+  if (state.endAnchor) gesture.endAnchor = state.endAnchor;
+  else delete gesture.endAnchor;
+}
+
 function appendUniquePoint(points: Point[], point: Point): void {
   const previous = points.at(-1);
   if (!previous || previous[0] !== point[0] || previous[1] !== point[1]) points.push(point);
@@ -1280,14 +1367,15 @@ function deduplicatePoints(points: readonly Point[]): Point[] {
   return result;
 }
 
-function shapeGeometry(
+export function shapeGeometry(
   shape: "line" | "rectangle" | "ellipse",
   start: Point,
   end: Point,
   constrained: boolean,
+  endpointSnapped = false,
 ): LineGeometry | BoxGeometry {
   let next = end;
-  if (shape === "line" && constrained) {
+  if (shape === "line" && constrained && !endpointSnapped) {
     const distance = pointDistance(start, end);
     const angle = Math.atan2(end[1] - start[1], end[0] - start[0]);
     const snapped = Math.round(angle / (Math.PI / 12)) * (Math.PI / 12);
@@ -1371,14 +1459,15 @@ function axisIndex(position: number, sizes: readonly number[]): number | null {
   return null;
 }
 
-function buildShapeCreateOperation(
+export function buildShapeCreateOperation(
   itemId: string,
   shape: "line" | "rectangle" | "ellipse",
   geometry: LineGeometry | BoxGeometry,
-  style: StrokeStyle,
+  style: StrokeStyle | LineStyle,
 ): BatchItemOperation {
   if (shape === "line") {
     if (!("x1" in geometry)) throw new Error("Line geometry is invalid.");
+    if (style.kind !== "line") throw new Error("Line style is invalid.");
     return {
       kind: "item.create",
       item: {
@@ -1391,6 +1480,7 @@ function buildShapeCreateOperation(
     };
   }
   if (!("width" in geometry)) throw new Error("Box geometry is invalid.");
+  if (style.kind !== "stroke") throw new Error("Shape style is invalid.");
   if (shape === "rectangle") {
     return {
       kind: "item.create",

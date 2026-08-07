@@ -190,6 +190,40 @@ describe("BoardModel", () => {
     expect(model.hitTest([400, 300])).toBeUndefined();
   });
 
+  it("finds connector anchors on transformed world AABB cardinal points", () => {
+    const item = rectangle();
+    item.transform = [0, 1, -1, 0, 200, 10];
+    const model = new BoardModel();
+    model.load(snapshot([item], 1));
+
+    expect(itemBounds(item)).toEqual({ minX: 118, minY: 18, maxX: 182, maxY: 122 });
+    expect(model.nearestConnectorAnchor([151, 17], 2)).toEqual({
+      itemId: ITEM_ID,
+      point: [150, 18],
+      z: 1,
+      distance: Math.SQRT2,
+    });
+    expect(model.nearestConnectorAnchor([151, 17], 1)).toBeUndefined();
+  });
+
+  it("breaks equally near connector anchors by topmost z and excludes stamps", () => {
+    const lower = rectangle();
+    const higher: BoardItem = {
+      ...structuredClone(lower),
+      id: REMOTE_ID,
+      z: 9,
+    };
+    const excluded = stamp();
+    excluded.id = "018f47a1-7a2b-7c3d-8e4f-123456789ac2";
+    excluded.z = 20;
+    excluded.geometry = { x: 60, y: 18, size: 10, stamp: "star" };
+    excluded.transform = [1, 0, 0, 1, 0, 0];
+    const model = new BoardModel();
+    model.load(snapshot([lower, higher, excluded], 1));
+
+    expect(model.nearestConnectorAnchor([60, 17], 2)?.itemId).toBe(REMOTE_ID);
+  });
+
   it("uses the complete sticky rectangle for bounds and hit testing", () => {
     const item = sticky();
     expect(itemBounds(item)).toEqual({ minX: 40, minY: 15, maxX: 220, maxY: 155 });

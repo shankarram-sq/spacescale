@@ -109,6 +109,7 @@ type StyleState = {
   color: string;
   width: number;
   opacity: number;
+  lineArrowhead: "none" | "arrow";
   fontSize: number;
   stickyFill: string;
   stickyTextColor: string;
@@ -276,6 +277,7 @@ export class BoardApp {
     color: "#20201e",
     width: 4,
     opacity: 1,
+    lineArrowhead: "none",
     fontSize: 28,
     stickyFill: STICKY_COLORS[0].value,
     stickyTextColor: "#292524",
@@ -692,6 +694,7 @@ export class BoardApp {
               <label class="custom-color" title="Custom colour" data-custom-color><span class="sr-only">Custom colour</span><input type="color" value="#20201e" data-style-color /></label>
             </fieldset>
             <label class="range-row" data-style-stroke-row><span>Stroke</span><output data-width-output>4</output><input type="range" min="1" max="32" value="4" step="1" data-style-stroke /></label>
+            <label class="style-checkbox-row" data-line-arrow-row hidden><input type="checkbox" data-line-arrow /> <span>End arrow</span><span class="line-arrow-preview" aria-hidden="true">→</span></label>
             <label class="range-row"><span>Opacity</span><output data-opacity-output>100%</output><input type="range" min="10" max="100" value="100" step="5" data-style-opacity /></label>
             <label class="range-row" data-style-font-row><span>Text</span><output data-font-output>28</output><input type="range" min="8" max="96" value="28" step="1" data-style-font /></label>
           </section>
@@ -979,6 +982,11 @@ export class BoardApp {
     const stroke = query(this.root, "[data-style-stroke]", HTMLInputElement);
     stroke.addEventListener("input", () => {
       this.style.width = Number(stroke.value);
+      this.updateStyleControls();
+    });
+    const lineArrow = query(this.root, "[data-line-arrow]", HTMLInputElement);
+    lineArrow.addEventListener("change", () => {
+      this.style.lineArrowhead = lineArrow.checked ? "arrow" : "none";
       this.updateStyleControls();
     });
     const opacity = query(this.root, "[data-style-opacity]", HTMLInputElement);
@@ -3406,6 +3414,7 @@ export class BoardApp {
   private updateStyleControls(): void {
     const sticky = this.tools.tool === "sticky";
     const stamp = this.tools.tool === "stamp";
+    const line = this.tools.tool === "line";
     const activeColor = sticky
       ? this.style.stickyFill
       : stamp
@@ -3426,6 +3435,8 @@ export class BoardApp {
       ? this.style.stampColor
       : this.style.color;
     query(this.root, "[data-style-stroke]", HTMLInputElement).value = String(this.style.width);
+    query(this.root, "[data-line-arrow]", HTMLInputElement).checked =
+      this.style.lineArrowhead === "arrow";
     query(this.root, "[data-style-opacity]", HTMLInputElement).value = String(activeOpacity * 100);
     query(this.root, "[data-style-font]", HTMLInputElement).value = String(activeFontSize);
     query(this.root, "[data-width-output]", HTMLOutputElement).value = String(this.style.width);
@@ -3437,6 +3448,7 @@ export class BoardApp {
     query(this.root, "[data-stamp-fieldset]", HTMLElement).hidden = !stamp;
     query(this.root, "[data-custom-color]", HTMLElement).hidden = sticky;
     query(this.root, "[data-style-stroke-row]", HTMLElement).hidden = sticky || stamp;
+    query(this.root, "[data-line-arrow-row]", HTMLElement).hidden = !line;
     query(this.root, "[data-style-font-row]", HTMLElement).hidden = stamp;
     query(this.root, "[data-style-color-label]", HTMLElement).textContent = sticky
       ? "Sticky colour"
@@ -3447,10 +3459,18 @@ export class BoardApp {
       ? "New sticky notes"
       : stamp
         ? "New stamps"
-        : "New marks";
+        : line
+          ? "New lines"
+          : "New marks";
     query(this.root, "[data-testid='style-button']", HTMLButtonElement).setAttribute(
       "aria-label",
-      sticky ? "Open sticky note style" : stamp ? "Open stamp style" : "Open drawing style",
+      sticky
+        ? "Open sticky note style"
+        : stamp
+          ? "Open stamp style"
+          : line
+            ? "Open line style"
+            : "Open drawing style",
     );
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-color]")) {
       button.setAttribute("aria-pressed", String(button.dataset.color === activeColor));

@@ -86,6 +86,14 @@ export type StrokeStyle = {
   opacity: number;
 };
 
+export type LineStyle = {
+  kind: "line";
+  color: string;
+  width: number;
+  opacity: number;
+  arrowhead: "none" | "arrow";
+};
+
 export type TextStyle = {
   kind: "text";
   color: string;
@@ -126,7 +134,14 @@ export type ZoneStyle = {
   opacity: number;
 };
 
-export type ItemStyle = StrokeStyle | TextStyle | StickyStyle | StampStyle | TableStyle | ZoneStyle;
+export type ItemStyle =
+  | StrokeStyle
+  | LineStyle
+  | TextStyle
+  | StickyStyle
+  | StampStyle
+  | TableStyle
+  | ZoneStyle;
 export type Matrix = [number, number, number, number, number, number];
 
 export type PencilGeometry = { points: Array<[number, number]> };

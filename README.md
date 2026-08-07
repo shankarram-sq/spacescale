@@ -67,6 +67,12 @@ and border are selectable while the interior remains transparent to items
 inside it. Multi-selection also offers atomic **Arrange** actions to align or
 distribute items and tidy selected sticky notes into a deterministic grid.
 
+Choose **Line** or press `L` to draw a line, then enable **End arrow** when a
+one-way connector is useful. New line endpoints snap to nearby cardinal points
+on shapes, sticky notes, tables, image cards, and zones. V1 stores the snapped
+coordinates as ordinary line geometry, so moving the target later does not move
+the connector automatically.
+
 ## Local development
 
 Requirements: Node.js 22.19 or newer. Local development uses Miniflare-backed

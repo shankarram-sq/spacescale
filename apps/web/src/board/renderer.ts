@@ -1,4 +1,4 @@
-import { ZONE_TITLE_PADDING, zoneTitleBandHeight } from "@collab/geometry";
+import { lineArrowheadPoints, ZONE_TITLE_PADDING, zoneTitleBandHeight } from "@collab/geometry";
 import { STAMP_SVG_PATHS } from "@collab/svg-export";
 import { summarizeBoardVotes, type VoteSummary } from "../activities/voting";
 import type {
@@ -7,6 +7,7 @@ import type {
   ImageGeometry,
   ImageStyle,
   LineGeometry,
+  LineStyle,
   Matrix,
   Point,
   Presence,
@@ -168,12 +169,27 @@ export class BoardRenderer {
   showLocalShape(
     kind: "line" | "rectangle" | "ellipse",
     geometry: LineGeometry | BoxGeometry,
-    style: StrokeStyle,
+    style: LineStyle | StrokeStyle,
+    snapPoints: readonly Point[] = [],
   ): void {
     this.localLayer.replaceChildren();
     const preview = shapeNode(kind, geometry, style);
     preview.classList.add("local-preview");
-    this.localLayer.append(preview);
+    this.localLayer.append(preview, ...snapPoints.map((point) => this.snapHalo(point)));
+  }
+
+  private snapHalo(point: Point): SVGCircleElement {
+    const halo = svgElement("circle");
+    halo.classList.add("connector-snap-halo");
+    halo.setAttribute("cx", String(point[0]));
+    halo.setAttribute("cy", String(point[1]));
+    halo.setAttribute("r", String(8 / this.viewport.zoom));
+    halo.setAttribute("fill", "none");
+    halo.setAttribute("stroke", "currentColor");
+    halo.setAttribute("stroke-width", String(2 / this.viewport.zoom));
+    halo.setAttribute("pointer-events", "none");
+    halo.setAttribute("aria-hidden", "true");
+    return halo;
   }
 
   showLocalText(
@@ -287,7 +303,9 @@ export class BoardRenderer {
             shapeNode(
               kind,
               geometry as LineGeometry | BoxGeometry,
-              previewStyle(payload.style, color),
+              kind === "line"
+                ? previewLineStyle(payload.style, color)
+                : previewStyle(payload.style, color),
             ),
           );
         }
@@ -1253,17 +1271,11 @@ export function wrapStickyText(
 function shapeNode(
   kind: "line" | "rectangle" | "ellipse",
   geometry: LineGeometry | BoxGeometry,
-  style: StrokeStyle,
+  style: LineStyle | StrokeStyle,
 ): SVGGraphicsElement {
   let node: SVGGraphicsElement;
   if (kind === "line") {
-    const line = svgElement("line");
-    const value = geometry as LineGeometry;
-    line.setAttribute("x1", String(value.x1));
-    line.setAttribute("y1", String(value.y1));
-    line.setAttribute("x2", String(value.x2));
-    line.setAttribute("y2", String(value.y2));
-    node = line;
+    node = lineNode(geometry as LineGeometry, style as LineStyle);
   } else if (kind === "rectangle") {
     const rect = svgElement("rect");
     const value = geometry as BoxGeometry;
@@ -1286,7 +1298,35 @@ function shapeNode(
   return node;
 }
 
-function setStroke(node: SVGGraphicsElement, style: StrokeStyle): void {
+export function lineNode(geometry: LineGeometry, style: LineStyle): SVGGElement {
+  const group = svgElement("g");
+  const shaft = svgElement("line");
+  shaft.classList.add("connector-shaft");
+  shaft.setAttribute("x1", String(geometry.x1));
+  shaft.setAttribute("y1", String(geometry.y1));
+  shaft.setAttribute("x2", String(geometry.x2));
+  shaft.setAttribute("y2", String(geometry.y2));
+  setStroke(shaft, style);
+  group.append(shaft);
+
+  if (style.arrowhead === "arrow") {
+    const points = lineArrowheadPoints(geometry, style.width);
+    if (points) {
+      const [left, tip, right] = points;
+      const arrowhead = svgElement("path");
+      arrowhead.classList.add("connector-arrowhead");
+      arrowhead.setAttribute(
+        "d",
+        `M ${left[0]} ${left[1]} L ${tip[0]} ${tip[1]} L ${right[0]} ${right[1]}`,
+      );
+      setStroke(arrowhead, style);
+      group.append(arrowhead);
+    }
+  }
+  return group;
+}
+
+function setStroke(node: SVGGraphicsElement, style: StrokeStyle | LineStyle): void {
   node.setAttribute("fill", "none");
   node.setAttribute("stroke", style.color);
   node.setAttribute("stroke-width", String(style.width));
@@ -1338,6 +1378,17 @@ function previewStyle(value: unknown, fallback: string): StrokeStyle {
     };
   }
   return { kind: "stroke", color: fallback, width: 3, opacity: 0.7 };
+}
+
+function previewLineStyle(value: unknown, fallback: string): LineStyle {
+  const stroke = previewStyle(value, fallback);
+  return {
+    kind: "line",
+    color: stroke.color,
+    width: stroke.width,
+    opacity: stroke.opacity,
+    arrowhead: isRecord(value) && value.arrowhead === "arrow" ? "arrow" : "none",
+  };
 }
 
 function asPoints(value: unknown): Point[] {

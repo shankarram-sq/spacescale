@@ -2,6 +2,7 @@ import { type BoardState, createBoardState } from "@collab/board-core";
 import type {
   BoardItem,
   ClientCommitFrame,
+  LineStyle,
   NewBoardItem,
   ServerActionFrame,
   StrokeStyle,
@@ -40,6 +41,17 @@ export function strokeStyle(overrides: Partial<StrokeStyle> = {}): StrokeStyle {
     color: "#336699",
     width: 4,
     opacity: 0.8,
+    ...overrides,
+  };
+}
+
+export function lineStyle(overrides: Partial<LineStyle> = {}): LineStyle {
+  return {
+    kind: "line",
+    color: "#336699",
+    width: 4,
+    opacity: 0.8,
+    arrowhead: "none",
     ...overrides,
   };
 }
@@ -103,6 +115,17 @@ export function newPencilItem(overrides: Partial<NewBoardItem> = {}): NewBoardIt
         [20, 12],
       ],
     },
+    ...overrides,
+  } as NewBoardItem;
+}
+
+export function newLineItem(overrides: Partial<NewBoardItem> = {}): NewBoardItem {
+  return {
+    id: FIXTURE_IDS.line,
+    kind: "line",
+    style: lineStyle({ arrowhead: "arrow" }),
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: { x1: 10, y1: 20, x2: 130, y2: 80 },
     ...overrides,
   } as NewBoardItem;
 }

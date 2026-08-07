@@ -24,6 +24,19 @@ function rectangle(id: string, z: number): BoardItem {
   };
 }
 
+function lineItem(id: string, arrowhead: "none" | "arrow"): Extract<BoardItem, { kind: "line" }> {
+  return {
+    id,
+    kind: "line",
+    z: 2,
+    version: 1,
+    createdBy: ACTOR,
+    style: { kind: "line", color: "#123456", width: 4, opacity: 0.75, arrowhead },
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: { x1: 0, y1: 0, x2: 100, y2: 0 },
+  };
+}
+
 function sticky(id: string, text: string): Extract<BoardItem, { kind: "sticky" }> {
   return {
     id,
@@ -175,6 +188,26 @@ describe("safe SVG serialization", () => {
     expect(result.svg).toContain('viewBox="-11 -11 32 42"');
     expect(result.svg).toContain('data-format="cf-whiteboard-svg"');
     expect(result.svg).toContain('data-seq="1"');
+  });
+
+  it("renders deterministic open arrowheads and includes them in the export viewBox", () => {
+    const arrow = lineItem("018f0000-0000-7000-8000-000000000002", "arrow");
+    const first = createSvgExport({ boardId: BOARD, seq: 2, padding: 0, items: [arrow] });
+    const second = createSvgExport({ boardId: BOARD, seq: 2, padding: 0, items: [arrow] });
+    expect(first.svg).toBe(second.svg);
+    expect(first.viewBox).toEqual({ minX: -2, minY: -7.4, maxX: 102, maxY: 7.4 });
+    expect(first.svg).toContain(
+      'd="M 0 0 L 100 0 M 88 5.4 L 100 0 L 88 -5.4" fill="none" stroke="#123456"',
+    );
+    expect(first.svg).not.toContain("marker-end");
+    expect(first.svg).not.toContain("foreignObject");
+
+    const plain = serializeSvg({
+      boardId: BOARD,
+      seq: 3,
+      items: [lineItem("018f0000-0000-7000-8000-000000000003", "none")],
+    });
+    expect(plain).toContain('<line x1="0" y1="0" x2="100" y2="0"');
   });
 
   it("sorts paint order and supports multiline plain text with tspans", () => {

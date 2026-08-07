@@ -30,6 +30,16 @@ function rectangle(id = ID_1) {
   };
 }
 
+function line(id = ID_1, arrowhead = "arrow") {
+  return {
+    id,
+    kind: "line",
+    style: { kind: "line", color: "#abcdef", width: 2.125, opacity: 0.555, arrowhead },
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: { x1: 5.129, y1: 7.555, x2: 25.555, y2: 17.129 },
+  };
+}
+
 function sticky(id = ID_1) {
   return {
     id,
@@ -138,6 +148,43 @@ describe("durable operation validation", () => {
       validateDurableOperation({
         kind: "item.create",
         item: { ...rectangle(), z: 10 },
+      }),
+    ).toThrow(/Unknown field/);
+  });
+
+  it("requires a strict line-specific arrowhead style", () => {
+    expect(validateDurableOperation({ kind: "item.create", item: line() })).toEqual({
+      kind: "item.create",
+      item: {
+        id: ID_1,
+        kind: "line",
+        style: {
+          kind: "line",
+          color: "#abcdef",
+          width: 2.13,
+          opacity: 0.56,
+          arrowhead: "arrow",
+        },
+        transform: [1, 0, 0, 1, 0, 0],
+        geometry: { x1: 5.13, y1: 7.56, x2: 25.56, y2: 17.13 },
+      },
+    });
+    expect(() =>
+      validateDurableOperation({
+        kind: "item.create",
+        item: { ...line(), style: { kind: "stroke", color: "#abcdef", width: 2, opacity: 1 } },
+      }),
+    ).toThrow(/line/);
+    expect(() =>
+      validateDurableOperation({
+        kind: "item.create",
+        item: { ...line(), style: { ...line().style, arrowhead: "diamond" } },
+      }),
+    ).toThrow(/arrowhead/);
+    expect(() =>
+      validateDurableOperation({
+        kind: "item.create",
+        item: { ...line(), style: { ...line().style, extra: true } },
       }),
     ).toThrow(/Unknown field/);
   });
@@ -623,6 +670,49 @@ describe("hostile frame parsing", () => {
     );
     expect(frame.t).toBe("client.commit");
     expect(frame.t === "client.commit" && frame.op.kind).toBe("item.create");
+  });
+
+  it("normalizes line previews with line styles and rejects shape-style confusion", () => {
+    const preview = {
+      v: 1,
+      t: "client.preview",
+      gestureId: ID_2,
+      previewSeq: 1,
+      kind: "shape.geometry",
+      payload: {
+        itemId: ID_1,
+        itemKind: "line",
+        geometry: line().geometry,
+        style: line().style,
+      },
+    };
+    expect(parseClientFrame(JSON.stringify(preview))).toMatchObject({
+      payload: {
+        itemKind: "line",
+        geometry: { x1: 5.13, y1: 7.56, x2: 25.56, y2: 17.13 },
+        style: { kind: "line", width: 2.13, opacity: 0.56, arrowhead: "arrow" },
+      },
+    });
+    expect(() =>
+      parseClientFrame(
+        JSON.stringify({
+          ...preview,
+          payload: { ...preview.payload, style: rectangle().style },
+        }),
+      ),
+    ).toThrow(/line/);
+    expect(() =>
+      parseClientFrame(
+        JSON.stringify({
+          ...preview,
+          payload: {
+            ...preview.payload,
+            itemKind: "rectangle",
+            geometry: rectangle().geometry,
+          },
+        }),
+      ),
+    ).toThrow(/stroke/);
   });
 
   it("rejects binary, unsupported, unknown, deep, and non-finite frames with typed errors", () => {

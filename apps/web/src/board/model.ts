@@ -1,5 +1,5 @@
 import { applyAuthoritativeOperation } from "@collab/board-core";
-import { zoneGeometryContainsPoint } from "@collab/geometry";
+import { lineArrowheadPoints, zoneGeometryContainsPoint } from "@collab/geometry";
 import type {
   AuthoritativeItemOperation,
   AuthoritativeOperation,
@@ -23,6 +23,13 @@ import type {
 import { isBoardItem } from "../types";
 
 export type Bounds = { minX: number; minY: number; maxX: number; maxY: number };
+
+export type ConnectorAnchor = {
+  itemId: string;
+  point: Point;
+  z: number;
+  distance: number;
+};
 
 type ModelListener = (changedIds: ReadonlySet<string> | null) => void;
 type RebaseListener = (error: Error | null) => void;
@@ -197,6 +204,28 @@ export class BoardModel {
       if (preciseHit(item, point, extra)) return item;
     }
     return undefined;
+  }
+
+  nearestConnectorAnchor(point: Point, maxDistance: number): ConnectorAnchor | undefined {
+    if (!Number.isFinite(maxDistance) || maxDistance < 0) return undefined;
+    let nearest: ConnectorAnchor | undefined;
+    for (const item of this.rendered.values()) {
+      if (!supportsConnectorAnchors(item)) continue;
+      const bounds = this.getBounds(item.id);
+      if (!bounds) continue;
+      for (const anchorPoint of cardinalAnchorPoints(bounds)) {
+        const distance = Math.hypot(anchorPoint[0] - point[0], anchorPoint[1] - point[1]);
+        if (distance > maxDistance) continue;
+        if (
+          !nearest ||
+          distance < nearest.distance - 1e-9 ||
+          (Math.abs(distance - nearest.distance) <= 1e-9 && item.z > nearest.z)
+        ) {
+          nearest = { itemId: item.id, point: anchorPoint, z: item.z, distance };
+        }
+      }
+    }
+    return nearest;
   }
 
   intersecting(area: Bounds): BoardItem[] {
@@ -627,6 +656,33 @@ export function itemBounds(item: BoardItem): Bounds {
   return { minX: minX - padding, minY: minY - padding, maxX: maxX + padding, maxY: maxY + padding };
 }
 
+export function cardinalAnchorPoints(bounds: Bounds): readonly Point[] {
+  const centerX = (bounds.minX + bounds.maxX) / 2;
+  const centerY = (bounds.minY + bounds.maxY) / 2;
+  return [
+    [centerX, bounds.minY],
+    [bounds.maxX, centerY],
+    [centerX, bounds.maxY],
+    [bounds.minX, centerY],
+  ];
+}
+
+function supportsConnectorAnchors(
+  item: BoardItem,
+): item is Extract<
+  BoardItem,
+  { kind: "rectangle" | "ellipse" | "sticky" | "table" | "image" | "zone" }
+> {
+  return (
+    item.kind === "rectangle" ||
+    item.kind === "ellipse" ||
+    item.kind === "sticky" ||
+    item.kind === "table" ||
+    item.kind === "image" ||
+    item.kind === "zone"
+  );
+}
+
 function geometryBounds(item: BoardItem): Bounds {
   switch (item.kind) {
     case "pencil": {
@@ -639,13 +695,28 @@ function geometryBounds(item: BoardItem): Bounds {
         maxY: Math.max(...ys),
       };
     }
-    case "line":
-      return {
+    case "line": {
+      let bounds: Bounds = {
         minX: Math.min(item.geometry.x1, item.geometry.x2),
         minY: Math.min(item.geometry.y1, item.geometry.y2),
         maxX: Math.max(item.geometry.x1, item.geometry.x2),
         maxY: Math.max(item.geometry.y1, item.geometry.y2),
       };
+      if (item.style.arrowhead === "arrow") {
+        const points = lineArrowheadPoints(item.geometry, item.style.width);
+        if (points) {
+          const xs = points.map((point) => point[0]);
+          const ys = points.map((point) => point[1]);
+          bounds = unionBounds(bounds, {
+            minX: Math.min(...xs),
+            minY: Math.min(...ys),
+            maxX: Math.max(...xs),
+            maxY: Math.max(...ys),
+          });
+        }
+      }
+      return bounds;
+    }
     case "rectangle":
     case "ellipse":
     case "sticky":
@@ -698,13 +769,19 @@ function preciseHit(item: BoardItem, point: Point, extra: number): boolean {
   const local = inverseTransformPoint(point, item.transform);
   if (!local) return true;
   if (item.kind === "line") {
-    return (
+    const shaftHit =
       distanceToSegment(
         local,
         [item.geometry.x1, item.geometry.y1],
         [item.geometry.x2, item.geometry.y2],
       ) <=
-      item.style.width / 2 + extra
+      item.style.width / 2 + extra;
+    if (shaftHit || item.style.arrowhead !== "arrow") return shaftHit;
+    const arrowhead = lineArrowheadPoints(item.geometry, item.style.width);
+    return (
+      arrowhead !== null &&
+      (distanceToSegment(local, arrowhead[0], arrowhead[1]) <= item.style.width / 2 + extra ||
+        distanceToSegment(local, arrowhead[1], arrowhead[2]) <= item.style.width / 2 + extra)
     );
   }
   if (item.kind === "pencil") {

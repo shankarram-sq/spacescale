@@ -10,6 +10,9 @@ export const MAX_IMAGE_INTRINSIC_DIMENSION = 4_096;
 export const MAX_IMAGE_INTRINSIC_PIXELS = 16_000_000;
 export const MAX_TABLE_COLUMNS = 6;
 export const MAX_TABLE_ROWS = 8;
+export const LINE_ARROWHEAD_MIN_LENGTH = 10;
+export const LINE_ARROWHEAD_MAX_LENGTH = 32;
+export const LINE_ARROWHEAD_WIDTH_RATIO = 0.45;
 export const ZONE_TITLE_PADDING = 12;
 export const ZONE_BORDER_HIT_WIDTH = 6;
 
@@ -115,6 +118,7 @@ export interface BoundsItem {
   transform: Transform;
   style:
     | { kind: "stroke"; width: number }
+    | { kind: "line"; width: number; arrowhead: "none" | "arrow" }
     | { kind: "text"; fontSize: number }
     | { kind: "sticky"; fontSize: number }
     | { kind: "zone"; fontSize: number }
@@ -740,6 +744,37 @@ export function boundsFromPoints(points: readonly Point[]): Bounds {
   return { minX, minY, maxX, maxY };
 }
 
+export function lineArrowheadPoints(
+  geometry: LineGeometry,
+  strokeWidth: number,
+): [Point, Point, Point] | null {
+  if (!Number.isFinite(strokeWidth) || strokeWidth <= 0) {
+    throw new GeometryValidationError(
+      "Line arrowhead stroke width must be a finite positive number",
+      "$strokeWidth",
+    );
+  }
+  const dx = geometry.x2 - geometry.x1;
+  const dy = geometry.y2 - geometry.y1;
+  const length = Math.hypot(dx, dy);
+  if (length === 0) return null;
+
+  const headLength = Math.min(
+    length / 2,
+    Math.max(LINE_ARROWHEAD_MIN_LENGTH, Math.min(LINE_ARROWHEAD_MAX_LENGTH, strokeWidth * 3)),
+  );
+  const halfWidth = headLength * LINE_ARROWHEAD_WIDTH_RATIO;
+  const unitX = dx / length;
+  const unitY = dy / length;
+  const baseX = geometry.x2 - unitX * headLength;
+  const baseY = geometry.y2 - unitY * headLength;
+  return [
+    [baseX - unitY * halfWidth, baseY + unitX * halfWidth],
+    [geometry.x2, geometry.y2],
+    [baseX + unitY * halfWidth, baseY - unitX * halfWidth],
+  ];
+}
+
 function codePointLength(value: string): number {
   return Array.from(value).length;
 }
@@ -912,14 +947,18 @@ export function expandBounds(bounds: Bounds, padding: number): Bounds {
 }
 
 export function itemBounds(item: BoundsItem): Bounds {
-  const local = geometryBounds(
+  let local = geometryBounds(
     item.kind,
     item.geometry,
     item.style.kind === "text" ? item.style.fontSize : 16,
   );
+  if (item.kind === "line" && item.style.kind === "line" && item.style.arrowhead === "arrow") {
+    const arrowhead = lineArrowheadPoints(item.geometry as LineGeometry, item.style.width);
+    if (arrowhead !== null) local = unionBounds(local, boundsFromPoints(arrowhead));
+  }
   const transformed = transformBounds(local, item.transform);
   const result =
-    item.style.kind === "stroke"
+    item.style.kind === "stroke" || item.style.kind === "line"
       ? expandBounds(transformed, (item.style.width / 2) * maximumLinearScale(item.transform))
       : transformed;
   for (const [name, value] of Object.entries(result)) {

@@ -35,6 +35,22 @@ function rectangle(id = RECTANGLE_ID) {
   };
 }
 
+function line(id = RECTANGLE_ID) {
+  return {
+    id,
+    kind: "line" as const,
+    style: {
+      kind: "line" as const,
+      color: "#123456",
+      width: 4,
+      opacity: 1,
+      arrowhead: "arrow" as const,
+    },
+    transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+    geometry: { x1: 10, y1: 20, x2: 130, y2: 80 },
+  };
+}
+
 function sticky(id = RECTANGLE_ID) {
   return {
     id,
@@ -399,6 +415,100 @@ describe("normal board reductions", () => {
           itemId: RECTANGLE_ID,
           expectedVersion: 1,
           patch: { geometry: { x: 1, y: 2, text: "ordinary text" } },
+        },
+        { seq: 2, actorId: ALICE },
+      ),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_FRAME" }));
+  });
+
+  it("preserves connector style through update, copy, history, and canonical snapshots", () => {
+    const created = applyDurableOperation(
+      createBoardState(),
+      { kind: "item.create", item: line() },
+      { seq: 1, actorId: ALICE },
+    );
+    const updated = applyDurableOperation(
+      created.state,
+      {
+        kind: "item.update",
+        itemId: RECTANGLE_ID,
+        expectedVersion: 1,
+        patch: { style: { ...line().style, arrowhead: "none" } },
+      },
+      { seq: 2, actorId: ALICE },
+    );
+    expect(updated.state.items.get(RECTANGLE_ID)?.item).toMatchObject({
+      kind: "line",
+      version: 2,
+      style: { kind: "line", arrowhead: "none" },
+    });
+
+    const copied = applyDurableOperation(
+      updated.state,
+      {
+        kind: "item.copy",
+        sourceItemId: RECTANGLE_ID,
+        expectedVersion: 2,
+        newItemId: COPY_ID,
+        translate: { x: 20, y: 30 },
+      },
+      { seq: 3, actorId: BOB },
+    );
+    expect(copied.state.items.get(COPY_ID)?.item).toMatchObject({
+      kind: "line",
+      createdBy: BOB,
+      transform: [1, 0, 0, 1, 20, 30],
+      style: { kind: "line", arrowhead: "none" },
+    });
+    const deleted = applyDurableOperation(
+      copied.state,
+      { kind: "item.delete", itemId: COPY_ID, expectedVersion: 3 },
+      { seq: 4, actorId: BOB },
+    );
+    const undone = applyUndoEffects(deleted.state, deleted.effects, {
+      seq: 5,
+      targetActionId: ACTION_2,
+    });
+    expect(undone.state.items.get(COPY_ID)).toMatchObject({
+      exists: true,
+      item: { kind: "line", version: 5, style: { arrowhead: "none" } },
+    });
+    const redone = applyRedoEffects(undone.state, deleted.effects, {
+      seq: 6,
+      targetActionId: ACTION_2,
+    });
+    expect(redone.state.items.get(COPY_ID)?.exists).toBe(false);
+
+    const snapshot = JSON.parse(
+      serializeCanonicalSnapshot({
+        boardId: "018f0000-0000-7000-8000-0000000000ff",
+        seq: 2,
+        createdAt: 1_785_840_000_000,
+        settings: { title: "Concept map" },
+        items: liveItemsInPaintOrder(updated.state),
+      }),
+    ) as { items: unknown[] };
+    expect(snapshot.items).toEqual([
+      expect.objectContaining({
+        kind: "line",
+        style: {
+          kind: "line",
+          color: "#123456",
+          width: 4,
+          opacity: 1,
+          arrowhead: "none",
+        },
+        geometry: { x1: 10, y1: 20, x2: 130, y2: 80 },
+      }),
+    ]);
+    expect(() =>
+      applyDurableOperation(
+        created.state,
+        {
+          kind: "item.update",
+          itemId: RECTANGLE_ID,
+          expectedVersion: 1,
+          patch: { style: rectangle().style },
         },
         { seq: 2, actorId: ALICE },
       ),

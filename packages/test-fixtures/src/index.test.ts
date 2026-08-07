@@ -6,6 +6,7 @@ import {
   createCommitFrame,
   FIXTURE_IDS,
   newImageItem,
+  newLineItem,
   newPencilItem,
   newRectangleItem,
   newStampItem,
@@ -19,6 +20,9 @@ describe("deterministic shared fixtures", () => {
   it("builds protocol-valid commands", () => {
     expect(validateClientFrame(createCommitFrame())).toEqual(createCommitFrame());
     expect(validateClientFrame(createCommitFrame(newPencilItem())).t).toBe("client.commit");
+    expect(validateClientFrame(createCommitFrame(newLineItem()))).toEqual(
+      createCommitFrame(newLineItem()),
+    );
     expect(validateClientFrame(createCommitFrame(newStickyItem()))).toEqual(
       createCommitFrame(newStickyItem()),
     );

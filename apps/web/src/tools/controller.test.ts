@@ -5,12 +5,16 @@ import {
   buildCapturedMoveOperations,
   buildCapturedTextUpdate,
   buildImageCreateOperation,
+  buildShapeCreateOperation,
   buildStampCreateOperation,
   buildStickyCreateOperation,
   buildTableCreateOperation,
   buildZoneCreateOperation,
   type CapturedMoveItem,
   defaultImageCardSize,
+  resolveConnectorEndpoint,
+  resolveShapePointerState,
+  shapeGeometry,
   stickyTapMoveThreshold,
   tableCellAtPoint,
   tapAdjustedMovePoint,
@@ -75,6 +79,106 @@ describe("captured gesture operations", () => {
     expect(buildCapturedDeleteOperations(captured)).toEqual([
       { kind: "item.delete", itemId: ITEM_ID, expectedVersion: 8 },
     ]);
+  });
+
+  it("resolves connector snapping in CSS pixels at the current zoom", () => {
+    let receivedThreshold = 0;
+    const anchor = {
+      itemId: ITEM_ID,
+      point: [100, 50] as const,
+      z: 4,
+      distance: 7,
+    };
+    const model = {
+      nearestConnectorAnchor: (_point: readonly [number, number], threshold: number) => {
+        receivedThreshold = threshold;
+        return anchor;
+      },
+    };
+
+    expect(resolveConnectorEndpoint(model, [94, 53], 2)).toEqual({ point: [100, 50], anchor });
+    expect(receivedThreshold).toBe(8);
+  });
+
+  it("uses a pointerup-only final coordinate when resolving a connector snap", () => {
+    const anchor = {
+      itemId: ITEM_ID,
+      point: [120, 80] as const,
+      z: 4,
+      distance: 5,
+    };
+    const release = resolveShapePointerState(
+      "line",
+      [116, 77],
+      false,
+      { nearestConnectorAnchor: () => anchor },
+      1,
+    );
+
+    expect(release).toEqual({ current: [120, 80], constrained: false, endAnchor: anchor });
+    expect(
+      shapeGeometry("line", [10, 20], release.current, release.constrained, !!release.endAnchor),
+    ).toEqual({ x1: 10, y1: 20, x2: 120, y2: 80 });
+  });
+
+  it("uses final pointerup Shift state while snapped endpoints retain precedence", () => {
+    const noAnchor = { nearestConnectorAnchor: () => undefined };
+    const shiftedRelease = resolveShapePointerState("line", [10, 3], true, noAnchor, 1);
+    const unconstrainedRelease = resolveShapePointerState("line", [10, 3], false, noAnchor, 1);
+    const shiftedGeometry = shapeGeometry(
+      "line",
+      [0, 0],
+      shiftedRelease.current,
+      shiftedRelease.constrained,
+      !!shiftedRelease.endAnchor,
+    );
+    const unconstrainedGeometry = shapeGeometry(
+      "line",
+      [0, 0],
+      unconstrainedRelease.current,
+      unconstrainedRelease.constrained,
+      !!unconstrainedRelease.endAnchor,
+    );
+    expect(shiftedGeometry).not.toEqual(unconstrainedGeometry);
+    expect(unconstrainedGeometry).toEqual({ x1: 0, y1: 0, x2: 10, y2: 3 });
+
+    const anchor = { itemId: ITEM_ID, point: [10, 3] as const, z: 4, distance: 1 };
+    const snappedRelease = resolveShapePointerState(
+      "line",
+      [9, 3],
+      true,
+      { nearestConnectorAnchor: () => anchor },
+      1,
+    );
+    expect(
+      shapeGeometry(
+        "line",
+        [0, 0],
+        snappedRelease.current,
+        snappedRelease.constrained,
+        !!snappedRelease.endAnchor,
+      ),
+    ).toEqual({ x1: 0, y1: 0, x2: 10, y2: 3 });
+  });
+
+  it("persists connector endpoints as absolute geometry with its arrow variant", () => {
+    expect(
+      buildShapeCreateOperation(
+        ITEM_ID,
+        "line",
+        { x1: 12, y1: 34, x2: 156, y2: 78 },
+        { kind: "line", color: "#20201e", width: 4, opacity: 1, arrowhead: "arrow" },
+      ),
+    ).toEqual({
+      kind: "item.create",
+      item: {
+        id: ITEM_ID,
+        kind: "line",
+        style: { kind: "line", color: "#20201e", width: 4, opacity: 1, arrowhead: "arrow" },
+        transform: [1, 0, 0, 1, 0, 0],
+        geometry: { x1: 12, y1: 34, x2: 156, y2: 78 },
+      },
+    });
   });
 
   it("uses the text version and geometry captured when editing opened", () => {

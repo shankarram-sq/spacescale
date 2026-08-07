@@ -780,7 +780,13 @@ async function downgradeEditorAndProbe(
         item: {
           id: deterministicUuid(0x2fffffff, 1),
           kind: "line",
-          style: { kind: "stroke", color: "#ff0000", width: 2, opacity: 1 },
+          style: {
+            kind: "line",
+            color: "#ff0000",
+            width: 2,
+            opacity: 1,
+            arrowhead: "none",
+          },
           transform: [1, 0, 0, 1, 0, 0],
           geometry: { x1: 0, y1: 0, x2: 10, y2: 10 },
         },

@@ -7,6 +7,7 @@ import {
   imageGeometryContainsPoint,
   isCanonicalImageAssetId,
   itemBounds,
+  lineArrowheadPoints,
   normalizeBoxGeometry,
   normalizeImageGeometry,
   normalizePencilGeometry,
@@ -305,9 +306,28 @@ describe("bounds and transforms", () => {
         kind: "line",
         geometry: { x1: 0, y1: 0, x2: 10, y2: 0 },
         transform: [2, 0, 0, 2, 5, 7],
-        style: { kind: "stroke", width: 4 },
+        style: { kind: "line", width: 4, arrowhead: "none" },
       }),
     ).toEqual({ minX: 1, minY: 3, maxX: 29, maxY: 11 });
+  });
+
+  it("uses one deterministic open arrowhead for rendering and transformed bounds", () => {
+    const geometry = { x1: 0, y1: 0, x2: 100, y2: 0 };
+    expect(lineArrowheadPoints(geometry, 4)).toEqual([
+      [88, 5.4],
+      [100, 0],
+      [88, -5.4],
+    ]);
+    expect(
+      itemBounds({
+        kind: "line",
+        geometry,
+        transform: [0, 1, -1, 0, 10, 20],
+        style: { kind: "line", width: 4, arrowhead: "arrow" },
+      }),
+    ).toEqual({ minX: 2.5999999999999996, minY: 18, maxX: 17.4, maxY: 122 });
+    expect(lineArrowheadPoints({ x1: 1, y1: 2, x2: 1, y2: 2 }, 4)).toBeNull();
+    expect(() => lineArrowheadPoints(geometry, 0)).toThrow(/stroke width/);
   });
 
   it("uses the full transformed sticky rectangle", () => {

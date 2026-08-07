@@ -4,11 +4,47 @@ import { MAX_RENDERED_VOTE_TABLES, VOTE_TABLE_STYLE } from "../activities/voting
 import type { BoardItem, TableItem } from "../types";
 import {
   CanvasViewport,
+  lineNode,
   renderVoteCounts,
   wrapStickyText,
   wrapTableCellText,
   zoneNode,
 } from "./renderer";
+
+describe("connector rendering", () => {
+  beforeEach(() => {
+    vi.stubGlobal("document", {
+      createElementNS: (_namespace: string, name: string) => fakeSvgNode(name),
+    });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("renders a plain connector as one shaft", () => {
+    const node = lineNode(
+      { x1: 0, y1: 0, x2: 100, y2: 0 },
+      { kind: "line", color: "#20201e", width: 4, opacity: 1, arrowhead: "none" },
+    ) as unknown as FakeSvgNode;
+
+    expect(node.children).toHaveLength(1);
+    expect(node.children[0]?.classList.values.has("connector-shaft")).toBe(true);
+    expect(node.children[0]?.attributes.get("x2")).toBe("100");
+  });
+
+  it("renders a shared-math open arrowhead without closing or filling it", () => {
+    const node = lineNode(
+      { x1: 0, y1: 0, x2: 100, y2: 0 },
+      { kind: "line", color: "#20201e", width: 4, opacity: 0.8, arrowhead: "arrow" },
+    ) as unknown as FakeSvgNode;
+
+    expect(node.children).toHaveLength(2);
+    const arrowhead = node.children[1];
+    expect(arrowhead?.classList.values.has("connector-arrowhead")).toBe(true);
+    expect(arrowhead?.attributes.get("d")).toBe("M 88 5.4 L 100 0 L 88 -5.4");
+    expect(arrowhead?.attributes.get("fill")).toBe("none");
+    expect(arrowhead?.attributes.get("stroke-opacity")).toBe("0.8");
+  });
+});
 
 describe("sticky note text wrapping", () => {
   it("wraps words within the default note and preserves blank paragraphs", () => {

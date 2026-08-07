@@ -291,19 +291,21 @@ function geometryMatchesKind(item: BoardItem, geometry: ItemGeometry): boolean {
 function validatePatchForItem(item: BoardItem, patch: ItemPatch): void {
   if (patch.style !== undefined) {
     const expectedKind =
-      item.kind === "text"
-        ? "text"
-        : item.kind === "sticky"
-          ? "sticky"
-          : item.kind === "image"
-            ? "image"
-            : item.kind === "stamp"
-              ? "stamp"
-              : item.kind === "table"
-                ? "table"
-                : item.kind === "zone"
-                  ? "zone"
-                  : "stroke";
+      item.kind === "line"
+        ? "line"
+        : item.kind === "text"
+          ? "text"
+          : item.kind === "sticky"
+            ? "sticky"
+            : item.kind === "image"
+              ? "image"
+              : item.kind === "stamp"
+                ? "stamp"
+                : item.kind === "table"
+                  ? "table"
+                  : item.kind === "zone"
+                    ? "zone"
+                    : "stroke";
     if (patch.style.kind !== expectedKind) {
       coreFail("INVALID_FRAME", `The patch style does not match the stored ${item.kind} item.`);
     }
@@ -976,51 +978,59 @@ function canonicalItem(item: BoardItem): BoardItem {
           width: normalized.style.width,
           opacity: normalized.style.opacity,
         }
-      : normalized.style.kind === "text"
+      : normalized.style.kind === "line"
         ? {
-            kind: "text" as const,
+            kind: "line" as const,
             color: normalized.style.color,
-            fontSize: normalized.style.fontSize,
+            width: normalized.style.width,
             opacity: normalized.style.opacity,
+            arrowhead: normalized.style.arrowhead,
           }
-        : normalized.style.kind === "sticky"
+        : normalized.style.kind === "text"
           ? {
-              kind: "sticky" as const,
-              fill: normalized.style.fill,
-              textColor: normalized.style.textColor,
+              kind: "text" as const,
+              color: normalized.style.color,
               fontSize: normalized.style.fontSize,
               opacity: normalized.style.opacity,
             }
-          : normalized.style.kind === "image"
+          : normalized.style.kind === "sticky"
             ? {
-                kind: "image" as const,
+                kind: "sticky" as const,
+                fill: normalized.style.fill,
+                textColor: normalized.style.textColor,
+                fontSize: normalized.style.fontSize,
                 opacity: normalized.style.opacity,
-                radius: normalized.style.radius,
               }
-            : normalized.style.kind === "stamp"
+            : normalized.style.kind === "image"
               ? {
-                  kind: "stamp" as const,
-                  color: normalized.style.color,
+                  kind: "image" as const,
                   opacity: normalized.style.opacity,
+                  radius: normalized.style.radius,
                 }
-              : normalized.style.kind === "table"
+              : normalized.style.kind === "stamp"
                 ? {
-                    kind: "table" as const,
-                    borderColor: normalized.style.borderColor,
-                    fill: normalized.style.fill,
-                    headerFill: normalized.style.headerFill,
-                    textColor: normalized.style.textColor,
-                    fontSize: normalized.style.fontSize,
+                    kind: "stamp" as const,
+                    color: normalized.style.color,
                     opacity: normalized.style.opacity,
                   }
-                : {
-                    kind: "zone" as const,
-                    borderColor: normalized.style.borderColor,
-                    fill: normalized.style.fill,
-                    textColor: normalized.style.textColor,
-                    fontSize: normalized.style.fontSize,
-                    opacity: normalized.style.opacity,
-                  };
+                : normalized.style.kind === "table"
+                  ? {
+                      kind: "table" as const,
+                      borderColor: normalized.style.borderColor,
+                      fill: normalized.style.fill,
+                      headerFill: normalized.style.headerFill,
+                      textColor: normalized.style.textColor,
+                      fontSize: normalized.style.fontSize,
+                      opacity: normalized.style.opacity,
+                    }
+                  : {
+                      kind: "zone" as const,
+                      borderColor: normalized.style.borderColor,
+                      fill: normalized.style.fill,
+                      textColor: normalized.style.textColor,
+                      fontSize: normalized.style.fontSize,
+                      opacity: normalized.style.opacity,
+                    };
   const geometry =
     normalized.kind === "pencil"
       ? { points: normalized.geometry.points.map(([x, y]) => [x, y] as [number, number]) }
