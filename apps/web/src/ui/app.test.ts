@@ -12,6 +12,8 @@ import {
   imageUploadIssue,
   localSvg,
   MAX_IMAGE_UPLOAD_BYTES,
+  managedInvitationStorageKey,
+  operationAllowedForActor,
   STAMP_CHOICES,
   STICKY_COLORS,
   savedAuthoritativeItems,
@@ -20,6 +22,12 @@ import {
 } from "./app";
 
 const boardId = "b_1234567890123456789012";
+
+describe("SpaceScale browser storage", () => {
+  it("uses the SpaceScale namespace for managed invitation metadata", () => {
+    expect(managedInvitationStorageKey(boardId)).toBe(`spacescale:managed-invitations:${boardId}`);
+  });
+});
 
 describe("creator display names", () => {
   it("combines bootstrap creators with the current participant and trims names", () => {
@@ -77,6 +85,128 @@ describe("creator display names", () => {
         affectedActor: { id: actorId, displayName: "Asha Patel" },
       }),
     ).toBeNull();
+  });
+});
+
+describe("student item ownership preflight", () => {
+  const studentId = "student-a";
+  const otherStudentId = "student-b";
+  const ownItem: BoardItem = {
+    id: "sticky-own",
+    kind: "sticky",
+    z: 1,
+    version: 2,
+    createdBy: studentId,
+    transform: [1, 0, 0, 1, 0, 0],
+    style: {
+      kind: "sticky",
+      fill: "#fde68a",
+      textColor: "#292524",
+      fontSize: 20,
+      opacity: 1,
+    },
+    geometry: { x: 10, y: 20, width: 180, height: 140, text: "Mine" },
+  };
+  const foreignItem: BoardItem = {
+    ...ownItem,
+    id: "sticky-foreign",
+    createdBy: otherStudentId,
+    geometry: { ...ownItem.geometry, x: 220, text: "Theirs" },
+  };
+  const items = new Map([
+    [ownItem.id, ownItem],
+    [foreignItem.id, foreignItem],
+  ]);
+
+  it("allows owners to change any item and editors to change only their own", () => {
+    const foreignUpdate: DurableOperation = {
+      kind: "item.update",
+      itemId: foreignItem.id,
+      expectedVersion: foreignItem.version,
+      patch: { transform: [1, 0, 0, 1, 40, 20] },
+    };
+    const ownUpdate: DurableOperation = {
+      ...foreignUpdate,
+      itemId: ownItem.id,
+    };
+
+    expect(operationAllowedForActor(foreignUpdate, "owner", "coach", items)).toBe(true);
+    expect(operationAllowedForActor(ownUpdate, "editor", studentId, items)).toBe(true);
+    expect(operationAllowedForActor(foreignUpdate, "editor", studentId, items)).toBe(false);
+    expect(
+      operationAllowedForActor(
+        {
+          kind: "item.delete",
+          itemId: foreignItem.id,
+          expectedVersion: foreignItem.version,
+        },
+        "editor",
+        studentId,
+        items,
+      ),
+    ).toBe(false);
+  });
+
+  it("allows a foreign copy but rejects a batch containing any foreign mutation", () => {
+    const copy: DurableOperation = {
+      kind: "item.copy",
+      sourceItemId: foreignItem.id,
+      expectedVersion: foreignItem.version,
+      newItemId: "sticky-copy",
+      translate: { x: 20, y: 20 },
+    };
+    expect(operationAllowedForActor(copy, "editor", studentId, items)).toBe(true);
+    expect(
+      operationAllowedForActor(
+        {
+          kind: "items.batch",
+          operations: [
+            {
+              kind: "item.update",
+              itemId: ownItem.id,
+              expectedVersion: ownItem.version,
+              patch: { geometry: { ...ownItem.geometry, text: "Changed" } },
+            },
+            {
+              kind: "item.delete",
+              itemId: foreignItem.id,
+              expectedVersion: foreignItem.version,
+            },
+          ],
+        },
+        "editor",
+        studentId,
+        items,
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps editor history available while viewers cannot commit", () => {
+    expect(
+      operationAllowedForActor(
+        { kind: "history.undo", expectedHistoryVersion: 3 },
+        "editor",
+        studentId,
+        items,
+      ),
+    ).toBe(true);
+    expect(
+      operationAllowedForActor(
+        {
+          kind: "item.create",
+          item: {
+            id: "new-sticky",
+            kind: "sticky",
+            transform: [1, 0, 0, 1, 0, 0],
+            style: ownItem.style,
+            geometry: ownItem.geometry,
+          },
+        },
+        "viewer",
+        "observer",
+        items,
+      ),
+    ).toBe(false);
   });
 });
 

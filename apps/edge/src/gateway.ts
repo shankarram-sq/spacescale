@@ -1,5 +1,6 @@
 import { BoardRoom } from "./board-room";
 import { ClassroomAuthService, type VerifiedClassroomLaunch } from "./classroom-auth";
+import { MAX_CLASSROOM_IMPORT_ENCODED_CHARS } from "./classroom-import";
 import { bytesToBase64Url, randomBoardId, randomToken, sha256 } from "./crypto";
 import { assertExactKeys, isRecord, readJsonBody } from "./http/body";
 import { errorResponse, HttpError } from "./http/errors";
@@ -107,8 +108,17 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
     requireSameOrigin(request, env);
     const clientAddress = request.headers.get("cf-connecting-ip") ?? "local";
     enforceGatewayRateLimit(`embed:ip:${clientAddress}`, 120, 2);
-    const body = await readJsonBody(request, 8 * 1_024);
-    assertExactKeys(body, ["token"], ["token"]);
+    const body = await readJsonBody(request, MAX_CLASSROOM_IMPORT_ENCODED_CHARS + 16 * 1_024);
+    assertExactKeys(body, ["token", "importSnapshot"], ["token"]);
+    if (body.importSnapshot !== undefined && typeof body.importSnapshot !== "string") {
+      throw new HttpError(400, "BAD_REQUEST", "The classroom import is invalid.");
+    }
+    if (
+      typeof body.importSnapshot === "string" &&
+      body.importSnapshot.length > MAX_CLASSROOM_IMPORT_ENCODED_CHARS
+    ) {
+      throw new HttpError(413, "PAYLOAD_TOO_LARGE", "The classroom import is too large.");
+    }
 
     const now = Date.now();
     const classroom = new ClassroomAuthService(env);
@@ -127,6 +137,7 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
         launchIssuedAtMs: launch.issuedAtMs,
         placeholderOwnerActorId: launch.placeholderOwnerActorId,
         ownerRecoveryHash: launch.ownerRecoveryHash,
+        ...(body.importSnapshot === undefined ? {} : { importSnapshot: body.importSnapshot }),
       }),
     });
     const launchResponse = await stub.fetch(

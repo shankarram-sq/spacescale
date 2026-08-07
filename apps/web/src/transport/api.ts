@@ -10,6 +10,13 @@ import type {
 
 export type FragmentClaim = { type: "invite" | "recovery"; token: string };
 
+export type EmbedLaunch = {
+  token: string;
+  importSnapshot?: string;
+};
+
+const MAX_CLASSROOM_IMPORT_ENCODED_CHARS = Math.ceil((1 * 1_024 * 1_024 * 4) / 3);
+
 export type EmbedSession = {
   sessionToken: string;
   sessionExpiresAt: number;
@@ -123,10 +130,26 @@ export class ApiClient {
     return this.embedBearer;
   }
 
-  async startEmbedSession(token: string): Promise<EmbedSession> {
+  async startEmbedSession(launch: EmbedLaunch): Promise<EmbedSession> {
+    if (
+      launch.importSnapshot !== undefined &&
+      launch.importSnapshot.length > MAX_CLASSROOM_IMPORT_ENCODED_CHARS
+    ) {
+      throw new ApiError(
+        "PAYLOAD_TOO_LARGE",
+        "The board import in this classroom URL is too large.",
+        413,
+      );
+    }
     const result = await this.request<unknown>(
       "/api/v1/embed/session",
-      { method: "POST", body: JSON.stringify({ token }) },
+      {
+        method: "POST",
+        body: JSON.stringify({
+          token: launch.token,
+          ...(launch.importSnapshot === undefined ? {} : { importSnapshot: launch.importSnapshot }),
+        }),
+      },
       false,
       false,
     );
@@ -496,22 +519,28 @@ export function takeFragmentClaim(locationValue: Location = window.location): Fr
 export function takeEmbedLaunch(
   locationValue: Location = window.location,
   historyValue: History = window.history,
-): string | null {
+): EmbedLaunch | null {
   if (!/^\/embed\/?$/u.test(locationValue.pathname)) return null;
   const parameters = new URLSearchParams(
     locationValue.hash.startsWith("#") ? locationValue.hash.slice(1) : locationValue.hash,
   );
   const launch = parameters.get("launch");
-  if (launch === null) return null;
+  const importSnapshot = parameters.get("import");
+  if (launch === null && importSnapshot === null) return null;
 
-  // The one-time launch credential must leave browser-visible URL state before
-  // the network request starts. It is never persisted.
+  // The one-time launch credential and initial board data must leave
+  // browser-visible URL state before the network request starts. Neither is
+  // persisted in session history.
   historyValue.replaceState(
     historyValue.state,
     "",
     `${locationValue.pathname}${locationValue.search}`,
   );
-  return launch;
+  if (launch === null) return null;
+  return {
+    token: launch,
+    ...(importSnapshot === null ? {} : { importSnapshot }),
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1,0 +1,18 @@
+{
+  "name": "SpaceScale Collaborative Whiteboard",
+  "short_name": "SpaceScale",
+  "description": "A fast, collaborative whiteboard for sketching ideas together.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f6f4ee",
+  "theme_color": "#f7f5ef",
+  "icons": [
+    {
+      "src": "/spacescale-mark.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

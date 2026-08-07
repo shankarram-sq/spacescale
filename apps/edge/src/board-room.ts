@@ -11,6 +11,7 @@ import {
   ProtocolValidationError,
   parseClientFrame,
 } from "@collab/protocol";
+import { decodeClassroomBoardImport, MAX_CLASSROOM_IMPORT_ENCODED_CHARS } from "./classroom-import";
 import {
   base64UrlToBytes,
   bytesToBase64Url,
@@ -32,7 +33,6 @@ import {
   MAX_PUBLIC_RESULT_BYTES,
   type ParsedCommit,
   parseCommitFrame,
-  prepareItemOperation,
 } from "./domain";
 import { assertExactKeys, isRecord, readBoundedBytes, readJsonBody } from "./http/body";
 import { errorResponse, HttpError } from "./http/errors";
@@ -49,6 +49,7 @@ import {
   parseImageAsset,
   requireImageAssetMimeType,
 } from "./image-assets";
+import { prepareOwnedItemOperation } from "./item-ownership";
 import { safeLog } from "./logging";
 import { applyMigrations } from "./migrations";
 import { TokenBucket } from "./rate-limit";
@@ -479,7 +480,7 @@ export class BoardRoom extends DurableObject<Env> {
   }
 
   private async classroomLaunch(request: Request, actor: InternalActorContext): Promise<Response> {
-    const body = await readJsonBody(request, 16 * 1_024);
+    const body = await readJsonBody(request, MAX_CLASSROOM_IMPORT_ENCODED_CHARS + 16 * 1_024);
     assertExactKeys(
       body,
       [
@@ -490,6 +491,7 @@ export class BoardRoom extends DurableObject<Env> {
         "launchIssuedAtMs",
         "placeholderOwnerActorId",
         "ownerRecoveryHash",
+        "importSnapshot",
       ],
       [
         "publicId",
@@ -504,7 +506,7 @@ export class BoardRoom extends DurableObject<Env> {
     if (typeof body.publicId !== "string" || !/^b_[A-Za-z0-9_-]{22}$/u.test(body.publicId)) {
       throw new HttpError(400, "BAD_REQUEST", "The board ID is invalid.");
     }
-    const title = optionalTitle(body.title);
+    const launchTitle = optionalTitle(body.title);
     if (body.role !== "viewer" && body.role !== "editor" && body.role !== "owner") {
       throw new HttpError(400, "BAD_REQUEST", "The classroom role is invalid.");
     }
@@ -523,6 +525,17 @@ export class BoardRoom extends DurableObject<Env> {
       throw new HttpError(400, "BAD_REQUEST", "The recovery capability is invalid.");
     }
 
+    // A fragment import is initial state only. Once a board row exists, do not
+    // decode or inspect the supplied payload: relaunches must preserve state.
+    const boardBeforeLaunch = readBoard(this.#sql);
+    const importedBoard =
+      boardBeforeLaunch === null && role === "owner" && body.importSnapshot !== undefined
+        ? decodeClassroomBoardImport(body.importSnapshot)
+        : null;
+    const importedAccounting =
+      importedBoard === null ? null : snapshotAccountingForItems(importedBoard.items);
+    const title = importedBoard?.title ?? launchTitle;
+
     const now = Date.now();
     let created = false;
     let launchApplied = false;
@@ -531,19 +544,32 @@ export class BoardRoom extends DurableObject<Env> {
     this.ctx.storage.transactionSync(() => {
       let board = readBoard(this.#sql);
       if (board === null) {
+        const importedItems = importedBoard?.items ?? [];
         this.#sql.exec(
           `INSERT INTO board(
              singleton, public_id, title, access_mode, drawing_policy,
-             owner_actor_id, owner_recovery_hash, snapshot_live_item_count,
+             owner_actor_id, owner_recovery_hash, latest_seq, next_z, min_replay_seq,
+             snapshot_live_item_count,
              snapshot_live_item_bytes, classroom_mode, created_at_ms, updated_at_ms
-           ) VALUES (1, ?, ?, 'private', 'editors_enabled', ?, ?, 0, 0, 1, ?, ?)`,
+           ) VALUES (1, ?, ?, 'private', 'editors_enabled', ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
           body.publicId,
           title,
           placeholderOwnerActorId,
           recoveryHash,
+          importedBoard === null ? 0 : 1,
+          importedItems.length + 1,
+          importedBoard === null ? 0 : 1,
+          importedAccounting?.itemCount ?? 0,
+          importedAccounting?.itemBytes ?? 0,
           now,
           now,
         );
+        for (const item of importedItems) {
+          writeItem(this.#sql, itemWriteFromState(item, false, crypto.randomUUID()));
+        }
+        if (importedItems.length > 0) {
+          this.replaceCurrentAttribution(importedItems, null, 1, now);
+        }
         board = this.requireBoard();
         created = true;
       } else if (board.public_id !== body.publicId || board.classroom_mode !== 1) {
@@ -2886,9 +2912,10 @@ export class BoardRoom extends DurableObject<Env> {
       this.ensureItemIdentityCapacity(newItemIdentityCount(operation));
       const seq = board.latest_seq + 1;
       const records = readItems(this.#sql, affectedIds(operation));
-      const prepared = prepareItemOperation(operation, records, {
+      const prepared = prepareOwnedItemOperation(operation, records, {
         seq,
         actorId: attachment.actorId,
+        role: access.role,
         nextZ: board.next_z,
         liveCount: board.snapshot_live_item_count,
       });

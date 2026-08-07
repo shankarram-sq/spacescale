@@ -183,7 +183,10 @@ describe("classroom embed session", () => {
     );
 
     const api = new ApiClient(true);
-    const launched = await api.startEmbedSession("cl1.launch.signature");
+    const launched = await api.startEmbedSession({
+      token: "cl1.launch.signature",
+      importSnapshot: "eyJmb3JtYXQiOiJjZi13aGl0ZWJvYXJkLWpzb24ifQ",
+    });
     await api.ensureSession();
     await api.request("/api/v1/boards/b_1234567890123456789012/settings", {
       method: "PATCH",
@@ -195,7 +198,12 @@ describe("classroom embed session", () => {
       actor: { id: "a_1234567890123456789012", role: "editor" },
     });
     expect(requests[0]?.path).toBe("/api/v1/embed/session");
-    expect(requests[0]?.init.body).toBe(JSON.stringify({ token: "cl1.launch.signature" }));
+    expect(requests[0]?.init.body).toBe(
+      JSON.stringify({
+        token: "cl1.launch.signature",
+        importSnapshot: "eyJmb3JtYXQiOiJjZi13aGl0ZWJvYXJkLWpzb24ifQ",
+      }),
+    );
     expect(new Headers(requests[0]?.init.headers).has("authorization")).toBe(false);
     expect(new Headers(requests[1]?.init.headers).get("authorization")).toBe(
       "Bearer es1.session.signature",
@@ -236,17 +244,33 @@ describe("classroom embed session", () => {
     expect(new Headers(requests[1]?.init.headers).has("authorization")).toBe(false);
   });
 
-  it("scrubs the launch fragment before returning the one-time token", () => {
+  it("scrubs launch and import data before returning the one-time exchange payload", () => {
     const replaceState = vi.fn();
     const locationValue = {
       pathname: "/embed",
       search: "?theme=light",
-      hash: "#launch=cl1.launch.signature",
+      hash: "#launch=cl1.launch.signature&import=eyJmb3JtYXQiOiJjZi13aGl0ZWJvYXJkLWpzb24ifQ",
     } as Location;
     const historyValue = { state: { source: "lms" }, replaceState } as unknown as History;
 
-    expect(takeEmbedLaunch(locationValue, historyValue)).toBe("cl1.launch.signature");
+    expect(takeEmbedLaunch(locationValue, historyValue)).toEqual({
+      token: "cl1.launch.signature",
+      importSnapshot: "eyJmb3JtYXQiOiJjZi13aGl0ZWJvYXJkLWpzb24ifQ",
+    });
     expect(replaceState).toHaveBeenCalledWith({ source: "lms" }, "", "/embed?theme=light");
+  });
+
+  it("scrubs an orphaned import fragment without attempting a launch", () => {
+    const replaceState = vi.fn();
+    const locationValue = {
+      pathname: "/embed",
+      search: "",
+      hash: "#import=eyJpdGVtcyI6W119",
+    } as Location;
+    const historyValue = { state: null, replaceState } as unknown as History;
+
+    expect(takeEmbedLaunch(locationValue, historyValue)).toBeNull();
+    expect(replaceState).toHaveBeenCalledWith(null, "", "/embed");
   });
 
   it("keeps owner roles and primary-owner metadata in the member response", async () => {

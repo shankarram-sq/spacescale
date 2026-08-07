@@ -18,6 +18,12 @@ import {
 import { buildClearVoteDeletes, isVoteTable, summarizeVotes } from "../activities/voting";
 import { BoardModel, SequenceError } from "../board/model";
 import { BoardRenderer, STICKY_PADDING } from "../board/renderer";
+import {
+  BRAND_MARK_HTML,
+  brandedDocumentTitle,
+  PRODUCT_HOME_LABEL,
+  PRODUCT_NAME,
+} from "../branding";
 import { DurableOutbox, type OutboxEntry, OutboxLimitError } from "../persistence/outbox";
 import { type ArrangeKind, buildArrangeUpdates } from "../tools/arrange";
 import {
@@ -302,6 +308,37 @@ export function savedAuthoritativeItems(
   return result;
 }
 
+export function operationAllowedForActor(
+  operation: DurableOperation,
+  role: Role,
+  actorId: string,
+  authoritativeItems: ReadonlyMap<string, BoardItem>,
+): boolean {
+  if (role === "owner") return true;
+  if (role !== "editor") return false;
+  if (operation.kind === "history.undo" || operation.kind === "history.redo") return true;
+  if (operation.kind === "board.clear") return false;
+
+  const ownedItemIds = new Set(
+    [...authoritativeItems.values()]
+      .filter((item) => item.createdBy === actorId)
+      .map((item) => item.id),
+  );
+  const operations = operation.kind === "items.batch" ? operation.operations : [operation];
+  for (const child of operations) {
+    if (child.kind === "item.create") {
+      ownedItemIds.add(child.item.id);
+    } else if (child.kind === "item.copy") {
+      ownedItemIds.add(child.newItemId);
+    } else if (!ownedItemIds.has(child.itemId)) {
+      return false;
+    } else if (child.kind === "item.delete") {
+      ownedItemIds.delete(child.itemId);
+    }
+  }
+  return true;
+}
+
 export function buildCreatorNameMap(creators: readonly Actor[], self: Actor): Map<string, string> {
   const result = new Map<string, string>();
   for (const creator of [...creators, self]) {
@@ -535,6 +572,7 @@ export class BoardApp {
       model: this.model,
       renderer: this.renderer,
       canDraw: () => this.canCommit(),
+      canModifyItem: (item) => this.canModifyItem(item),
       canUseImages: () => this.canUploadImages(),
       getStyle: () => this.style,
       commit: (operation, actionId) => this.commit(operation, actionId),
@@ -665,9 +703,9 @@ export class BoardApp {
     this.root.innerHTML = `
       <div class="workspace" data-testid="board-shell">
         <header class="topbar">
-          <a class="wordmark" href="/" aria-label="Commonspace home">
-            <span class="brand-mark" aria-hidden="true">C</span>
-            <span class="wordmark-text">Commonspace</span>
+          <a class="wordmark" href="/" aria-label="${PRODUCT_HOME_LABEL}">
+            ${BRAND_MARK_HTML}
+            <span class="wordmark-text">${PRODUCT_NAME}</span>
           </a>
           <label class="board-title-wrap">
             <span class="sr-only">Board title</span>
@@ -1529,6 +1567,10 @@ export class BoardApp {
       this.notify("Drawing is read only.", "warning");
       return;
     }
+    if (!this.canModifyItem(item)) {
+      this.notify("You can edit only work that you created.", "warning");
+      return;
+    }
     if (item.version <= 0) {
       this.notify("Wait for the image to finish saving before editing alt text.", "info");
       return;
@@ -1585,6 +1627,10 @@ export class BoardApp {
   ): void {
     if (!this.canCommit()) {
       this.notify("Drawing is read only.", "warning");
+      return;
+    }
+    if (!this.canModifyItem(item)) {
+      this.notify("You can edit only work that you created.", "warning");
       return;
     }
     if (item.version <= 0) {
@@ -1715,6 +1761,10 @@ export class BoardApp {
   ): void {
     if (!this.canCommit()) {
       this.notify("Drawing is read only.", "warning");
+      return;
+    }
+    if (!this.canModifyItem(item)) {
+      this.notify("You can edit only work that you created.", "warning");
       return;
     }
     if (item.version <= 0) {
@@ -1931,6 +1981,17 @@ export class BoardApp {
       normalizedOperation = validateDurableOperation(operation) as DurableOperation;
     } catch {
       this.notify("That gesture could not be converted into a valid board edit.", "error");
+      return false;
+    }
+    if (
+      !operationAllowedForActor(
+        normalizedOperation,
+        this.bootstrap.actor.role,
+        this.bootstrap.actor.id,
+        this.model.authoritativeItems,
+      )
+    ) {
+      this.notify("You can edit only work that you created. Make a copy to adapt it.", "warning");
       return false;
     }
     const command: CommitFrame = {
@@ -2390,6 +2451,10 @@ export class BoardApp {
 
   private openTextEditor(point: Point, item?: BoardItem, recovery?: StickyDraftRecovery): void {
     if (!this.canCommit()) return;
+    if (item && !this.canModifyItem(item)) {
+      this.notify("You can edit only work that you created.", "warning");
+      return;
+    }
     void this.closeTableCellEditor(false);
     void this.closeZoneTitleEditor(false);
     void this.closeTextEditor(false);
@@ -2758,7 +2823,7 @@ export class BoardApp {
       );
       this.bootstrap.board.title = title;
       this.adoptAclVersion(result);
-      document.title = `${title} — Commonspace`;
+      document.title = brandedDocumentTitle(title);
     } catch (error) {
       this.titleInput.value = this.bootstrap.board.title;
       this.apiError(error);
@@ -3467,6 +3532,13 @@ export class BoardApp {
     );
   }
 
+  private canModifyItem(item: BoardItem): boolean {
+    return (
+      this.bootstrap.actor.role === "owner" ||
+      (this.bootstrap.actor.role === "editor" && item.createdBy === this.bootstrap.actor.id)
+    );
+  }
+
   private canArchiveBoard(): boolean {
     return (
       this.bootstrap.actor.role === "owner" &&
@@ -3507,7 +3579,7 @@ export class BoardApp {
     this.updateStatus();
     this.renderParticipants();
     query(this.root, "[data-canvas-hint]", HTMLElement).hidden = this.model.items.size > 0;
-    document.title = `${this.bootstrap.board.title} — Commonspace`;
+    document.title = brandedDocumentTitle(this.bootstrap.board.title);
   }
 
   private updatePermissions(): void {
@@ -3721,6 +3793,9 @@ export class BoardApp {
     const allSelectedAuthoritative =
       savedAuthoritativeItems(selectedIds, this.model.items, this.model.authoritativeItems) !==
       null;
+    const allSelectedOwned =
+      selectedItems.length === selectedIds.length &&
+      selectedItems.every((item) => this.canModifyItem(item));
     let enabledArrangeActions = 0;
     for (const button of this.arrangeMenu.querySelectorAll<HTMLButtonElement>("[data-arrange]")) {
       const kind = button.dataset.arrange as ArrangeKind;
@@ -3732,26 +3807,34 @@ export class BoardApp {
       const allAuthoritative =
         savedAuthoritativeItems(participantIds, this.model.items, this.model.authoritativeItems) !==
         null;
+      const allOwned = participantIds.every((id) => {
+        const item = this.model.authoritativeItems.get(id);
+        return item !== undefined && this.canModifyItem(item);
+      });
       button.disabled =
         !canEdit ||
         participantIds.length < minimum ||
         participantIds.length > maxBatchItems ||
-        !allAuthoritative;
+        !allAuthoritative ||
+        !allOwned;
       if (!button.disabled) enabledArrangeActions += 1;
     }
     this.arrangeButton.hidden = ids.size < 2;
     this.arrangeButton.disabled = enabledArrangeActions === 0;
     if (this.arrangeButton.hidden || this.arrangeButton.disabled) this.setArrangeMenuOpen(false);
-    const selectionReady =
+    const copyReady = canEdit && allSelectedAuthoritative && selectedIds.length <= maxBatchItems;
+    const mutationReady =
       canEdit && allSelectedAuthoritative && selectedIds.length <= maxBatchItems;
     const copy = query(this.selectionActions, "[data-selection-copy]", HTMLButtonElement);
     const remove = query(this.selectionActions, "[data-selection-delete]", HTMLButtonElement);
-    copy.disabled = !selectionReady;
-    remove.disabled = !selectionReady;
-    const pendingTitle = allSelectedAuthoritative
-      ? ""
-      : "Wait for the selected items to finish saving.";
-    copy.title = pendingTitle;
+    copy.disabled = !copyReady;
+    remove.disabled = !mutationReady || !allSelectedOwned;
+    const pendingTitle = !allSelectedAuthoritative
+      ? "Wait for the selected items to finish saving."
+      : !allSelectedOwned
+        ? "You can edit only work that you created."
+        : "";
+    copy.title = allSelectedAuthoritative ? "" : "Wait for the selected items to finish saving.";
     remove.title = pendingTitle;
 
     const colourWrap = query(this.selectionActions, ".selection-colour-wrap", HTMLElement);
@@ -3760,7 +3843,7 @@ export class BoardApp {
       selectedItems.length > 0 &&
       selectedItems.every((item) => item.kind === "sticky");
     colourWrap.hidden = !allStickies;
-    this.selectionColourButton.disabled = !selectionReady || !allStickies;
+    this.selectionColourButton.disabled = !mutationReady || !allSelectedOwned || !allStickies;
     this.selectionColourButton.title = pendingTitle;
     if (colourWrap.hidden || this.selectionColourButton.disabled) {
       this.setSelectionColourMenuOpen(false);
@@ -3786,7 +3869,8 @@ export class BoardApp {
     const [selectedId] = ids;
     const selected = selectedId ? this.model.getItem(selectedId) : undefined;
     alt.hidden = ids.size !== 1 || selected?.kind !== "image";
-    alt.disabled = !canEdit || selected?.version === 0;
+    alt.disabled =
+      !canEdit || selected?.version === 0 || !selected || !this.canModifyItem(selected);
     const voteSummary =
       ids.size === 1 && selected ? summarizeVotes(selected, this.model.items.values()) : null;
     const authoritativeTable = selectedId
@@ -4107,10 +4191,11 @@ export async function acknowledgeRecoveredOwnership(
 }
 
 export function renderLanding(root: HTMLElement, api: ApiClient): void {
+  document.title = brandedDocumentTitle();
   root.innerHTML = `
     <main class="landing" data-testid="landing-page">
       <div class="landing-glow" aria-hidden="true"></div>
-      <header><a class="wordmark" href="/"><span class="brand-mark" aria-hidden="true">C</span><span>Commonspace</span></a><span class="landing-badge">Cloudflare-native</span></header>
+      <header><a class="wordmark" href="/" aria-label="${PRODUCT_HOME_LABEL}">${BRAND_MARK_HTML}<span>${PRODUCT_NAME}</span></a><span class="landing-badge">Cloudflare-native</span></header>
       <section class="landing-copy">
         <span class="eyebrow">A room for unfinished ideas</span>
         <h1>Think together,<br /><em>in the open.</em></h1>
@@ -4149,10 +4234,11 @@ export function renderLanding(root: HTMLElement, api: ApiClient): void {
 }
 
 export function renderFatal(root: HTMLElement, title: string, message: string, retry = true): void {
+  document.title = brandedDocumentTitle(title);
   root.innerHTML = `
     <main class="fatal-screen" data-testid="fatal-screen">
-      <span class="brand-mark" aria-hidden="true">C</span>
-      <span class="eyebrow">Commonspace</span>
+      ${BRAND_MARK_HTML}
+      <span class="eyebrow">${PRODUCT_NAME}</span>
       <h1></h1><p></p>
       <div><a class="primary-button" href="/">Start a new board</a>${retry ? '<button type="button" data-retry>Try again</button>' : ""}</div>
     </main>
@@ -4413,8 +4499,8 @@ function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-function managedInvitationStorageKey(boardId: string): string {
-  return `commonspace:managed-invitations:${boardId}`;
+export function managedInvitationStorageKey(boardId: string): string {
+  return `spacescale:managed-invitations:${boardId}`;
 }
 
 function loadManagedInvitations(boardId: string): ManagedInvitation[] {

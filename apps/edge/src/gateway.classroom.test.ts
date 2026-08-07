@@ -2,6 +2,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { signClassroomLaunchToken } from "./classroom-auth";
+import { MAX_CLASSROOM_IMPORT_ENCODED_CHARS } from "./classroom-import";
 import gateway from "./gateway";
 import { configuredFrameAncestors } from "./http/security";
 import { HmacIdentityService } from "./identity";
@@ -116,12 +117,17 @@ async function launchToken(
   );
 }
 
-async function exchange(env: Env, token: string, origin = "http://localhost"): Promise<Response> {
+async function exchange(
+  env: Env,
+  token: string,
+  origin = "http://localhost",
+  importSnapshot?: string,
+): Promise<Response> {
   return gateway.fetch(
     new Request("http://localhost/api/v1/embed/session", {
       method: "POST",
       headers: { Origin: origin, "Content-Type": "application/json" },
-      body: JSON.stringify({ token }),
+      body: JSON.stringify({ token, ...(importSnapshot === undefined ? {} : { importSnapshot }) }),
     }),
     env,
   );
@@ -138,6 +144,8 @@ describe("classroom embed gateway", () => {
         display_name: "  Coach Mira  ",
         user_identifier: "coach-mira",
       }),
+      "http://localhost",
+      "eyJmb3JtYXQiOiJjZi13aGl0ZWJvYXJkLWpzb24ifQ",
     );
     expect(response.status).toBe(200);
     expect(response.headers.get("set-cookie")).toBeNull();
@@ -171,6 +179,7 @@ describe("classroom embed gateway", () => {
       launchIssuedAtMs: expect.any(Number),
       placeholderOwnerActorId: expect.stringMatching(/^a_[A-Za-z0-9_-]{22}$/u),
       ownerRecoveryHash: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
+      importSnapshot: "eyJmb3JtYXQiOiJjZi13aGl0ZWJvYXJkLWpzb24ifQ",
     });
 
     const verified = await new HmacIdentityService(env).verifySession(
@@ -200,6 +209,29 @@ describe("classroom embed gateway", () => {
 
     const invalid = await exchange(env, `${token.slice(0, -1)}x`);
     expect(invalid.status).toBe(401);
+    expect(getByName).not.toHaveBeenCalled();
+  });
+
+  it("bounds import transport before the signed launch reaches a room", async () => {
+    const { env, getByName } = makeEnv();
+    const token = await launchToken("import-bounds");
+    const invalidType = await gateway.fetch(
+      new Request("http://localhost/api/v1/embed/session", {
+        method: "POST",
+        headers: { Origin: "http://localhost", "Content-Type": "application/json" },
+        body: JSON.stringify({ token, importSnapshot: 42 }),
+      }),
+      env,
+    );
+    expect(invalidType.status).toBe(400);
+
+    const tooLarge = await exchange(
+      env,
+      token,
+      "http://localhost",
+      "A".repeat(MAX_CLASSROOM_IMPORT_ENCODED_CHARS + 1),
+    );
+    expect(tooLarge.status).toBe(413);
     expect(getByName).not.toHaveBeenCalled();
   });
 

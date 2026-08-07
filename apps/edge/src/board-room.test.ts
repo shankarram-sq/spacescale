@@ -4,7 +4,8 @@ import { evictDurableObject, reset, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { canonicalSnapshotByteLengthFromParts } from "@collab/board-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { sha256, sha256Base64Url } from "./crypto";
+import { MAX_CLASSROOM_IMPORT_ENCODED_CHARS, MAX_CLASSROOM_IMPORT_ITEMS } from "./classroom-import";
+import { bytesToBase64Url, sha256, sha256Base64Url, utf8 } from "./crypto";
 import {
   backfillSnapshotAccounting,
   captureSnapshot,
@@ -64,19 +65,22 @@ async function launchClassroom(
   launchIssuedAtMs: number,
   displayName = "Classroom participant",
   ownerRecoveryHash = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  importSnapshot?: string,
+  publicId = boardId,
 ): Promise<Response> {
   return stub.fetch(
     internalActorRequest(actor, "/__internal/classroom-launch", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        publicId: boardId,
+        publicId,
         title: "Classroom board",
         role,
         displayName,
         launchIssuedAtMs,
         placeholderOwnerActorId: placeholderOwnerId,
         ownerRecoveryHash,
+        ...(importSnapshot === undefined ? {} : { importSnapshot }),
       }),
     }),
   );
@@ -97,9 +101,9 @@ async function addEditor(stub: DurableObjectStub): Promise<void> {
   });
 }
 
-function socketRequest(actor: string, since = 0): Request {
+function socketRequest(actor: string, since = 0, publicId = boardId): Request {
   const request = internalRequest(
-    `/api/v1/boards/${boardId}/socket?since=${since}&client=018f0000-0000-7000-8000-000000000099`,
+    `/api/v1/boards/${publicId}/socket?since=${since}&client=018f0000-0000-7000-8000-000000000099`,
     { method: "GET", headers: { Upgrade: "websocket" } },
   );
   request.headers.set("x-whiteboard-internal-actor", actor);
@@ -115,8 +119,13 @@ interface TestSocket {
   ) => Promise<Record<string, unknown>>;
 }
 
-async function openSocket(stub: DurableObjectStub, actor: string, since = 0): Promise<TestSocket> {
-  const response = await stub.fetch(socketRequest(actor, since));
+async function openSocket(
+  stub: DurableObjectStub,
+  actor: string,
+  since = 0,
+  publicId = boardId,
+): Promise<TestSocket> {
+  const response = await stub.fetch(socketRequest(actor, since, publicId));
   expect(response.status).toBe(101);
   const socket = response.webSocket;
   if (socket === null) throw new Error("Upgrade did not return a WebSocket.");
@@ -155,8 +164,13 @@ async function openSocket(stub: DurableObjectStub, actor: string, since = 0): Pr
   return { socket, received, closed, next };
 }
 
-async function connect(stub: DurableObjectStub, actor: string, since = 0): Promise<TestSocket> {
-  const connected = await openSocket(stub, actor, since);
+async function connect(
+  stub: DurableObjectStub,
+  actor: string,
+  since = 0,
+  publicId = boardId,
+): Promise<TestSocket> {
+  const connected = await openSocket(stub, actor, since, publicId);
   await connected.next((frame) => frame.t === "server.ready");
   return connected;
 }
@@ -877,6 +891,300 @@ describe("BoardRoom initialization", () => {
       ]),
     });
     coach.socket.close(1000, "done");
+  });
+
+  it("round-trips a canonical export into first owner launch and ignores every later import", async () => {
+    const binding = (env as unknown as Env).BOARD_ROOMS;
+    const sourceStub = binding.getByName(boardId);
+    await initializeBoard(sourceStub);
+    const sourceSocket = await connect(sourceStub, actorId);
+    const itemId = "018f0000-0000-7000-8000-0000000008a2";
+    sourceSocket.socket.send(
+      JSON.stringify(
+        createStickyCommit(
+          "018f0000-0000-7000-8000-0000000008a0",
+          "018f0000-0000-7000-8000-0000000008a1",
+          itemId,
+        ),
+      ),
+    );
+    await sourceSocket.next((frame) => frame.t === "server.action" && frame.seq === 1);
+
+    const sourceExportResponse = await sourceStub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/export.json`),
+    );
+    expect(sourceExportResponse.status).toBe(200);
+    const sourceExportText = await sourceExportResponse.text();
+    const sourceExport = JSON.parse(sourceExportText) as {
+      format: string;
+      version: number;
+      boardId: string;
+      seq: number;
+      createdAt: number;
+      settings: { title: string };
+      items: Array<Record<string, unknown>>;
+    };
+    expect(sourceExport).toMatchObject({
+      format: "cf-whiteboard-json",
+      version: 1,
+      boardId,
+      seq: 1,
+      settings: { title: "Test board" },
+      items: [
+        expect.objectContaining({
+          id: itemId,
+          version: 1,
+          createdBy: actorId,
+          geometry: expect.objectContaining({ text: "Original classroom idea\nSecond line" }),
+        }),
+      ],
+    });
+
+    const destinationBoardId = `b_${"I".repeat(21)}A`;
+    const destinationStub = binding.getByName(destinationBoardId);
+    const issuedAt = Date.now() - 5_000;
+    const encodedExport = bytesToBase64Url(utf8(sourceExportText));
+    const firstLaunch = await launchClassroom(
+      destinationStub,
+      actorId,
+      "owner",
+      issuedAt,
+      "Coach",
+      "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      encodedExport,
+      destinationBoardId,
+    );
+    expect(firstLaunch.status).toBe(201);
+    expect(await firstLaunch.json()).toMatchObject({
+      board: { id: destinationBoardId, title: "Test board" },
+      actor: { id: actorId, role: "owner" },
+      created: true,
+    });
+
+    const bootstrapResponse = await destinationStub.fetch(
+      internalActorRequest(actorId, `/api/v1/boards/${destinationBoardId}/bootstrap`),
+    );
+    expect(bootstrapResponse.status).toBe(200);
+    const bootstrap = (await bootstrapResponse.json()) as {
+      board: { latestSeq: number; snapshotSeq: number; title: string };
+      snapshot: { seq: number; settings: { title: string }; items: Array<Record<string, unknown>> };
+    };
+    expect(bootstrap).toMatchObject({
+      board: { latestSeq: 1, snapshotSeq: 1, title: "Test board" },
+      snapshot: {
+        seq: 1,
+        settings: { title: "Test board" },
+        items: [
+          expect.objectContaining({
+            id: itemId,
+            z: 1,
+            version: 1,
+            createdBy: actorId,
+            style: sourceExport.items[0]?.style,
+            transform: sourceExport.items[0]?.transform,
+            geometry: sourceExport.items[0]?.geometry,
+          }),
+        ],
+      },
+    });
+
+    const importedExportResponse = await destinationStub.fetch(
+      internalActorRequest(actorId, `/api/v1/boards/${destinationBoardId}/export.json`),
+    );
+    expect(importedExportResponse.status, await importedExportResponse.clone().text()).toBe(200);
+    const importedExport = (await importedExportResponse.json()) as typeof sourceExport;
+    expect(importedExport).toMatchObject({
+      format: sourceExport.format,
+      version: sourceExport.version,
+      boardId: destinationBoardId,
+      seq: 1,
+      settings: sourceExport.settings,
+      items: sourceExport.items,
+    });
+
+    // Version 1 is immediately usable by the normal optimistic/server edit
+    // path; imported state is not mistaken for a local unsaved object.
+    const destinationSocket = await connect(destinationStub, actorId, 1, destinationBoardId);
+    destinationSocket.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-0000000008a3",
+        actionId: "018f0000-0000-7000-8000-0000000008a4",
+        baseSeq: 1,
+        op: {
+          kind: "item.update",
+          itemId,
+          expectedVersion: 1,
+          patch: {
+            geometry: {
+              x: 40,
+              y: 55,
+              width: 240,
+              height: 170,
+              text: "Imported and editable",
+            },
+          },
+        },
+      }),
+    );
+    await expect(
+      destinationSocket.next((frame) => frame.t === "server.action" && frame.seq === 2),
+    ).resolves.toMatchObject({
+      op: { kind: "item.update", item: { id: itemId, version: 2 } },
+    });
+
+    const beforeRelaunch = await destinationStub.fetch(
+      internalActorRequest(actorId, `/api/v1/boards/${destinationBoardId}/export.json`),
+    );
+    const beforeRelaunchValue = await beforeRelaunch.json();
+    const overwriteAttempt = bytesToBase64Url(
+      utf8(
+        JSON.stringify({
+          format: "cf-whiteboard-json",
+          version: 1,
+          boardId,
+          seq: 0,
+          createdAt: Date.now(),
+          settings: { title: "Overwrite attempt" },
+          items: [],
+        }),
+      ),
+    );
+    const repeatedLaunch = await launchClassroom(
+      destinationStub,
+      actorId,
+      "owner",
+      issuedAt + 1,
+      "Coach",
+      "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      overwriteAttempt,
+      destinationBoardId,
+    );
+    expect(repeatedLaunch.status).toBe(200);
+    expect(await repeatedLaunch.json()).toMatchObject({
+      board: { title: "Test board" },
+      created: false,
+    });
+    const malformedRelaunch = await launchClassroom(
+      destinationStub,
+      actorId,
+      "owner",
+      issuedAt + 2,
+      "Coach",
+      "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "not+base64url",
+      destinationBoardId,
+    );
+    expect(malformedRelaunch.status).toBe(200);
+    await malformedRelaunch.arrayBuffer();
+    const afterRelaunch = await destinationStub.fetch(
+      internalActorRequest(actorId, `/api/v1/boards/${destinationBoardId}/export.json`),
+    );
+    expect(await afterRelaunch.json()).toEqual(beforeRelaunchValue);
+
+    sourceSocket.socket.close(1000, "done");
+    destinationSocket.socket.close(1000, "done");
+  });
+
+  it("ignores a first student import and creates the normal blank classroom board", async () => {
+    const destinationBoardId = `b_${"J".repeat(21)}A`;
+    const destinationStub = (env as unknown as Env).BOARD_ROOMS.getByName(destinationBoardId);
+    const issuedAt = Date.now() - 5_000;
+    const studentLaunch = await launchClassroom(
+      destinationStub,
+      studentId,
+      "editor",
+      issuedAt,
+      "Student",
+      "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "not+base64url",
+      destinationBoardId,
+    );
+    expect(studentLaunch.status).toBe(201);
+    expect(await studentLaunch.json()).toMatchObject({
+      board: { id: destinationBoardId, title: "Classroom board" },
+      actor: { id: studentId, role: "editor" },
+      created: true,
+    });
+
+    const bootstrap = await destinationStub.fetch(
+      internalActorRequest(studentId, `/api/v1/boards/${destinationBoardId}/bootstrap`),
+    );
+    expect(bootstrap.status).toBe(200);
+    expect(await bootstrap.json()).toMatchObject({
+      board: { latestSeq: 0, snapshotSeq: 0, title: "Classroom board" },
+      snapshot: { seq: 0, settings: { title: "Classroom board" }, items: [] },
+    });
+  });
+
+  it("rejects over-limit first-owner imports without partially creating a board", async () => {
+    const binding = (env as unknown as Env).BOARD_ROOMS;
+    const itemLimitBoardId = `b_${"K".repeat(21)}A`;
+    const itemLimitStub = binding.getByName(itemLimitBoardId);
+    const tooManyItems = bytesToBase64Url(
+      utf8(
+        JSON.stringify({
+          format: "cf-whiteboard-json",
+          version: 1,
+          boardId,
+          seq: 0,
+          createdAt: Date.now(),
+          settings: { title: "Too many objects" },
+          items: Array.from({ length: MAX_CLASSROOM_IMPORT_ITEMS + 1 }, () => ({})),
+        }),
+      ),
+    );
+    const itemLimitResponse = await launchClassroom(
+      itemLimitStub,
+      actorId,
+      "owner",
+      Date.now() - 5_000,
+      "Coach",
+      "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      tooManyItems,
+      itemLimitBoardId,
+    );
+    expect(itemLimitResponse.status).toBe(413);
+    expect(await itemLimitResponse.json()).toMatchObject({
+      error: { code: "BOARD_LIMIT_REACHED" },
+    });
+    expect(
+      await runInDurableObject(itemLimitStub, (_instance, durableState) => ({
+        boards: durableState.storage.sql
+          .exec<{ count: number }>("SELECT COUNT(*) AS count FROM board")
+          .one().count,
+        items: durableState.storage.sql
+          .exec<{ count: number }>("SELECT COUNT(*) AS count FROM items")
+          .one().count,
+      })),
+    ).toEqual({ boards: 0, items: 0 });
+
+    const byteLimitBoardId = `b_${"L".repeat(21)}A`;
+    const byteLimitStub = binding.getByName(byteLimitBoardId);
+    const byteLimitResponse = await launchClassroom(
+      byteLimitStub,
+      actorId,
+      "owner",
+      Date.now() - 4_000,
+      "Coach",
+      "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "A".repeat(MAX_CLASSROOM_IMPORT_ENCODED_CHARS + 1),
+      byteLimitBoardId,
+    );
+    expect(byteLimitResponse.status).toBe(413);
+    expect(await byteLimitResponse.json()).toMatchObject({
+      error: { code: "PAYLOAD_TOO_LARGE" },
+    });
+    expect(
+      await runInDurableObject(
+        byteLimitStub,
+        (_instance, durableState) =>
+          durableState.storage.sql
+            .exec<{ count: number }>("SELECT COUNT(*) AS count FROM board")
+            .one().count,
+      ),
+    ).toBe(0);
   });
 
   it("keeps a paginated owner-only activity feed after action compaction", async () => {
@@ -2197,8 +2505,8 @@ describe("BoardRoom initialization", () => {
       tableId,
       "Question",
     );
-    owner.socket.send(JSON.stringify(create));
-    await owner.next((frame) => frame.t === "server.action" && frame.seq === 1);
+    editor.socket.send(JSON.stringify(create));
+    await editor.next((frame) => frame.t === "server.action" && frame.seq === 1);
 
     const withQuestion = [
       ["Question", "Feedback", "Next step"],
@@ -2276,7 +2584,7 @@ describe("BoardRoom initialization", () => {
       ],
     });
     expect(cleared.objects[0]?.attribution).toMatchObject({
-      createdBy: { id: actorId, displayName: "Owner 1" },
+      createdBy: { id: editorId, displayName: "Editor" },
       lastModifiedBy: { id: editorId, displayName: "Editor" },
       updatedSeq: 3,
     });
@@ -2286,8 +2594,8 @@ describe("BoardRoom initialization", () => {
       row: 0,
       column: 0,
       text: "Question",
-      responsibleUser: { id: actorId, displayName: "Owner 1" },
-      lastChangedBy: { id: actorId, displayName: "Owner 1" },
+      responsibleUser: { id: editorId, displayName: "Editor" },
+      lastChangedBy: { id: editorId, displayName: "Editor" },
       updatedSeq: 1,
     });
     expect(cleared.objects[0]?.content[3]).toMatchObject({
@@ -2324,7 +2632,7 @@ describe("BoardRoom initialization", () => {
         baseSeq: 3,
         op: {
           kind: "history.undo",
-          expectedHistoryVersion: 2,
+          expectedHistoryVersion: 3,
           targetActionId: "018f0000-0000-7000-8000-000000000a07",
         },
       }),

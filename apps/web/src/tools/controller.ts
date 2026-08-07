@@ -398,6 +398,7 @@ export type ToolControllerOptions = {
   model: BoardModel;
   renderer: BoardRenderer;
   canDraw: () => boolean;
+  canModifyItem: (item: BoardItem) => boolean;
   canUseImages: () => boolean;
   getStyle: () => StyleState;
   commit: (operation: DurableOperation, actionId?: string) => Promise<boolean>;
@@ -1166,6 +1167,8 @@ export class ToolController {
       const item = itemId ? this.options.model.getItem(itemId) : undefined;
       if (!this.options.canDraw()) {
         this.options.notify("Drawing is currently read only.", "warning");
+      } else if (item && !this.options.canModifyItem(item)) {
+        this.options.notify("You can resize only work that you created.", "warning");
       } else if (
         item &&
         (item.kind === "sticky" || item.kind === "image") &&
@@ -1207,9 +1210,15 @@ export class ToolController {
         this.selectOnly(event.shiftKey ? [...this.selected, hit.id] : [hit.id]);
       if (this.options.canDraw()) {
         const items = new Map<string, CapturedMoveItem>();
+        let includesForeignWork = false;
         for (const id of this.selected) {
           const item = this.options.model.getItem(id);
           if (!item || item.version <= 0) {
+            items.clear();
+            break;
+          }
+          if (!this.options.canModifyItem(item)) {
+            includesForeignWork = true;
             items.clear();
             break;
           }
@@ -1218,7 +1227,12 @@ export class ToolController {
             expectedVersion: item.version,
           });
         }
-        if (items.size === this.selected.size) {
+        if (includesForeignWork) {
+          this.options.notify(
+            "You can move only work that you created. You can still copy this selection.",
+            "warning",
+          );
+        } else if (items.size === this.selected.size) {
           this.gesture = {
             kind: "move",
             pointerId: event.pointerId,
@@ -1270,7 +1284,12 @@ export class ToolController {
 
   private collectEraser(point: Point, gesture: Extract<Gesture, { kind: "eraser" }>): void {
     const hit = this.options.model.hitTest(point, 8 / this.options.renderer.viewport.zoom);
-    if (hit && hit.version > 0 && !gesture.versions.has(hit.id)) {
+    if (
+      hit &&
+      this.options.canModifyItem(hit) &&
+      hit.version > 0 &&
+      !gesture.versions.has(hit.id)
+    ) {
       gesture.versions.set(hit.id, hit.version);
     }
     this.options.renderer.highlightForErase(gesture.versions.keys());

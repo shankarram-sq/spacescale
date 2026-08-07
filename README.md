@@ -316,6 +316,6 @@ and incident procedures. GitHub environment settings, bucket provisioning, and
 the lightweight release flow are in
 [docs/deployment-ci.md](docs/deployment-ci.md).
 
-Trusted-backend signing, iframe setup, live coach controls, co-owners, and the
-activity feed are documented in
+Trusted-backend signing, coach-first JSON initialization, iframe setup,
+student-owned editing, live coach controls, co-owners, and the activity feed are documented in
 [docs/classroom-embedding.md](docs/classroom-embedding.md).

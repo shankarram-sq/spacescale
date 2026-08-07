@@ -94,17 +94,17 @@ textarea:focus-visible,
 }
 
 .brand-mark {
-  display: inline-grid;
-  place-items: center;
+  display: inline-block;
+  flex: 0 0 auto;
   width: 32px;
   height: 32px;
   border-radius: 11px 11px 11px 3px;
-  background: var(--ink);
-  color: #fff;
-  font:
-    700 16px / 1 Georgia,
-    serif;
-  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 14%);
+  background: url("/spacescale-mark.svg") center / contain no-repeat;
+  color: transparent;
+  font-size: 0;
+  object-fit: contain;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgb(32 32 30 / 14%);
 }
 
 .workspace {
@@ -146,7 +146,6 @@ textarea:focus-visible,
   width: 30px;
   height: 30px;
   border-radius: 10px 10px 10px 3px;
-  font-size: 14px;
 }
 
 .board-title-wrap {

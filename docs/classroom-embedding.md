@@ -127,10 +127,55 @@ The bearer is retained in memory and in that iframe's frame-local session
 history so sibling participant frames cannot overwrite it; neither credential
 is stored in `localStorage` or `sessionStorage`.
 
+## Initialize a new board from canonical JSON
+
+An owner launch can carry one canonical **JSON export** in the URL fragment:
+
+```js
+import { readFile } from "node:fs/promises";
+
+const canonicalJson = await readFile("fractions-board.json", "utf8");
+const encodedImport = Buffer.from(canonicalJson, "utf8").toString("base64url");
+const coachUrl =
+  `https://spacescale.net/embed#launch=${encodeURIComponent(ownerToken)}` +
+  `&import=${encodedImport}`;
+```
+
+Use the file downloaded from the normal **JSON** export, whose format is
+`cf-whiteboard-json`. The classroom-data/attributed export is an analytics
+view and is deliberately not an import format.
+
+The import has first-creation semantics:
+
+- open the coach's owner URL before any student URL;
+- an owner import initializes a board only when that `board_name` has never
+  been created;
+- once the board exists, every import fragment is ignored and the current
+  authoritative state continues unchanged;
+- editor/viewer launches cannot seed a board;
+- object IDs, creator IDs, text, design, geometry, and paint order are
+  preserved, while the destination board rebases its sequence/version
+  baseline;
+- the decoded JSON is limited to 1 MiB and 1,000 objects;
+- image cards are rejected because canonical JSON does not contain their
+  private asset bytes.
+
+Like the launch credential, the browser removes the import data from its
+visible URL before the session exchange. A fragment can still be exposed in
+LMS logs, browser history synchronization, screenshots, or copied URLs, so do
+not place sensitive content in an import link.
+
 ## Live classroom control
 
 Every owner can open **Access** and change any non-primary participant between
 viewer, editor, and owner. Changes apply to existing connections immediately.
+
+Editors may create new objects and copy another participant's object, but they
+may update or delete only objects whose `createdBy` actor ID is their own. This
+single rule covers text edits, table cells, movement, resizing, colours,
+design changes, and deletion. Owners and co-owners may update any object.
+Authorization is enforced by the BoardRoom even if a participant bypasses the
+browser controls.
 
 - **Students can edit** (`editors_enabled`) lets editors and owners draw.
 - **Lock students** (`owner_only`) leaves every owner able to draw and makes
