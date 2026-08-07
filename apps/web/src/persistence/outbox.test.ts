@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { CommitFrame } from "../types";
 import { PROTOCOL_VERSION } from "../types";
-import { DurableOutbox, type OutboxEntry } from "./outbox";
+import { DurableOutbox, type OutboxEntry, type OutboxRecoveryMetadata } from "./outbox";
 
 class FakeTransaction {
   oncomplete: (() => void) | null = null;
@@ -149,6 +149,55 @@ describe("durable outbox identity scoping", () => {
 
     expect((await outbox.contents(boardId, firstActor)).active).toHaveLength(0);
     expect((await outbox.contents(boardId, secondActor)).active).toHaveLength(1);
+  });
+
+  it("round-trips explicit draft recovery metadata outside the protocol command", async () => {
+    installIndexedDb();
+    const outbox = new DurableOutbox();
+    const boardId = "b_1234567890123456789012";
+    const actorId = "a_1111111111111111111111";
+    const tableCommand = command("table-cell-command");
+    const zoneCommand = command("zone-title-command");
+    const tableRecovery: OutboxRecoveryMetadata = {
+      kind: "table-cell",
+      itemId: "018f47a1-7a2b-7c3d-8e4f-123456789ac1",
+      row: 2,
+      column: 1,
+      text: "Exact student draft <&> 😀",
+      selectionStart: 6,
+      selectionEnd: 13,
+    };
+    const zoneRecovery: OutboxRecoveryMetadata = {
+      kind: "zone-title",
+      itemId: "018f47a1-7a2b-7c3d-8e4f-123456789ac2",
+      title: "Questions to investigate",
+      selectionStart: 0,
+      selectionEnd: 9,
+    };
+
+    await outbox.put(boardId, actorId, tableCommand, tableRecovery);
+    await outbox.put(boardId, actorId, zoneCommand, zoneRecovery);
+    tableRecovery.text = "mutated after persistence";
+
+    const restored = await outbox.contents(boardId, actorId);
+    const tableEntry = restored.active.find((entry) => entry.commandId === tableCommand.commandId);
+    const zoneEntry = restored.active.find((entry) => entry.commandId === zoneCommand.commandId);
+
+    expect(tableEntry?.recovery).toEqual({
+      kind: "table-cell",
+      itemId: "018f47a1-7a2b-7c3d-8e4f-123456789ac1",
+      row: 2,
+      column: 1,
+      text: "Exact student draft <&> 😀",
+      selectionStart: 6,
+      selectionEnd: 13,
+    });
+    expect(zoneEntry?.recovery).toEqual(zoneRecovery);
+    expect(tableEntry?.command).toEqual(tableCommand);
+    expect(tableEntry?.command).not.toHaveProperty("recovery");
+    expect(tableEntry?.byteLength).toBeGreaterThan(
+      new TextEncoder().encode(JSON.stringify(tableCommand)).byteLength,
+    );
   });
 
   it("round-trips a sticky create for later offline restore", async () => {

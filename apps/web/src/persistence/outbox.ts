@@ -17,7 +17,25 @@ export type OutboxEntry = {
   createdAt: number;
   byteLength: number;
   command: CommitFrame;
+  recovery?: OutboxRecoveryMetadata;
 };
+export type OutboxRecoveryMetadata =
+  | {
+      kind: "table-cell";
+      itemId: string;
+      row: number;
+      column: number;
+      text: string;
+      selectionStart: number;
+      selectionEnd: number;
+    }
+  | {
+      kind: "zone-title";
+      itemId: string;
+      title: string;
+      selectionStart: number;
+      selectionEnd: number;
+    };
 
 export type OutboxContents = {
   active: OutboxEntry[];
@@ -39,22 +57,30 @@ export class OutboxLimitError extends Error {
 export class DurableOutbox {
   private databasePromise: Promise<IDBDatabase> | null = null;
 
-  async put(boardId: string, actorId: string, command: CommitFrame): Promise<OutboxEntry> {
-    const commandBytes = new TextEncoder().encode(JSON.stringify(command)).byteLength;
+  async put(
+    boardId: string,
+    actorId: string,
+    command: CommitFrame,
+    recovery?: OutboxRecoveryMetadata,
+  ): Promise<OutboxEntry> {
+    const entryBytes = new TextEncoder().encode(
+      JSON.stringify([command, recovery ?? null]),
+    ).byteLength;
     const existing = await this.listAll(boardId, actorId);
     const duplicate = existing.find((entry) => entry.commandId === command.commandId);
     if (duplicate) return duplicate;
     if (existing.length >= MAX_COMMANDS) throw new OutboxLimitError("commands");
     const totalBytes = existing.reduce((sum, entry) => sum + entry.byteLength, 0);
-    if (totalBytes + commandBytes > MAX_BYTES) throw new OutboxLimitError("bytes");
+    if (totalBytes + entryBytes > MAX_BYTES) throw new OutboxLimitError("bytes");
 
     const entry: OutboxEntry = {
       commandId: command.commandId,
       boardId,
       actorId,
       createdAt: Date.now(),
-      byteLength: commandBytes,
+      byteLength: entryBytes,
       command: structuredClone(command),
+      ...(recovery ? { recovery: structuredClone(recovery) } : {}),
     };
     const database = await this.database();
     const transaction = database.transaction(STORE_NAME, "readwrite");

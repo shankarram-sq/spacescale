@@ -29,7 +29,12 @@ import {
   PRODUCT_HOME_LABEL,
   PRODUCT_NAME,
 } from "../branding";
-import { DurableOutbox, type OutboxEntry, OutboxLimitError } from "../persistence/outbox";
+import {
+  DurableOutbox,
+  type OutboxEntry,
+  OutboxLimitError,
+  type OutboxRecoveryMetadata,
+} from "../persistence/outbox";
 import { type ArrangeKind, buildArrangeUpdates } from "../tools/arrange";
 import {
   buildCapturedTextUpdate,
@@ -78,22 +83,41 @@ import type {
 } from "../types";
 import { canRoleDraw, createId, PROTOCOL_VERSION } from "../types";
 
-const TOOL_DEFINITIONS: Array<{ name: ToolName; label: string; shortcut: string; glyph: string }> =
-  [
-    { name: "select", label: "Select and move", shortcut: "V", glyph: "↖" },
-    { name: "pencil", label: "Pencil", shortcut: "P", glyph: "✎" },
-    { name: "line", label: "Straight line", shortcut: "L", glyph: "╱" },
-    { name: "rectangle", label: "Rectangle", shortcut: "R", glyph: "□" },
-    { name: "ellipse", label: "Ellipse", shortcut: "O", glyph: "○" },
-    { name: "text", label: "Text", shortcut: "T", glyph: "T" },
-    { name: "sticky", label: "Sticky note", shortcut: "N", glyph: "▣" },
-    { name: "stamp", label: "Stamp", shortcut: "K", glyph: "★" },
-    { name: "image", label: "Add image", shortcut: "I", glyph: "▧" },
-    { name: "table", label: "Table", shortcut: "G", glyph: "▦" },
-    { name: "zone", label: "Zone", shortcut: "Z", glyph: "▭" },
-    { name: "eraser", label: "Eraser", shortcut: "E", glyph: "◇" },
-    { name: "pan", label: "Pan canvas", shortcut: "H", glyph: "✋" },
-  ];
+const TOOL_DEFINITIONS: Array<{
+  name: ToolName;
+  label: string;
+  shortcut: string;
+  glyph: string;
+  iconSvg?: string;
+}> = [
+  { name: "select", label: "Select and move", shortcut: "V", glyph: "↖" },
+  { name: "pencil", label: "Pencil", shortcut: "P", glyph: "✎" },
+  { name: "line", label: "Straight line", shortcut: "L", glyph: "╱" },
+  { name: "rectangle", label: "Rectangle", shortcut: "R", glyph: "□" },
+  { name: "ellipse", label: "Ellipse", shortcut: "O", glyph: "○" },
+  { name: "text", label: "Text", shortcut: "T", glyph: "T" },
+  { name: "sticky", label: "Sticky note", shortcut: "N", glyph: "▣" },
+  { name: "stamp", label: "Stamp", shortcut: "K", glyph: "★" },
+  {
+    name: "image",
+    label: "Add image",
+    shortcut: "I",
+    glyph: "",
+    iconSvg:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>',
+  },
+  { name: "table", label: "Table", shortcut: "G", glyph: "▦" },
+  { name: "zone", label: "Zone", shortcut: "Z", glyph: "▭" },
+  {
+    name: "eraser",
+    label: "Eraser",
+    shortcut: "E",
+    glyph: "",
+    iconSvg:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false" aria-hidden="true"><path d="m7 21-4-4a2.83 2.83 0 0 1 0-4L13.1 2.9a2.83 2.83 0 0 1 4 0l4 4a2.83 2.83 0 0 1 0 4L11 21"/><path d="m5 11 9 9"/><path d="M21 21H7"/></svg>',
+  },
+  { name: "pan", label: "Pan canvas", shortcut: "H", glyph: "✋" },
+];
 
 const DRAW_TOOLS = new Set<ToolName>([
   "pencil",
@@ -490,6 +514,7 @@ export class BoardApp {
   private readonly arrangeButton: HTMLButtonElement;
   private readonly arrangeMenu: HTMLElement;
   private readonly imageInput: HTMLInputElement;
+  private readonly tablePickerDialog: HTMLDialogElement;
   private readonly imageAltDialog: HTMLDialogElement;
   private readonly imageAltInput: HTMLTextAreaElement;
   private readonly organisationTemplateDialog: HTMLDialogElement;
@@ -569,6 +594,7 @@ export class BoardApp {
     );
     this.arrangeMenu = query(this.selectionActions, "[data-testid='arrange-menu']", HTMLElement);
     this.imageInput = query(this.root, "[data-image-input]", HTMLInputElement);
+    this.tablePickerDialog = query(this.root, "[data-testid='table-picker']", HTMLDialogElement);
     this.imageAltDialog = query(this.root, "[data-testid='image-alt-dialog']", HTMLDialogElement);
     this.imageAltInput = query(this.imageAltDialog, "[data-image-alt-input]", HTMLTextAreaElement);
     this.organisationTemplateDialog = query(
@@ -730,6 +756,7 @@ export class BoardApp {
     document.removeEventListener("paste", this.onImagePaste);
     this.renderer.svg.removeEventListener("dragover", this.onImageDragOver);
     this.renderer.svg.removeEventListener("drop", this.onImageDrop);
+    this.tablePickerDialog.close();
     this.closeImageAltEditor();
     this.organisationTemplateDialog.close();
     void this.closeTableCellEditor(false);
@@ -820,18 +847,26 @@ export class BoardApp {
           <section class="canvas-wrap" data-canvas-host>
             <p class="sr-only" id="canvas-help">Use the tool rail to draw. Hold Space to pan. Scroll or pinch to zoom.</p>
             <div class="canvas-hint" data-canvas-hint aria-hidden="true">Drag anywhere to begin</div>
-            <section class="table-picker" data-testid="table-picker" aria-label="New table size" hidden>
-              <div><strong>New table</strong><span class="table-picker-note">Click the canvas to place it</span></div>
-              <div class="table-picker-fields">
-                <label><span class="table-picker-field-label">Columns</span><select data-table-columns aria-label="Table columns">
-                  <option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option>
-                </select></label>
-                <label><span class="table-picker-field-label">Rows</span><select data-table-rows aria-label="Table rows">
-                  <option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option>
-                </select></label>
-              </div>
-              <label class="table-header-toggle"><input type="checkbox" data-table-header /> <span>Header row</span></label>
-            </section>
+            <dialog class="claim-dialog table-picker" data-testid="table-picker" aria-labelledby="table-picker-title" aria-describedby="table-picker-note">
+              <form data-table-picker-form>
+                <span class="eyebrow">Table</span>
+                <h2 id="table-picker-title">Choose a table size</h2>
+                <p class="table-picker-note" id="table-picker-note">Set up the grid, then choose where to place it on the canvas.</p>
+                <div class="table-picker-fields">
+                  <label><span class="table-picker-field-label">Columns</span><select data-table-columns aria-label="Table columns">
+                    <option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option>
+                  </select></label>
+                  <label><span class="table-picker-field-label">Rows</span><select data-table-rows aria-label="Table rows">
+                    <option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option>
+                  </select></label>
+                </div>
+                <label class="table-header-toggle"><input type="checkbox" data-table-header /> <span>Header row</span></label>
+                <div class="dialog-actions">
+                  <button type="button" data-table-picker-cancel>Cancel</button>
+                  <button class="primary-button" type="submit">Choose placement</button>
+                </div>
+              </form>
+            </dialog>
             <div class="selection-actions" data-testid="selection-actions" hidden>
               <button type="button" data-selection-alt aria-label="Edit image alt text" hidden>Edit alt text</button>
               <div class="selection-colour-wrap" hidden>
@@ -953,7 +988,9 @@ export class BoardApp {
       button.title = `${definition.label} · ${definition.shortcut}`;
       const glyph = document.createElement("span");
       glyph.className = `tool-glyph tool-glyph-${definition.name}`;
-      glyph.textContent = definition.glyph;
+      glyph.setAttribute("aria-hidden", "true");
+      if (definition.iconSvg) glyph.innerHTML = definition.iconSvg;
+      else glyph.textContent = definition.glyph;
       const key = document.createElement("kbd");
       key.textContent = definition.shortcut;
       button.append(glyph, key);
@@ -1458,6 +1495,28 @@ export class BoardApp {
     const tableColumns = query(this.root, "[data-table-columns]", HTMLSelectElement);
     const tableRows = query(this.root, "[data-table-rows]", HTMLSelectElement);
     const tableHeader = query(this.root, "[data-table-header]", HTMLInputElement);
+    const tablePickerForm = query(
+      this.tablePickerDialog,
+      "[data-table-picker-form]",
+      HTMLFormElement,
+    );
+    const cancelTablePicker = (): void => {
+      this.setTablePickerOpen(false);
+      if (this.tools.tool === "table") this.tools.setTool("select");
+      query(this.root, "[data-testid='tool-select']", HTMLButtonElement).focus();
+    };
+    tablePickerForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      this.setTablePickerOpen(false);
+    });
+    query(this.tablePickerDialog, "[data-table-picker-cancel]", HTMLButtonElement).addEventListener(
+      "click",
+      cancelTablePicker,
+    );
+    this.tablePickerDialog.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      cancelTablePicker();
+    });
     tableColumns.addEventListener("change", () => {
       this.style.tableColumns = Math.max(1, Math.min(6, Number(tableColumns.value)));
     });
@@ -2112,6 +2171,7 @@ export class BoardApp {
         patch: { geometry },
       },
       createId(),
+      { kind: "table-cell", ...draft },
       (commandId) => this.pendingTableCellDrafts.set(commandId, draft),
     );
     if (!accepted) this.recoverTableCellDraft(draft);
@@ -2233,6 +2293,7 @@ export class BoardApp {
         patch: { geometry: { ...edit.geometry, title } },
       },
       createId(),
+      { kind: "zone-title", ...draft },
       (commandId) => this.pendingZoneTitleDrafts.set(commandId, draft),
     );
     if (!accepted) this.recoverZoneTitleDraft(draft);
@@ -2248,6 +2309,7 @@ export class BoardApp {
           const frame = validateClientFrame(entry.command);
           if (frame.t !== "client.commit") throw new Error("Outbox entry is not a commit.");
           this.model.restoreQueued(frame as CommitFrame, this.bootstrap.actor.id);
+          this.hydrateOutboxRecovery(frame.commandId, entry.recovery);
         } catch {
           this.expiredRecovery.push(entry);
         }
@@ -2260,6 +2322,17 @@ export class BoardApp {
         "error",
       );
       this.phase = "stopped";
+    }
+  }
+
+  private hydrateOutboxRecovery(
+    commandId: string,
+    recovery: OutboxRecoveryMetadata | undefined,
+  ): void {
+    if (recovery?.kind === "table-cell") {
+      this.pendingTableCellDrafts.set(commandId, structuredClone(recovery));
+    } else if (recovery?.kind === "zone-title") {
+      this.pendingZoneTitleDrafts.set(commandId, structuredClone(recovery));
     }
   }
 
@@ -2327,6 +2400,7 @@ export class BoardApp {
   private async commit(
     operation: DurableOperation,
     actionId = createId(),
+    recovery?: OutboxRecoveryMetadata,
     onQueued?: (commandId: string) => void,
   ): Promise<boolean> {
     if (!this.canCommit()) {
@@ -2366,7 +2440,7 @@ export class BoardApp {
       op: normalizedOperation,
     };
     try {
-      await this.outbox.put(this.bootstrap.board.id, this.bootstrap.actor.id, command);
+      await this.outbox.put(this.bootstrap.board.id, this.bootstrap.actor.id, command, recovery);
     } catch (error) {
       if (error instanceof OutboxLimitError) {
         this.recoveryBanner.hidden = false;
@@ -2439,16 +2513,8 @@ export class BoardApp {
       stickyDraft =
         this.pendingStickyDrafts.get(commandId) ??
         (pendingCommand ? stickyDraftFromOperation(pendingCommand.op) : undefined);
-      tableCellDraft =
-        this.pendingTableCellDrafts.get(commandId) ??
-        (pendingCommand
-          ? tableCellDraftFromOperation(pendingCommand.op, this.model.authoritativeItems)
-          : undefined);
-      zoneTitleDraft =
-        this.pendingZoneTitleDrafts.get(commandId) ??
-        (pendingCommand
-          ? zoneTitleDraftFromOperation(pendingCommand.op, this.model.authoritativeItems)
-          : undefined);
+      tableCellDraft = this.pendingTableCellDrafts.get(commandId);
+      zoneTitleDraft = this.pendingZoneTitleDrafts.get(commandId);
       this.pendingStickyDrafts.delete(commandId);
       this.pendingTableCellDrafts.delete(commandId);
       this.pendingZoneTitleDrafts.delete(commandId);
@@ -2738,12 +2804,15 @@ export class BoardApp {
     this.notify(reason, "info");
     const next = await this.api.bootstrap(this.bootstrap.board.id);
     const contents = await this.outbox.contents(next.board.id, next.actor.id);
-    const activeCommands: CommitFrame[] = [];
+    const activeEntries: Array<{
+      command: CommitFrame;
+      recovery?: OutboxRecoveryMetadata;
+    }> = [];
     for (const entry of contents.active) {
       try {
         const frame = validateClientFrame(entry.command);
         if (frame.t !== "client.commit") throw new Error("Outbox entry is not a commit.");
-        activeCommands.push(frame as CommitFrame);
+        activeEntries.push({ command: frame as CommitFrame, recovery: entry.recovery });
       } catch {
         contents.expired.push(entry);
       }
@@ -2754,7 +2823,10 @@ export class BoardApp {
       this.creatorNames.set(actorId, displayName);
     }
     this.model.load(next.snapshot as BoardSnapshot, true);
-    for (const command of activeCommands) this.model.restoreQueued(command, next.actor.id);
+    for (const entry of activeEntries) {
+      this.model.restoreQueued(entry.command, next.actor.id);
+      this.hydrateOutboxRecovery(entry.command.commandId, entry.recovery);
+    }
     this.expiredRecovery = contents.expired;
     this.syncRecoveryBanner();
     this.history = {
@@ -3032,6 +3104,7 @@ export class BoardApp {
       accepted = await this.commit(
         operation,
         createId(),
+        undefined,
         stickyDraft
           ? (commandId) => this.pendingStickyDrafts.set(commandId, stickyDraft)
           : undefined,
@@ -4025,7 +4098,7 @@ export class BoardApp {
     const archiveButton = this.accessBody.querySelector<HTMLButtonElement>("[data-archive-board]");
     if (archiveButton) archiveButton.disabled = !this.canArchiveBoard();
     this.renderer.svg.setAttribute("aria-readonly", String(!canEdit));
-    this.renderer.refreshSelection();
+    this.tools.reconcileSelection();
     this.updateHistoryControls();
     this.updateStatus();
     this.imageInput.disabled = !this.canUploadImages();
@@ -4308,7 +4381,11 @@ export class BoardApp {
   }
 
   private setTablePickerOpen(open: boolean): void {
-    query(this.root, "[data-testid='table-picker']", HTMLElement).hidden = !open;
+    if (open) {
+      if (!this.tablePickerDialog.open) this.tablePickerDialog.showModal();
+    } else if (this.tablePickerDialog.open) {
+      this.tablePickerDialog.close();
+    }
   }
 
   private closeActivitiesMenu(): void {
@@ -4774,6 +4851,12 @@ export function tableCellDraftFromOperation(
   const geometry = operation.patch.geometry;
   const current = authoritativeItems.get(operation.itemId);
   if (!geometry || !("cells" in geometry) || current?.kind !== "table") return undefined;
+  if (
+    !numberArraysEqual(geometry.columnWidths, current.geometry.columnWidths) ||
+    !numberArraysEqual(geometry.rowHeights, current.geometry.rowHeights)
+  ) {
+    return undefined;
+  }
   const changed: Array<{ row: number; column: number; text: string }> = [];
   geometry.cells.forEach((row, rowIndex) => {
     row.forEach((text, columnIndex) => {
@@ -4802,12 +4885,23 @@ export function zoneTitleDraftFromOperation(
   const geometry = operation.patch.geometry;
   const current = authoritativeItems.get(operation.itemId);
   if (!geometry || !("title" in geometry) || current?.kind !== "zone") return undefined;
+  if (
+    geometry.title === current.geometry.title ||
+    geometry.width !== current.geometry.width ||
+    geometry.height !== current.geometry.height
+  ) {
+    return undefined;
+  }
   return {
     itemId: operation.itemId,
     title: geometry.title,
     selectionStart: geometry.title.length,
     selectionEnd: geometry.title.length,
   };
+}
+
+function numberArraysEqual(first: readonly number[], second: readonly number[]): boolean {
+  return first.length === second.length && first.every((value, index) => value === second[index]);
 }
 
 function arrangeSuccessMessage(kind: ArrangeKind): string {

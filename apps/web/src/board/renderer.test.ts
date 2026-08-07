@@ -9,6 +9,8 @@ import {
   lineNode,
   renderVoteCounts,
   selectionResizeHandle,
+  selectionResizeHandles,
+  tableDimensionResizeHandles,
   wrapStickyText,
   wrapTableCellText,
   zoneNode,
@@ -145,12 +147,83 @@ describe("selection resize handle", () => {
 
     const handle = selectionResizeHandle(item, 2, { x: 4, y: 6 }) as unknown as FakeSvgNode;
     expect(handle.dataset).toEqual({ resizeHandle: "southeast", itemId: "sticky-a" });
-    expect(handle.attributes.get("aria-label")).toBe("Resize selected card");
+    expect(handle.attributes.get("aria-hidden")).toBe("true");
     expect(handle.children).toHaveLength(2);
     expect(handle.children[0]?.attributes.get("cx")).toBe("206");
     expect(handle.children[0]?.attributes.get("cy")).toBe("184");
     expect(handle.children[0]?.attributes.get("r")).toBe("11");
     expect(handle.children[1]?.attributes.get("r")).toBe("3");
+  });
+
+  it("renders transformed column, row, and overall handles for a selected table", () => {
+    const item: Extract<BoardItem, { kind: "table" }> = {
+      id: "table-a",
+      kind: "table",
+      z: 1,
+      version: 4,
+      createdBy: "student-a",
+      transform: [1, 0, 0, 1, 12, 18],
+      style: {
+        kind: "table",
+        borderColor: "#a8a59d",
+        fill: "#fffefa",
+        headerFill: "#e8edff",
+        textColor: "#20201e",
+        fontSize: 16,
+        opacity: 1,
+      },
+      geometry: {
+        x: 10,
+        y: 20,
+        columnWidths: [100, 120],
+        rowHeights: [40, 50],
+        cells: [
+          ["A", "B"],
+          ["C", "D"],
+        ],
+      },
+    };
+
+    const axisHandles = tableDimensionResizeHandles(item, 2) as unknown as FakeSvgNode[];
+    expect(axisHandles.map((handle) => handle.dataset)).toEqual([
+      { resizeHandle: "table-column", resizeIndex: "0", itemId: "table-a" },
+      { resizeHandle: "table-column", resizeIndex: "1", itemId: "table-a" },
+      { resizeHandle: "table-row", resizeIndex: "0", itemId: "table-a" },
+      { resizeHandle: "table-row", resizeIndex: "1", itemId: "table-a" },
+    ]);
+    expect(axisHandles[0]?.attributes.get("aria-hidden")).toBe("true");
+    expect(axisHandles[0]?.children[0]?.attributes.get("cx")).toBe("122");
+    expect(axisHandles[0]?.children[0]?.attributes.get("cy")).toBe("25");
+    expect(axisHandles[0]?.children[0]?.attributes.get("r")).toBe("11");
+
+    const allHandles = selectionResizeHandles(item, 2) as unknown as FakeSvgNode[];
+    expect(allHandles).toHaveLength(5);
+    expect(allHandles.at(-1)?.dataset.resizeHandle).toBe("southeast");
+    expect(allHandles.at(-1)?.attributes.get("aria-hidden")).toBe("true");
+  });
+
+  it("renders one overall handle for a selected zone", () => {
+    const item: Extract<BoardItem, { kind: "zone" }> = {
+      id: "zone-a",
+      kind: "zone",
+      z: 1,
+      version: 2,
+      createdBy: "student-a",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "zone",
+        borderColor: "#a8a59d",
+        fill: "#e8edff",
+        textColor: "#4f5b75",
+        fontSize: 18,
+        opacity: 0.18,
+      },
+      geometry: { x: 20, y: 30, width: 520, height: 320, title: "Evidence" },
+    };
+    const handles = selectionResizeHandles(item, 1) as unknown as FakeSvgNode[];
+    expect(handles).toHaveLength(1);
+    expect(handles[0]?.dataset.resizeHandle).toBe("southeast");
+    expect(handles[0]?.attributes.get("aria-hidden")).toBe("true");
   });
 });
 

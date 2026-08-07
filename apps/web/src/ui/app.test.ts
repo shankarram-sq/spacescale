@@ -20,6 +20,7 @@ import {
   savedAuthoritativeItems,
   serializeAttributedData,
   tableCellDraftFromOperation,
+  zoneTitleDraftFromOperation,
 } from "./app";
 
 const boardId = "b_1234567890123456789012";
@@ -593,6 +594,51 @@ describe("table cell draft recovery", () => {
       selectionStart: 41,
       selectionEnd: 41,
     });
+
+    geometry.columnWidths[0] = 180;
+    expect(tableCellDraftFromOperation(operation, new Map([[item.id, item]]))).toBeUndefined();
+  });
+});
+
+describe("zone title draft recovery", () => {
+  it("recovers title-only updates and ignores rejected zone resizes", () => {
+    const item: Extract<BoardItem, { kind: "zone" }> = {
+      id: "018f47a1-7a2b-7c3d-8e4f-123456789ac2",
+      kind: "zone",
+      z: 1,
+      version: 4,
+      createdBy: "018f47a1-7a2b-7c3d-8e4f-123456789abc",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "zone",
+        borderColor: "#a8a59d",
+        fill: "#e8edff",
+        textColor: "#4f5b75",
+        fontSize: 18,
+        opacity: 0.18,
+      },
+      geometry: { x: 10, y: 20, width: 520, height: 320, title: "Evidence" },
+    };
+    const titleOperation: DurableOperation = {
+      kind: "item.update",
+      itemId: item.id,
+      expectedVersion: item.version,
+      patch: { geometry: { ...item.geometry, title: "Questions" } },
+    };
+    expect(zoneTitleDraftFromOperation(titleOperation, new Map([[item.id, item]]))).toMatchObject({
+      itemId: item.id,
+      title: "Questions",
+    });
+
+    const resizeOperation: DurableOperation = {
+      kind: "item.update",
+      itemId: item.id,
+      expectedVersion: item.version,
+      patch: { geometry: { ...item.geometry, width: 680, height: 420 } },
+    };
+    expect(
+      zoneTitleDraftFromOperation(resizeOperation, new Map([[item.id, item]])),
+    ).toBeUndefined();
   });
 });
 

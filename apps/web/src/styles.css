@@ -477,6 +477,12 @@ button:disabled {
     sans-serif;
 }
 
+.tool-glyph svg {
+  width: 22px;
+  height: 22px;
+  display: block;
+}
+
 .tool-glyph-text {
   font-size: 18px;
   font-weight: 750;
@@ -748,6 +754,14 @@ button:disabled {
   pointer-events: all;
 }
 
+.selection-resize-handle[data-resize-handle="table-column"] {
+  cursor: col-resize;
+}
+
+.selection-resize-handle[data-resize-handle="table-row"] {
+  cursor: row-resize;
+}
+
 .selection-resize-hit-target {
   fill: transparent;
   pointer-events: all;
@@ -759,6 +773,18 @@ button:disabled {
   stroke-width: 2;
   vector-effect: non-scaling-stroke;
   filter: drop-shadow(0 1px 2px rgb(30 55 130 / 24%));
+  pointer-events: none;
+}
+
+.selection-axis-resize-hit-target {
+  fill: transparent;
+  pointer-events: all;
+}
+
+.selection-axis-resize-guide {
+  stroke: var(--blue);
+  stroke-linecap: round;
+  opacity: 0.62;
   pointer-events: none;
 }
 
@@ -799,35 +825,32 @@ button:disabled {
   box-shadow: 0 4px 16px rgb(42 41 36 / 5%);
 }
 
-.table-picker {
-  position: absolute;
-  z-index: 16;
-  top: 12px;
-  left: 12px;
-  width: min(260px, calc(100% - 24px));
+.claim-dialog.table-picker {
+  width: min(420px, calc(100vw - 28px));
+}
+
+.table-picker form {
   display: grid;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: rgb(255 255 255 / 96%);
-  box-shadow: 0 6px 22px rgb(35 34 30 / 12%);
-  backdrop-filter: blur(12px);
+  gap: 14px;
 }
 
-.table-picker > div:first-child {
-  display: grid;
-  gap: 2px;
+.table-picker h2 {
+  margin: 0;
+  font:
+    650 25px / 1.15 Georgia,
+    serif;
 }
 
-.table-picker strong {
-  font-size: 13px;
+.table-picker .table-picker-note {
+  margin: -5px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
-.table-picker-note,
 .table-picker-field-label {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .table-picker-fields {
@@ -839,6 +862,7 @@ button:disabled {
 .table-picker-fields label {
   display: grid;
   gap: 5px;
+  font-weight: 680;
 }
 
 .table-picker select {
@@ -858,7 +882,7 @@ button:disabled {
   align-items: center;
   gap: 8px;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 620;
 }
 
@@ -2591,12 +2615,6 @@ button:disabled {
 
   .style-wrap {
     left: 58px;
-  }
-
-  .table-picker {
-    top: 8px;
-    left: 8px;
-    width: min(240px, calc(100% - 16px));
   }
 
   .arrange-menu {

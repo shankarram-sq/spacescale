@@ -42,41 +42,166 @@ export const RESIZE_HANDLE_RADIUS_CSS_PX = 6;
 export const RESIZE_HANDLE_HIT_RADIUS_CSS_PX = 22;
 
 type ResizableCardItem = Extract<BoardItem, { kind: "sticky" | "image" }>;
+export type ResizableStructuredItem = Extract<BoardItem, { kind: "table" | "zone" }>;
+type ResizableItem = ResizableCardItem | ResizableStructuredItem;
 type AttributedItem = Extract<BoardItem, { kind: "sticky" | "image" | "stamp" }>;
 export type CreatorNameResolver = (actorId: string) => string | undefined;
 
 export function selectionResizeHandle(
-  item: ResizableCardItem,
+  item: ResizableItem,
   zoom: number,
   translated: { x: number; y: number } = { x: 0, y: 0 },
 ): SVGGElement {
-  const localX = item.geometry.x + item.geometry.width;
-  const localY = item.geometry.y + item.geometry.height;
-  const point: Point = [
-    item.transform[0] * localX + item.transform[2] * localY + item.transform[4],
-    item.transform[1] * localX + item.transform[3] * localY + item.transform[5],
-  ];
+  const [localX, localY] = itemResizeCorner(item);
+  const point = transformedPoint(item, [localX, localY], translated);
   const safeZoom = Math.max(0.1, zoom);
   const group = svgElement("g");
   group.classList.add("selection-resize-handle");
   group.dataset.resizeHandle = "southeast";
   group.dataset.itemId = item.id;
-  group.setAttribute("role", "button");
-  group.setAttribute("aria-label", "Resize selected card");
+  group.setAttribute("aria-hidden", "true");
 
   const hitTarget = svgElement("circle");
   hitTarget.classList.add("selection-resize-hit-target");
-  hitTarget.setAttribute("cx", String(point[0] + translated.x));
-  hitTarget.setAttribute("cy", String(point[1] + translated.y));
+  hitTarget.setAttribute("cx", String(point[0]));
+  hitTarget.setAttribute("cy", String(point[1]));
   hitTarget.setAttribute("r", String(RESIZE_HANDLE_HIT_RADIUS_CSS_PX / safeZoom));
 
   const knob = svgElement("circle");
   knob.classList.add("selection-resize-knob");
-  knob.setAttribute("cx", String(point[0] + translated.x));
-  knob.setAttribute("cy", String(point[1] + translated.y));
+  knob.setAttribute("cx", String(point[0]));
+  knob.setAttribute("cy", String(point[1]));
   knob.setAttribute("r", String(RESIZE_HANDLE_RADIUS_CSS_PX / safeZoom));
   group.append(hitTarget, knob);
   return group;
+}
+
+export function selectionResizeHandles(
+  item: ResizableItem,
+  zoom: number,
+  translated: { x: number; y: number } = { x: 0, y: 0 },
+): SVGGElement[] {
+  const handles = item.kind === "table" ? tableDimensionResizeHandles(item, zoom, translated) : [];
+  handles.push(selectionResizeHandle(item, zoom, translated));
+  return handles;
+}
+
+export function tableDimensionResizeHandles(
+  item: Extract<BoardItem, { kind: "table" }>,
+  zoom: number,
+  translated: { x: number; y: number } = { x: 0, y: 0 },
+): SVGGElement[] {
+  const handles: SVGGElement[] = [];
+  const geometry = item.geometry;
+  let x = geometry.x;
+  geometry.columnWidths.forEach((columnWidth, index) => {
+    x += columnWidth;
+    const nextWidth = geometry.columnWidths[index + 1] ?? columnWidth;
+    handles.push(
+      selectionAxisResizeHandle(
+        item,
+        "table-column",
+        index,
+        [x, geometry.y],
+        zoom,
+        translated,
+        Math.min(columnWidth, nextWidth),
+      ),
+    );
+  });
+  let y = geometry.y;
+  geometry.rowHeights.forEach((rowHeight, index) => {
+    y += rowHeight;
+    const nextHeight = geometry.rowHeights[index + 1] ?? rowHeight;
+    handles.push(
+      selectionAxisResizeHandle(
+        item,
+        "table-row",
+        index,
+        [geometry.x, y],
+        zoom,
+        translated,
+        Math.min(rowHeight, nextHeight),
+      ),
+    );
+  });
+  return handles;
+}
+
+function selectionAxisResizeHandle(
+  item: Extract<BoardItem, { kind: "table" }>,
+  kind: "table-column" | "table-row",
+  index: number,
+  localBoundary: Point,
+  zoom: number,
+  translated: { x: number; y: number },
+  availableAxisSize: number,
+): SVGGElement {
+  const safeZoom = Math.max(0.1, zoom);
+  const hitRadiusCssPx = Math.max(
+    2,
+    Math.min(RESIZE_HANDLE_HIT_RADIUS_CSS_PX, (availableAxisSize * safeZoom - 4) / 2),
+  );
+  const outsideOffset = (hitRadiusCssPx + 4) / safeZoom;
+  const halfGuide = Math.min(10, hitRadiusCssPx * 0.7) / safeZoom;
+  const localCenter: Point =
+    kind === "table-column"
+      ? [localBoundary[0], localBoundary[1] - outsideOffset]
+      : [localBoundary[0] - outsideOffset, localBoundary[1]];
+  const localGuideStart: Point =
+    kind === "table-column"
+      ? [localCenter[0], localCenter[1] - halfGuide]
+      : [localCenter[0] - halfGuide, localCenter[1]];
+  const localGuideEnd: Point =
+    kind === "table-column"
+      ? [localCenter[0], localCenter[1] + halfGuide]
+      : [localCenter[0] + halfGuide, localCenter[1]];
+  const center = transformedPoint(item, localCenter, translated);
+  const guideStart = transformedPoint(item, localGuideStart, translated);
+  const guideEnd = transformedPoint(item, localGuideEnd, translated);
+  const group = svgElement("g");
+  group.classList.add("selection-resize-handle", "selection-axis-resize-handle");
+  group.dataset.resizeHandle = kind;
+  group.dataset.resizeIndex = String(index);
+  group.dataset.itemId = item.id;
+  group.setAttribute("aria-hidden", "true");
+
+  const hitTarget = svgElement("circle");
+  hitTarget.classList.add("selection-axis-resize-hit-target");
+  hitTarget.setAttribute("cx", String(center[0]));
+  hitTarget.setAttribute("cy", String(center[1]));
+  hitTarget.setAttribute("r", String(hitRadiusCssPx / safeZoom));
+
+  const guide = svgElement("line");
+  guide.classList.add("selection-axis-resize-guide");
+  guide.setAttribute("x1", String(guideStart[0]));
+  guide.setAttribute("y1", String(guideStart[1]));
+  guide.setAttribute("x2", String(guideEnd[0]));
+  guide.setAttribute("y2", String(guideEnd[1]));
+  guide.setAttribute("stroke-width", String(1.5 / safeZoom));
+  group.append(hitTarget, guide);
+  return group;
+}
+
+function itemResizeCorner(item: ResizableItem): Point {
+  if (item.kind === "table") {
+    return [
+      item.geometry.x + item.geometry.columnWidths.reduce((total, value) => total + value, 0),
+      item.geometry.y + item.geometry.rowHeights.reduce((total, value) => total + value, 0),
+    ];
+  }
+  return [item.geometry.x + item.geometry.width, item.geometry.y + item.geometry.height];
+}
+
+function transformedPoint(
+  item: Pick<BoardItem, "transform">,
+  point: Point,
+  translated: { x: number; y: number },
+): Point {
+  return [
+    item.transform[0] * point[0] + item.transform[2] * point[1] + item.transform[4] + translated.x,
+    item.transform[1] * point[0] + item.transform[3] * point[1] + item.transform[5] + translated.y,
+  ];
 }
 
 export class BoardRenderer {
@@ -92,6 +217,7 @@ export class BoardRenderer {
   private readonly itemNodes = new Map<string, SVGGraphicsElement>();
   private readonly imageAssets: ImageAssetCache;
   private selectedIds = new Set<string>();
+  private resizeHandlesEnabled = true;
 
   constructor(
     container: HTMLElement,
@@ -165,6 +291,10 @@ export class BoardRenderer {
     this.svg.dataset.tool = temporaryPan ? "pan" : tool;
   }
 
+  setResizeHandlesEnabled(enabled: boolean): void {
+    this.resizeHandlesEnabled = enabled;
+  }
+
   setSelection(ids: Iterable<string>, translated?: { x: number; y: number }): void {
     this.selectedIds = new Set(ids);
     const bounds = this.model.boundsFor(this.selectedIds);
@@ -179,10 +309,16 @@ export class BoardRenderer {
       return item ? [item] : [];
     });
     const selected = selectedItems.length === 1 ? selectedItems[0] : undefined;
-    const handle =
-      selected && selected.version > 0 && (selected.kind === "sticky" || selected.kind === "image")
-        ? selectionResizeHandle(selected, this.viewport.zoom, { x, y })
-        : undefined;
+    const handles =
+      selected &&
+      this.resizeHandlesEnabled &&
+      selected.version > 0 &&
+      (selected.kind === "sticky" ||
+        selected.kind === "image" ||
+        selected.kind === "table" ||
+        selected.kind === "zone")
+        ? selectionResizeHandles(selected, this.viewport.zoom, { x, y })
+        : [];
     this.renderSelectionBounds(
       {
         minX: bounds.minX + x,
@@ -190,7 +326,7 @@ export class BoardRenderer {
         maxX: bounds.maxX + x,
         maxY: bounds.maxY + y,
       },
-      handle,
+      handles,
     );
   }
 
@@ -213,7 +349,7 @@ export class BoardRenderer {
     if (itemIds.size > 0) this.render(itemIds);
   }
 
-  private renderSelectionBounds(bounds: Bounds, handle?: SVGGElement): void {
+  private renderSelectionBounds(bounds: Bounds, handles: readonly SVGGElement[] = []): void {
     this.selectionLayer.replaceChildren();
     const outline = svgElement("rect");
     outline.classList.add("selection-outline");
@@ -223,7 +359,7 @@ export class BoardRenderer {
     outline.setAttribute("height", String(Math.max(1, bounds.maxY - bounds.minY)));
     outline.setAttribute("rx", "3");
     this.selectionLayer.append(outline);
-    if (handle) this.selectionLayer.append(handle);
+    this.selectionLayer.append(...handles);
   }
 
   showMarquee(bounds: Bounds | null): void {
@@ -361,7 +497,26 @@ export class BoardRenderer {
     this.localLayer.append(node);
     this.renderSelectionBounds(
       boardItemBounds(preview),
-      selectionResizeHandle(preview, this.viewport.zoom),
+      selectionResizeHandles(preview, this.viewport.zoom),
+    );
+  }
+
+  showStructuredResizePreview(
+    item: ResizableStructuredItem,
+    geometry: TableGeometry | ZoneGeometry,
+  ): void {
+    this.localLayer.replaceChildren();
+    const preview = { ...item, geometry } as ResizableStructuredItem;
+    const renderItem = {
+      ...preview,
+      id: `${item.id}-resize-preview`,
+    } as ResizableStructuredItem;
+    const node = itemNode(renderItem, (assetId) => this.imageAssets.load(assetId));
+    node.classList.add("local-preview", "resize-preview");
+    this.localLayer.append(node);
+    this.renderSelectionBounds(
+      boardItemBounds(preview),
+      selectionResizeHandles(preview, this.viewport.zoom),
     );
   }
 

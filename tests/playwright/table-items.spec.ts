@@ -30,6 +30,8 @@ test("tables insert, edit collaboratively, copy, delete, and reload", async ({
     await expect(picker.getByLabel("Table columns")).toHaveValue("3");
     await expect(picker.getByLabel("Table rows")).toHaveValue("3");
     await picker.getByRole("checkbox", { name: "Header row" }).check();
+    await picker.getByRole("button", { name: "Choose placement" }).click();
+    await expect(picker).toBeHidden();
 
     const canvas = page.locator("#board-canvas");
     const canvasBounds = await canvas.boundingBox();
@@ -46,8 +48,8 @@ test("tables insert, edit collaboratively, copy, delete, and reload", async ({
     await expect(ownerTables.first()).toHaveAttribute("data-table-rows", "3");
     await expect(ownerTables.first()).toHaveAttribute("data-table-columns", "3");
     await expect(ownerTables.first()).toHaveAttribute("aria-label", "Table, 3 rows by 3 columns");
+    await expect(page.getByTestId("tool-select")).toHaveAttribute("aria-pressed", "true");
 
-    await page.getByTestId("tool-select").click();
     const ownerFirstCell = ownerTables
       .first()
       .locator('[data-table-cell][data-table-row="0"][data-table-column="0"]');

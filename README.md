@@ -14,8 +14,8 @@ Alongside freehand drawing, shapes, and plain text, the board supports durable
 sticky notes for brainstorming, exit tickets, sorting, and feedback. Choose
 **Sticky note** or press `N`, click the board, and type immediately. A note may
 be left empty, uses a 180 × 140 board-unit default size, and can be recolored
-with the six SpaceScale presets while creating it or after selecting it. A saved
-sticky note or image card also exposes a lower-right resize handle.
+with the six SpaceScale presets while creating it or after selecting it. Saved
+sticky notes, image cards, tables, and zones expose direct resize handles.
 
 Sticky notes participate in the same authoritative collaboration pipeline as
 every other board item: they can be selected, moved, copied, deleted, undone,
@@ -59,11 +59,13 @@ as other items. Safe SVG export uses a placeholder rather than leaking a private
 asset URL or identifier.
 
 For lightweight learning grids, choose **Table** or press `G`, select 1–6
-columns and 1–8 rows, optionally enable a header row, then click the board. Each
-cell contains plain text only; double-click or double-tap a cell (or press
-`Enter`/`F2` on a selected table) to edit it. Tables use the same real-time,
-role/lock, copy/delete, snapshot, replay, and safe JSON/SVG export behavior as
-the other durable board items.
+columns and 1–8 rows in the blocking chooser, optionally enable a header row,
+then choose a location on the board. Placement returns to **Select**. A selected
+table exposes a lower-right whole-table handle plus draggable row and column
+edge grips. Each cell contains plain text only; double-click or double-tap a
+cell (or press `Enter`/`F2` on a selected table) to edit it. Tables use the same
+real-time, role/lock, copy/delete, snapshot, replay, and safe JSON/SVG export
+behavior as the other durable board items.
 
 Owners and editors can select **Follow me** to share their live canvas position
 and zoom with the Space, including while drawing is locked. Participants may
@@ -82,7 +84,8 @@ bulk **Clear votes** action; the underlying stamps remain ordinary board items.
 
 Choose **Zone** or press `Z` to add a labelled 520 × 320 work area. Its title
 and border are selectable while the interior remains transparent to items
-inside it. Multi-selection also offers atomic **Arrange** actions to align or
+inside it. A selected zone has a lower-right handle for changing its width and
+height. Multi-selection also offers atomic **Arrange** actions to align or
 distribute items and tidy selected sticky notes into a deterministic grid.
 
 Choose **Line** or press `L` to draw a line, then enable **End arrow** when a

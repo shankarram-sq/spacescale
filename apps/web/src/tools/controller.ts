@@ -18,10 +18,19 @@ import type {
   StickyGeometry,
   StickyStyle,
   StrokeStyle,
+  TableGeometry,
   TextGeometry,
   ToolName,
+  ZoneGeometry,
 } from "../types";
 import { createId, roundBoard } from "../types";
+import {
+  buildCapturedStructuredResizeOperation,
+  type CapturedStructuredResize,
+  resizedStructuredGeometry,
+  type StructuredResizeHandle,
+  structuredResizeGrabOffset,
+} from "./resize";
 
 export type StyleState = {
   color: string;
@@ -471,6 +480,13 @@ type Gesture =
       grabOffset: Point;
       geometry: StickyGeometry | ImageGeometry;
     }
+  | {
+      kind: "resize-structured";
+      pointerId: number;
+      capture: CapturedStructuredResize;
+      grabOffset: Point;
+      geometry: TableGeometry | ZoneGeometry;
+    }
   | { kind: "marquee"; pointerId: number; start: Point; current: Point }
   | {
       kind: "eraser";
@@ -578,7 +594,7 @@ export class ToolController {
     for (const id of ids) {
       if (this.options.model.getItem(id)) this.selected.add(id);
     }
-    this.options.renderer.setSelection(this.selected);
+    this.renderSelection();
     this.options.onSelectionChanged(this.selected);
   }
 
@@ -588,7 +604,7 @@ export class ToolController {
       this.selectOnly(existing);
       return;
     }
-    this.options.renderer.setSelection(this.selected);
+    this.renderSelection();
   }
 
   cancelActiveGesture(): void {
@@ -861,7 +877,7 @@ export class ToolController {
           operation,
         };
       } else {
-        void this.options.commit(operation);
+        void this.commitTable(operation);
       }
       event.preventDefault();
       return;
@@ -987,6 +1003,20 @@ export class ToolController {
         );
         this.options.renderer.showCardResizePreview(gesture.capture.item, gesture.geometry);
       }
+    } else if (gesture.kind === "resize-structured") {
+      const localPointer = inverseTransformPoint(
+        boardPoint(event, this.options.renderer),
+        gesture.capture.item.transform,
+      );
+      if (localPointer) {
+        gesture.geometry = resizedStructuredGeometry(
+          gesture.capture.item,
+          gesture.capture.handle,
+          localPointer,
+          gesture.grabOffset,
+        );
+        this.options.renderer.showStructuredResizePreview(gesture.capture.item, gesture.geometry);
+      }
     } else if (gesture.kind === "marquee") {
       gesture.current = boardPoint(event, this.options.renderer);
       this.options.renderer.showMarquee(pointsBounds(gesture.start, gesture.current));
@@ -1035,6 +1065,16 @@ export class ToolController {
       if (localPointer) {
         gesture.geometry = resizedCardGeometry(
           gesture.capture.item,
+          localPointer,
+          gesture.grabOffset,
+        );
+      }
+    } else if (gesture.kind === "resize-structured") {
+      const localPointer = inverseTransformPoint(tapPoint, gesture.capture.item.transform);
+      if (localPointer) {
+        gesture.geometry = resizedStructuredGeometry(
+          gesture.capture.item,
+          gesture.capture.handle,
           localPointer,
           gesture.grabOffset,
         );
@@ -1092,7 +1132,7 @@ export class ToolController {
   private readonly onContextMenu = (event: MouseEvent): void => event.preventDefault();
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
-    if (isEditingTarget(event.target)) return;
+    if (isEditingTarget(event.target) || isOpenDialogTarget(event.target)) return;
     if (event.code === "Space") {
       this.spaceHeld = true;
       this.options.renderer.setCursor(this.toolValue, true);
@@ -1165,13 +1205,15 @@ export class ToolController {
     if (resizeHandle) {
       const itemId = resizeHandle.dataset.itemId;
       const item = itemId ? this.options.model.getItem(itemId) : undefined;
+      const structuredHandle = structuredResizeHandleFromDataset(resizeHandle.dataset);
       if (!this.options.canDraw()) {
         this.options.notify("Drawing is currently read only.", "warning");
       } else if (item && !this.options.canModifyItem(item)) {
-        this.options.notify("You can resize only work that you created.", "warning");
+        this.options.notify("You can resize only items that you created.", "warning");
       } else if (
         item &&
         (item.kind === "sticky" || item.kind === "image") &&
+        resizeHandle.dataset.resizeHandle === "southeast" &&
         item.version > 0 &&
         this.selected.size === 1 &&
         this.selected.has(item.id)
@@ -1191,8 +1233,33 @@ export class ToolController {
           };
           this.options.renderer.showCardResizePreview(capture.item, this.gesture.geometry);
         }
+      } else if (
+        item &&
+        (item.kind === "table" || item.kind === "zone") &&
+        structuredHandle !== null &&
+        structuredResizeHandleApplies(item, structuredHandle) &&
+        item.version > 0 &&
+        this.selected.size === 1 &&
+        this.selected.has(item.id)
+      ) {
+        const localPointer = inverseTransformPoint(point, item.transform);
+        if (localPointer) {
+          const capture = {
+            item: structuredClone(item),
+            expectedVersion: item.version,
+            handle: structuredHandle,
+          } satisfies CapturedStructuredResize;
+          this.gesture = {
+            kind: "resize-structured",
+            pointerId: event.pointerId,
+            capture,
+            grabOffset: structuredResizeGrabOffset(capture.item, capture.handle, localPointer),
+            geometry: structuredClone(capture.item.geometry),
+          };
+          this.options.renderer.showStructuredResizePreview(capture.item, this.gesture.geometry);
+        }
       } else {
-        this.options.notify("Wait for this card to finish saving before resizing it.", "info");
+        this.options.notify("Wait for this item to finish saving before resizing it.", "info");
       }
       event.preventDefault();
       return;
@@ -1323,7 +1390,7 @@ export class ToolController {
         gesture.pointerType,
         this.options.renderer.viewport.zoom,
       );
-      if (point === gesture.start) await this.options.commit(gesture.operation);
+      if (point === gesture.start) await this.commitTable(gesture.operation);
       return;
     }
     if (gesture.kind === "zone") {
@@ -1418,6 +1485,14 @@ export class ToolController {
       );
       return;
     }
+    if (gesture.kind === "resize-structured") {
+      this.options.renderer.clearLocalPreview();
+      if (!structuredResizeChanged(gesture.capture.item, gesture.geometry)) return;
+      await this.options.commit(
+        buildCapturedStructuredResizeOperation(gesture.capture, gesture.geometry),
+      );
+      return;
+    }
     if (gesture.kind === "marquee") {
       const bounds = pointsBounds(gesture.start, gesture.current);
       const hits = this.options.model.intersecting(bounds).map((item) => item.id);
@@ -1443,7 +1518,8 @@ export class ToolController {
       gesture.kind === "stamp" ||
       gesture.kind === "table" ||
       gesture.kind === "zone" ||
-      gesture.kind === "resize-card"
+      gesture.kind === "resize-card" ||
+      gesture.kind === "resize-structured"
     ) {
       this.options.renderer.clearLocalPreview();
       return;
@@ -1456,6 +1532,19 @@ export class ToolController {
       "gesture.cancel",
     );
     this.options.renderer.clearLocalPreview();
+  }
+
+  private async commitTable(operation: BatchItemOperation): Promise<void> {
+    if (await this.options.commit(operation)) this.setTool("select");
+  }
+
+  private renderSelection(): void {
+    const [selectedId] = this.selected.size === 1 ? this.selected : [];
+    const selected = selectedId ? this.options.model.getItem(selectedId) : undefined;
+    this.options.renderer.setResizeHandlesEnabled(
+      Boolean(selected && this.options.canDraw() && this.options.canModifyItem(selected)),
+    );
+    this.options.renderer.setSelection(this.selected);
   }
 
   private handleStickyTap(item: Extract<BoardItem, { kind: "sticky" }>, point: Point): void {
@@ -1510,6 +1599,42 @@ export class ToolController {
   private async commitZone(operation: ZoneCreateOperation): Promise<void> {
     if (await this.options.commit(operation)) this.options.onZoneCreated(operation.item.id);
   }
+}
+
+function structuredResizeHandleFromDataset(dataset: DOMStringMap): StructuredResizeHandle | null {
+  if (dataset.resizeHandle === "southeast") return { kind: "southeast" };
+  if (dataset.resizeHandle !== "table-column" && dataset.resizeHandle !== "table-row") return null;
+  const index = Number(dataset.resizeIndex);
+  if (!Number.isSafeInteger(index) || index < 0) return null;
+  return { kind: dataset.resizeHandle, index };
+}
+
+function structuredResizeHandleApplies(
+  item: Extract<BoardItem, { kind: "table" | "zone" }>,
+  handle: StructuredResizeHandle,
+): boolean {
+  if (item.kind === "zone") return handle.kind === "southeast";
+  if (handle.kind === "southeast") return true;
+  return handle.kind === "table-column"
+    ? handle.index < item.geometry.columnWidths.length
+    : handle.index < item.geometry.rowHeights.length;
+}
+
+function structuredResizeChanged(
+  item: Extract<BoardItem, { kind: "table" | "zone" }>,
+  geometry: TableGeometry | ZoneGeometry,
+): boolean {
+  if (item.kind === "zone") {
+    return (
+      "width" in geometry &&
+      (item.geometry.width !== geometry.width || item.geometry.height !== geometry.height)
+    );
+  }
+  if (!("columnWidths" in geometry)) return false;
+  return (
+    item.geometry.columnWidths.some((width, index) => width !== geometry.columnWidths[index]) ||
+    item.geometry.rowHeights.some((height, index) => height !== geometry.rowHeights[index])
+  );
 }
 
 function boardPoint(
@@ -1720,6 +1845,10 @@ function isEditingTarget(target: EventTarget | null): boolean {
     target instanceof HTMLSelectElement ||
     (target instanceof HTMLElement && target.isContentEditable)
   );
+}
+
+function isOpenDialogTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && target.closest("dialog[open]") !== null;
 }
 
 function safeReleaseCapture(element: Element, pointerId: number): void {
