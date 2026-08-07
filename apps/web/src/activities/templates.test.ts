@@ -1,4 +1,9 @@
-import { MAX_BATCH_OPERATIONS, validateDurableOperation } from "@collab/protocol";
+import {
+  MAX_BATCH_OPERATIONS,
+  PROTOCOL_VERSION,
+  validateClientFrame,
+  validateDurableOperation,
+} from "@collab/protocol";
 import { describe, expect, it } from "vitest";
 
 import type { BoardItem } from "../types";
@@ -10,14 +15,14 @@ function deterministicIds(): () => string {
   return () => `018f0000-0000-7000-8000-${(next++).toString(16).padStart(12, "0")}`;
 }
 
-describe("classroom activity templates", () => {
+describe("classroom templates", () => {
   it("builds all five templates as small valid ordinary-item batches", () => {
     const expectedCounts: Record<ActivityTemplateId, number> = {
       "exit-ticket": 7,
       kwl: 2,
       "sort-it": 12,
       "pair-share": 7,
-      "vote-with-stamps": 5,
+      "vote-with-stamps": 4,
     };
 
     expect(ACTIVITY_TEMPLATES.map(({ id }) => id)).toEqual(Object.keys(expectedCounts));
@@ -34,6 +39,16 @@ describe("classroom activity templates", () => {
         ),
       ).toBe(true);
       expect(() => validateDurableOperation(result.operation)).not.toThrow();
+      expect(() =>
+        validateClientFrame({
+          v: PROTOCOL_VERSION,
+          t: "client.commit",
+          commandId: "018f0000-0000-7000-8000-000000000101",
+          actionId: "018f0000-0000-7000-8000-000000000102",
+          baseSeq: 0,
+          op: result.operation,
+        }),
+      ).not.toThrow();
     }
   });
 
@@ -52,6 +67,14 @@ describe("classroom activity templates", () => {
     expect(kwl.geometry.rowHeights).toHaveLength(4);
 
     const voteBatch = buildActivityBatch("vote-with-stamps", [0, 0], deterministicIds());
+    expect(
+      voteBatch.operation.operations.some(
+        (operation) =>
+          operation.kind === "item.create" &&
+          operation.item.kind === "text" &&
+          operation.item.geometry.text.includes("one vote per participant"),
+      ),
+    ).toBe(false);
     const voteCreate = voteBatch.operation.operations.find(
       (operation) => operation.kind === "item.create" && operation.item.kind === "table",
     );

@@ -536,6 +536,7 @@ export interface ServerActionFrame {
   seq: number;
   acceptedAt: number;
   actor: ServerActor;
+  creators?: ServerActor[];
   commandId: string;
   actionId: string;
   op: AuthoritativeOperation;
@@ -1502,7 +1503,6 @@ function inspectJsonValue(value: unknown, maximumDepth: number): void {
   while (stack.length > 0) {
     const current = stack.pop();
     if (current === undefined) break;
-    if (current.depth > maximumDepth) fail(`JSON nesting exceeds ${maximumDepth}`, current.path);
     const entry = current.value;
     if (entry === null || typeof entry === "string" || typeof entry === "boolean") continue;
     if (typeof entry === "number") {
@@ -1510,6 +1510,11 @@ function inspectJsonValue(value: unknown, maximumDepth: number): void {
       continue;
     }
     if (typeof entry !== "object") fail("Value is not valid JSON", current.path);
+    // Depth limits protect traversal of nested containers. Scalar leaves do not
+    // add another recursively traversable level, so allow them immediately
+    // below the deepest permitted object or array. This keeps bounded table
+    // rows valid inside item batches without relaxing the container-depth cap.
+    if (current.depth > maximumDepth) fail(`JSON nesting exceeds ${maximumDepth}`, current.path);
     if (seen.has(entry)) fail("Cyclic values are not valid JSON", current.path);
     seen.add(entry);
     if (Array.isArray(entry)) {

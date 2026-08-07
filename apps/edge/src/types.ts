@@ -217,6 +217,7 @@ export interface ServerAction {
   seq: number;
   acceptedAt: number;
   actor: { id: string; displayName: string };
+  creators?: Array<{ id: string; displayName: string }>;
   commandId: string;
   actionId: string;
   op: Record<string, unknown>;

@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { BoardItem, BoardSnapshot, DurableOperation } from "../types";
 import {
+  actorFromAccessChanged,
   boardIdFromPath,
+  buildCreatorNameMap,
+  buildStickyColourOperations,
   clampImageAlt,
   clampStickyText,
   imageUploadIssue,
@@ -9,10 +12,70 @@ import {
   MAX_IMAGE_UPLOAD_BYTES,
   STAMP_CHOICES,
   STICKY_COLORS,
+  savedAuthoritativeItems,
   tableCellDraftFromOperation,
 } from "./app";
 
 const boardId = "b_1234567890123456789012";
+
+describe("creator display names", () => {
+  it("combines bootstrap creators with the current participant and trims names", () => {
+    const creators = [
+      { id: "student-a", displayName: " Asha Patel " },
+      { id: "coach", displayName: "Outdated coach name" },
+      { id: "ignored", displayName: "   " },
+    ];
+    const self = { id: "coach", displayName: "Coach Mira" };
+
+    expect([...buildCreatorNameMap(creators, self)]).toEqual([
+      ["student-a", "Asha Patel"],
+      ["coach", "Coach Mira"],
+    ]);
+  });
+
+  it("accepts only a validated affected actor from access-change frames", () => {
+    const actorId = `a_${"A".repeat(22)}`;
+    expect(
+      actorFromAccessChanged({
+        v: 1,
+        t: "access.changed",
+        affectedActorId: actorId,
+        affectedActor: { id: actorId, displayName: "Asha Patel" },
+      }),
+    ).toEqual({ id: actorId, displayName: "Asha Patel" });
+    expect(
+      actorFromAccessChanged({
+        v: 1,
+        t: "access.changed",
+        affectedActorId: "asha@example.com",
+        affectedActor: { id: "asha@example.com", displayName: "Asha Patel" },
+      }),
+    ).toBeNull();
+    expect(
+      actorFromAccessChanged({
+        v: 1,
+        t: "access.changed",
+        affectedActorId: actorId,
+        affectedActor: { id: actorId, displayName: "Asha\nPatel" },
+      }),
+    ).toBeNull();
+    expect(
+      actorFromAccessChanged({
+        v: 1,
+        t: "access.changed",
+        affectedActorId: `a_${"B".repeat(22)}`,
+        affectedActor: { id: actorId, displayName: "Asha Patel" },
+      }),
+    ).toBeNull();
+    expect(
+      actorFromAccessChanged({
+        v: 1,
+        t: "access.changed",
+        affectedActor: { id: actorId, displayName: "Asha Patel" },
+      }),
+    ).toBeNull();
+  });
+});
 
 describe("board path routing", () => {
   it("accepts normal and classroom embed board paths", () => {
@@ -40,6 +103,65 @@ describe("sticky note UI configuration", () => {
       "Orange",
     ]);
     expect(STICKY_COLORS.every(({ value }) => /^#[0-9a-f]{6}$/.test(value))).toBe(true);
+  });
+
+  it("builds all-or-nothing versioned recolor updates without changing other style fields", () => {
+    const first: Extract<BoardItem, { kind: "sticky" }> = {
+      id: "sticky-a",
+      kind: "sticky",
+      z: 1,
+      version: 4,
+      createdBy: "student-a",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "sticky",
+        fill: "#fde68a",
+        textColor: "#292524",
+        fontSize: 20,
+        opacity: 0.9,
+      },
+      geometry: { x: 10, y: 20, width: 180, height: 140, text: "First" },
+    };
+    const second: Extract<BoardItem, { kind: "sticky" }> = {
+      ...first,
+      id: "sticky-b",
+      z: 2,
+      version: 6,
+      style: { ...first.style, fill: "#bfdbfe" },
+      geometry: { ...first.geometry, x: 220, text: "Second" },
+    };
+
+    expect(buildStickyColourOperations([first, second], "#fecdd3")).toEqual([
+      {
+        kind: "item.update",
+        itemId: "sticky-a",
+        expectedVersion: 4,
+        patch: { style: { ...first.style, fill: "#fecdd3" } },
+      },
+      {
+        kind: "item.update",
+        itemId: "sticky-b",
+        expectedVersion: 6,
+        patch: { style: { ...second.style, fill: "#fecdd3" } },
+      },
+    ]);
+    expect(buildStickyColourOperations([first, { ...second, version: 0 }], "#fecdd3")).toEqual([]);
+
+    const authoritative = new Map<string, BoardItem>([
+      [first.id, first],
+      [second.id, second],
+    ]);
+    expect(savedAuthoritativeItems([first.id, second.id], authoritative, authoritative)).toEqual([
+      first,
+      second,
+    ]);
+    const renderedWithPending = new Map<string, BoardItem>([
+      [first.id, first],
+      [second.id, { ...second, version: 0 }],
+    ]);
+    expect(
+      savedAuthoritativeItems([first.id, second.id], renderedWithPending, authoritative),
+    ).toBeNull();
   });
 
   it("limits input by Unicode code point rather than UTF-16 length", () => {

@@ -8,13 +8,14 @@ per board validates, commits, sequences, and broadcasts every durable action
 through the shared board reducer. SQLite is authoritative; private R2 objects
 provide immutable recovery checkpoints and named snapshots.
 
-## Classroom activity tools
+## Classroom template tools
 
 Alongside freehand drawing, shapes, and plain text, the board supports durable
 sticky notes for brainstorming, exit tickets, sorting, and feedback. Choose
 **Sticky note** or press `N`, click the board, and type immediately. A note may
 be left empty, uses a 180 × 140 board-unit default size, and can be recolored
-with the six classroom presets in the style popover.
+with the six classroom presets while creating it or after selecting it. A saved
+sticky note or image card also exposes a lower-right resize handle.
 
 Sticky notes participate in the same authoritative collaboration pipeline as
 every other board item: they can be selected, moved, copied, deleted, undone,
@@ -24,12 +25,16 @@ select tool—to edit its wrapped text.
 
 For quick visual feedback, choose **Stamp** or press `K`. Pick a star, check,
 heart, question mark, smile, or sparkle in the palette, choose a colour, then
-click or tap the board to place a readable 72-unit stamp. Stamps are local SVG
+click or tap the board to place a compact 36-unit stamp. Stamps are local SVG
 marks with accessible labels and no external image dependency.
 
 Stamps are durable board items too: every participant sees them in real time,
 and they support selection, movement, copy/delete, undo/redo, offline recovery,
 snapshots, and JSON/SVG export.
+
+Saved sticky notes, image cards, and stamps show the creator's initials. Hovering
+the item reveals the creator's signed display name; the stable user identifier
+remains server-side attribution metadata rather than visible board text.
 
 Owners can also enable private **Image cards** for a board. Editors then upload,
 paste, or drop PNG, JPEG, WebP, and static GIF images; the browser removes photo
@@ -56,7 +61,7 @@ press `Esc` or choose **Stop** to leave that Spotlight session; a later session
 can be followed normally. Spotlight traffic is ephemeral and never enters board
 history, snapshots, exports, or the offline outbox.
 
-The **Activities** menu adds five local starter layouts—Exit ticket, K-W-L,
+The **Templates** menu adds five local starter layouts—Exit ticket, K-W-L,
 Sort it, Pair share, and Vote with stamps—as one ordinary attributed item batch.
 Vote totals are derived live from each participant's latest stamp in the vote
 table and are not stored in board history or exports. Only owners receive the

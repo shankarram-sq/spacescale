@@ -4,12 +4,55 @@ import { MAX_RENDERED_VOTE_TABLES, VOTE_TABLE_STYLE } from "../activities/voting
 import type { BoardItem, TableItem } from "../types";
 import {
   CanvasViewport,
+  creatorBadge,
+  creatorInitials,
   lineNode,
   renderVoteCounts,
+  selectionResizeHandle,
   wrapStickyText,
   wrapTableCellText,
   zoneNode,
 } from "./renderer";
+
+describe("creator attribution", () => {
+  beforeEach(() => {
+    vi.stubGlobal("document", {
+      createElementNS: (_namespace: string, name: string) => fakeSvgNode(name),
+    });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("uses compact display-name initials without exposing the actor identifier", () => {
+    const item: Extract<BoardItem, { kind: "sticky" }> = {
+      id: "sticky-attributed",
+      kind: "sticky",
+      z: 1,
+      version: 1,
+      createdBy: "private-stable-user-id",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "sticky",
+        fill: "#fde68a",
+        textColor: "#292524",
+        fontSize: 20,
+        opacity: 1,
+      },
+      geometry: { x: 10, y: 20, width: 180, height: 140, text: "Idea" },
+    };
+
+    expect(creatorInitials(" Coach Mira ")).toBe("CM");
+    expect(creatorInitials("Asha")).toBe("AS");
+    expect(creatorInitials("李 雷")).toBe("李雷");
+
+    const badge = creatorBadge(item, "Coach Mira") as unknown as FakeSvgNode;
+    expect(badge.classList.values.has("creator-badge")).toBe(true);
+    expect(badge.children[1]?.textContent).toBe("CM");
+    expect(badge.children.map((child) => child.textContent)).not.toContain(
+      "private-stable-user-id",
+    );
+  });
+});
 
 describe("connector rendering", () => {
   beforeEach(() => {
@@ -70,6 +113,44 @@ describe("sticky note text wrapping", () => {
       "three",
       "four",
     ]);
+  });
+});
+
+describe("selection resize handle", () => {
+  beforeEach(() => {
+    vi.stubGlobal("document", {
+      createElementNS: (_namespace: string, name: string) => fakeSvgNode(name),
+    });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("renders a southeast card handle with a constant CSS-pixel touch target", () => {
+    const item: Extract<BoardItem, { kind: "sticky" }> = {
+      id: "sticky-a",
+      kind: "sticky",
+      z: 1,
+      version: 4,
+      createdBy: "student-a",
+      transform: [1, 0, 0, 1, 12, 18],
+      style: {
+        kind: "sticky",
+        fill: "#fde68a",
+        textColor: "#292524",
+        fontSize: 20,
+        opacity: 1,
+      },
+      geometry: { x: 10, y: 20, width: 180, height: 140, text: "Idea" },
+    };
+
+    const handle = selectionResizeHandle(item, 2, { x: 4, y: 6 }) as unknown as FakeSvgNode;
+    expect(handle.dataset).toEqual({ resizeHandle: "southeast", itemId: "sticky-a" });
+    expect(handle.attributes.get("aria-label")).toBe("Resize selected card");
+    expect(handle.children).toHaveLength(2);
+    expect(handle.children[0]?.attributes.get("cx")).toBe("206");
+    expect(handle.children[0]?.attributes.get("cy")).toBe("184");
+    expect(handle.children[0]?.attributes.get("r")).toBe("11");
+    expect(handle.children[1]?.attributes.get("r")).toBe("3");
   });
 });
 

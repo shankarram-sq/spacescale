@@ -49,9 +49,28 @@ The JSON object must contain exactly these fields:
 | `iat` | Issued-at time in Unix seconds. |
 | `exp` | Expiry in Unix seconds, after `iat` and no more than 24 hours later. |
 
+If your parent backend calls these values `name` and `email_id`, translate them
+before signing rather than adding new launch claims:
+
+```js
+{
+  display_name: participant.name,
+  user_identifier: participant.databaseId ?? stableHmacPseudonym(participant.canonicalEmail),
+}
+```
+
+Prefer an opaque, stable database ID. If email is the only stable identifier,
+use a stable HMAC pseudonym produced with a backend-only key and keep that key
+stable; rotating it creates a different board actor. Do not put the email in
+`display_name` or send it as an additional signed field.
+
 The verifier permits five minutes of clock skew. Treat each launch URL as a
 credential, create one per participant, and do not put it in application logs.
 The browser removes it from the address bar before exchanging it.
+The payload is base64url-encoded for transport, not encrypted. Anyone who can
+read the iframe URL can decode its claims, which is why `user_identifier`
+should not contain a raw email when an opaque identifier or pseudonym is
+available.
 
 This Node.js example uses the secret as its literal UTF-8 value, matching the
 Worker:

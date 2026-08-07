@@ -174,6 +174,77 @@ describe("protocol rollout handling", () => {
     expect(fakeSockets[0]?.protocols).toBeUndefined();
   });
 
+  it("forwards a strictly parsed creator directory on authoritative actions", () => {
+    const socketHooks = hooks();
+    const boardSocket = new BoardSocket("b_test", socketHooks);
+    boardSocket.connect();
+    const socket = fakeSockets[0];
+    expect(socket).toBeDefined();
+    if (socket === undefined) return;
+    socket.readyState = FakeWebSocket.OPEN;
+
+    const action = {
+      v: 1,
+      t: "server.action",
+      seq: 1,
+      acceptedAt: 1_700_000_000_000,
+      actor: { id: "a_1234567890123456789012", displayName: "Coach" },
+      creators: [{ id: "a_abcdefghijklmnopqrstuv", displayName: "Student" }],
+      commandId: "018f0000-0000-7000-8000-000000000010",
+      actionId: "018f0000-0000-7000-8000-000000000011",
+      op: { kind: "board.clear", removed: [] },
+    };
+    socket.emitMessage(action);
+
+    expect(socketHooks.onAction).toHaveBeenCalledWith(action, false);
+    expect(socketHooks.onResync).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a non-array directory", { id: "a_abcdefghijklmnopqrstuv", displayName: "Student" }],
+    [
+      "an extended actor record",
+      [
+        {
+          id: "a_abcdefghijklmnopqrstuv",
+          displayName: "Student",
+          user_identifier: "student@example.edu",
+        },
+      ],
+    ],
+    ["a non-opaque actor id", [{ id: "student@example.edu", displayName: "Student" }]],
+    [
+      "duplicate actors",
+      [
+        { id: "a_abcdefghijklmnopqrstuv", displayName: "Student" },
+        { id: "a_abcdefghijklmnopqrstuv", displayName: "Student renamed" },
+      ],
+    ],
+  ])("resynchronizes instead of forwarding creator metadata with %s", (_label, creators) => {
+    const socketHooks = hooks();
+    const boardSocket = new BoardSocket("b_test", socketHooks);
+    boardSocket.connect();
+    const socket = fakeSockets[0];
+    expect(socket).toBeDefined();
+    if (socket === undefined) return;
+    socket.readyState = FakeWebSocket.OPEN;
+
+    socket.emitMessage({
+      v: 1,
+      t: "server.action",
+      seq: 1,
+      acceptedAt: 1_700_000_000_000,
+      actor: { id: "a_1234567890123456789012", displayName: "Coach" },
+      creators,
+      commandId: "018f0000-0000-7000-8000-000000000012",
+      actionId: "018f0000-0000-7000-8000-000000000013",
+      op: { kind: "board.clear", removed: [] },
+    });
+
+    expect(socketHooks.onAction).not.toHaveBeenCalled();
+    expect(socketHooks.onResync).toHaveBeenCalledWith("The server sent an invalid action.");
+  });
+
   it("preserves classroom object tools in peer presence", () => {
     const socketHooks = hooks();
     const boardSocket = new BoardSocket("b_test", socketHooks);

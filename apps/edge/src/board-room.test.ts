@@ -447,8 +447,162 @@ describe("BoardRoom initialization", () => {
     );
     expect(bootstrap.status).toBe(200);
     const value = (await bootstrap.json()) as Record<string, unknown>;
-    expect(value).toMatchObject({ protocolVersion: 1 });
+    expect(value).toMatchObject({ protocolVersion: 1, creators: [] });
   });
+
+  it("returns names only for visible-item creators, including revoked members", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+
+    const editor = await connect(stub, editorId);
+    editor.socket.send(
+      JSON.stringify(
+        createStampCommit(
+          "018f0000-0000-7000-8000-000000000101",
+          "018f0000-0000-7000-8000-000000000102",
+          "018f0000-0000-7000-8000-000000000103",
+        ),
+      ),
+    );
+    await editor.next((frame) => frame.t === "server.action" && frame.seq === 1);
+    editor.socket.close(1000, "done");
+
+    await runInDurableObject(stub, (_instance, durableState) => {
+      const now = Date.now();
+      durableState.storage.sql.exec(
+        "UPDATE members SET revoked_at_ms = ?, updated_at_ms = ? WHERE actor_id = ?",
+        now,
+        now,
+        editorId,
+      );
+      durableState.storage.sql.exec(
+        `INSERT INTO members(actor_id, role, display_name, created_at_ms, updated_at_ms)
+         VALUES (?, 'viewer', 'Member without items', ?, ?)`,
+        studentId,
+        now,
+        now,
+      );
+    });
+
+    const bootstrap = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/bootstrap`, { method: "GET" }),
+    );
+    expect(bootstrap.status).toBe(200);
+    const value = (await bootstrap.json()) as {
+      creators: Array<Record<string, unknown>>;
+      snapshot: { items: Array<{ createdBy: string }> };
+    };
+    expect(value.snapshot.items).toHaveLength(1);
+    expect(value.snapshot.items[0]?.createdBy).toBe(editorId);
+    expect(value.creators).toEqual([{ id: editorId, displayName: "Editor" }]);
+    expect(Object.keys(value.creators[0] ?? {}).sort()).toEqual(["displayName", "id"]);
+  });
+
+  it("persists creator metadata when another actor restores an item", async () => {
+    const typedEnv = env as unknown as Env;
+    const stub = typedEnv.BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    const owner = await connect(stub, actorId);
+    const editor = await connect(stub, editorId);
+    const itemId = "018f0000-0000-7000-8000-000000000110";
+    const create = createStickyCommit(
+      "018f0000-0000-7000-8000-000000000111",
+      "018f0000-0000-7000-8000-000000000112",
+      itemId,
+    );
+    editor.socket.send(JSON.stringify(create));
+    await Promise.all([
+      owner.next((frame) => frame.t === "server.action" && frame.seq === 1),
+      editor.next((frame) => frame.t === "server.action" && frame.seq === 1),
+    ]);
+
+    const deleteActionId = "018f0000-0000-7000-8000-000000000114";
+    owner.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000113",
+        actionId: deleteActionId,
+        baseSeq: 1,
+        op: { kind: "item.delete", itemId, expectedVersion: 1 },
+      }),
+    );
+    await owner.next((frame) => frame.t === "server.action" && frame.seq === 2);
+
+    owner.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000115",
+        actionId: "018f0000-0000-7000-8000-000000000116",
+        baseSeq: 2,
+        op: {
+          kind: "history.undo",
+          expectedHistoryVersion: 1,
+          targetActionId: deleteActionId,
+        },
+      }),
+    );
+    const undo = await owner.next((frame) => frame.t === "server.action" && frame.seq === 3);
+    expect(undo).toMatchObject({
+      actor: { id: actorId, displayName: "Owner 1" },
+      creators: [{ id: editorId, displayName: "Editor" }],
+      op: { changes: [{ kind: "item.replace", item: { id: itemId, createdBy: editorId } }] },
+    });
+
+    const named = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/snapshots`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "creator-restore-snapshot-0001",
+        },
+        body: JSON.stringify({ label: "Attributed restore" }),
+      }),
+    );
+    expect(named.status).toBe(201);
+    await named.arrayBuffer();
+
+    owner.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000117",
+        actionId: "018f0000-0000-7000-8000-000000000118",
+        baseSeq: 3,
+        op: { kind: "item.delete", itemId, expectedVersion: 3 },
+      }),
+    );
+    await owner.next((frame) => frame.t === "server.action" && frame.seq === 4);
+
+    const restored = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/restore/3`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "creator-restore-apply-0002",
+        },
+        body: JSON.stringify({ expectedBoardSeq: 4 }),
+      }),
+    );
+    expect(restored.status).toBe(200);
+    expect(await restored.json()).toMatchObject({ seq: 5, requiresResync: false });
+    const restoreAction = await owner.next(
+      (frame) => frame.t === "server.action" && frame.seq === 5,
+    );
+    expect(restoreAction.creators).toEqual([{ id: editorId, displayName: "Editor" }]);
+
+    owner.socket.close(1000, "replay");
+    editor.socket.close(1000, "replay");
+    const replayed = await connect(stub, actorId, 2);
+    const replay = await replayed.next((frame) => frame.t === "server.replay");
+    const replayActions = replay.actions as Array<Record<string, unknown>>;
+    expect(replayActions[0]?.creators).toEqual([{ id: editorId, displayName: "Editor" }]);
+    expect(replayActions[2]?.creators).toEqual([{ id: editorId, displayName: "Editor" }]);
+    replayed.socket.close(1000, "done");
+  }, 45_000);
 
   it("migrates existing boards to multiple active owners", async () => {
     const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
@@ -2343,7 +2497,12 @@ describe("BoardRoom initialization", () => {
     );
     expect(downgrade.status).toBe(200);
     const changed = await editor.next((frame) => frame.t === "access.changed");
-    expect(changed).toMatchObject({ role: "viewer", aclVersion: 3 });
+    expect(changed).toMatchObject({
+      role: "viewer",
+      aclVersion: 3,
+      affectedActorId: editorId,
+      affectedActor: { id: editorId, displayName: "Editor" },
+    });
 
     editor.socket.send(
       JSON.stringify(

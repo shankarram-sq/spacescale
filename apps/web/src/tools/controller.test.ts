@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { Matrix } from "../types";
+import type { BoardItem, Matrix } from "../types";
 import {
+  buildCapturedCardResizeOperation,
   buildCapturedDeleteOperations,
   buildCapturedMoveOperations,
   buildCapturedTextUpdate,
@@ -11,9 +12,12 @@ import {
   buildTableCreateOperation,
   buildZoneCreateOperation,
   type CapturedMoveItem,
+  cardResizeGrabOffset,
   defaultImageCardSize,
+  resizedCardGeometry,
   resolveConnectorEndpoint,
   resolveShapePointerState,
+  selectionHitPadding,
   shapeGeometry,
   stickyTapMoveThreshold,
   tableCellAtPoint,
@@ -28,6 +32,13 @@ describe("captured gesture operations", () => {
     expect(stickyTapMoveThreshold("touch", 1)).toBe(10);
     expect(stickyTapMoveThreshold("touch", 2)).toBe(5);
     expect(stickyTapMoveThreshold("mouse", 1)).toBe(3);
+  });
+
+  it("keeps selection padding comfortable in CSS pixels across zoom levels", () => {
+    expect(selectionHitPadding("mouse", 1)).toBe(5);
+    expect(selectionHitPadding("mouse", 2)).toBe(2.5);
+    expect(selectionHitPadding("touch", 1)).toBe(16);
+    expect(selectionHitPadding("touch", 0.5)).toBe(32);
   });
 
   it("suppresses mouse tap jitter before move finalization", () => {
@@ -260,8 +271,85 @@ describe("captured gesture operations", () => {
         kind: "stamp",
         style: { kind: "stamp", color: "#8e4ec6", opacity: 0.75 },
         transform: [1, 0, 0, 1, 0, 0],
-        geometry: { x: 72, y: 96, size: 72, stamp: "sparkle" },
+        geometry: { x: 72, y: 96, size: 36, stamp: "sparkle" },
       },
+    });
+  });
+
+  it("freely resizes sticky cards from the southeast corner with classroom-safe minimums", () => {
+    const item: Extract<BoardItem, { kind: "sticky" }> = {
+      id: ITEM_ID,
+      kind: "sticky",
+      z: 2,
+      version: 7,
+      createdBy: "student-a",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "sticky",
+        fill: "#fde68a",
+        textColor: "#292524",
+        fontSize: 20,
+        opacity: 1,
+      },
+      geometry: { x: 10, y: 20, width: 180, height: 140, text: "An idea" },
+    };
+
+    const offCenterGrab: [number, number] = [174, 149];
+    const grabOffset = cardResizeGrabOffset(item, offCenterGrab);
+    expect(grabOffset).toEqual([-16, -11]);
+    expect(resizedCardGeometry(item, offCenterGrab, grabOffset)).toEqual(item.geometry);
+    expect(resizedCardGeometry(item, [204, 164], grabOffset)).toEqual({
+      ...item.geometry,
+      width: 210,
+      height: 155,
+    });
+
+    expect(resizedCardGeometry(item, [260, 220])).toEqual({
+      ...item.geometry,
+      width: 250,
+      height: 200,
+    });
+    const minimum = resizedCardGeometry(item, [20, 30]);
+    expect(minimum).toEqual({ ...item.geometry, width: 96, height: 72 });
+    expect(buildCapturedCardResizeOperation({ item, expectedVersion: 7 }, minimum)).toEqual({
+      kind: "item.update",
+      itemId: ITEM_ID,
+      expectedVersion: 7,
+      patch: { geometry: { ...item.geometry, width: 96, height: 72 } },
+    });
+  });
+
+  it("preserves image card aspect ratio and immutable metadata while resizing", () => {
+    const item: Extract<BoardItem, { kind: "image" }> = {
+      id: ITEM_ID,
+      kind: "image",
+      z: 3,
+      version: 11,
+      createdBy: "coach-a",
+      transform: [1, 0, 0, 1, 12, 18],
+      style: { kind: "image", opacity: 1, radius: 12 },
+      geometry: {
+        x: 10,
+        y: 20,
+        width: 200,
+        height: 100,
+        assetId: `asset_${"a".repeat(43)}`,
+        alt: "Classroom diagram",
+        mimeType: "image/webp",
+        intrinsicWidth: 1_200,
+        intrinsicHeight: 600,
+      },
+    };
+
+    expect(resizedCardGeometry(item, [410, 220])).toEqual({
+      ...item.geometry,
+      width: 400,
+      height: 200,
+    });
+    expect(resizedCardGeometry(item, [10, 20])).toEqual({
+      ...item.geometry,
+      width: 144,
+      height: 72,
     });
   });
 

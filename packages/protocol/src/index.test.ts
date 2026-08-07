@@ -672,6 +672,44 @@ describe("hostile frame parsing", () => {
     expect(frame.t === "client.commit" && frame.op.kind).toBe("item.create");
   });
 
+  it("admits a bounded table create nested inside an item batch", () => {
+    expect(
+      parseClientFrame(
+        JSON.stringify({
+          v: 1,
+          t: "client.commit",
+          commandId: ID_2,
+          actionId: ID_3,
+          baseSeq: 0,
+          op: {
+            kind: "items.batch",
+            operations: [{ kind: "item.create", item: table() }],
+          },
+        }),
+      ),
+    ).toMatchObject({
+      t: "client.commit",
+      op: {
+        kind: "items.batch",
+        operations: [
+          {
+            kind: "item.create",
+            item: {
+              kind: "table",
+              geometry: {
+                cells: [
+                  ["Term", "Meaning", "Example"],
+                  ["Atom", "Small unit", "Carbon"],
+                  ["", "", ""],
+                ],
+              },
+            },
+          },
+        ],
+      },
+    });
+  });
+
   it("normalizes line previews with line styles and rejects shape-style confusion", () => {
     const preview = {
       v: 1,

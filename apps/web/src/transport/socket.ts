@@ -45,6 +45,8 @@ export type SocketHooks = {
 };
 
 const BACKOFF_MS = [0, 250, 500, 1_000, 2_000, 5_000];
+const ACTOR_ID_PATTERN = /^a_[A-Za-z0-9_-]{22}$/u;
+const MAX_ACTION_CREATORS = 10_000;
 export const PROTOCOL_RELOAD_NOTICE =
   "This board was updated and this tab is no longer compatible. Reload the page to continue.";
 
@@ -546,21 +548,64 @@ function welcomeState(frame: ServerFrame): WelcomeState | null {
 
 function asServerAction(value: unknown): ServerAction | null {
   if (!isRecord(value)) return null;
-  const seq = number(value.seq);
+  const baseKeys = ["v", "t", "seq", "acceptedAt", "actor", "commandId", "actionId", "op"];
+  const expectedKeys = value.creators === undefined ? baseKeys : [...baseKeys, "creators"];
+  if (!hasExactKeys(value, expectedKeys)) return null;
+  const actor = asServerActor(value.actor);
+  const creators =
+    value.creators === undefined ? undefined : asServerCreatorDirectory(value.creators);
   if (
     value.v !== PROTOCOL_VERSION ||
     value.t !== "server.action" ||
-    seq === null ||
-    typeof value.commandId !== "string" ||
-    typeof value.actionId !== "string" ||
-    !isRecord(value.actor) ||
-    typeof value.actor.id !== "string" ||
-    typeof value.actor.displayName !== "string" ||
+    !Number.isSafeInteger(value.seq) ||
+    (value.seq as number) < 1 ||
+    !Number.isSafeInteger(value.acceptedAt) ||
+    (value.acceptedAt as number) < 0 ||
+    !isCanonicalUuid(value.commandId) ||
+    !isCanonicalUuid(value.actionId) ||
+    actor === null ||
+    (value.creators !== undefined && creators === null) ||
     !isRecord(value.op)
   ) {
     return null;
   }
-  return value as unknown as ServerAction;
+  return {
+    v: PROTOCOL_VERSION,
+    t: "server.action",
+    seq: value.seq as number,
+    acceptedAt: value.acceptedAt as number,
+    actor,
+    ...(creators === undefined || creators === null ? {} : { creators }),
+    commandId: value.commandId,
+    actionId: value.actionId,
+    op: value.op as ServerAction["op"],
+  };
+}
+
+function asServerActor(value: unknown): ServerAction["actor"] | null {
+  if (!isRecord(value) || !hasExactKeys(value, ["id", "displayName"])) return null;
+  if (typeof value.id !== "string" || !ACTOR_ID_PATTERN.test(value.id)) return null;
+  if (typeof value.displayName !== "string" || value.displayName.trim() !== value.displayName) {
+    return null;
+  }
+  const displayNameLength = [...value.displayName].length;
+  if (displayNameLength < 1 || displayNameLength > 40 || /\p{Cc}/u.test(value.displayName)) {
+    return null;
+  }
+  return { id: value.id, displayName: value.displayName };
+}
+
+function asServerCreatorDirectory(value: unknown): NonNullable<ServerAction["creators"]> | null {
+  if (!Array.isArray(value) || value.length > MAX_ACTION_CREATORS) return null;
+  const result: NonNullable<ServerAction["creators"]> = [];
+  const seen = new Set<string>();
+  for (const valueActor of value) {
+    const actor = asServerActor(valueActor);
+    if (actor === null || seen.has(actor.id)) return null;
+    seen.add(actor.id);
+    result.push(actor);
+  }
+  return result;
 }
 
 function asPresence(value: unknown): Presence | null {

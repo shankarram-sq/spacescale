@@ -640,6 +640,21 @@ button:disabled {
   pointer-events: none;
 }
 
+.board-item-stamp .stamp-art path,
+.board-item-stamp .stamp-art circle {
+  pointer-events: visiblePainted;
+}
+
+.creator-badge {
+  pointer-events: none;
+  filter: drop-shadow(0 1px 2px rgb(32 32 30 / 20%));
+}
+
+.creator-badge text {
+  pointer-events: none;
+  user-select: none;
+}
+
 .board-item-image .image-card-background {
   fill: #f2f0ea;
 }
@@ -711,6 +726,10 @@ button:disabled {
   opacity: 0.5;
 }
 
+.resize-preview {
+  opacity: 0.72;
+}
+
 .selection-outline,
 .selection-marquee {
   fill: rgb(62 99 221 / 6%);
@@ -723,6 +742,30 @@ button:disabled {
 
 .selection-marquee {
   fill: rgb(62 99 221 / 10%);
+}
+
+.selection-resize-handle {
+  cursor: nwse-resize;
+  pointer-events: all;
+}
+
+.selection-resize-hit-target {
+  fill: transparent;
+  pointer-events: all;
+}
+
+.selection-resize-knob {
+  fill: #fff;
+  stroke: var(--blue);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 1px 2px rgb(30 55 130 / 24%));
+  pointer-events: none;
+}
+
+.board-canvas:not([data-tool="select"]) .selection-resize-handle,
+.board-canvas[aria-readonly="true"] .selection-resize-handle {
+  display: none;
 }
 
 .connector-snap-halo {
@@ -876,6 +919,50 @@ button:disabled {
 
 .selection-arrange-wrap {
   position: relative;
+}
+
+.selection-colour-wrap {
+  position: relative;
+}
+
+.selection-colour-menu {
+  position: absolute;
+  z-index: 60;
+  top: 39px;
+  left: 50%;
+  display: grid;
+  grid-template-columns: repeat(3, 44px);
+  gap: 6px;
+  padding: 8px;
+  translate: -50% 0;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+
+.selection-colour-menu[hidden] {
+  display: none;
+}
+
+.selection-actions .selection-colour-choice {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  padding: 6px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--choice-color);
+  background-clip: content-box;
+  box-shadow: inset 0 0 0 1px rgb(32 32 30 / 13%);
+}
+
+.selection-actions .selection-colour-choice:hover,
+.selection-actions .selection-colour-choice:focus-visible,
+.selection-actions .selection-colour-choice[aria-checked="true"] {
+  border-color: var(--blue);
+  background-color: var(--choice-color);
+  outline: none;
 }
 
 .arrange-menu {

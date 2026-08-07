@@ -649,6 +649,8 @@ export class BoardRoom extends DurableObject<Env> {
     const access = this.requireView(board, actor.actorId);
     const snapshot = captureSnapshot(this.#sql, board);
     const history = this.historyState(actor.actorId);
+    const creatorIds = new Set(snapshot.items.map((item) => item.createdBy));
+    const creators = this.actorDirectory(creatorIds);
     return Response.json(
       {
         protocolVersion: 1,
@@ -671,11 +673,39 @@ export class BoardRoom extends DurableObject<Env> {
           canRedo: history.canRedo,
           sessionExpiresAt: actor.sessionExpiresAt,
         },
+        creators,
         limits: LIMITS,
         snapshot,
       },
       { headers: { "Cache-Control": "no-store" } },
     );
+  }
+
+  private actorDirectory(
+    actorIds: ReadonlySet<string>,
+  ): Array<{ id: string; displayName: string }> {
+    if (actorIds.size === 0) return [];
+    return this.#sql
+      .exec<{ actor_id: string; display_name: string }>(
+        "SELECT actor_id, display_name FROM members ORDER BY actor_id",
+      )
+      .toArray()
+      .flatMap((member) =>
+        actorIds.has(member.actor_id)
+          ? [{ id: member.actor_id, displayName: member.display_name }]
+          : [],
+      );
+  }
+
+  private restoredItemCreators(
+    items: Iterable<BoardItem>,
+    actionActorId: string,
+  ): Array<{ id: string; displayName: string }> {
+    const actorIds = new Set<string>();
+    for (const item of items) {
+      if (item.createdBy !== actionActorId) actorIds.add(item.createdBy);
+    }
+    return this.actorDirectory(actorIds);
   }
 
   private listMembers(actor: InternalActorContext, board: BoardRow): Response {
@@ -2017,23 +2047,29 @@ export class BoardRoom extends DurableObject<Env> {
         kind: "items.batch",
         operations: authoritativeOperations,
       };
-      requiresResync = utf8(JSON.stringify(expandedOperation)).byteLength > MAX_PUBLIC_RESULT_BYTES;
-      const publicOperation: Record<string, unknown> = requiresResync
-        ? { kind: "board.clear", removed: [] }
-        : expandedOperation;
-      action = {
+      const actionActor = {
+        id: actor.actorId,
+        displayName: this.requireOwner(board, actor.actorId).displayName,
+      };
+      const creators = this.restoredItemCreators(targetItems, actor.actorId);
+      const actionBase = {
         v: 1,
         t: "server.action",
         seq,
         acceptedAt,
-        actor: {
-          id: actor.actorId,
-          displayName: this.requireOwner(board, actor.actorId).displayName,
-        },
+        actor: actionActor,
         commandId,
         actionId,
-        op: publicOperation,
+      } satisfies Omit<ServerAction, "creators" | "op">;
+      const expandedAction: ServerAction = {
+        ...actionBase,
+        ...(creators.length > 0 ? { creators } : {}),
+        op: expandedOperation,
       };
+      requiresResync = utf8(JSON.stringify(expandedAction)).byteLength > MAX_PUBLIC_RESULT_BYTES;
+      action = requiresResync
+        ? { ...actionBase, op: { kind: "board.clear", removed: [] } }
+        : expandedAction;
       const payload: StoredActionPayload = { publicResult: action, effects: [] };
       snapshotScheduleRowsWritten = this.upsertSnapshotJob(
         seq,
@@ -2844,12 +2880,17 @@ export class BoardRoom extends DurableObject<Env> {
             : { kind: "item.replace", item: write.item },
         );
       }
+      const creators = this.restoredItemCreators(
+        changes.flatMap((change) => (change.kind === "item.replace" ? [change.item] : [])),
+        attachment.actorId,
+      );
       action = {
         v: 1,
         t: "server.action",
         seq,
         acceptedAt,
         actor: { id: attachment.actorId, displayName: access.displayName },
+        ...(creators.length > 0 ? { creators } : {}),
         commandId: command.commandId,
         actionId: command.actionId,
         op: { kind: operation.kind, targetActionId: entry.action_id, changes },
@@ -3556,6 +3597,13 @@ export class BoardRoom extends DurableObject<Env> {
 
   private broadcastAccessChanged(affectedActorId?: string): void {
     const board = this.requireBoard();
+    const affectedActor =
+      affectedActorId === undefined
+        ? undefined
+        : this.actorDirectory(new Set([affectedActorId]))[0];
+    if (affectedActorId !== undefined && affectedActor === undefined) {
+      throw new BoardDomainError("INTERNAL_ERROR", "The affected board member is unavailable.");
+    }
     const cancelledActors = new Set<string>();
     for (const socket of this.ctx.getWebSockets()) {
       try {
@@ -3584,7 +3632,7 @@ export class BoardRoom extends DurableObject<Env> {
           drawingPolicy: board.drawing_policy,
           imagesEnabled: board.images_enabled === 1,
           aclVersion: board.acl_version,
-          ...(affectedActorId ? { affectedActorId } : {}),
+          ...(affectedActorId ? { affectedActorId, affectedActor } : {}),
         });
         if (!canDraw(board.drawing_policy, access.role)) {
           cancelledActors.add(oldAttachment.actorId);
@@ -4959,6 +5007,9 @@ function parseStoredActionPayload(payloadJson: string): StoredActionPayload {
     action.v !== 1 ||
     action.t !== "server.action" ||
     !Number.isSafeInteger(action.seq) ||
+    !Number.isSafeInteger(action.acceptedAt) ||
+    !isStoredServerActor(action.actor) ||
+    (action.creators !== undefined && !isStoredCreatorDirectory(action.creators)) ||
     typeof action.commandId !== "string" ||
     typeof action.actionId !== "string" ||
     !isRecord(action.op)
@@ -4966,6 +5017,32 @@ function parseStoredActionPayload(payloadJson: string): StoredActionPayload {
     throw new BoardDomainError("INTERNAL_ERROR", "Stored action data is invalid.");
   }
   return value as unknown as StoredActionPayload;
+}
+
+function isStoredServerActor(value: unknown): value is { id: string; displayName: string } {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length !== 2 || !Object.hasOwn(value, "id") || !Object.hasOwn(value, "displayName")) {
+    return false;
+  }
+  if (typeof value.id !== "string" || !ACTOR_ID_PATTERN.test(value.id)) return false;
+  if (typeof value.displayName !== "string" || value.displayName.trim() !== value.displayName) {
+    return false;
+  }
+  const displayNameLength = [...value.displayName].length;
+  return displayNameLength >= 1 && displayNameLength <= 40 && !/\p{Cc}/u.test(value.displayName);
+}
+
+function isStoredCreatorDirectory(
+  value: unknown,
+): value is Array<{ id: string; displayName: string }> {
+  if (!Array.isArray(value) || value.length > LIMITS.maxItems) return false;
+  const seen = new Set<string>();
+  for (const creator of value) {
+    if (!isStoredServerActor(creator) || seen.has(creator.id)) return false;
+    seen.add(creator.id);
+  }
+  return true;
 }
 
 function parseAttachment(value: unknown): SocketAttachment {

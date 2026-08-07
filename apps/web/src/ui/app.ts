@@ -39,6 +39,8 @@ import {
 import { BoardSocket } from "../transport/socket";
 import type {
   AccessMode,
+  Actor,
+  BatchItemOperation,
   BoardItem,
   BoardSnapshot,
   Bootstrap,
@@ -255,6 +257,81 @@ export const STICKY_COLORS = [
   { name: "Orange", value: "#fed7aa" },
 ] as const;
 
+export function buildStickyColourOperations(
+  items: readonly BoardItem[],
+  fill: string,
+): BatchItemOperation[] {
+  if (items.length === 0 || items.some((item) => item.kind !== "sticky" || item.version <= 0)) {
+    return [];
+  }
+  return items.flatMap((item) =>
+    item.kind === "sticky" && item.style.fill !== fill
+      ? [
+          {
+            kind: "item.update" as const,
+            itemId: item.id,
+            expectedVersion: item.version,
+            patch: { style: { ...item.style, fill } },
+          },
+        ]
+      : [],
+  );
+}
+
+export function savedAuthoritativeItems(
+  itemIds: readonly string[],
+  renderedItems: ReadonlyMap<string, BoardItem>,
+  authoritativeItems: ReadonlyMap<string, BoardItem>,
+): BoardItem[] | null {
+  const result: BoardItem[] = [];
+  for (const itemId of itemIds) {
+    const rendered = renderedItems.get(itemId);
+    const authoritative = authoritativeItems.get(itemId);
+    if (
+      !rendered ||
+      rendered.version <= 0 ||
+      !authoritative ||
+      authoritative.version !== rendered.version
+    ) {
+      return null;
+    }
+    result.push(authoritative);
+  }
+  return result;
+}
+
+export function buildCreatorNameMap(creators: readonly Actor[], self: Actor): Map<string, string> {
+  const result = new Map<string, string>();
+  for (const creator of [...creators, self]) {
+    const displayName = creator.displayName.trim();
+    if (displayName) result.set(creator.id, displayName);
+  }
+  return result;
+}
+
+export function actorFromAccessChanged(frame: ServerFrame): Actor | null {
+  const actor = frame.affectedActor;
+  if (!isRecord(actor) || Object.keys(actor).length !== 2) return null;
+  if (
+    typeof frame.affectedActorId !== "string" ||
+    typeof actor.id !== "string" ||
+    actor.id !== frame.affectedActorId ||
+    !/^a_[A-Za-z\d_-]{22}$/u.test(actor.id)
+  ) {
+    return null;
+  }
+  if (
+    typeof actor.displayName !== "string" ||
+    actor.displayName.trim() !== actor.displayName ||
+    [...actor.displayName].length < 1 ||
+    [...actor.displayName].length > 40 ||
+    /\p{Cc}/u.test(actor.displayName)
+  ) {
+    return null;
+  }
+  return { id: actor.id, displayName: actor.displayName };
+}
+
 export const STAMP_CHOICES: ReadonlyArray<{ kind: StampKind; name: string; glyph: string }> = [
   { kind: "star", name: "Star", glyph: "★" },
   { kind: "check", name: "Check", glyph: "✓" },
@@ -292,6 +369,7 @@ export class BoardApp {
   };
   private readonly remotePreviews = new Map<string, RemotePreview>();
   private readonly presences = new Map<string, Presence>();
+  private readonly creatorNames = new Map<string, string>();
   private readonly ignoredSpotlightIds = new Set<string>();
   private readonly localSpotlightIds = new Set<string>();
   private broadcastSpotlightId: string | null = null;
@@ -346,6 +424,8 @@ export class BoardApp {
   private readonly stylePopover: HTMLElement;
   private readonly exportMenu: HTMLElement;
   private readonly selectionActions: HTMLElement;
+  private readonly selectionColourButton: HTMLButtonElement;
+  private readonly selectionColourMenu: HTMLElement;
   private readonly arrangeButton: HTMLButtonElement;
   private readonly arrangeMenu: HTMLElement;
   private readonly imageInput: HTMLInputElement;
@@ -365,6 +445,9 @@ export class BoardApp {
     bootstrap: Bootstrap,
   ) {
     this.bootstrap = bootstrap;
+    for (const [actorId, displayName] of buildCreatorNameMap(bootstrap.creators, bootstrap.actor)) {
+      this.creatorNames.set(actorId, displayName);
+    }
     this.managedInvitations = loadManagedInvitations(bootstrap.board.id);
     this.history = {
       historyVersion: bootstrap.actor.historyVersion,
@@ -405,6 +488,16 @@ export class BoardApp {
     this.stylePopover = query(this.root, "[data-testid='style-popover']", HTMLElement);
     this.exportMenu = query(this.root, "[data-testid='export-menu']", HTMLElement);
     this.selectionActions = query(this.root, "[data-testid='selection-actions']", HTMLElement);
+    this.selectionColourButton = query(
+      this.selectionActions,
+      "[data-selection-colour]",
+      HTMLButtonElement,
+    );
+    this.selectionColourMenu = query(
+      this.selectionActions,
+      "[data-testid='selection-colour-menu']",
+      HTMLElement,
+    );
     this.arrangeButton = query(
       this.selectionActions,
       "[data-selection-arrange]",
@@ -427,9 +520,11 @@ export class BoardApp {
       query(this.root, "[data-canvas-host]", HTMLElement),
       this.model,
       (assetId) => this.api.boardImage(this.bootstrap.board.id, assetId),
+      (actorId) => this.creatorNames.get(actorId),
     );
     this.renderer.viewport.subscribe((zoom) => {
       this.zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
+      this.renderer.refreshSelection();
     });
     this.unsubscribeViewport = this.renderer.viewport.subscribeView(() => {
       this.scheduleSpotlightViewportUpdate();
@@ -516,6 +611,7 @@ export class BoardApp {
     this.bindShellEvents();
     this.model.subscribe(() => {
       this.updateStatus();
+      this.tools.reconcileSelection();
       this.updateSelectionActions(this.tools.selection);
       this.syncNewZoneTitleEditor();
     });
@@ -585,12 +681,12 @@ export class BoardApp {
               <span data-save-status-text>Connecting…</span>
             </div>
             <div class="menu-wrap activities-wrap">
-              <button class="topbar-button activities-button" type="button" data-testid="activities-button" aria-label="Add classroom activity" aria-haspopup="menu" aria-controls="activities-menu" aria-expanded="false" hidden>
+              <button class="topbar-button activities-button" type="button" data-testid="activities-button" aria-label="Add classroom template" aria-haspopup="menu" aria-controls="activities-menu" aria-expanded="false" hidden>
                 <span class="activities-button-mark" aria-hidden="true">＋</span>
-                <span class="activities-button-label">Activities</span>
+                <span class="activities-button-label">Templates</span>
               </button>
-              <div class="floating-menu activities-menu" data-testid="activities-menu" id="activities-menu" role="menu" aria-label="Classroom activities" hidden>
-                <p class="menu-eyebrow">Add an activity</p>
+              <div class="floating-menu activities-menu" data-testid="activities-menu" id="activities-menu" role="menu" aria-label="Classroom templates" hidden>
+                <p class="menu-eyebrow">Add a template</p>
                 <p class="activities-menu-note">Starter layouts made from ordinary board items.</p>
                 <div class="activities-template-list" data-activities-template-list></div>
               </div>
@@ -647,6 +743,10 @@ export class BoardApp {
             </section>
             <div class="selection-actions" data-testid="selection-actions" hidden>
               <button type="button" data-selection-alt aria-label="Edit image alt text" hidden>Edit alt text</button>
+              <div class="selection-colour-wrap" hidden>
+                <button type="button" data-selection-colour aria-label="Change selected sticky note colour" aria-haspopup="menu" aria-controls="selection-colour-menu" aria-expanded="false">Colour</button>
+                <div class="selection-colour-menu" data-testid="selection-colour-menu" id="selection-colour-menu" role="menu" aria-label="Sticky note colour" hidden></div>
+              </div>
               <button type="button" data-selection-copy aria-label="Copy selected items">Copy</button>
               <div class="selection-arrange-wrap">
                 <button type="button" data-selection-arrange aria-label="Arrange selected items" aria-haspopup="menu" aria-controls="arrange-menu" aria-expanded="false">Arrange</button>
@@ -662,7 +762,7 @@ export class BoardApp {
                   <button type="button" role="menuitem" data-arrange="tidy-stickies">Tidy stickies into grid</button>
                 </div>
               </div>
-              <button type="button" data-selection-clear-votes aria-label="Clear votes from selected activity" hidden>Clear votes</button>
+              <button type="button" data-selection-clear-votes aria-label="Clear votes from selected template" hidden>Clear votes</button>
               <button type="button" data-selection-delete aria-label="Delete selected items">Delete</button>
             </div>
             <div class="zoom-controls" aria-label="Canvas zoom">
@@ -797,6 +897,22 @@ export class BoardApp {
       button.style.setProperty("--choice-color", value);
       stickyColorGrid.append(button);
     });
+    const selectionColourMenu = query(
+      this.root,
+      "[data-testid='selection-colour-menu']",
+      HTMLElement,
+    );
+    STICKY_COLORS.forEach(({ name, value }) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "selection-colour-choice";
+      button.dataset.selectionStickyColour = value;
+      button.setAttribute("role", "menuitemradio");
+      button.setAttribute("aria-label", `${name} sticky note`);
+      button.setAttribute("aria-checked", "false");
+      button.style.setProperty("--choice-color", value);
+      selectionColourMenu.append(button);
+    });
     const stampGrid = query(this.root, "[data-stamp-grid]", HTMLElement);
     STAMP_CHOICES.forEach(({ kind, name, glyph }) => {
       const button = document.createElement("button");
@@ -822,7 +938,7 @@ export class BoardApp {
       button.dataset.activityTemplate = template.id;
       button.dataset.testid = `activity-${template.id}`;
       button.setAttribute("role", "menuitem");
-      button.setAttribute("aria-label", `Add ${template.label} activity`);
+      button.setAttribute("aria-label", `Add ${template.label} template`);
       const label = document.createElement("strong");
       label.textContent = template.label;
       const description = document.createElement("span");
@@ -877,7 +993,7 @@ export class BoardApp {
     const amount = clear.operations.length;
     const cappedNote = clear.remaining > 0 ? ` ${clear.remaining} more will remain.` : "";
     if (
-      !confirm(`Clear ${amount} vote${amount === 1 ? "" : "s"} from this activity?${cappedNote}`)
+      !confirm(`Clear ${amount} vote${amount === 1 ? "" : "s"} from this template?${cappedNote}`)
     ) {
       return;
     }
@@ -889,6 +1005,37 @@ export class BoardApp {
         : `${amount} vote${amount === 1 ? "" : "s"} cleared.`,
       "info",
     );
+  }
+
+  private async recolourSelectedStickies(fill: string): Promise<void> {
+    if (!this.canCommit()) return;
+    const selectedIds = [...this.tools.selection];
+    const limit = Math.max(1, Math.min(100, Math.floor(this.bootstrap.limits.maxBatchItems)));
+    if (selectedIds.length > limit) {
+      this.notify(`Recolour ${limit} sticky notes or fewer at a time.`, "warning");
+      return;
+    }
+    const items = selectedIds.flatMap((id) => {
+      const rendered = this.model.getItem(id);
+      const authoritative = this.model.authoritativeItems.get(id);
+      return rendered && authoritative && rendered.version > 0 ? [rendered] : [];
+    });
+    if (items.length !== selectedIds.length) {
+      this.tools.reconcileSelection();
+      this.notify("Wait for every selected sticky note to finish saving.", "info");
+      return;
+    }
+    const operations = buildStickyColourOperations(items, fill);
+    if (operations.length === 0) {
+      this.notify(
+        items.every((item) => item.kind === "sticky" && item.style.fill === fill)
+          ? "Those sticky notes already use that colour."
+          : "Select only saved sticky notes to change their colour.",
+        "info",
+      );
+      return;
+    }
+    await this.commit({ kind: "items.batch", operations });
   }
 
   private async arrangeSelection(kind: ArrangeKind): Promise<void> {
@@ -905,11 +1052,12 @@ export class BoardApp {
       this.notify(`Arrange ${limit} items or fewer at a time.`, "warning");
       return;
     }
-    const items = participantIds.flatMap((id) => {
-      const item = this.model.authoritativeItems.get(id);
-      return item ? [item] : [];
-    });
-    if (items.length !== participantIds.length) {
+    const items = savedAuthoritativeItems(
+      participantIds,
+      this.model.items,
+      this.model.authoritativeItems,
+    );
+    if (!items) {
       this.notify("Wait for every selected item to finish saving before arranging.", "info");
       return;
     }
@@ -1005,6 +1153,25 @@ export class BoardApp {
 
     this.undoButton.addEventListener("click", () => void this.undo());
     this.redoButton.addEventListener("click", () => void this.redo());
+    this.selectionColourButton.addEventListener("click", () => {
+      if (this.selectionColourButton.disabled) return;
+      this.setSelectionColourMenuOpen(this.selectionColourMenu.hidden !== false);
+    });
+    for (const button of this.selectionColourMenu.querySelectorAll<HTMLButtonElement>(
+      "[data-selection-sticky-colour]",
+    )) {
+      button.addEventListener("click", () => {
+        const fill = button.dataset.selectionStickyColour;
+        if (fill) void this.recolourSelectedStickies(fill);
+        this.setSelectionColourMenuOpen(false);
+      });
+    }
+    this.selectionColourMenu.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      this.setSelectionColourMenuOpen(false);
+      this.selectionColourButton.focus();
+    });
     query(this.root, "[data-selection-copy]", HTMLButtonElement).addEventListener(
       "click",
       () => void this.tools.copySelection(),
@@ -1230,6 +1397,13 @@ export class BoardApp {
         !this.arrangeButton.contains(target)
       ) {
         this.setArrangeMenuOpen(false);
+      }
+      if (
+        !this.selectionColourMenu.hidden &&
+        !this.selectionColourMenu.contains(target) &&
+        !this.selectionColourButton.contains(target)
+      ) {
+        this.setSelectionColourMenuOpen(false);
       }
     });
   }
@@ -1794,6 +1968,7 @@ export class BoardApp {
       return;
     }
     try {
+      this.rememberCreators([action.actor, ...(action.creators ?? [])]);
       const result = this.model.applyAction(action);
       this.bootstrap.board.latestSeq = action.seq;
       if (result.acknowledged) {
@@ -1896,6 +2071,8 @@ export class BoardApp {
       this.socket.resynchronize("Board image permissions changed; refreshing policy.");
       return;
     }
+    const affectedActor = actorFromAccessChanged(frame);
+    if (affectedActor) this.rememberCreators([affectedActor]);
     if (access.role === "viewer" || access.role === "editor" || access.role === "owner")
       this.bootstrap.actor.role = access.role;
     if (
@@ -1954,6 +2131,7 @@ export class BoardApp {
   }
 
   private handlePresence(values: Presence[], replace: boolean): void {
+    this.rememberCreators(values);
     if (replace) {
       this.presences.clear();
     }
@@ -2128,6 +2306,10 @@ export class BoardApp {
       }
     }
     this.bootstrap = next;
+    this.creatorNames.clear();
+    for (const [actorId, displayName] of buildCreatorNameMap(next.creators, next.actor)) {
+      this.creatorNames.set(actorId, displayName);
+    }
     this.model.load(next.snapshot as BoardSnapshot, true);
     for (const command of activeCommands) this.model.restoreQueued(command, next.actor.id);
     this.expiredRecovery = contents.expired;
@@ -2139,6 +2321,17 @@ export class BoardApp {
     };
     this.titleInput.value = next.board.title;
     this.updateAll();
+  }
+
+  private rememberCreators(creators: Iterable<Actor>): void {
+    const changed = new Set<string>();
+    for (const creator of creators) {
+      const displayName = creator.displayName.trim();
+      if (!displayName || this.creatorNames.get(creator.id) === displayName) continue;
+      this.creatorNames.set(creator.id, displayName);
+      changed.add(creator.id);
+    }
+    this.renderer.refreshCreatorAttribution(changed);
   }
 
   private flushOutbox(): void {
@@ -3308,6 +3501,7 @@ export class BoardApp {
 
   private updatePermissions(): void {
     const canEdit = this.canCommit();
+    if (!canEdit) this.tools.cancelActiveGesture();
     const archived = this.phase === "archived";
     const roleCanBroadcast =
       this.bootstrap.actor.role === "owner" || this.bootstrap.actor.role === "editor";
@@ -3359,6 +3553,7 @@ export class BoardApp {
     const archiveButton = this.accessBody.querySelector<HTMLButtonElement>("[data-archive-board]");
     if (archiveButton) archiveButton.disabled = !this.canArchiveBoard();
     this.renderer.svg.setAttribute("aria-readonly", String(!canEdit));
+    this.renderer.refreshSelection();
     this.updateHistoryControls();
     this.updateStatus();
     this.imageInput.disabled = !this.canUploadImages();
@@ -3506,6 +3701,13 @@ export class BoardApp {
       Math.min(100, Math.floor(this.bootstrap.limits.maxBatchItems)),
     );
     const selectedIds = [...ids];
+    const selectedItems = selectedIds.flatMap((id) => {
+      const item = this.model.getItem(id);
+      return item ? [item] : [];
+    });
+    const allSelectedAuthoritative =
+      savedAuthoritativeItems(selectedIds, this.model.items, this.model.authoritativeItems) !==
+      null;
     let enabledArrangeActions = 0;
     for (const button of this.arrangeMenu.querySelectorAll<HTMLButtonElement>("[data-arrange]")) {
       const kind = button.dataset.arrange as ArrangeKind;
@@ -3514,7 +3716,9 @@ export class BoardApp {
           ? selectedIds.filter((id) => this.model.getItem(id)?.kind === "sticky")
           : selectedIds;
       const minimum = kind.startsWith("distribute-") ? 3 : 2;
-      const allAuthoritative = participantIds.every((id) => this.model.authoritativeItems.has(id));
+      const allAuthoritative =
+        savedAuthoritativeItems(participantIds, this.model.items, this.model.authoritativeItems) !==
+        null;
       button.disabled =
         !canEdit ||
         participantIds.length < minimum ||
@@ -3525,8 +3729,41 @@ export class BoardApp {
     this.arrangeButton.hidden = ids.size < 2;
     this.arrangeButton.disabled = enabledArrangeActions === 0;
     if (this.arrangeButton.hidden || this.arrangeButton.disabled) this.setArrangeMenuOpen(false);
-    query(this.selectionActions, "[data-selection-copy]", HTMLButtonElement).disabled = !canEdit;
-    query(this.selectionActions, "[data-selection-delete]", HTMLButtonElement).disabled = !canEdit;
+    const selectionReady =
+      canEdit && allSelectedAuthoritative && selectedIds.length <= maxBatchItems;
+    const copy = query(this.selectionActions, "[data-selection-copy]", HTMLButtonElement);
+    const remove = query(this.selectionActions, "[data-selection-delete]", HTMLButtonElement);
+    copy.disabled = !selectionReady;
+    remove.disabled = !selectionReady;
+    const pendingTitle = allSelectedAuthoritative
+      ? ""
+      : "Wait for the selected items to finish saving.";
+    copy.title = pendingTitle;
+    remove.title = pendingTitle;
+
+    const colourWrap = query(this.selectionActions, ".selection-colour-wrap", HTMLElement);
+    const allStickies =
+      selectedItems.length === selectedIds.length &&
+      selectedItems.length > 0 &&
+      selectedItems.every((item) => item.kind === "sticky");
+    colourWrap.hidden = !allStickies;
+    this.selectionColourButton.disabled = !selectionReady || !allStickies;
+    this.selectionColourButton.title = pendingTitle;
+    if (colourWrap.hidden || this.selectionColourButton.disabled) {
+      this.setSelectionColourMenuOpen(false);
+    }
+    const stickyFills = new Set(
+      selectedItems.flatMap((item) => (item.kind === "sticky" ? [item.style.fill] : [])),
+    );
+    const selectedFill = stickyFills.size === 1 ? [...stickyFills][0] : undefined;
+    for (const button of this.selectionColourMenu.querySelectorAll<HTMLButtonElement>(
+      "[data-selection-sticky-colour]",
+    )) {
+      button.setAttribute(
+        "aria-checked",
+        String(selectedFill !== undefined && button.dataset.selectionStickyColour === selectedFill),
+      );
+    }
     const alt = query(this.selectionActions, "[data-selection-alt]", HTMLButtonElement);
     const clearVotes = query(
       this.selectionActions,
@@ -3554,8 +3791,8 @@ export class BoardApp {
     clearVotes.setAttribute(
       "aria-label",
       voteCount > 0
-        ? `Clear ${voteCount} vote${voteCount === 1 ? "" : "s"} from selected activity`
-        : "Clear votes from selected activity",
+        ? `Clear ${voteCount} vote${voteCount === 1 ? "" : "s"} from selected template`
+        : "Clear votes from selected template",
     );
     clearVotes.title = voteSummary
       ? voteSummary.options.map((option) => `${option.label}: ${option.count}`).join(" · ")
@@ -3598,6 +3835,12 @@ export class BoardApp {
     const next = open && !this.arrangeButton.disabled && !this.arrangeButton.hidden;
     this.arrangeMenu.hidden = !next;
     this.arrangeButton.setAttribute("aria-expanded", String(next));
+  }
+
+  private setSelectionColourMenuOpen(open: boolean): void {
+    const next = open && !this.selectionColourButton.disabled && !this.selectionColourButton.hidden;
+    this.selectionColourMenu.hidden = !next;
+    this.selectionColourButton.setAttribute("aria-expanded", String(next));
   }
 
   private togglePopover(popover: HTMLElement, trigger: HTMLButtonElement): void {

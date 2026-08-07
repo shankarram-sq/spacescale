@@ -26,7 +26,7 @@ import type {
   ZoneGeometry,
   ZoneStyle,
 } from "../types";
-import type { BoardModel, Bounds } from "./model";
+import { type BoardModel, type Bounds, itemBounds as boardItemBounds } from "./model";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 export type ImageAssetLoader = (assetId: string) => Promise<Blob>;
@@ -38,6 +38,46 @@ export const STICKY_CHARACTER_WIDTH = 0.56;
 export const TABLE_CELL_PADDING = 8;
 export const TABLE_LINE_HEIGHT = 1.2;
 export const TABLE_CHARACTER_WIDTH = 0.56;
+export const RESIZE_HANDLE_RADIUS_CSS_PX = 6;
+export const RESIZE_HANDLE_HIT_RADIUS_CSS_PX = 22;
+
+type ResizableCardItem = Extract<BoardItem, { kind: "sticky" | "image" }>;
+type AttributedItem = Extract<BoardItem, { kind: "sticky" | "image" | "stamp" }>;
+export type CreatorNameResolver = (actorId: string) => string | undefined;
+
+export function selectionResizeHandle(
+  item: ResizableCardItem,
+  zoom: number,
+  translated: { x: number; y: number } = { x: 0, y: 0 },
+): SVGGElement {
+  const localX = item.geometry.x + item.geometry.width;
+  const localY = item.geometry.y + item.geometry.height;
+  const point: Point = [
+    item.transform[0] * localX + item.transform[2] * localY + item.transform[4],
+    item.transform[1] * localX + item.transform[3] * localY + item.transform[5],
+  ];
+  const safeZoom = Math.max(0.1, zoom);
+  const group = svgElement("g");
+  group.classList.add("selection-resize-handle");
+  group.dataset.resizeHandle = "southeast";
+  group.dataset.itemId = item.id;
+  group.setAttribute("role", "button");
+  group.setAttribute("aria-label", "Resize selected card");
+
+  const hitTarget = svgElement("circle");
+  hitTarget.classList.add("selection-resize-hit-target");
+  hitTarget.setAttribute("cx", String(point[0] + translated.x));
+  hitTarget.setAttribute("cy", String(point[1] + translated.y));
+  hitTarget.setAttribute("r", String(RESIZE_HANDLE_HIT_RADIUS_CSS_PX / safeZoom));
+
+  const knob = svgElement("circle");
+  knob.classList.add("selection-resize-knob");
+  knob.setAttribute("cx", String(point[0] + translated.x));
+  knob.setAttribute("cy", String(point[1] + translated.y));
+  knob.setAttribute("r", String(RESIZE_HANDLE_RADIUS_CSS_PX / safeZoom));
+  group.append(hitTarget, knob);
+  return group;
+}
 
 export class BoardRenderer {
   readonly svg: SVGSVGElement;
@@ -57,6 +97,7 @@ export class BoardRenderer {
     container: HTMLElement,
     private readonly model: BoardModel,
     loadImageAsset: ImageAssetLoader,
+    private readonly resolveCreatorName: CreatorNameResolver = () => undefined,
   ) {
     this.imageAssets = new ImageAssetCache(loadImageAsset);
     this.svg = svgElement("svg");
@@ -126,19 +167,63 @@ export class BoardRenderer {
 
   setSelection(ids: Iterable<string>, translated?: { x: number; y: number }): void {
     this.selectedIds = new Set(ids);
-    this.selectionLayer.replaceChildren();
     const bounds = this.model.boundsFor(this.selectedIds);
-    if (!bounds) return;
+    if (!bounds) {
+      this.selectionLayer.replaceChildren();
+      return;
+    }
     const x = translated?.x ?? 0;
     const y = translated?.y ?? 0;
+    const selectedItems = [...this.selectedIds].flatMap((id) => {
+      const item = this.model.getItem(id);
+      return item ? [item] : [];
+    });
+    const selected = selectedItems.length === 1 ? selectedItems[0] : undefined;
+    const handle =
+      selected && selected.version > 0 && (selected.kind === "sticky" || selected.kind === "image")
+        ? selectionResizeHandle(selected, this.viewport.zoom, { x, y })
+        : undefined;
+    this.renderSelectionBounds(
+      {
+        minX: bounds.minX + x,
+        minY: bounds.minY + y,
+        maxX: bounds.maxX + x,
+        maxY: bounds.maxY + y,
+      },
+      handle,
+    );
+  }
+
+  refreshSelection(): void {
+    this.setSelection(this.selectedIds);
+  }
+
+  refreshCreatorAttribution(actorIds?: Iterable<string>): void {
+    if (actorIds === undefined) {
+      this.render(null);
+      return;
+    }
+    const changedActors = new Set(actorIds);
+    if (changedActors.size === 0) return;
+    const itemIds = new Set(
+      [...this.model.items.values()]
+        .filter((item) => changedActors.has(item.createdBy))
+        .map((item) => item.id),
+    );
+    if (itemIds.size > 0) this.render(itemIds);
+  }
+
+  private renderSelectionBounds(bounds: Bounds, handle?: SVGGElement): void {
+    this.selectionLayer.replaceChildren();
     const outline = svgElement("rect");
     outline.classList.add("selection-outline");
-    outline.setAttribute("x", String(bounds.minX + x));
-    outline.setAttribute("y", String(bounds.minY + y));
+    outline.setAttribute("x", String(bounds.minX));
+    outline.setAttribute("y", String(bounds.minY));
     outline.setAttribute("width", String(Math.max(1, bounds.maxX - bounds.minX)));
     outline.setAttribute("height", String(Math.max(1, bounds.maxY - bounds.minY)));
     outline.setAttribute("rx", "3");
     this.selectionLayer.append(outline);
+    if (handle) this.selectionLayer.append(handle);
   }
 
   showMarquee(bounds: Bounds | null): void {
@@ -267,6 +352,19 @@ export class BoardRenderer {
     this.setSelection(ids, { x, y });
   }
 
+  showCardResizePreview(item: ResizableCardItem, geometry: StickyGeometry | ImageGeometry): void {
+    this.localLayer.replaceChildren();
+    const preview = { ...item, geometry } as ResizableCardItem;
+    const renderItem = { ...preview, id: `${item.id}-resize-preview` } as ResizableCardItem;
+    const node = itemNode(renderItem, (assetId) => this.imageAssets.load(assetId));
+    node.classList.add("local-preview", "resize-preview");
+    this.localLayer.append(node);
+    this.renderSelectionBounds(
+      boardItemBounds(preview),
+      selectionResizeHandle(preview, this.viewport.zoom),
+    );
+  }
+
   highlightForErase(ids: Iterable<string>): void {
     const erased = new Set(ids);
     for (const [id, node] of this.itemNodes) node.classList.toggle("erase-target", erased.has(id));
@@ -380,7 +478,11 @@ export class BoardRenderer {
         this.itemNodes.delete(id);
         continue;
       }
-      const replacement = itemNode(item, (assetId) => this.imageAssets.load(assetId));
+      const replacement = itemNode(
+        item,
+        (assetId) => this.imageAssets.load(assetId),
+        this.resolveCreatorName(item.createdBy),
+      );
       if (current) current.replaceWith(replacement);
       this.itemNodes.set(id, replacement);
       this.insertInPaintOrder(replacement, item.z);
@@ -723,6 +825,7 @@ export class CanvasViewport {
 function itemNode(
   item: BoardItem,
   loadImageAsset: (assetId: string) => Promise<string>,
+  creatorName?: string,
 ): SVGGraphicsElement {
   let node: SVGGraphicsElement;
   switch (item.kind) {
@@ -778,7 +881,82 @@ function itemNode(
   node.dataset.z = String(item.z);
   node.classList.add("board-item", `board-item-${item.kind}`);
   node.setAttribute("transform", matrixAttribute(item.transform));
+  if (
+    creatorName?.trim() &&
+    (item.kind === "sticky" || item.kind === "image" || item.kind === "stamp")
+  ) {
+    appendCreatorAttribution(node, item, creatorName.trim());
+  }
   return node;
+}
+
+export function creatorInitials(displayName: string): string {
+  const words = displayName.trim().split(/\s+/u).filter(Boolean);
+  if (words.length === 0) return "?";
+  const first = [...(words[0] ?? "")][0] ?? "?";
+  if (words.length === 1) return [...(words[0] ?? "")].slice(0, 2).join("").toLocaleUpperCase();
+  const last = [...(words.at(-1) ?? "")][0] ?? "";
+  return `${first}${last}`.toLocaleUpperCase();
+}
+
+function appendCreatorAttribution(
+  node: SVGGraphicsElement,
+  item: AttributedItem,
+  displayName: string,
+): void {
+  const label = `Created by ${displayName}`;
+  const title = svgElement("title");
+  title.textContent = label;
+  node.prepend(title);
+  node.setAttribute("aria-description", label);
+  node.dataset.creatorInitials = creatorInitials(displayName);
+  node.classList.add("has-creator-badge");
+  node.append(creatorBadge(item, displayName));
+}
+
+export function creatorBadge(item: AttributedItem, displayName: string): SVGGElement {
+  let x: number;
+  let y: number;
+  let radius: number;
+  if (item.kind === "sticky") {
+    radius = 9;
+    x = item.geometry.width - radius - 4;
+    y = item.geometry.height - radius - 4;
+  } else if (item.kind === "image") {
+    radius = 9;
+    x = item.geometry.x + item.geometry.width - radius - 4;
+    y = item.geometry.y + item.geometry.height - radius - 4;
+  } else {
+    radius = Math.max(6, Math.min(8, item.geometry.size * 0.2));
+    x = item.geometry.x + item.geometry.size / 2 - radius - 1;
+    y = item.geometry.y + item.geometry.size / 2 - radius - 1;
+  }
+
+  const badge = svgElement("g");
+  badge.classList.add("creator-badge");
+  badge.setAttribute("aria-hidden", "true");
+  badge.setAttribute("pointer-events", "none");
+
+  const background = svgElement("circle");
+  background.setAttribute("cx", String(x));
+  background.setAttribute("cy", String(y));
+  background.setAttribute("r", String(radius));
+  background.setAttribute("fill", actorColor(item.createdBy));
+  background.setAttribute("stroke", "#ffffff");
+  background.setAttribute("stroke-width", "1.5");
+  background.setAttribute("vector-effect", "non-scaling-stroke");
+
+  const text = svgElement("text");
+  text.setAttribute("x", String(x));
+  text.setAttribute("y", String(y + radius * 0.34));
+  text.setAttribute("text-anchor", "middle");
+  text.setAttribute("fill", "#ffffff");
+  text.setAttribute("font-size", String(Math.max(7, radius * 0.92)));
+  text.setAttribute("font-family", "Inter, ui-sans-serif, system-ui, sans-serif");
+  text.setAttribute("font-weight", "800");
+  text.textContent = creatorInitials(displayName);
+  badge.append(background, text);
+  return badge;
 }
 
 export function zoneNode(itemId: string, geometry: ZoneGeometry, style: ZoneStyle): SVGGElement {

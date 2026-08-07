@@ -263,6 +263,7 @@ export type ServerAction = {
   seq: number;
   acceptedAt: number;
   actor: Actor;
+  creators?: Actor[];
   commandId: string;
   actionId: string;
   op: CanonicalOperation;
@@ -297,6 +298,7 @@ export type Bootstrap = {
     canUndo?: boolean;
     canRedo?: boolean;
   };
+  creators: Actor[];
   limits: {
     maxConnections: number;
     maxItems: number;

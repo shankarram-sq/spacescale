@@ -194,7 +194,6 @@ export const ACTIVITY_TEMPLATES: readonly ActivityTemplate[] = [
         { ...VOTE_TABLE_STYLE },
       ),
       stamp(-280, 175),
-      text(-250, 182, "= one vote per participant", 16, MUTED),
     ],
   },
 ] as const;

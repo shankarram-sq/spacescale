@@ -43,7 +43,12 @@ export type StyleState = {
 
 export const DEFAULT_STICKY_WIDTH = 180;
 export const DEFAULT_STICKY_HEIGHT = 140;
-export const DEFAULT_STAMP_SIZE = 72;
+export const DEFAULT_STAMP_SIZE = 36;
+export const MIN_RESIZED_STICKY_WIDTH = 96;
+export const MIN_RESIZED_STICKY_HEIGHT = 72;
+export const MIN_RESIZED_IMAGE_SIDE = 72;
+export const MOUSE_SELECTION_PADDING_CSS_PX = 5;
+export const TOUCH_SELECTION_PADDING_CSS_PX = 16;
 export const DEFAULT_TABLE_COLUMNS = 3;
 export const DEFAULT_TABLE_ROWS = 3;
 export const DEFAULT_TABLE_COLUMN_WIDTH = 120;
@@ -91,6 +96,12 @@ export function stickyTapMoveThreshold(pointerType: string, zoom: number): numbe
   return (pointerType === "touch" ? 10 : 3) / Math.max(0.1, zoom);
 }
 
+export function selectionHitPadding(pointerType: string, zoom: number): number {
+  const cssPixels =
+    pointerType === "touch" ? TOUCH_SELECTION_PADDING_CSS_PX : MOUSE_SELECTION_PADDING_CSS_PX;
+  return cssPixels / Math.max(0.1, zoom);
+}
+
 export function tapAdjustedMovePoint(
   start: Point,
   current: Point,
@@ -113,6 +124,62 @@ export type CapturedTextEdit = {
   expectedVersion: number;
   geometry: TextGeometry | StickyGeometry;
 };
+
+export type ResizableCardItem = Extract<BoardItem, { kind: "sticky" | "image" }>;
+
+export type CapturedCardResize = {
+  item: ResizableCardItem;
+  expectedVersion: number;
+};
+
+export function cardResizeGrabOffset(item: ResizableCardItem, localPointer: Point): Point {
+  return [
+    localPointer[0] - (item.geometry.x + item.geometry.width),
+    localPointer[1] - (item.geometry.y + item.geometry.height),
+  ];
+}
+
+export function resizedCardGeometry(
+  item: ResizableCardItem,
+  localPointer: Point,
+  grabOffset: Point = [0, 0],
+): StickyGeometry | ImageGeometry {
+  const { geometry } = item;
+  const pointer: Point = [localPointer[0] - grabOffset[0], localPointer[1] - grabOffset[1]];
+  if (item.kind === "sticky") {
+    return {
+      ...geometry,
+      width: roundBoard(Math.max(MIN_RESIZED_STICKY_WIDTH, pointer[0] - geometry.x)),
+      height: roundBoard(Math.max(MIN_RESIZED_STICKY_HEIGHT, pointer[1] - geometry.y)),
+    };
+  }
+
+  const width = Math.max(Number.EPSILON, geometry.width);
+  const height = Math.max(Number.EPSILON, geometry.height);
+  const pointerWidth = pointer[0] - geometry.x;
+  const pointerHeight = pointer[1] - geometry.y;
+  const projectedScale =
+    (pointerWidth * width + pointerHeight * height) / (width ** 2 + height ** 2);
+  const minimumScale = MIN_RESIZED_IMAGE_SIDE / Math.min(width, height);
+  const scale = Math.max(minimumScale, projectedScale);
+  return {
+    ...geometry,
+    width: roundBoard(width * scale),
+    height: roundBoard(height * scale),
+  };
+}
+
+export function buildCapturedCardResizeOperation(
+  capture: CapturedCardResize,
+  geometry: StickyGeometry | ImageGeometry,
+): BatchItemOperation {
+  return {
+    kind: "item.update",
+    itemId: capture.item.id,
+    expectedVersion: capture.expectedVersion,
+    patch: { geometry },
+  };
+}
 
 export function buildCapturedMoveOperations(
   items: ReadonlyMap<string, CapturedMoveItem>,
@@ -396,6 +463,13 @@ type Gesture =
       previewSeq: number;
       lastPreviewAt: number;
     }
+  | {
+      kind: "resize-card";
+      pointerId: number;
+      capture: CapturedCardResize;
+      grabOffset: Point;
+      geometry: StickyGeometry | ImageGeometry;
+    }
   | { kind: "marquee"; pointerId: number; start: Point; current: Point }
   | {
       kind: "eraser";
@@ -507,15 +581,36 @@ export class ToolController {
     this.options.onSelectionChanged(this.selected);
   }
 
+  reconcileSelection(): void {
+    const existing = [...this.selected].filter((id) => this.options.model.getItem(id));
+    if (existing.length !== this.selected.size) {
+      this.selectOnly(existing);
+      return;
+    }
+    this.options.renderer.setSelection(this.selected);
+  }
+
+  cancelActiveGesture(): void {
+    this.cancelGesture();
+  }
+
   async deleteSelection(): Promise<void> {
     if (!this.options.canDraw() || this.selected.size === 0) return;
-    const operations = [...this.selected].flatMap((id) => {
-      const item = this.options.model.getItem(id);
-      return item && item.version > 0
-        ? [{ kind: "item.delete" as const, itemId: id, expectedVersion: item.version }]
-        : [];
-    });
-    if (operations.length === 0) return;
+    const items = [...this.selected].map((id) => this.options.model.getItem(id));
+    if (items.some((item) => !item)) {
+      this.reconcileSelection();
+      this.options.notify("That selection is no longer available.", "info");
+      return;
+    }
+    if (items.some((item) => item && item.version <= 0)) {
+      this.options.notify("Wait for the selected items to finish saving.", "info");
+      return;
+    }
+    const operations = items.flatMap((item) =>
+      item
+        ? [{ kind: "item.delete" as const, itemId: item.id, expectedVersion: item.version }]
+        : [],
+    );
     if (operations.length > 100) {
       this.options.notify("Select 100 items or fewer for one delete.", "warning");
       return;
@@ -526,21 +621,29 @@ export class ToolController {
 
   async copySelection(): Promise<void> {
     if (!this.options.canDraw() || this.selected.size === 0) return;
-    const operations = [...this.selected].flatMap((id) => {
-      const item = this.options.model.getItem(id);
-      return item && item.version > 0
+    const items = [...this.selected].map((id) => this.options.model.getItem(id));
+    if (items.some((item) => !item)) {
+      this.reconcileSelection();
+      this.options.notify("That selection is no longer available.", "info");
+      return;
+    }
+    if (items.some((item) => item && item.version <= 0)) {
+      this.options.notify("Wait for the selected items to finish saving.", "info");
+      return;
+    }
+    const operations = items.flatMap((item) =>
+      item
         ? [
             {
               kind: "item.copy" as const,
-              sourceItemId: id,
+              sourceItemId: item.id,
               expectedVersion: item.version,
               newItemId: createId(),
               translate: { x: 20, y: 20 },
             },
           ]
-        : [];
-    });
-    if (operations.length === 0) return;
+        : [],
+    );
     if (operations.length > 100) {
       this.options.notify("Select 100 items or fewer for one copy.", "warning");
       return;
@@ -870,6 +973,19 @@ export class ToolController {
           translate: delta,
         });
       }
+    } else if (gesture.kind === "resize-card") {
+      const localPointer = inverseTransformPoint(
+        boardPoint(event, this.options.renderer),
+        gesture.capture.item.transform,
+      );
+      if (localPointer) {
+        gesture.geometry = resizedCardGeometry(
+          gesture.capture.item,
+          localPointer,
+          gesture.grabOffset,
+        );
+        this.options.renderer.showCardResizePreview(gesture.capture.item, gesture.geometry);
+      }
     } else if (gesture.kind === "marquee") {
       gesture.current = boardPoint(event, this.options.renderer);
       this.options.renderer.showMarquee(pointsBounds(gesture.start, gesture.current));
@@ -911,6 +1027,17 @@ export class ToolController {
           this.options.renderer.viewport.zoom,
         ),
       );
+    } else if (gesture.kind === "move") {
+      gesture.current = tapPoint;
+    } else if (gesture.kind === "resize-card") {
+      const localPointer = inverseTransformPoint(tapPoint, gesture.capture.item.transform);
+      if (localPointer) {
+        gesture.geometry = resizedCardGeometry(
+          gesture.capture.item,
+          localPointer,
+          gesture.grabOffset,
+        );
+      }
     }
     this.gesture = null;
     safeReleaseCapture(this.options.renderer.svg, event.pointerId);
@@ -1032,7 +1159,46 @@ export class ToolController {
   };
 
   private beginSelection(event: PointerEvent, point: Point): void {
-    const hit = this.options.model.hitTest(point, 5 / this.options.renderer.viewport.zoom);
+    const eventTarget = event.target instanceof Element ? event.target : null;
+    const resizeHandle = eventTarget?.closest<SVGGElement>("[data-resize-handle]");
+    if (resizeHandle) {
+      const itemId = resizeHandle.dataset.itemId;
+      const item = itemId ? this.options.model.getItem(itemId) : undefined;
+      if (!this.options.canDraw()) {
+        this.options.notify("Drawing is currently read only.", "warning");
+      } else if (
+        item &&
+        (item.kind === "sticky" || item.kind === "image") &&
+        item.version > 0 &&
+        this.selected.size === 1 &&
+        this.selected.has(item.id)
+      ) {
+        const localPointer = inverseTransformPoint(point, item.transform);
+        if (localPointer) {
+          const capture = {
+            item: structuredClone(item),
+            expectedVersion: item.version,
+          } satisfies CapturedCardResize;
+          this.gesture = {
+            kind: "resize-card",
+            pointerId: event.pointerId,
+            capture,
+            grabOffset: cardResizeGrabOffset(capture.item, localPointer),
+            geometry: structuredClone(capture.item.geometry),
+          };
+          this.options.renderer.showCardResizePreview(capture.item, this.gesture.geometry);
+        }
+      } else {
+        this.options.notify("Wait for this card to finish saving before resizing it.", "info");
+      }
+      event.preventDefault();
+      return;
+    }
+
+    const hit = this.options.model.hitTest(
+      point,
+      selectionHitPadding(event.pointerType, this.options.renderer.viewport.zoom),
+    );
     if (hit?.kind !== "sticky") this.lastStickyTap = null;
     if (hit?.kind !== "table") this.lastTableTap = null;
     if (hit?.kind !== "zone") this.lastZoneTap = null;
@@ -1063,6 +1229,8 @@ export class ToolController {
             previewSeq: 0,
             lastPreviewAt: 0,
           };
+        } else {
+          this.options.notify("Wait for the selected items to finish saving.", "info");
         }
       }
     } else {
@@ -1215,6 +1383,22 @@ export class ToolController {
         await this.options.commit({ kind: "items.batch", operations }, gesture.gestureId);
       return;
     }
+    if (gesture.kind === "resize-card") {
+      this.options.renderer.clearLocalPreview();
+      const before = gesture.capture.item.geometry;
+      if (
+        before.width === gesture.geometry.width &&
+        before.height === gesture.geometry.height &&
+        before.x === gesture.geometry.x &&
+        before.y === gesture.geometry.y
+      ) {
+        return;
+      }
+      await this.options.commit(
+        buildCapturedCardResizeOperation(gesture.capture, gesture.geometry),
+      );
+      return;
+    }
     if (gesture.kind === "marquee") {
       const bounds = pointsBounds(gesture.start, gesture.current);
       const hits = this.options.model.intersecting(bounds).map((item) => item.id);
@@ -1239,7 +1423,8 @@ export class ToolController {
       gesture.kind === "sticky" ||
       gesture.kind === "stamp" ||
       gesture.kind === "table" ||
-      gesture.kind === "zone"
+      gesture.kind === "zone" ||
+      gesture.kind === "resize-card"
     ) {
       this.options.renderer.clearLocalPreview();
       return;
