@@ -1,6 +1,7 @@
 import type { BoardModel, Bounds, ConnectorAnchor } from "../board/model";
 import { translateMatrix } from "../board/model";
 import type { BoardRenderer } from "../board/renderer";
+import { STICKY_COLOR_VALUES, UI_COLORS } from "../palette";
 import type {
   BatchItemOperation,
   BoardItem,
@@ -347,10 +348,10 @@ export function buildTableCreateOperation(
       kind: "table",
       style: {
         kind: "table",
-        borderColor: "#a8a59d",
-        fill: "#fffefa",
-        headerFill: "#e8edff",
-        textColor: "#20201e",
+        borderColor: UI_COLORS.borderStrong,
+        fill: UI_COLORS.surface,
+        headerFill: STICKY_COLOR_VALUES.lavender,
+        textColor: UI_COLORS.ink,
         fontSize: 16,
         opacity: 1,
       },
@@ -376,7 +377,7 @@ type ZoneCreateOperation = Extract<BatchItemOperation, { kind: "item.create" }> 
 export function buildZoneCreateOperation(
   itemId: string,
   center: Point,
-  title = "Zone",
+  title = "Section",
 ): ZoneCreateOperation {
   return {
     kind: "item.create",
@@ -385,9 +386,9 @@ export function buildZoneCreateOperation(
       kind: "zone",
       style: {
         kind: "zone",
-        borderColor: "#a8a59d",
-        fill: "#e8edff",
-        textColor: "#4f5b75",
+        borderColor: UI_COLORS.borderStrong,
+        fill: STICKY_COLOR_VALUES.sky,
+        textColor: UI_COLORS.ink,
         fontSize: 18,
         opacity: 0.18,
       },
@@ -1590,7 +1591,7 @@ export class ToolController {
     this.lastZoneTap = null;
     if (!this.options.canDraw()) return;
     if (item.version <= 0) {
-      this.options.notify("Wait for the zone to finish saving before renaming it.", "info");
+      this.options.notify("Wait for the section to finish saving before renaming it.", "info");
       return;
     }
     this.options.editZoneTitle(item);

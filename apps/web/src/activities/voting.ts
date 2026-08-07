@@ -1,14 +1,15 @@
 import { MAX_BATCH_OPERATIONS } from "@collab/protocol";
 
+import { DRAWING_COLOR_VALUES, STICKY_COLOR_VALUES, UI_COLORS } from "../palette";
 import type { BatchItemOperation, BoardItem, Matrix, Point, TableItem, TableStyle } from "../types";
 
 export const MAX_RENDERED_VOTE_TABLES = 32;
 export const VOTE_TABLE_STYLE = {
   kind: "table",
-  borderColor: "#8e4ec6",
-  fill: "#fffefa",
-  headerFill: "#f3e8ff",
-  textColor: "#20201e",
+  borderColor: DRAWING_COLOR_VALUES.purple,
+  fill: UI_COLORS.surface,
+  headerFill: STICKY_COLOR_VALUES.lavender,
+  textColor: UI_COLORS.ink,
   fontSize: 16,
   opacity: 1,
 } as const satisfies TableStyle;

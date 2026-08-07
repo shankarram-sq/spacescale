@@ -71,6 +71,20 @@ export const MAX_TABLE_CELL_TEXT_CODE_POINTS = 500;
 export const MAX_TABLE_TEXT_CODE_POINTS = 8_000;
 export const MAX_ZONE_TITLE_CODE_POINTS = 120;
 export const LINE_ARROWHEADS = ["none", "arrow"] as const;
+export const TEXT_FONT_FAMILIES = ["sans", "serif", "handwritten", "mono"] as const;
+
+export type TextFontFamily = (typeof TEXT_FONT_FAMILIES)[number];
+
+export const TEXT_FONT_STACKS: Readonly<Record<TextFontFamily, string>> = {
+  sans: 'Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+  serif: 'Georgia, "Times New Roman", Times, serif',
+  handwritten: '"Comic Sans MS", "Segoe Print", "Bradley Hand", cursive',
+  mono: 'ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace',
+};
+
+export function textFontStack(fontFamily: TextFontFamily): string {
+  return TEXT_FONT_STACKS[fontFamily];
+}
 
 export const ITEM_KINDS = [
   "pencil",
@@ -130,6 +144,7 @@ export interface TextStyle {
   kind: "text";
   color: string;
   fontSize: number;
+  fontFamily: TextFontFamily;
   opacity: number;
 }
 
@@ -773,7 +788,7 @@ export function normalizeLineStyle(value: unknown, path = "$style"): LineStyle {
 export function normalizeTextStyle(value: unknown, path = "$style"): TextStyle {
   const object = expectRecord(value, path);
   if (object.kind !== "text") fail('Expected style kind "text"', `${path}.kind`);
-  expectExactKeys(object, ["kind", "color", "fontSize", "opacity"], [], path);
+  expectExactKeys(object, ["kind", "color", "fontSize", "fontFamily", "opacity"], [], path);
   if (typeof object.fontSize !== "number" || !Number.isFinite(object.fontSize)) {
     fail("Font size must be a finite number", `${path}.fontSize`);
   }
@@ -784,6 +799,7 @@ export function normalizeTextStyle(value: unknown, path = "$style"): TextStyle {
     kind: "text",
     color: normalizeColor(object.color, `${path}.color`),
     fontSize,
+    fontFamily: expectLiteral(object.fontFamily, TEXT_FONT_FAMILIES, `${path}.fontFamily`),
     opacity: normalizeOpacity(object.opacity, `${path}.opacity`),
   };
 }

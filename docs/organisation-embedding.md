@@ -197,7 +197,7 @@ launch claim.
   changes the policy.
 
 All durable objects record opaque creator and last-editor IDs. Text, sticky
-text, zone titles, image descriptions, and table cells retain content-level
+text, section titles, image descriptions, and table cells retain content-level
 attribution. Owners can download **Attributed data JSON**, or a trusted service
 can call:
 

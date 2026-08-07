@@ -6,6 +6,7 @@ import {
   MAX_TABLE_CELL_TEXT_CODE_POINTS,
   MAX_ZONE_TITLE_CODE_POINTS,
   normalizeBoardItem,
+  textFontStack,
   validateClientFrame,
   validateDurableOperation,
 } from "@collab/protocol";
@@ -29,6 +30,7 @@ import {
   PRODUCT_HOME_LABEL,
   PRODUCT_NAME,
 } from "../branding";
+import { DRAWING_COLOR_VALUES, DRAWING_COLORS, STICKY_COLORS, UI_COLORS } from "../palette";
 import {
   DurableOutbox,
   type OutboxEntry,
@@ -79,6 +81,7 @@ import type {
   SpotlightFrame,
   StampKind,
   TableGeometry,
+  TextFontFamily,
   ToolName,
 } from "../types";
 import { canRoleDraw, createId, PROTOCOL_VERSION } from "../types";
@@ -89,34 +92,37 @@ const TOOL_DEFINITIONS: Array<{
   shortcut: string;
   glyph: string;
   iconSvg?: string;
+  dockLabel: string;
 }> = [
-  { name: "select", label: "Select and move", shortcut: "V", glyph: "↖" },
-  { name: "pencil", label: "Pencil", shortcut: "P", glyph: "✎" },
-  { name: "line", label: "Straight line", shortcut: "L", glyph: "╱" },
-  { name: "rectangle", label: "Rectangle", shortcut: "R", glyph: "□" },
-  { name: "ellipse", label: "Ellipse", shortcut: "O", glyph: "○" },
-  { name: "text", label: "Text", shortcut: "T", glyph: "T" },
-  { name: "sticky", label: "Sticky note", shortcut: "N", glyph: "▣" },
-  { name: "stamp", label: "Stamp", shortcut: "K", glyph: "★" },
+  { name: "select", label: "Select and move", dockLabel: "Select", shortcut: "V", glyph: "↖" },
+  { name: "pan", label: "Pan canvas", dockLabel: "Hand", shortcut: "H", glyph: "✋" },
+  { name: "pencil", label: "Pencil", dockLabel: "Draw", shortcut: "P", glyph: "✎" },
+  { name: "line", label: "Straight line", dockLabel: "Line", shortcut: "L", glyph: "╱" },
+  { name: "rectangle", label: "Rectangle", dockLabel: "Shape", shortcut: "R", glyph: "□" },
+  { name: "ellipse", label: "Ellipse", dockLabel: "Circle", shortcut: "O", glyph: "○" },
+  { name: "text", label: "Text", dockLabel: "Text", shortcut: "T", glyph: "T" },
+  { name: "sticky", label: "Sticky note", dockLabel: "Sticky", shortcut: "N", glyph: "▣" },
   {
     name: "image",
     label: "Add image",
+    dockLabel: "Image",
     shortcut: "I",
     glyph: "",
     iconSvg:
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>',
   },
-  { name: "table", label: "Table", shortcut: "G", glyph: "▦" },
-  { name: "zone", label: "Zone", shortcut: "Z", glyph: "▭" },
+  { name: "table", label: "Table", dockLabel: "Table", shortcut: "G", glyph: "▦" },
+  { name: "stamp", label: "Stamp", dockLabel: "Stamp", shortcut: "K", glyph: "★" },
+  { name: "zone", label: "Section", dockLabel: "Section", shortcut: "Z", glyph: "▭" },
   {
     name: "eraser",
     label: "Eraser",
+    dockLabel: "Eraser",
     shortcut: "E",
     glyph: "",
     iconSvg:
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false" aria-hidden="true"><path d="m7 21-4-4a2.83 2.83 0 0 1 0-4L13.1 2.9a2.83 2.83 0 0 1 4 0l4 4a2.83 2.83 0 0 1 0 4L11 21"/><path d="m5 11 9 9"/><path d="M21 21H7"/></svg>',
   },
-  { name: "pan", label: "Pan canvas", shortcut: "H", glyph: "✋" },
 ];
 
 const DRAW_TOOLS = new Set<ToolName>([
@@ -132,6 +138,14 @@ const DRAW_TOOLS = new Set<ToolName>([
   "zone",
   "eraser",
 ]);
+
+const BRUSH_PRESETS = {
+  pen: { width: 4, opacity: 1 },
+  marker: { width: 10, opacity: 1 },
+  highlighter: { width: 20, opacity: 0.35 },
+} as const;
+
+type BrushPreset = keyof typeof BRUSH_PRESETS;
 
 const SPOTLIGHT_UPDATE_THROTTLE_MS = 100;
 const SPOTLIGHT_HEARTBEAT_MS = 1_000;
@@ -151,6 +165,7 @@ type StyleState = {
   opacity: number;
   lineArrowhead: "none" | "arrow";
   fontSize: number;
+  fontFamily: TextFontFamily;
   stickyFill: string;
   stickyTextColor: string;
   stickyFontSize: number;
@@ -286,34 +301,76 @@ export function clampZoneTitle(value: string): string {
   return [...value].slice(0, MAX_ZONE_TITLE_CODE_POINTS).join("");
 }
 
-export const STICKY_COLORS = [
-  { name: "Yellow", value: "#fde68a" },
-  { name: "Pink", value: "#fecdd3" },
-  { name: "Blue", value: "#bfdbfe" },
-  { name: "Green", value: "#bbf7d0" },
-  { name: "Purple", value: "#ddd6fe" },
-  { name: "Orange", value: "#fed7aa" },
-] as const;
+export { STICKY_COLORS } from "../palette";
 
-export function buildStickyColourOperations(
+export function elementColour(item: BoardItem): string | null {
+  switch (item.kind) {
+    case "sticky":
+    case "table":
+    case "zone":
+      return item.style.fill;
+    case "image":
+      return null;
+    default:
+      return item.style.color;
+  }
+}
+
+export function buildElementColourOperations(
   items: readonly BoardItem[],
-  fill: string,
+  color: string,
 ): BatchItemOperation[] {
-  if (items.length === 0 || items.some((item) => item.kind !== "sticky" || item.version <= 0)) {
+  if (items.length === 0 || items.some((item) => item.version <= 0 || item.kind === "image")) {
     return [];
   }
-  return items.flatMap((item) =>
-    item.kind === "sticky" && item.style.fill !== fill
+  return items.flatMap((item) => {
+    if (item.kind === "image") return [];
+    const nextStyle =
+      item.kind === "sticky" || item.kind === "table" || item.kind === "zone"
+        ? item.style.fill === color
+          ? null
+          : { ...item.style, fill: color }
+        : item.style.color === color
+          ? null
+          : { ...item.style, color };
+    return nextStyle
       ? [
           {
             kind: "item.update" as const,
             itemId: item.id,
             expectedVersion: item.version,
-            patch: { style: { ...item.style, fill } },
+            patch: { style: nextStyle },
           },
         ]
-      : [],
-  );
+      : [];
+  });
+}
+
+export function buildTextStyleOperations(
+  items: readonly BoardItem[],
+  patch: { fontFamily?: TextFontFamily; fontSize?: number },
+): BatchItemOperation[] {
+  if (items.length === 0 || items.some((item) => item.kind !== "text" || item.version <= 0)) {
+    return [];
+  }
+  return items.flatMap((item) => {
+    if (item.kind !== "text") return [];
+    const nextStyle = { ...item.style, ...patch };
+    if (
+      nextStyle.fontFamily === item.style.fontFamily &&
+      nextStyle.fontSize === item.style.fontSize
+    ) {
+      return [];
+    }
+    return [
+      {
+        kind: "item.update" as const,
+        itemId: item.id,
+        expectedVersion: item.version,
+        patch: { style: nextStyle },
+      },
+    ];
+  });
 }
 
 export function savedAuthoritativeItems(
@@ -427,17 +484,18 @@ export class BoardApp {
   private phase: ConnectionPhase = "idle";
   private history: HistoryState;
   private style: StyleState = {
-    color: "#20201e",
+    color: DRAWING_COLOR_VALUES.ink,
     width: 4,
     opacity: 1,
     lineArrowhead: "none",
     fontSize: 28,
+    fontFamily: "sans",
     stickyFill: STICKY_COLORS[0].value,
-    stickyTextColor: "#292524",
+    stickyTextColor: UI_COLORS.ink,
     stickyFontSize: 20,
     stickyOpacity: 1,
     stampKind: "star",
-    stampColor: "#e5484d",
+    stampColor: DRAWING_COLOR_VALUES.red,
     stampOpacity: 1,
     tableRows: 3,
     tableColumns: 3,
@@ -845,7 +903,7 @@ export class BoardApp {
         <main class="board-stage">
           <nav class="tool-rail" aria-label="Drawing tools" data-testid="tool-rail"></nav>
           <section class="canvas-wrap" data-canvas-host>
-            <p class="sr-only" id="canvas-help">Use the tool rail to draw. Hold Space to pan. Scroll or pinch to zoom.</p>
+            <p class="sr-only" id="canvas-help">Use the bottom toolbar to draw. Hold Space to pan. Scroll or pinch to zoom.</p>
             <div class="canvas-hint" data-canvas-hint aria-hidden="true">Drag anywhere to begin</div>
             <dialog class="claim-dialog table-picker" data-testid="table-picker" aria-labelledby="table-picker-title" aria-describedby="table-picker-note">
               <form data-table-picker-form>
@@ -870,9 +928,28 @@ export class BoardApp {
             <div class="selection-actions" data-testid="selection-actions" hidden>
               <button type="button" data-selection-alt aria-label="Edit image alt text" hidden>Edit alt text</button>
               <div class="selection-colour-wrap" hidden>
-                <button type="button" data-selection-colour aria-label="Change selected sticky note colour" aria-haspopup="menu" aria-controls="selection-colour-menu" aria-expanded="false">Colour</button>
-                <div class="selection-colour-menu" data-testid="selection-colour-menu" id="selection-colour-menu" role="menu" aria-label="Sticky note colour" hidden></div>
+                <button type="button" data-selection-colour aria-label="Change selected element colour" aria-haspopup="menu" aria-controls="selection-colour-menu" aria-expanded="false">Colour</button>
+                <div class="selection-colour-menu" data-testid="selection-colour-menu" id="selection-colour-menu" role="menu" aria-label="Element colour" hidden></div>
               </div>
+              <div class="selection-font-controls" data-selection-font-controls hidden>
+                <select data-selection-font-family aria-label="Font family">
+                  <option value="" disabled>Mixed fonts</option>
+                  <option value="sans">Sans</option>
+                  <option value="serif">Serif</option>
+                  <option value="handwritten">Handwritten</option>
+                  <option value="mono">Mono</option>
+                </select>
+                <select data-selection-font-size aria-label="Text size">
+                  <option value="" disabled>Mixed sizes</option>
+                  <option value="16">Small</option>
+                  <option value="24">Medium</option>
+                  <option value="28">Default</option>
+                  <option value="36">Large</option>
+                  <option value="52">Extra large</option>
+                  <option value="72">Huge</option>
+                </select>
+              </div>
+              <span class="selection-actions-divider" data-selection-style-divider aria-hidden="true" hidden></span>
               <button type="button" data-selection-copy aria-label="Copy selected items">Copy</button>
               <div class="selection-arrange-wrap">
                 <button type="button" data-selection-arrange aria-label="Arrange selected items" aria-haspopup="menu" aria-controls="arrange-menu" aria-expanded="false">Arrange</button>
@@ -891,6 +968,13 @@ export class BoardApp {
               <button type="button" data-selection-clear-votes aria-label="Clear votes from selected template" hidden>Clear votes</button>
               <button type="button" data-selection-delete aria-label="Delete selected items">Delete</button>
             </div>
+            <div class="quick-style-bar" data-testid="quick-style-bar" aria-label="Brush and colour" hidden>
+              <button class="brush-preset" type="button" data-brush-preset="pen" aria-pressed="true">Pen</button>
+              <button class="brush-preset" type="button" data-brush-preset="marker" aria-pressed="false">Marker</button>
+              <button class="brush-preset" type="button" data-brush-preset="highlighter" aria-pressed="false">Highlighter</button>
+              <span class="quick-style-divider" aria-hidden="true"></span>
+              <div data-quick-colours></div>
+            </div>
             <div class="zoom-controls" aria-label="Canvas zoom">
               <button type="button" data-zoom-out aria-label="Zoom out">−</button>
               <button type="button" data-zoom-reset aria-label="Reset zoom"><span data-zoom-label>100%</span></button>
@@ -903,7 +987,7 @@ export class BoardApp {
         <input type="file" data-testid="image-input" data-image-input accept="image/png,image/jpeg,image/webp,image/gif" hidden />
 
         <div class="style-wrap">
-          <button class="style-trigger" type="button" data-testid="style-button" aria-label="Open drawing style" aria-controls="style-popover" aria-expanded="false">
+          <button class="style-trigger" type="button" data-style-trigger aria-label="Open drawing style" aria-controls="style-popover" aria-expanded="false">
             <span class="style-swatch" data-style-swatch aria-hidden="true"></span>
             <span class="style-width" data-style-width aria-hidden="true"></span>
           </button>
@@ -917,11 +1001,17 @@ export class BoardApp {
               <legend data-style-color-label>Colour</legend>
               <div class="color-grid" data-color-grid></div>
               <div class="color-grid sticky-color-grid" data-sticky-color-grid hidden></div>
-              <label class="custom-color" title="Custom colour" data-custom-color><span class="sr-only">Custom colour</span><input type="color" value="#20201e" data-style-color /></label>
+              <label class="custom-color" title="Custom colour" data-custom-color><span class="sr-only">Custom colour</span><input type="color" value="${UI_COLORS.ink}" data-style-color /></label>
             </fieldset>
             <label class="range-row" data-style-stroke-row><span>Stroke</span><output data-width-output>4</output><input type="range" min="1" max="32" value="4" step="1" data-style-stroke /></label>
             <label class="style-checkbox-row" data-line-arrow-row hidden><input type="checkbox" data-line-arrow /> <span>End arrow</span><span class="line-arrow-preview" aria-hidden="true">→</span></label>
             <label class="range-row"><span>Opacity</span><output data-opacity-output>100%</output><input type="range" min="10" max="100" value="100" step="5" data-style-opacity /></label>
+            <label class="style-select-row" data-style-font-family-row><span>Font</span><select data-style-font-family>
+              <option value="sans">Sans</option>
+              <option value="serif">Serif</option>
+              <option value="handwritten">Handwritten</option>
+              <option value="mono">Mono</option>
+            </select></label>
             <label class="range-row" data-style-font-row><span>Text</span><output data-font-output>28</output><input type="range" min="8" max="96" value="28" step="1" data-style-font /></label>
           </section>
         </div>
@@ -991,9 +1081,10 @@ export class BoardApp {
       glyph.setAttribute("aria-hidden", "true");
       if (definition.iconSvg) glyph.innerHTML = definition.iconSvg;
       else glyph.textContent = definition.glyph;
-      const key = document.createElement("kbd");
-      key.textContent = definition.shortcut;
-      button.append(glyph, key);
+      const label = document.createElement("span");
+      label.className = "tool-label";
+      label.textContent = definition.dockLabel;
+      button.append(glyph, label);
       rail.append(button);
     }
     const divider = document.createElement("span");
@@ -1003,22 +1094,17 @@ export class BoardApp {
     const styleShortcut = document.createElement("button");
     styleShortcut.type = "button";
     styleShortcut.dataset.openStyle = "true";
+    styleShortcut.dataset.testid = "style-button";
     styleShortcut.setAttribute("aria-label", "Drawing style");
-    styleShortcut.innerHTML = '<span class="rail-color-dot" aria-hidden="true"></span><kbd>S</kbd>';
+    styleShortcut.setAttribute("aria-controls", "style-popover");
+    styleShortcut.setAttribute("aria-pressed", "false");
+    styleShortcut.innerHTML =
+      '<span class="rail-color-dot" aria-hidden="true"></span><span class="tool-label">Style</span>';
     rail.append(styleShortcut);
 
-    const palette = [
-      "#20201e",
-      "#e5484d",
-      "#f97316",
-      "#d4a72c",
-      "#30a46c",
-      "#0d9488",
-      "#3e63dd",
-      "#8e4ec6",
-    ];
     const colorGrid = query(this.root, "[data-color-grid]", HTMLElement);
-    palette.forEach((color) => {
+    const quickColours = query(this.root, "[data-quick-colours]", HTMLElement);
+    DRAWING_COLORS.forEach(({ value: color }) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "color-choice";
@@ -1027,6 +1113,14 @@ export class BoardApp {
       button.setAttribute("aria-pressed", String(color === this.style.color));
       button.style.setProperty("--choice-color", color);
       colorGrid.append(button);
+      const quickButton = document.createElement("button");
+      quickButton.type = "button";
+      quickButton.className = "quick-colour";
+      quickButton.dataset.quickColor = color;
+      quickButton.setAttribute("aria-label", `Draw with ${color}`);
+      quickButton.setAttribute("aria-pressed", String(color === this.style.color));
+      quickButton.style.setProperty("--choice-color", color);
+      quickColours.append(quickButton);
     });
     const stickyColorGrid = query(this.root, "[data-sticky-color-grid]", HTMLElement);
     STICKY_COLORS.forEach(({ name, value }) => {
@@ -1044,16 +1138,27 @@ export class BoardApp {
       "[data-testid='selection-colour-menu']",
       HTMLElement,
     );
-    STICKY_COLORS.forEach(({ name, value }) => {
+    const addSelectionColour = (
+      name: string,
+      value: string,
+      palette: "sticky" | "drawing",
+    ): void => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "selection-colour-choice";
-      button.dataset.selectionStickyColour = value;
+      button.dataset.selectionColour = value;
+      button.dataset.palette = palette;
       button.setAttribute("role", "menuitemradio");
-      button.setAttribute("aria-label", `${name} sticky note`);
+      button.setAttribute("aria-label", `${name} colour`);
       button.setAttribute("aria-checked", "false");
       button.style.setProperty("--choice-color", value);
       selectionColourMenu.append(button);
+    };
+    STICKY_COLORS.forEach(({ name, value }) => {
+      addSelectionColour(name, value, "sticky");
+    });
+    DRAWING_COLORS.forEach(({ name, value }) => {
+      addSelectionColour(name, value, "drawing");
     });
     const stampGrid = query(this.root, "[data-stamp-grid]", HTMLElement);
     STAMP_CHOICES.forEach(({ kind, name, glyph }) => {
@@ -1423,35 +1528,67 @@ export class BoardApp {
     );
   }
 
-  private async recolourSelectedStickies(fill: string): Promise<void> {
+  private async recolourSelectedElements(color: string): Promise<void> {
     if (!this.canCommit()) return;
     const selectedIds = [...this.tools.selection];
     const limit = Math.max(1, Math.min(100, Math.floor(this.bootstrap.limits.maxBatchItems)));
     if (selectedIds.length > limit) {
-      this.notify(`Recolour ${limit} sticky notes or fewer at a time.`, "warning");
+      this.notify(`Recolour ${limit} elements or fewer at a time.`, "warning");
       return;
     }
-    const items = selectedIds.flatMap((id) => {
-      const rendered = this.model.getItem(id);
-      const authoritative = this.model.authoritativeItems.get(id);
-      return rendered && authoritative && rendered.version > 0 ? [rendered] : [];
-    });
-    if (items.length !== selectedIds.length) {
+    const items = savedAuthoritativeItems(
+      selectedIds,
+      this.model.items,
+      this.model.authoritativeItems,
+    );
+    if (!items) {
       this.tools.reconcileSelection();
-      this.notify("Wait for every selected sticky note to finish saving.", "info");
+      this.notify("Wait for every selected element to finish saving.", "info");
       return;
     }
-    const operations = buildStickyColourOperations(items, fill);
+    if (items.some((item) => !this.canModifyItem(item))) {
+      this.notify("You can edit only work that you created.", "warning");
+      return;
+    }
+    const operations = buildElementColourOperations(items, color);
     if (operations.length === 0) {
       this.notify(
-        items.every((item) => item.kind === "sticky" && item.style.fill === fill)
-          ? "Those sticky notes already use that colour."
-          : "Select only saved sticky notes to change their colour.",
+        items.every((item) => elementColour(item) === color)
+          ? "Those elements already use that colour."
+          : "The selected element does not support colour changes.",
         "info",
       );
       return;
     }
     await this.commit({ kind: "items.batch", operations });
+  }
+
+  private async restyleSelectedText(patch: {
+    fontFamily?: TextFontFamily;
+    fontSize?: number;
+  }): Promise<void> {
+    if (!this.canCommit()) return;
+    const selectedIds = [...this.tools.selection];
+    const limit = Math.max(1, Math.min(100, Math.floor(this.bootstrap.limits.maxBatchItems)));
+    if (selectedIds.length > limit) {
+      this.notify(`Style ${limit} text elements or fewer at a time.`, "warning");
+      return;
+    }
+    const items = savedAuthoritativeItems(
+      selectedIds,
+      this.model.items,
+      this.model.authoritativeItems,
+    );
+    if (!items) {
+      this.notify("Wait for every selected text element to finish saving.", "info");
+      return;
+    }
+    if (items.some((item) => !this.canModifyItem(item))) {
+      this.notify("You can edit only work that you created.", "warning");
+      return;
+    }
+    const operations = buildTextStyleOperations(items, patch);
+    if (operations.length > 0) await this.commit({ kind: "items.batch", operations });
   }
 
   private async arrangeSelection(kind: ArrangeKind): Promise<void> {
@@ -1526,12 +1663,8 @@ export class BoardApp {
     tableHeader.addEventListener("change", () => {
       this.style.tableHeaderRow = tableHeader.checked;
     });
-    const toggleStyle = (): void =>
-      this.togglePopover(
-        this.stylePopover,
-        query(this.root, "[data-testid='style-button']", HTMLButtonElement),
-      );
-    query(this.root, "[data-testid='style-button']", HTMLButtonElement).addEventListener(
+    const toggleStyle = (): void => this.setStylePopoverOpen(Boolean(this.stylePopover.hidden));
+    query(this.root, "[data-style-trigger]", HTMLButtonElement).addEventListener(
       "click",
       toggleStyle,
     );
@@ -1542,6 +1675,21 @@ export class BoardApp {
         const next = button.dataset.color ?? this.style.color;
         if (this.tools.tool === "stamp") this.style.stampColor = next;
         else this.style.color = next;
+        this.updateStyleControls();
+      });
+    }
+    for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-quick-color]")) {
+      button.addEventListener("click", () => {
+        this.style.color = button.dataset.quickColor ?? this.style.color;
+        this.updateStyleControls();
+      });
+    }
+    for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-brush-preset]")) {
+      button.addEventListener("click", () => {
+        const preset = button.dataset.brushPreset as BrushPreset | undefined;
+        if (!preset) return;
+        this.style.width = BRUSH_PRESETS[preset].width;
+        this.style.opacity = BRUSH_PRESETS[preset].opacity;
         this.updateStyleControls();
       });
     }
@@ -1588,6 +1736,13 @@ export class BoardApp {
       else this.style.fontSize = Number(font.value);
       this.updateStyleControls();
     });
+    query(this.root, "[data-style-font-family]", HTMLSelectElement).addEventListener(
+      "change",
+      (event) => {
+        this.style.fontFamily = (event.currentTarget as HTMLSelectElement).value as TextFontFamily;
+        this.updateStyleControls();
+      },
+    );
 
     this.undoButton.addEventListener("click", () => void this.undo());
     this.redoButton.addEventListener("click", () => void this.redo());
@@ -1596,14 +1751,29 @@ export class BoardApp {
       this.setSelectionColourMenuOpen(this.selectionColourMenu.hidden !== false);
     });
     for (const button of this.selectionColourMenu.querySelectorAll<HTMLButtonElement>(
-      "[data-selection-sticky-colour]",
+      "[data-selection-colour]",
     )) {
       button.addEventListener("click", () => {
-        const fill = button.dataset.selectionStickyColour;
-        if (fill) void this.recolourSelectedStickies(fill);
+        const color = button.dataset.selectionColour;
+        if (color) void this.recolourSelectedElements(color);
         this.setSelectionColourMenuOpen(false);
       });
     }
+    query(
+      this.selectionActions,
+      "[data-selection-font-family]",
+      HTMLSelectElement,
+    ).addEventListener("change", (event) => {
+      const fontFamily = (event.currentTarget as HTMLSelectElement).value as TextFontFamily;
+      void this.restyleSelectedText({ fontFamily });
+    });
+    query(this.selectionActions, "[data-selection-font-size]", HTMLSelectElement).addEventListener(
+      "change",
+      (event) => {
+        const fontSize = Number((event.currentTarget as HTMLSelectElement).value);
+        void this.restyleSelectedText({ fontSize });
+      },
+    );
     this.selectionColourMenu.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
@@ -2191,7 +2361,7 @@ export class BoardApp {
       return;
     }
     if (item.version <= 0) {
-      this.notify("Wait for the zone to finish saving before renaming it.", "info");
+      this.notify("Wait for the section to finish saving before renaming it.", "info");
       return;
     }
     void this.closeTextEditor(false);
@@ -2224,10 +2394,10 @@ export class BoardApp {
     editor.type = "text";
     editor.className = "canvas-zone-title-editor";
     editor.dataset.testid = "zone-title-editor";
-    editor.setAttribute("aria-label", "Edit zone title");
+    editor.setAttribute("aria-label", "Edit section title");
     editor.maxLength = MAX_ZONE_TITLE_CODE_POINTS * 2;
     editor.value = recovery?.title ?? item.geometry.title;
-    editor.placeholder = "Zone title";
+    editor.placeholder = "Section title";
     editor.style.left = `${Math.max(8, Math.min(window.innerWidth - width - 8, left))}px`;
     editor.style.top = `${Math.max(60, Math.min(window.innerHeight - height - 8, top))}px`;
     editor.style.width = `${width}px`;
@@ -2265,7 +2435,7 @@ export class BoardApp {
     const editor = this.zoneTitleEditor;
     const edit = this.zoneTitleEdit;
     if (!editor) return;
-    const title = clampZoneTitle(editor.value.replace(/[\r\n]/gu, " ")).trim() || "Zone";
+    const title = clampZoneTitle(editor.value.replace(/[\r\n]/gu, " ")).trim() || "Section";
     const draft: ZoneTitleDraftRecovery | null = edit
       ? {
           itemId: edit.itemId,
@@ -2555,7 +2725,7 @@ export class BoardApp {
       : tableCellDraft
         ? "table cell draft"
         : zoneTitleDraft
-          ? "zone title draft"
+          ? "section title draft"
           : null;
     this.notify(
       retainedDraft
@@ -2982,6 +3152,7 @@ export class BoardApp {
       editor.style.top = `${Math.min(window.innerHeight - 100, Math.max(60, client[1] - (textItem?.style.fontSize ?? style.fontSize)))}px`;
       editor.style.fontSize = `${Math.max(14, Math.min(48, (textItem?.style.fontSize ?? style.fontSize) * zoom))}px`;
       editor.style.color = textItem?.style.color ?? style.color;
+      editor.style.fontFamily = textFontStack(textItem?.style.fontFamily ?? style.fontFamily);
     }
     document.body.append(editor);
     this.textEditor = editor;
@@ -2998,7 +3169,12 @@ export class BoardApp {
       this.renderer.showLocalText(
         textPoint,
         editor.value,
-        textItem?.style ?? { color: style.color, fontSize: style.fontSize, opacity: style.opacity },
+        textItem?.style ?? {
+          color: style.color,
+          fontSize: style.fontSize,
+          fontFamily: style.fontFamily,
+          opacity: style.opacity,
+        },
         textItem?.transform,
       );
     };
@@ -3075,6 +3251,7 @@ export class BoardApp {
                 kind: "text",
                 color: this.style.color,
                 fontSize: this.style.fontSize,
+                fontFamily: this.style.fontFamily,
                 opacity: this.style.opacity,
               },
               transform: [1, 0, 0, 1, 0, 0],
@@ -4155,6 +4332,8 @@ export class BoardApp {
     const sticky = this.tools.tool === "sticky";
     const stamp = this.tools.tool === "stamp";
     const line = this.tools.tool === "line";
+    const text = this.tools.tool === "text";
+    const pencil = this.tools.tool === "pencil";
     const activeColor = sticky
       ? this.style.stickyFill
       : stamp
@@ -4179,6 +4358,7 @@ export class BoardApp {
       this.style.lineArrowhead === "arrow";
     query(this.root, "[data-style-opacity]", HTMLInputElement).value = String(activeOpacity * 100);
     query(this.root, "[data-style-font]", HTMLInputElement).value = String(activeFontSize);
+    query(this.root, "[data-style-font-family]", HTMLSelectElement).value = this.style.fontFamily;
     query(this.root, "[data-width-output]", HTMLOutputElement).value = String(this.style.width);
     query(this.root, "[data-opacity-output]", HTMLOutputElement).value =
       `${Math.round(activeOpacity * 100)}%`;
@@ -4189,7 +4369,9 @@ export class BoardApp {
     query(this.root, "[data-custom-color]", HTMLElement).hidden = sticky;
     query(this.root, "[data-style-stroke-row]", HTMLElement).hidden = sticky || stamp;
     query(this.root, "[data-line-arrow-row]", HTMLElement).hidden = !line;
-    query(this.root, "[data-style-font-row]", HTMLElement).hidden = stamp;
+    query(this.root, "[data-style-font-row]", HTMLElement).hidden = !(sticky || text);
+    query(this.root, "[data-style-font-family-row]", HTMLElement).hidden = !text;
+    query(this.root, "[data-testid='quick-style-bar']", HTMLElement).hidden = !pencil;
     query(this.root, "[data-style-color-label]", HTMLElement).textContent = sticky
       ? "Sticky colour"
       : stamp
@@ -4202,7 +4384,7 @@ export class BoardApp {
         : line
           ? "New lines"
           : "New marks";
-    query(this.root, "[data-testid='style-button']", HTMLButtonElement).setAttribute(
+    query(this.root, "[data-style-trigger]", HTMLButtonElement).setAttribute(
       "aria-label",
       sticky
         ? "Open sticky note style"
@@ -4214,6 +4396,21 @@ export class BoardApp {
     );
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-color]")) {
       button.setAttribute("aria-pressed", String(button.dataset.color === activeColor));
+    }
+    for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-quick-color]")) {
+      button.setAttribute("aria-pressed", String(button.dataset.quickColor === this.style.color));
+    }
+    for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-brush-preset]")) {
+      const preset = button.dataset.brushPreset as BrushPreset | undefined;
+      const values = preset ? BRUSH_PRESETS[preset] : undefined;
+      button.setAttribute(
+        "aria-pressed",
+        String(
+          values !== undefined &&
+            this.style.width === values.width &&
+            this.style.opacity === values.opacity,
+        ),
+      );
     }
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-sticky-color]")) {
       button.setAttribute(
@@ -4298,28 +4495,79 @@ export class BoardApp {
     remove.title = pendingTitle;
 
     const colourWrap = query(this.selectionActions, ".selection-colour-wrap", HTMLElement);
-    const allStickies =
+    const allFillItems =
       selectedItems.length === selectedIds.length &&
       selectedItems.length > 0 &&
-      selectedItems.every((item) => item.kind === "sticky");
-    colourWrap.hidden = !allStickies;
-    this.selectionColourButton.disabled = !mutationReady || !allSelectedOwned || !allStickies;
+      selectedItems.every(
+        (item) => item.kind === "sticky" || item.kind === "table" || item.kind === "zone",
+      );
+    const allStrokeOrTextItems =
+      selectedItems.length === selectedIds.length &&
+      selectedItems.length > 0 &&
+      selectedItems.every(
+        (item) =>
+          elementColour(item) !== null &&
+          item.kind !== "sticky" &&
+          item.kind !== "table" &&
+          item.kind !== "zone",
+      );
+    const selectionPalette = allFillItems ? "sticky" : allStrokeOrTextItems ? "drawing" : null;
+    colourWrap.hidden = selectionPalette === null;
+    this.selectionColourButton.disabled =
+      !mutationReady || !allSelectedOwned || selectionPalette === null;
     this.selectionColourButton.title = pendingTitle;
     if (colourWrap.hidden || this.selectionColourButton.disabled) {
       this.setSelectionColourMenuOpen(false);
     }
-    const stickyFills = new Set(
-      selectedItems.flatMap((item) => (item.kind === "sticky" ? [item.style.fill] : [])),
+    const selectedColours = new Set(
+      selectedItems.flatMap((item) => {
+        const color = elementColour(item);
+        return color ? [color] : [];
+      }),
     );
-    const selectedFill = stickyFills.size === 1 ? [...stickyFills][0] : undefined;
+    const selectedColour = selectedColours.size === 1 ? [...selectedColours][0] : undefined;
     for (const button of this.selectionColourMenu.querySelectorAll<HTMLButtonElement>(
-      "[data-selection-sticky-colour]",
+      "[data-selection-colour]",
     )) {
+      button.hidden = button.dataset.palette !== selectionPalette;
       button.setAttribute(
         "aria-checked",
-        String(selectedFill !== undefined && button.dataset.selectionStickyColour === selectedFill),
+        String(selectedColour !== undefined && button.dataset.selectionColour === selectedColour),
       );
     }
+    const fontControls = query(
+      this.selectionActions,
+      "[data-selection-font-controls]",
+      HTMLElement,
+    );
+    const allText =
+      selectedItems.length === selectedIds.length &&
+      selectedItems.length > 0 &&
+      selectedItems.every((item) => item.kind === "text");
+    fontControls.hidden = !allText;
+    const fontFamily = query(fontControls, "[data-selection-font-family]", HTMLSelectElement);
+    const fontSize = query(fontControls, "[data-selection-font-size]", HTMLSelectElement);
+    fontFamily.disabled = !mutationReady || !allSelectedOwned || !allText;
+    fontSize.disabled = fontFamily.disabled;
+    const textItems = selectedItems.filter((item) => item.kind === "text");
+    const selectedFontFamilies = new Set(textItems.map((item) => item.style.fontFamily));
+    const selectedFontSizes = new Set(textItems.map((item) => item.style.fontSize));
+    fontFamily.value = selectedFontFamilies.size === 1 ? ([...selectedFontFamilies][0] ?? "") : "";
+    const selectedFontSize = selectedFontSizes.size === 1 ? [...selectedFontSizes][0] : undefined;
+    fontSize.querySelector<HTMLOptionElement>("[data-current-size]")?.remove();
+    if (
+      selectedFontSize !== undefined &&
+      !fontSize.querySelector(`option[value="${selectedFontSize}"]`)
+    ) {
+      const option = document.createElement("option");
+      option.value = String(selectedFontSize);
+      option.textContent = `${selectedFontSize}px`;
+      option.dataset.currentSize = "true";
+      fontSize.append(option);
+    }
+    fontSize.value = selectedFontSize === undefined ? "" : String(selectedFontSize);
+    query(this.selectionActions, "[data-selection-style-divider]", HTMLElement).hidden =
+      colourWrap.hidden && fontControls.hidden;
     const alt = query(this.selectionActions, "[data-selection-alt]", HTMLButtonElement);
     const clearVotes = query(
       this.selectionActions,
@@ -4420,8 +4668,16 @@ export class BoardApp {
 
   private setStylePopoverOpen(open: boolean): void {
     this.stylePopover.hidden = !open;
-    query(this.root, "[data-testid='style-button']", HTMLButtonElement).setAttribute(
+    query(this.root, "[data-style-trigger]", HTMLButtonElement).setAttribute(
       "aria-expanded",
+      String(open),
+    );
+    query(this.root, "[data-open-style]", HTMLButtonElement).setAttribute(
+      "aria-expanded",
+      String(open),
+    );
+    query(this.root, "[data-open-style]", HTMLButtonElement).setAttribute(
+      "aria-pressed",
       String(open),
     );
     if (!open) return;

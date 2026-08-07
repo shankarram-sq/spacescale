@@ -61,6 +61,7 @@ export function textStyle(overrides: Partial<TextStyle> = {}): TextStyle {
     kind: "text",
     color: "#112233",
     fontSize: 24,
+    fontFamily: "sans",
     opacity: 1,
     ...overrides,
   };

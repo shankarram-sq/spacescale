@@ -1,3 +1,4 @@
+import { textFontStack } from "@collab/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MAX_RENDERED_VOTE_TABLES, VOTE_TABLE_STYLE } from "../activities/voting";
@@ -11,10 +12,39 @@ import {
   selectionResizeHandle,
   selectionResizeHandles,
   tableDimensionResizeHandles,
+  textNode,
   wrapStickyText,
   wrapTableCellText,
   zoneNode,
 } from "./renderer";
+
+describe("canvas text rendering", () => {
+  beforeEach(() => {
+    vi.stubGlobal("document", {
+      createElementNS: (_namespace: string, name: string) => fakeSvgNode(name),
+    });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("renders the persisted allowlisted font family for every text line", () => {
+    const node = textNode(
+      { x: 12, y: 34, text: "First\nSecond" },
+      {
+        kind: "text",
+        color: "#112233",
+        fontSize: 28,
+        fontFamily: "handwritten",
+        opacity: 0.8,
+      },
+    ) as unknown as FakeSvgNode;
+
+    expect(node.attributes.get("font-family")).toBe(textFontStack("handwritten"));
+    expect(node.attributes.get("font-size")).toBe("28");
+    expect(node.children.map((child) => child.textContent)).toEqual(["First", "Second"]);
+    expect(node.children[1]?.attributes.get("dy")).toBe("1.2em");
+  });
+});
 
 describe("creator attribution", () => {
   beforeEach(() => {
@@ -202,7 +232,7 @@ describe("selection resize handle", () => {
     expect(allHandles.at(-1)?.attributes.get("aria-hidden")).toBe("true");
   });
 
-  it("renders one overall handle for a selected zone", () => {
+  it("renders one overall handle for a selected section", () => {
     const item: Extract<BoardItem, { kind: "zone" }> = {
       id: "zone-a",
       kind: "zone",
@@ -280,7 +310,7 @@ function fakeSvgNode(name: string): FakeSvgNode {
   return node;
 }
 
-describe("zone rendering", () => {
+describe("section rendering", () => {
   beforeEach(() => {
     vi.stubGlobal("document", {
       createElementNS: (_namespace: string, name: string) => fakeSvgNode(name),
@@ -289,7 +319,7 @@ describe("zone rendering", () => {
 
   afterEach(() => vi.unstubAllGlobals());
 
-  it("renders a named, accessible zone with fill-only opacity", () => {
+  it("renders a named, accessible section with fill-only opacity", () => {
     const node = zoneNode(
       "zone/unsafe",
       { x: 20, y: 30, width: 520, height: 320, title: "Evidence <script>" },
@@ -304,7 +334,7 @@ describe("zone rendering", () => {
     ) as unknown as FakeSvgNode;
 
     expect(node.attributes.get("role")).toBe("group");
-    expect(node.attributes.get("aria-label")).toBe("Zone: Evidence <script>");
+    expect(node.attributes.get("aria-label")).toBe("Section: Evidence <script>");
     expect(node.dataset.zoneTitle).toBe("Evidence <script>");
     const fill = node.children.find((child) => child.classList.values.has("zone-fill"));
     const border = node.children.find((child) => child.classList.values.has("zone-border"));

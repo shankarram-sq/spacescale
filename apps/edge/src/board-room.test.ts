@@ -1857,7 +1857,13 @@ describe("BoardRoom initialization", () => {
       z: 1,
       version: 1,
       createdBy: actorId,
-      style: { kind: "text", color: "#112233", fontSize: 16, opacity: 1 },
+      style: {
+        kind: "text",
+        color: "#112233",
+        fontSize: 16,
+        fontFamily: "sans",
+        opacity: 1,
+      },
       transform: [1, 0, 0, 1, 0, 0],
       geometry: { x: 1, y: 2, text: "雪🙂e\u0301" },
     });

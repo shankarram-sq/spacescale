@@ -15,7 +15,7 @@ sticky notes for brainstorming, exit tickets, sorting, and feedback. Choose
 **Sticky note** or press `N`, click the board, and type immediately. A note may
 be left empty, uses a 180 × 140 board-unit default size, and can be recolored
 with the six SpaceScale presets while creating it or after selecting it. Saved
-sticky notes, image cards, tables, and zones expose direct resize handles.
+sticky notes, image cards, tables, and sections expose direct resize handles.
 
 Sticky notes participate in the same authoritative collaboration pipeline as
 every other board item: they can be selected, moved, copied, deleted, undone,
@@ -40,7 +40,7 @@ stable user identifier.
 Space owners can choose **Attributed data JSON** from the export menu to download
 the current authoritative objects together with participant names and normalized
 text attribution. Creator and content author are reported separately: for a
-sticky, text item, image description, or zone title, the responsible user is the
+sticky, text item, image description, or section title, the responsible user is the
 last participant who authored the current value; table cells are attributed
 individually. The same owner-only data is available to trusted backends at
 `GET /api/v1/boards/<board-id>/export.attributed.json`. It contains opaque actor
@@ -82,15 +82,15 @@ Vote totals are derived live from each participant's latest stamp in the vote
 table and are not stored in board history or exports. Only owners receive the
 bulk **Clear votes** action; the underlying stamps remain ordinary board items.
 
-Choose **Zone** or press `Z` to add a labelled 520 × 320 work area. Its title
+Choose **Section** or press `Z` to add a labelled 520 × 320 work area. Its title
 and border are selectable while the interior remains transparent to items
-inside it. A selected zone has a lower-right handle for changing its width and
+inside it. A selected section has a lower-right handle for changing its width and
 height. Multi-selection also offers atomic **Arrange** actions to align or
 distribute items and tidy selected sticky notes into a deterministic grid.
 
 Choose **Line** or press `L` to draw a line, then enable **End arrow** when a
 one-way connector is useful. New line endpoints snap to nearby cardinal points
-on shapes, sticky notes, tables, image cards, and zones. V1 stores the snapped
+on shapes, sticky notes, tables, image cards, and sections. V1 stores the snapped
 coordinates as ordinary line geometry, so moving the target later does not move
 the connector automatically.
 

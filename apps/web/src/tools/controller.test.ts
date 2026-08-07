@@ -394,10 +394,10 @@ describe("captured gesture operations", () => {
         kind: "table",
         style: {
           kind: "table",
-          borderColor: "#a8a59d",
-          fill: "#fffefa",
-          headerFill: "#e8edff",
-          textColor: "#20201e",
+          borderColor: "#d4d4d4",
+          fill: "#ffffff",
+          headerFill: "#d3bdff",
+          textColor: "#1e1e1e",
           fontSize: 16,
           opacity: 1,
         },
@@ -453,14 +453,14 @@ describe("captured gesture operations", () => {
         kind: "zone",
         style: {
           kind: "zone",
-          borderColor: "#a8a59d",
-          fill: "#e8edff",
-          textColor: "#4f5b75",
+          borderColor: "#d4d4d4",
+          fill: "#a8daff",
+          textColor: "#1e1e1e",
           fontSize: 18,
           opacity: 0.18,
         },
         transform: [1, 0, 0, 1, 0, 0],
-        geometry: { x: 140, y: 140, width: 520, height: 320, title: "Zone" },
+        geometry: { x: 140, y: 140, width: 520, height: 320, title: "Section" },
       },
     });
   });

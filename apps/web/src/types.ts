@@ -1,4 +1,7 @@
-import { PROTOCOL_VERSION as SHARED_PROTOCOL_VERSION } from "@collab/protocol";
+import {
+  PROTOCOL_VERSION as SHARED_PROTOCOL_VERSION,
+  type TextFontFamily as SharedTextFontFamily,
+} from "@collab/protocol";
 
 export const PROTOCOL_VERSION = SHARED_PROTOCOL_VERSION;
 
@@ -31,6 +34,7 @@ export type StrokeStyle = {
 };
 
 export type LineArrowhead = "none" | "arrow";
+export type TextFontFamily = SharedTextFontFamily;
 
 export type LineStyle = {
   kind: "line";
@@ -44,6 +48,7 @@ export type TextStyle = {
   kind: "text";
   color: string;
   fontSize: number;
+  fontFamily: TextFontFamily;
   opacity: number;
 };
 

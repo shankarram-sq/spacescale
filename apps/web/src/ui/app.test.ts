@@ -6,7 +6,8 @@ import {
   attributedDataFilename,
   boardIdFromPath,
   buildCreatorNameMap,
-  buildStickyColourOperations,
+  buildElementColourOperations,
+  buildTextStyleOperations,
   clampImageAlt,
   clampStickyText,
   imageUploadIssue,
@@ -386,11 +387,11 @@ describe("sticky note UI configuration", () => {
   it("offers the six classroom palette colours", () => {
     expect(STICKY_COLORS.map(({ name }) => name)).toEqual([
       "Yellow",
-      "Pink",
-      "Blue",
-      "Green",
-      "Purple",
-      "Orange",
+      "Coral",
+      "Lavender",
+      "Mint",
+      "Sky",
+      "Slate",
     ]);
     expect(STICKY_COLORS.every(({ value }) => /^#[0-9a-f]{6}$/.test(value))).toBe(true);
   });
@@ -421,7 +422,7 @@ describe("sticky note UI configuration", () => {
       geometry: { ...first.geometry, x: 220, text: "Second" },
     };
 
-    expect(buildStickyColourOperations([first, second], "#fecdd3")).toEqual([
+    expect(buildElementColourOperations([first, second], "#fecdd3")).toEqual([
       {
         kind: "item.update",
         itemId: "sticky-a",
@@ -435,7 +436,7 @@ describe("sticky note UI configuration", () => {
         patch: { style: { ...second.style, fill: "#fecdd3" } },
       },
     ]);
-    expect(buildStickyColourOperations([first, { ...second, version: 0 }], "#fecdd3")).toEqual([]);
+    expect(buildElementColourOperations([first, { ...second, version: 0 }], "#fecdd3")).toEqual([]);
 
     const authoritative = new Map<string, BoardItem>([
       [first.id, first],
@@ -452,6 +453,44 @@ describe("sticky note UI configuration", () => {
     expect(
       savedAuthoritativeItems([first.id, second.id], renderedWithPending, authoritative),
     ).toBeNull();
+  });
+
+  it("preserves unrelated text style while changing colour, family, and size", () => {
+    const text: Extract<BoardItem, { kind: "text" }> = {
+      id: "text-a",
+      kind: "text",
+      z: 1,
+      version: 3,
+      createdBy: "student-a",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "text",
+        color: "#1e1e1e",
+        fontSize: 28,
+        fontFamily: "sans",
+        opacity: 0.8,
+      },
+      geometry: { x: 10, y: 20, text: "Question" },
+    };
+
+    expect(buildElementColourOperations([text], "#874fff")).toEqual([
+      {
+        kind: "item.update",
+        itemId: "text-a",
+        expectedVersion: 3,
+        patch: { style: { ...text.style, color: "#874fff" } },
+      },
+    ]);
+    expect(buildTextStyleOperations([text], { fontFamily: "handwritten", fontSize: 52 })).toEqual([
+      {
+        kind: "item.update",
+        itemId: "text-a",
+        expectedVersion: 3,
+        patch: {
+          style: { ...text.style, fontFamily: "handwritten", fontSize: 52 },
+        },
+      },
+    ]);
   });
 
   it("limits input by Unicode code point rather than UTF-16 length", () => {

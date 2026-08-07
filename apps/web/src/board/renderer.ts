@@ -1,4 +1,5 @@
 import { lineArrowheadPoints, ZONE_TITLE_PADDING, zoneTitleBandHeight } from "@collab/geometry";
+import { textFontStack } from "@collab/protocol";
 import { STAMP_SVG_PATHS } from "@collab/svg-export";
 import { summarizeBoardVotes, type VoteSummary } from "../activities/voting";
 import type {
@@ -22,6 +23,8 @@ import type {
   TableGeometry,
   TableItem,
   TableStyle,
+  TextGeometry,
+  TextStyle,
   ToolName,
   ZoneGeometry,
   ZoneStyle,
@@ -244,7 +247,7 @@ export class BoardRenderer {
     dot.setAttribute("cx", "1");
     dot.setAttribute("cy", "1");
     dot.setAttribute("r", "0.85");
-    dot.setAttribute("fill", "#d7d4cc");
+    dot.setAttribute("fill", "#c7c7c7");
     pattern.append(dot);
     defs.append(pattern);
 
@@ -416,7 +419,7 @@ export class BoardRenderer {
   showLocalText(
     point: Point,
     value: string,
-    style: { color: string; fontSize: number; opacity: number },
+    style: Pick<TextStyle, "color" | "fontSize" | "fontFamily" | "opacity">,
     transform: Matrix = [1, 0, 0, 1, 0, 0],
   ): void {
     this.localLayer.replaceChildren();
@@ -428,7 +431,7 @@ export class BoardRenderer {
     text.setAttribute("fill", style.color);
     text.setAttribute("fill-opacity", String(style.opacity));
     text.setAttribute("font-size", String(style.fontSize));
-    text.setAttribute("font-family", "Inter, ui-sans-serif, system-ui, sans-serif");
+    text.setAttribute("font-family", textFontStack(style.fontFamily));
     text.setAttribute("transform", matrixAttribute(transform));
     value.split("\n").forEach((line, index) => {
       const span = svgElement("tspan");
@@ -997,23 +1000,7 @@ function itemNode(
       node = shapeNode(item.kind, item.geometry, item.style);
       break;
     case "text": {
-      const text = svgElement("text");
-      text.setAttribute("x", String(item.geometry.x));
-      text.setAttribute("y", String(item.geometry.y));
-      text.setAttribute("fill", item.style.color);
-      text.setAttribute("fill-opacity", String(item.style.opacity));
-      text.setAttribute("font-size", String(item.style.fontSize));
-      text.setAttribute("font-family", "Inter, ui-sans-serif, system-ui, sans-serif");
-      text.setAttribute("xml:space", "preserve");
-      const lines = item.geometry.text.split("\n");
-      lines.forEach((line, index) => {
-        const span = svgElement("tspan");
-        span.setAttribute("x", String(item.geometry.x));
-        if (index > 0) span.setAttribute("dy", "1.2em");
-        span.textContent = line || " ";
-        text.append(span);
-      });
-      node = text;
+      node = textNode(item.geometry, item.style);
       break;
     }
     case "sticky":
@@ -1043,6 +1030,26 @@ function itemNode(
     appendCreatorAttribution(node, item, creatorName.trim());
   }
   return node;
+}
+
+export function textNode(geometry: TextGeometry, style: TextStyle): SVGTextElement {
+  const text = svgElement("text");
+  text.setAttribute("x", String(geometry.x));
+  text.setAttribute("y", String(geometry.y));
+  text.setAttribute("fill", style.color);
+  text.setAttribute("fill-opacity", String(style.opacity));
+  text.setAttribute("font-size", String(style.fontSize));
+  text.setAttribute("font-family", textFontStack(style.fontFamily));
+  text.setAttribute("xml:space", "preserve");
+  const lines = geometry.text.split("\n");
+  lines.forEach((line, index) => {
+    const span = svgElement("tspan");
+    span.setAttribute("x", String(geometry.x));
+    if (index > 0) span.setAttribute("dy", "1.2em");
+    span.textContent = line || " ";
+    text.append(span);
+  });
+  return text;
 }
 
 export function creatorInitials(displayName: string): string {
@@ -1119,7 +1126,7 @@ export function zoneNode(itemId: string, geometry: ZoneGeometry, style: ZoneStyl
   node.classList.add("zone-item");
   node.dataset.zoneTitle = geometry.title;
   node.setAttribute("role", "group");
-  node.setAttribute("aria-label", `Zone: ${geometry.title}`);
+  node.setAttribute("aria-label", `Section: ${geometry.title}`);
 
   const safeId = itemId.replace(/[^A-Za-z0-9_-]/gu, "-");
   const titleClipId = `zone-title-clip-${safeId}`;

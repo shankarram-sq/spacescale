@@ -18,7 +18,7 @@ test("line, text, styles, constrained shapes, eraser, and pen input commit canon
   await page.getByTestId("style-button").click();
   const style = page.getByTestId("style-popover");
   await expect(style).toBeVisible();
-  await style.getByRole("button", { name: "Use #e5484d" }).click();
+  await style.getByRole("button", { name: "Use #f24822" }).click();
   await setRange(page, "[data-style-stroke]", 7);
   await setRange(page, "[data-style-opacity]", 55);
   await setRange(page, "[data-style-font]", 40);
@@ -34,7 +34,7 @@ test("line, text, styles, constrained shapes, eraser, and pen input commit canon
     y: lineStart.y + 35,
   });
   await expect(line).toHaveClass(/board-item-line/u);
-  await expect(line).toHaveAttribute("stroke", "#e5484d");
+  await expect(line).toHaveAttribute("stroke", "#f24822");
   await expect(line).toHaveAttribute("stroke-width", "7");
   await expect(line).toHaveAttribute("stroke-opacity", "0.55");
 
@@ -48,7 +48,7 @@ test("line, text, styles, constrained shapes, eraser, and pen input commit canon
   const text = page.locator("#drawing-area .board-item-text");
   await expect(text).toHaveCount(1);
   await expect(text).toContainText("Shared words");
-  await expect(text).toHaveAttribute("fill", "#e5484d");
+  await expect(text).toHaveAttribute("fill", "#f24822");
   await expect(text).toHaveAttribute("font-size", "40");
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
 
@@ -139,9 +139,22 @@ test("the complete board remains usable at a 320px viewport", async ({ page }, t
   expect(layout.shell?.right).toBeLessThanOrEqual(320);
   expect(layout.canvas?.width).toBeGreaterThan(240);
   expect(layout.canvas?.right).toBeLessThanOrEqual(320);
+  const floatingControls = await page.evaluate(() => {
+    const history = document.querySelector(".history-controls")?.getBoundingClientRect();
+    const zoom = document.querySelector(".zoom-controls")?.getBoundingClientRect();
+    return {
+      history: history ? { top: history.top, bottom: history.bottom } : null,
+      zoom: zoom ? { top: zoom.top, bottom: zoom.bottom } : null,
+    };
+  });
+  expect(floatingControls.history).not.toBeNull();
+  expect(floatingControls.zoom).not.toBeNull();
+  expect(floatingControls.history?.bottom ?? 0).toBeLessThan(
+    floatingControls.zoom?.top ?? Number.POSITIVE_INFINITY,
+  );
 
   const tools = page.getByTestId("tool-rail").locator("button[data-tool]");
-  await expect(tools).toHaveCount(11);
+  await expect(tools).toHaveCount(13);
   await expect(page.getByTestId("tool-image")).toHaveAttribute("aria-label", "Add image (I)");
   await expect(page.getByTestId("tool-image").locator("svg")).toHaveCount(1);
   await expect(page.getByTestId("tool-eraser").locator("svg")).toHaveCount(1);
@@ -154,6 +167,24 @@ test("the complete board remains usable at a 320px viewport", async ({ page }, t
     expect(bounds?.x).toBeGreaterThanOrEqual(0);
     expect((bounds?.x ?? 0) + (bounds?.width ?? 0)).toBeLessThanOrEqual(320);
   }
+  const textPoint = await canvasPoint(page, 0.5, 0.34);
+  await page.getByRole("button", { name: /^Text/u }).click();
+  await page.mouse.click(textPoint.x, textPoint.y);
+  await page.getByTestId("canvas-text-editor").fill("Mobile note");
+  await page.getByTestId("canvas-text-editor").press("Control+Enter");
+  await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+  await page.getByTestId("tool-select").click();
+  await page.locator("#drawing-area .board-item-text").click();
+  await page.getByRole("button", { name: "Change selected element colour" }).click();
+  const colourMenu = page.getByTestId("selection-colour-menu");
+  await expect(colourMenu).toBeVisible();
+  const colourMenuBounds = await colourMenu.boundingBox();
+  expect(colourMenuBounds).not.toBeNull();
+  expect(colourMenuBounds?.x).toBeGreaterThanOrEqual(0);
+  expect((colourMenuBounds?.x ?? 0) + (colourMenuBounds?.width ?? 0)).toBeLessThanOrEqual(320);
+  expect(colourMenuBounds?.y).toBeGreaterThanOrEqual(0);
+  await page.keyboard.press("Escape");
+  await page.locator("#board-canvas").click({ position: { x: 16, y: 16 } });
   await page.getByRole("button", { name: /^Pan canvas/u }).click();
   await expect(page.getByRole("button", { name: /^Pan canvas/u })).toHaveAttribute(
     "aria-pressed",

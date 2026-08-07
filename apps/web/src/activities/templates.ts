@@ -1,5 +1,6 @@
 import { MAX_BATCH_OPERATIONS } from "@collab/protocol";
 
+import { DRAWING_COLOR_VALUES, STICKY_COLOR_VALUES, UI_COLORS } from "../palette";
 import type {
   BatchItemOperation,
   DurableOperation,
@@ -34,14 +35,14 @@ export type ActivityBatch = {
   itemIds: string[];
 };
 
-const INK = "#20201e";
+const INK = UI_COLORS.ink;
 const MUTED = "#6f6d66";
-const OUTLINE = "#a8a59d";
+const OUTLINE = UI_COLORS.borderStrong;
 const DEFAULT_TABLE_STYLE: TableStyle = {
   kind: "table",
   borderColor: OUTLINE,
-  fill: "#fffefa",
-  headerFill: "#e8edff",
+  fill: UI_COLORS.surface,
+  headerFill: STICKY_COLOR_VALUES.lavender,
   textColor: INK,
   fontSize: 16,
   opacity: 1,
@@ -52,11 +53,11 @@ function text(
   y: number,
   value: string,
   fontSize = 22,
-  color = INK,
+  color: string = INK,
 ): ActivityTemplateItem {
   return {
     kind: "text",
-    style: { kind: "text", color, fontSize, opacity: 1 },
+    style: { kind: "text", color, fontSize, fontFamily: "sans", opacity: 1 },
     geometry: { x, y, text: value },
   };
 }
@@ -102,7 +103,7 @@ function table(
 function stamp(x: number, y: number): ActivityTemplateItem {
   return {
     kind: "stamp",
-    style: { kind: "stamp", color: "#e5484d", opacity: 1 },
+    style: { kind: "stamp", color: DRAWING_COLOR_VALUES.red, opacity: 1 },
     geometry: { x, y, size: 36, stamp: "star" },
   };
 }
@@ -117,9 +118,9 @@ export const ACTIVITY_TEMPLATES: readonly ActivityTemplate[] = [
       outline(-350, -190, 220, 330),
       outline(-110, -190, 220, 330),
       outline(130, -190, 220, 330),
-      sticky(-330, -170, 180, 90, "I learned…", "#fde68a"),
-      sticky(-90, -170, 180, 90, "I wonder…", "#bfdbfe"),
-      sticky(150, -170, 180, 90, "I need help with…", "#fecdd3"),
+      sticky(-330, -170, 180, 90, "I learned…", STICKY_COLOR_VALUES.yellow),
+      sticky(-90, -170, 180, 90, "I wonder…", STICKY_COLOR_VALUES.sky),
+      sticky(150, -170, 180, 90, "I need help with…", STICKY_COLOR_VALUES.coral),
     ],
   },
   {
@@ -153,12 +154,12 @@ export const ACTIVITY_TEMPLATES: readonly ActivityTemplate[] = [
       outline(30, -170, 340, 280),
       text(-345, -135, "Group A", 24),
       text(55, -135, "Group B", 24),
-      sticky(-345, 145, 150, 110, "Item 1", "#fde68a"),
-      sticky(-180, 145, 150, 110, "Item 2", "#bfdbfe"),
-      sticky(-15, 145, 150, 110, "Item 3", "#bbf7d0"),
-      sticky(150, 145, 150, 110, "Item 4", "#ddd6fe"),
-      sticky(-97.5, 270, 150, 110, "Item 5", "#fed7aa"),
-      sticky(67.5, 270, 150, 110, "Item 6", "#fecdd3"),
+      sticky(-345, 145, 150, 110, "Item 1", STICKY_COLOR_VALUES.yellow),
+      sticky(-180, 145, 150, 110, "Item 2", STICKY_COLOR_VALUES.sky),
+      sticky(-15, 145, 150, 110, "Item 3", STICKY_COLOR_VALUES.mint),
+      sticky(150, 145, 150, 110, "Item 4", STICKY_COLOR_VALUES.lavender),
+      sticky(-97.5, 270, 150, 110, "Item 5", STICKY_COLOR_VALUES.slate),
+      sticky(67.5, 270, 150, 110, "Item 6", STICKY_COLOR_VALUES.coral),
     ],
   },
   {
@@ -171,8 +172,8 @@ export const ACTIVITY_TEMPLATES: readonly ActivityTemplate[] = [
       outline(20, -190, 370, 330),
       text(-365, -150, "Partner A", 24),
       text(45, -150, "Partner B", 24),
-      sticky(-350, -100, 180, 140, "Add your thinking…", "#fde68a"),
-      sticky(60, -100, 180, 140, "Add your thinking…", "#bfdbfe"),
+      sticky(-350, -100, 180, 140, "Add your thinking…", STICKY_COLOR_VALUES.yellow),
+      sticky(60, -100, 180, 140, "Add your thinking…", STICKY_COLOR_VALUES.sky),
     ],
   },
   {

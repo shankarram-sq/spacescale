@@ -15,6 +15,7 @@ import {
   normalizeBoardItem,
   type ProtocolErrorCode,
   ProtocolValidationError,
+  textFontStack,
   utf8Bytes,
   validatePlainText,
 } from "@collab/protocol";
@@ -442,7 +443,7 @@ function renderZone(item: ZoneBoardItem): string {
     `transform="${transformAttribute(item)}"`,
     `data-item-id="${escapeXmlAttribute(item.id)}"`,
     `role="group"`,
-    `aria-label="Zone: ${escapeXmlAttribute(title)}"`,
+    `aria-label="Section: ${escapeXmlAttribute(title)}"`,
   ].join(" ");
   const clip = `<defs><clipPath id="${escapeXmlAttribute(clipId)}" clipPathUnits="userSpaceOnUse"><rect x="${number(contentX)}" y="${number(y)}" width="${number(contentWidth)}" height="${number(contentHeight)}" /></clipPath></defs>`;
   const fill = `<rect x="${number(x)}" y="${number(y)}" width="${number(width)}" height="${number(height)}" rx="12" fill="${escapeXmlAttribute(item.style.fill)}" fill-opacity="${number(item.style.opacity)}" />`;
@@ -461,7 +462,7 @@ function renderText(item: Extract<BoardItem, { kind: "text" }>): string {
     `opacity="${number(item.style.opacity)}"`,
     `transform="${transformAttribute(item)}"`,
     `data-item-id="${escapeXmlAttribute(item.id)}"`,
-    `font-family="sans-serif"`,
+    `font-family="${escapeXmlAttribute(textFontStack(item.style.fontFamily))}"`,
     `xml:space="preserve"`,
   ].join(" ");
   if (lines.length === 1) return `<text ${attributes}>${escapeXmlText(lines[0] ?? "")}</text>`;

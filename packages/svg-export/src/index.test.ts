@@ -160,7 +160,13 @@ describe("safe SVG serialization", () => {
       z: 1,
       version: 1,
       createdBy: ACTOR,
-      style: { kind: "text", color: "#000000", fontSize: 16, opacity: 1 },
+      style: {
+        kind: "text",
+        color: "#000000",
+        fontSize: 16,
+        fontFamily: "handwritten",
+        opacity: 1,
+      },
       transform: [1, 0, 0, 1, 0, 0],
       geometry: { x: 4, y: 8, text: `<script>alert("x")</script> & 'ok'` },
     };
@@ -173,6 +179,9 @@ describe("safe SVG serialization", () => {
     expect(svg).not.toContain("<script>");
     expect(svg).not.toContain("onload=");
     expect(svg).toContain("&lt;script&gt;alert(\"x\")&lt;/script&gt; &amp; 'ok'");
+    expect(svg).toContain(
+      'font-family="&quot;Comic Sans MS&quot;, &quot;Segoe Print&quot;, &quot;Bradley Hand&quot;, cursive"',
+    );
     expect(svg).toContain('<title>"&gt;&lt;script&gt;title&lt;/script&gt;</title>');
     expect(svg).not.toContain("foreignObject");
   });
@@ -222,12 +231,20 @@ describe("safe SVG serialization", () => {
       z: 3,
       version: 2,
       createdBy: ACTOR,
-      style: { kind: "text", color: "#112233", fontSize: 10, opacity: 1 },
+      style: {
+        kind: "text",
+        color: "#112233",
+        fontSize: 10,
+        fontFamily: "mono",
+        opacity: 1,
+      },
       transform: [1, 0, 0, 1, 0, 0],
       geometry: { x: 1, y: 2, text: "one\ntwo" },
     };
-    expect(serializeSvg({ boardId: BOARD, seq: 2, items: [text] })).toContain(
-      '<tspan x="1" dy="12">two</tspan>',
+    const textSvg = serializeSvg({ boardId: BOARD, seq: 2, items: [text] });
+    expect(textSvg).toContain('<tspan x="1" dy="12">two</tspan>');
+    expect(textSvg).toContain(
+      'font-family="ui-monospace, &quot;SFMono-Regular&quot;, Consolas, &quot;Liberation Mono&quot;, monospace"',
     );
   });
 
@@ -380,7 +397,7 @@ describe("safe SVG serialization", () => {
     expect(first.svg).not.toContain("foreignObject");
   });
 
-  it("renders a deterministic muted zone with clipped, escaped title text", () => {
+  it("renders a deterministic muted section with clipped, escaped title text", () => {
     const item = zoneItem("018f0000-0000-7000-8000-00000000000b");
     const first = createSvgExport({ boardId: BOARD, seq: 12, padding: 0, items: [item] });
     const second = createSvgExport({ boardId: BOARD, seq: 12, padding: 0, items: [item] });
@@ -389,6 +406,7 @@ describe("safe SVG serialization", () => {
     expect(first.viewBox).toEqual({ minX: 10, minY: 20, maxX: 530, maxY: 340 });
     expect(first.svg).toContain('fill="#e8edff" fill-opacity="0.18"');
     expect(first.svg).toContain('fill="none" stroke="#a8a59d" stroke-width="1.5"');
+    expect(first.svg).toContain('role="group" aria-label="Section: Evidence &lt;&amp;&gt;');
     expect(first.svg).toContain(
       '<clipPath id="zone-title-clip-018f0000-0000-7000-8000-00000000000b" clipPathUnits="userSpaceOnUse"><rect x="22" y="20" width="496" height="33.6" /></clipPath>',
     );

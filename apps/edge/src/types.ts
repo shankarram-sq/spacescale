@@ -1,3 +1,5 @@
+import type { TextFontFamily } from "@collab/protocol";
+
 export type BoardRole = "viewer" | "editor" | "owner";
 export type AccessMode = "private" | "link_view";
 export type DrawingPolicy = "editors_enabled" | "owner_only" | "locked";
@@ -101,6 +103,7 @@ export type TextStyle = {
   kind: "text";
   color: string;
   fontSize: number;
+  fontFamily: TextFontFamily;
   opacity: number;
 };
 

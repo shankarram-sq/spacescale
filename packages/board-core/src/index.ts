@@ -991,6 +991,7 @@ function canonicalItem(item: BoardItem): BoardItem {
               kind: "text" as const,
               color: normalized.style.color,
               fontSize: normalized.style.fontSize,
+              fontFamily: normalized.style.fontFamily,
               opacity: normalized.style.opacity,
             }
           : normalized.style.kind === "sticky"

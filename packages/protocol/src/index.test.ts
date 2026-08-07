@@ -9,6 +9,8 @@ import {
   normalizeBoardAccessPolicy,
   ProtocolValidationError,
   parseClientFrame,
+  TEXT_FONT_FAMILIES,
+  textFontStack,
   validateDurableOperation,
   validatePlainText,
   validateTableCellText,
@@ -37,6 +39,16 @@ function line(id = ID_1, arrowhead = "arrow") {
     style: { kind: "line", color: "#abcdef", width: 2.125, opacity: 0.555, arrowhead },
     transform: [1, 0, 0, 1, 0, 0],
     geometry: { x1: 5.129, y1: 7.555, x2: 25.555, y2: 17.129 },
+  };
+}
+
+function text(id = ID_1, fontFamily = "sans") {
+  return {
+    id,
+    kind: "text",
+    style: { kind: "text", color: "#123456", fontSize: 16.125, fontFamily, opacity: 0.555 },
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: { x: 15.129, y: 17.555, text: "Shared words" },
   };
 }
 
@@ -189,6 +201,18 @@ describe("durable operation validation", () => {
     ).toThrow(/Unknown field/);
   });
 
+  it("persists only allowlisted text font families with trusted local stacks", () => {
+    for (const fontFamily of TEXT_FONT_FAMILIES) {
+      expect(
+        validateDurableOperation({ kind: "item.create", item: text(ID_1, fontFamily) }),
+      ).toMatchObject({ item: { style: { fontFamily } } });
+      expect(textFontStack(fontFamily)).not.toMatch(/url\(|https?:/u);
+    }
+    expect(() =>
+      validateDurableOperation({ kind: "item.create", item: text(ID_1, "remote-font") }),
+    ).toThrow(/fontFamily/u);
+  });
+
   it("normalizes sticky creates and permits empty sticky text", () => {
     expect(validateDurableOperation({ kind: "item.create", item: sticky() })).toEqual({
       kind: "item.create",
@@ -266,7 +290,13 @@ describe("durable operation validation", () => {
         item: {
           id: ID_1,
           kind: "text",
-          style: { kind: "text", color: "#123456", fontSize: 16, opacity: 1 },
+          style: {
+            kind: "text",
+            color: "#123456",
+            fontSize: 16,
+            fontFamily: "sans",
+            opacity: 1,
+          },
           transform: [1, 0, 0, 1, 0, 0],
           geometry: { x: 0, y: 0, text: "" },
         },
@@ -637,7 +667,13 @@ describe("durable operation validation", () => {
         kind: "item.create",
         item: {
           ...rectangle(),
-          style: { kind: "text", color: "#abcdef", fontSize: 16, opacity: 1 },
+          style: {
+            kind: "text",
+            color: "#abcdef",
+            fontSize: 16,
+            fontFamily: "sans",
+            opacity: 1,
+          },
         },
       }),
     ).toThrow(/stroke/);

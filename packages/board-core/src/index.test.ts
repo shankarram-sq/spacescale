@@ -1,4 +1,4 @@
-import type { ImageGeometry, ItemEffect } from "@collab/protocol";
+import type { ImageGeometry, ItemEffect, TextFontFamily } from "@collab/protocol";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -48,6 +48,22 @@ function line(id = RECTANGLE_ID) {
     },
     transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
     geometry: { x1: 10, y1: 20, x2: 130, y2: 80 },
+  };
+}
+
+function text(id = RECTANGLE_ID, fontFamily: TextFontFamily = "sans") {
+  return {
+    id,
+    kind: "text" as const,
+    style: {
+      kind: "text" as const,
+      color: "#123456",
+      fontSize: 24,
+      fontFamily,
+      opacity: 1,
+    },
+    transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+    geometry: { x: 10, y: 20, text: "Shared words" },
   };
 }
 
@@ -401,7 +417,13 @@ describe("normal board reductions", () => {
           itemId: RECTANGLE_ID,
           expectedVersion: 1,
           patch: {
-            style: { kind: "text", color: "#123456", fontSize: 16, opacity: 1 },
+            style: {
+              kind: "text",
+              color: "#123456",
+              fontSize: 16,
+              fontFamily: "sans",
+              opacity: 1,
+            },
           },
         },
         { seq: 2, actorId: ALICE },
@@ -419,6 +441,58 @@ describe("normal board reductions", () => {
         { seq: 2, actorId: ALICE },
       ),
     ).toThrowError(expect.objectContaining({ code: "INVALID_FRAME" }));
+  });
+
+  it("preserves text font family through updates, copies, and canonical snapshots", () => {
+    const created = applyDurableOperation(
+      createBoardState(),
+      { kind: "item.create", item: text(RECTANGLE_ID, "serif") },
+      { seq: 1, actorId: ALICE },
+    );
+    const updated = applyDurableOperation(
+      created.state,
+      {
+        kind: "item.update",
+        itemId: RECTANGLE_ID,
+        expectedVersion: 1,
+        patch: { style: { ...text().style, fontFamily: "handwritten" } },
+      },
+      { seq: 2, actorId: ALICE },
+    );
+    expect(updated.state.items.get(RECTANGLE_ID)?.item).toMatchObject({
+      kind: "text",
+      style: { fontFamily: "handwritten" },
+    });
+
+    const copied = applyDurableOperation(
+      updated.state,
+      {
+        kind: "item.copy",
+        sourceItemId: RECTANGLE_ID,
+        expectedVersion: 2,
+        newItemId: COPY_ID,
+        translate: { x: 20, y: 30 },
+      },
+      { seq: 3, actorId: BOB },
+    );
+    expect(copied.state.items.get(COPY_ID)?.item).toMatchObject({
+      kind: "text",
+      style: { fontFamily: "handwritten" },
+    });
+
+    const snapshot = JSON.parse(
+      serializeCanonicalSnapshot({
+        boardId: "018f0000-0000-7000-8000-0000000000ff",
+        seq: 3,
+        createdAt: 1_785_840_000_000,
+        settings: { title: "Font families" },
+        items: liveItemsInPaintOrder(copied.state),
+      }),
+    ) as { items: Array<{ style: { fontFamily?: string } }> };
+    expect(snapshot.items.map((item) => item.style.fontFamily)).toEqual([
+      "handwritten",
+      "handwritten",
+    ]);
   });
 
   it("preserves connector style through update, copy, history, and canonical snapshots", () => {
@@ -603,7 +677,15 @@ describe("normal board reductions", () => {
           kind: "item.update",
           itemId: RECTANGLE_ID,
           expectedVersion: 1,
-          patch: { style: { kind: "text", color: "#123456", fontSize: 16, opacity: 1 } },
+          patch: {
+            style: {
+              kind: "text",
+              color: "#123456",
+              fontSize: 16,
+              fontFamily: "sans",
+              opacity: 1,
+            },
+          },
         },
         { seq: 2, actorId: ALICE },
       ),

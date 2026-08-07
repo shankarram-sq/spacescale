@@ -15,7 +15,7 @@ specific feature, data flow, provider, and audience first.
 
 The first AI feature, if approved, must be a narrow facilitation aid such as
 clustering selected sticky notes, suggesting group labels, summarizing a
-selected zone for the teacher, or drafting starter prompts. It must not grade,
+selected section for the teacher, or drafting starter prompts. It must not grade,
 profile, rank, discipline, diagnose, or make consequential decisions about a
 student.
 
@@ -35,7 +35,7 @@ student.
 
 An AI request may contain only the content the teacher explicitly selected and
 the minimum instruction needed for the approved task. The complete board must
-never be sent merely because a zone or item is selected.
+never be sent merely because a section or item is selected.
 
 Before a request leaves the Worker, remove or replace user identifiers, email
 addresses, participant names, actor IDs, board IDs, access tokens, session
@@ -132,5 +132,5 @@ recorded evidence.
 - [ ] Re-review before changing the provider, model, use case, input types,
   retention, audience, region, or subprocessors.
 
-Until all required checks pass, the shipped sticky-note, template, zone, voting,
+Until all required checks pass, the shipped sticky-note, template, section, voting,
 and arrange tools remain the supported non-AI alternatives.
