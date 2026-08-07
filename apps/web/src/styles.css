@@ -1357,8 +1357,17 @@ button:disabled {
 }
 
 .export-menu a:hover,
-.export-menu button:hover {
+.export-menu button:hover:not(:disabled) {
   background: #f3f1ec;
+}
+
+.export-menu button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.export-menu [hidden] {
+  display: none;
 }
 
 .export-menu span {

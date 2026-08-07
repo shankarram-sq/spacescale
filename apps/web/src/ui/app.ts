@@ -32,6 +32,7 @@ import {
 import {
   type ApiClient,
   ApiError,
+  type AttributedBoardExport,
   type FragmentClaim,
   type ManagedInvitation,
   type RecoverySnapshot,
@@ -55,6 +56,7 @@ import type {
   Point,
   Presence,
   RemotePreview,
+  Role,
   ServerAction,
   ServerFrame,
   SpotlightFrame,
@@ -705,6 +707,7 @@ export class BoardApp {
               <button class="icon-button" type="button" data-testid="export-button" aria-label="Export board" aria-controls="export-menu" aria-expanded="false" title="Export">↓</button>
               <div class="floating-menu export-menu" data-testid="export-menu" id="export-menu" hidden>
                 <p class="menu-eyebrow">Download current board</p>
+                <button type="button" data-export-attributed-json${classroomDataDownloadAllowed(this.bootstrap.actor.role) ? "" : " hidden"}>Classroom data JSON <span>people + text attribution</span></button>
                 <a data-export-svg download href="/api/v1/boards/${encodeURIComponent(this.bootstrap.board.id)}/export.svg">SVG image <span>authoritative</span></a>
                 <a data-export-json download href="/api/v1/boards/${encodeURIComponent(this.bootstrap.board.id)}/export.json">Canonical JSON <span>authoritative</span></a>
                 <button type="button" data-local-svg>Local SVG <span>includes pending edits</span></button>
@@ -1324,6 +1327,14 @@ export class BoardApp {
 
     const exportButton = query(this.root, "[data-testid='export-button']", HTMLButtonElement);
     exportButton.addEventListener("click", () => this.togglePopover(this.exportMenu, exportButton));
+    const attributedExportButton = query(
+      this.root,
+      "[data-export-attributed-json]",
+      HTMLButtonElement,
+    );
+    attributedExportButton.addEventListener("click", () => {
+      void this.downloadAttributedJson(attributedExportButton);
+    });
     query(this.root, "[data-local-json]", HTMLButtonElement).addEventListener("click", () =>
       this.downloadLocalJson(),
     );
@@ -3537,6 +3548,8 @@ export class BoardApp {
     }
     this.accessButton.hidden = this.bootstrap.actor.role !== "owner" || archived;
     this.accessButton.disabled = archived || this.archivePending;
+    query(this.root, "[data-export-attributed-json]", HTMLButtonElement).hidden =
+      !classroomDataDownloadAllowed(this.bootstrap.actor.role);
     this.titleInput.readOnly = this.bootstrap.actor.role !== "owner" || archived;
     this.titleInput.disabled = archived || this.archivePending;
     this.titleInput.classList.toggle(
@@ -3916,6 +3929,28 @@ export class BoardApp {
     }
   }
 
+  private async downloadAttributedJson(button: HTMLButtonElement): Promise<void> {
+    button.disabled = true;
+    try {
+      const data = await this.api.attributedBoardExport(this.bootstrap.board.id);
+      downloadBlob(
+        classroomDataFilename(this.bootstrap.board.title),
+        "application/json",
+        serializeClassroomData(data),
+      );
+      this.exportMenu.hidden = true;
+      query(this.root, "[data-testid='export-button']", HTMLButtonElement).setAttribute(
+        "aria-expanded",
+        "false",
+      );
+      this.notify("Classroom data JSON downloaded.");
+    } catch (error) {
+      this.apiError(error);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   private downloadLocalSvg(): void {
     const svg = localSvg(
       this.model.toSnapshot(this.bootstrap.board.id),
@@ -4190,6 +4225,18 @@ export function localSvg(snapshot: BoardSnapshot, title: string): string {
     : "0 0 1200 800";
   const content = items.map(renderSvgItem).join("");
   return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" role="img" aria-label="${escapeXml(title)}"><metadata>{&quot;format&quot;:&quot;cf-whiteboard-json&quot;,&quot;seq&quot;:${snapshot.seq}}</metadata><rect x="-1000000" y="-1000000" width="2000000" height="2000000" fill="#ffffff"/>${content}</svg>`;
+}
+
+export function classroomDataFilename(boardTitle: string): string {
+  return `${safeFilename(boardTitle)}-classroom-data.json`;
+}
+
+export function classroomDataDownloadAllowed(role: Role): boolean {
+  return role === "owner";
+}
+
+export function serializeClassroomData(data: AttributedBoardExport): string {
+  return `${JSON.stringify(data, null, 2)}\n`;
 }
 
 export function clampStickyText(value: string): string {

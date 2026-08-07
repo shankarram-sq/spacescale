@@ -7,12 +7,15 @@ import {
   buildStickyColourOperations,
   clampImageAlt,
   clampStickyText,
+  classroomDataDownloadAllowed,
+  classroomDataFilename,
   imageUploadIssue,
   localSvg,
   MAX_IMAGE_UPLOAD_BYTES,
   STAMP_CHOICES,
   STICKY_COLORS,
   savedAuthoritativeItems,
+  serializeClassroomData,
   tableCellDraftFromOperation,
 } from "./app";
 
@@ -89,6 +92,149 @@ describe("board path routing", () => {
     expect(boardIdFromPath("/embed")).toBeNull();
     expect(boardIdFromPath(`/other/b/${boardId}`)).toBeNull();
     expect(boardIdFromPath("/embed/b/not-a-board")).toBeNull();
+  });
+});
+
+describe("classroom-data download", () => {
+  it("is visible to every owner and hidden from editors and viewers", () => {
+    expect(classroomDataDownloadAllowed("owner")).toBe(true);
+    expect(classroomDataDownloadAllowed("editor")).toBe(false);
+    expect(classroomDataDownloadAllowed("viewer")).toBe(false);
+  });
+
+  it("uses a classroom-facing filename and preserves attributed text as formatted JSON", () => {
+    const data = {
+      format: "cf-whiteboard-attributed-json" as const,
+      version: 1 as const,
+      board: {
+        id: boardId,
+        title: "Peer Feedback: 7/B",
+        seq: 12,
+        stateCreatedAt: 1_900_000_000_000,
+      },
+      participants: [
+        {
+          id: "a_1234567890123456789012",
+          displayName: "Asha Patel",
+          role: "editor" as const,
+          status: "active" as const,
+        },
+        {
+          id: "a_2345678901234567890123",
+          displayName: "Ben Shah",
+          role: null,
+          status: "referenced" as const,
+        },
+      ],
+      objects: [
+        {
+          item: {
+            id: "018f47a1-7a2b-7c3d-8e4f-123456789abd",
+            kind: "sticky" as const,
+            z: 1,
+            version: 1,
+            createdBy: "a_2345678901234567890123",
+            transform: [1, 0, 0, 1, 0, 0] as const,
+            style: {
+              kind: "sticky" as const,
+              fill: "#fde68a",
+              textColor: "#292524",
+              fontSize: 20,
+              opacity: 1,
+            },
+            geometry: {
+              x: 10,
+              y: 20,
+              width: 180,
+              height: 140,
+              text: "Could you explain the second step?",
+            },
+          },
+          attribution: {
+            createdBy: { id: "a_2345678901234567890123", displayName: "Coach Mira" },
+            lastModifiedBy: {
+              id: "a_1234567890123456789012",
+              displayName: "Asha Patel",
+            },
+            updatedSeq: 12,
+            updatedAt: 1_900_000_001_000,
+          },
+          content: [
+            {
+              kind: "sticky_text" as const,
+              text: "Could you explain the second step?",
+              responsibleUser: {
+                id: "a_1234567890123456789012",
+                displayName: "Asha Patel",
+              },
+              lastChangedBy: {
+                id: "a_1234567890123456789012",
+                displayName: "Asha Patel",
+              },
+              updatedSeq: 12,
+              updatedAt: 1_900_000_001_000,
+            },
+          ],
+        },
+        {
+          item: {
+            id: "018f47a1-7a2b-7c3d-8e4f-123456789abe",
+            kind: "table" as const,
+            z: 2,
+            version: 1,
+            createdBy: "a_2345678901234567890123",
+            transform: [1, 0, 0, 1, 0, 0] as const,
+            style: {
+              kind: "table" as const,
+              borderColor: "#a8a59d",
+              fill: "#fffefa",
+              headerFill: "#e8edff",
+              textColor: "#20201e",
+              fontSize: 16,
+              opacity: 1,
+            },
+            geometry: {
+              x: 220,
+              y: 20,
+              columnWidths: [120],
+              rowHeights: [48],
+              cells: [[""]],
+            },
+          },
+          attribution: {
+            createdBy: { id: "a_2345678901234567890123", displayName: "Coach Mira" },
+            lastModifiedBy: {
+              id: "a_2345678901234567890123",
+              displayName: "Coach Mira",
+            },
+            updatedSeq: 11,
+            updatedAt: 1_900_000_000_500,
+          },
+          content: [
+            {
+              kind: "table_cell" as const,
+              row: 0,
+              column: 0,
+              text: "",
+              responsibleUser: null,
+              lastChangedBy: null,
+              updatedSeq: null,
+              updatedAt: null,
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(classroomDataFilename(data.board.title)).toBe("peer-feedback-7-b-classroom-data.json");
+    const serialized = serializeClassroomData(data);
+    expect(serialized.endsWith("\n")).toBe(true);
+    expect(JSON.parse(serialized)).toEqual(data);
+    expect(serialized).toContain('"text": "Could you explain the second step?"');
+    expect(serialized).toContain('"responsibleUser": null');
+    expect(serialized).toContain('"displayName": "Asha Patel"');
+    expect(serialized).toContain('"id": "a_1234567890123456789012"');
+    expect(serialized).not.toContain("@example.com");
   });
 });
 

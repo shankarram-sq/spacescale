@@ -278,6 +278,63 @@ describe("classroom embed session", () => {
   });
 });
 
+describe("attributed classroom export", () => {
+  it("fetches the classroom-data API with the stored embed bearer", async () => {
+    vi.stubGlobal("history", {
+      state: {
+        "cf-collab-canvas.embed-bearer": "es1.classroom.signature",
+      },
+      replaceState: vi.fn(),
+    });
+    const requests: CapturedRequest[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+        requests.push({ path: String(input), init });
+        return Response.json({
+          format: "cf-whiteboard-attributed-json",
+          version: 1,
+          board: {
+            id: "b_1234567890123456789012",
+            title: "Peer feedback",
+            seq: 12,
+            stateCreatedAt: 1_900_000_000_000,
+          },
+          participants: [
+            {
+              id: "a_1234567890123456789012",
+              displayName: "Asha Patel",
+              role: "editor",
+              status: "active",
+            },
+          ],
+          objects: [],
+        });
+      }),
+    );
+
+    const exported = await new ApiClient(true).attributedBoardExport("b_1234567890123456789012");
+
+    expect(exported).toMatchObject({
+      format: "cf-whiteboard-attributed-json",
+      board: { title: "Peer feedback", seq: 12 },
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.path).toBe(
+      "/api/v1/boards/b_1234567890123456789012/export.attributed.json",
+    );
+    expect(requests[0]?.init).toMatchObject({
+      method: "GET",
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    const headers = new Headers(requests[0]?.init.headers);
+    expect(headers.get("accept")).toBe("application/json");
+    expect(headers.get("authorization")).toBe("Bearer es1.classroom.signature");
+    expect(requests[0]?.path).not.toContain("es1.classroom.signature");
+  });
+});
+
 describe("board image assets", () => {
   it("uploads raw image bytes with CSRF and fetches authenticated Blob bytes", async () => {
     const requests: CapturedRequest[] = [];

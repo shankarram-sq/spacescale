@@ -435,7 +435,7 @@ describe("BoardRoom initialization", () => {
         .one(),
     }));
     expect(state).toEqual({
-      migrations: [1, 2, 3, 4, 5, 6, 7, 8],
+      migrations: [1, 2, 3, 4, 5, 6, 7, 8, 9],
       boards: 1,
       owners: 1,
       classroomMode: 0,
@@ -1507,8 +1507,8 @@ describe("BoardRoom initialization", () => {
     expect(beforeCheckpoint).toEqual({
       usageRows: 0,
       actionUsage: [
-        { seq: 1, frames: 1, reads: 8, writes: 15 },
-        { seq: 2, frames: 1, reads: 8, writes: 13 },
+        { seq: 1, frames: 1, reads: 8, writes: 16 },
+        { seq: 2, frames: 1, reads: 8, writes: 14 },
       ],
     });
 
@@ -1544,7 +1544,7 @@ describe("BoardRoom initialization", () => {
       incoming_frames: 2,
       billed_request_estimate: 1,
       rows_read_estimate: 23,
-      rows_written_estimate: 34,
+      rows_written_estimate: 37,
       r2_reads: 1,
       r2_writes: 1,
       actions: 2,
@@ -2157,7 +2157,234 @@ describe("BoardRoom initialization", () => {
         createdBy: actorId,
       },
     ]);
+    const attributedResponse = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/export.attributed.json`),
+    );
+    expect(attributedResponse.status).toBe(200);
+    const attributed = (await attributedResponse.json()) as {
+      objects: Array<{
+        attribution: { updatedSeq: number };
+        content: Array<{
+          text: string;
+          responsibleUser: { id: string; displayName: string } | null;
+          updatedSeq: number | null;
+        }>;
+      }>;
+    };
+    expect(attributed.objects[0]).toMatchObject({
+      attribution: { updatedSeq: 1 },
+      content: [
+        {
+          text: "Original classroom idea\nSecond line",
+          responsibleUser: { id: actorId, displayName: "Owner 1" },
+          updatedSeq: 1,
+        },
+      ],
+    });
     connected.socket.close(1000, "done");
+  }, 45_000);
+
+  it("exports owner-only classroom content with per-cell authorship, clears, and undo", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    const owner = await connect(stub, actorId);
+    const editor = await connect(stub, editorId);
+    const tableId = "018f0000-0000-7000-8000-000000000a03";
+    const create = createTableCommit(
+      "018f0000-0000-7000-8000-000000000a01",
+      "018f0000-0000-7000-8000-000000000a02",
+      tableId,
+      "Question",
+    );
+    owner.socket.send(JSON.stringify(create));
+    await owner.next((frame) => frame.t === "server.action" && frame.seq === 1);
+
+    const withQuestion = [
+      ["Question", "Feedback", "Next step"],
+      ["Why do fractions flip?", "", ""],
+      ["", "", ""],
+    ];
+    editor.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000a04",
+        actionId: "018f0000-0000-7000-8000-000000000a05",
+        baseSeq: 1,
+        op: {
+          kind: "item.update",
+          itemId: tableId,
+          expectedVersion: 1,
+          patch: {
+            geometry: {
+              ...create.op.item.geometry,
+              cells: withQuestion,
+            },
+          },
+        },
+      }),
+    );
+    await editor.next((frame) => frame.t === "server.action" && frame.seq === 2);
+
+    editor.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000a06",
+        actionId: "018f0000-0000-7000-8000-000000000a07",
+        baseSeq: 2,
+        op: {
+          kind: "item.update",
+          itemId: tableId,
+          expectedVersion: 2,
+          patch: {
+            geometry: {
+              ...create.op.item.geometry,
+              cells: withQuestion.map((row, rowIndex) =>
+                rowIndex === 1
+                  ? row.map((cell, columnIndex) => (columnIndex === 0 ? "" : cell))
+                  : row,
+              ),
+            },
+          },
+        },
+      }),
+    );
+    await editor.next((frame) => frame.t === "server.action" && frame.seq === 3);
+
+    const clearedResponse = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/export.attributed.json`),
+    );
+    expect(clearedResponse.status).toBe(200);
+    expect(clearedResponse.headers.get("Content-Disposition")).toContain("-attributed.json");
+    const cleared = (await clearedResponse.json()) as {
+      format: string;
+      version: number;
+      participants: Array<Record<string, unknown>>;
+      objects: Array<{
+        attribution: Record<string, unknown>;
+        content: Array<Record<string, unknown>>;
+      }>;
+    };
+    expect(cleared).toMatchObject({
+      format: "cf-whiteboard-attributed-json",
+      version: 1,
+      participants: [
+        { id: actorId, displayName: "Owner 1", role: "owner", status: "active" },
+        { id: editorId, displayName: "Editor", role: "editor", status: "active" },
+      ],
+    });
+    expect(cleared.objects[0]?.attribution).toMatchObject({
+      createdBy: { id: actorId, displayName: "Owner 1" },
+      lastModifiedBy: { id: editorId, displayName: "Editor" },
+      updatedSeq: 3,
+    });
+    expect(cleared.objects[0]?.content).toHaveLength(9);
+    expect(cleared.objects[0]?.content[0]).toMatchObject({
+      kind: "table_cell",
+      row: 0,
+      column: 0,
+      text: "Question",
+      responsibleUser: { id: actorId, displayName: "Owner 1" },
+      lastChangedBy: { id: actorId, displayName: "Owner 1" },
+      updatedSeq: 1,
+    });
+    expect(cleared.objects[0]?.content[3]).toMatchObject({
+      kind: "table_cell",
+      row: 1,
+      column: 0,
+      text: "",
+      responsibleUser: null,
+      lastChangedBy: { id: editorId, displayName: "Editor" },
+      updatedSeq: 3,
+    });
+    expect(cleared.objects[0]?.content[4]).toEqual({
+      kind: "table_cell",
+      row: 1,
+      column: 1,
+      text: "",
+      responsibleUser: null,
+      lastChangedBy: null,
+      updatedSeq: null,
+      updatedAt: null,
+    });
+
+    const forbidden = await stub.fetch(
+      internalActorRequest(editorId, `/api/v1/boards/${boardId}/export.attributed.json`),
+    );
+    expect(forbidden.status).toBe(403);
+
+    editor.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000a08",
+        actionId: "018f0000-0000-7000-8000-000000000a09",
+        baseSeq: 3,
+        op: {
+          kind: "history.undo",
+          expectedHistoryVersion: 2,
+          targetActionId: "018f0000-0000-7000-8000-000000000a07",
+        },
+      }),
+    );
+    await editor.next((frame) => frame.t === "server.action" && frame.seq === 4);
+    const undoneResponse = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/export.attributed.json`),
+    );
+    const undone = (await undoneResponse.json()) as {
+      objects: Array<{
+        attribution: { updatedSeq: number };
+        content: Array<Record<string, unknown>>;
+      }>;
+    };
+    expect(undone.objects[0]?.attribution.updatedSeq).toBe(2);
+    expect(undone.objects[0]?.content[3]).toMatchObject({
+      text: "Why do fractions flip?",
+      responsibleUser: { id: editorId, displayName: "Editor" },
+      lastChangedBy: { id: editorId, displayName: "Editor" },
+      updatedSeq: 2,
+    });
+
+    owner.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000a10",
+        actionId: "018f0000-0000-7000-8000-000000000a11",
+        baseSeq: 4,
+        op: {
+          kind: "item.update",
+          itemId: tableId,
+          expectedVersion: 4,
+          patch: { transform: [1, 0, 0, 1, 40, 20] },
+        },
+      }),
+    );
+    await owner.next((frame) => frame.t === "server.action" && frame.seq === 5);
+    const movedResponse = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/export.attributed.json`),
+    );
+    const moved = (await movedResponse.json()) as {
+      objects: Array<{
+        attribution: Record<string, unknown>;
+        content: Array<Record<string, unknown>>;
+      }>;
+    };
+    expect(moved.objects[0]?.attribution).toMatchObject({
+      lastModifiedBy: { id: actorId, displayName: "Owner 1" },
+      updatedSeq: 5,
+    });
+    expect(moved.objects[0]?.content[3]).toMatchObject({
+      text: "Why do fractions flip?",
+      responsibleUser: { id: editorId, displayName: "Editor" },
+      lastChangedBy: { id: editorId, displayName: "Editor" },
+      updatedSeq: 2,
+    });
+
+    owner.socket.close(1000, "done");
+    editor.socket.close(1000, "done");
   }, 45_000);
 
   it("reconstructs hibernated socket attachments after forced Durable Object eviction", async () => {
@@ -2937,6 +3164,10 @@ describe("BoardRoom initialization", () => {
           key,
           now,
         );
+        durableState.storage.sql.exec(
+          "INSERT INTO snapshot_attribution(seq, data_json) VALUES (?, '[]')",
+          seq,
+        );
       }
       durableState.storage.sql.exec(
         `INSERT INTO http_receipts(
@@ -2963,11 +3194,18 @@ describe("BoardRoom initialization", () => {
         .exec<{ seq: number }>("SELECT seq FROM snapshots ORDER BY seq")
         .toArray()
         .map((row) => row.seq),
+      attributionSidecars: durableState.storage.sql
+        .exec<{ seq: number }>("SELECT seq FROM snapshot_attribution ORDER BY seq")
+        .toArray()
+        .map((row) => row.seq),
       receipts: durableState.storage.sql
         .exec<{ count: number }>("SELECT COUNT(*) AS count FROM http_receipts")
         .one().count,
     }));
     expect(retained.snapshots).toEqual(Array.from({ length: 20 }, (_, index) => index + 3));
+    expect(retained.attributionSidecars).toEqual(
+      Array.from({ length: 20 }, (_, index) => index + 3),
+    );
     expect(retained.receipts).toBe(0);
     expect(await typedEnv.BOARD_SNAPSHOTS.head(objects[0]?.key ?? "missing")).toBeNull();
     expect(await typedEnv.BOARD_SNAPSHOTS.head(objects[2]?.key ?? "missing")).not.toBeNull();

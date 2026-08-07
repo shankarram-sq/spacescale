@@ -206,9 +206,31 @@ export interface ItemEffect {
   afterStateToken: string;
 }
 
+export type ContentAttribution = {
+  responsibleBy: string | null;
+  lastChangedBy: string | null;
+  updatedSeq: number | null;
+  updatedAt: number | null;
+};
+
+export type ItemAttributionState = {
+  lastModifiedBy: string;
+  updatedSeq: number;
+  updatedAt: number;
+  content: ContentAttribution | null;
+  tableCells: ContentAttribution[][] | null;
+};
+
+export type ItemAttributionEffect = {
+  itemId: string;
+  before: ItemAttributionState | null;
+  after: ItemAttributionState | null;
+};
+
 export interface StoredActionPayload {
   publicResult: ServerAction;
   effects: ItemEffect[];
+  attributionEffects?: ItemAttributionEffect[];
 }
 
 export interface ServerAction {

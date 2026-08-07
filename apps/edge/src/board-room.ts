@@ -86,6 +86,9 @@ import type {
   DrawingPolicy,
   Env,
   InternalActorContext,
+  ItemAttributionEffect,
+  ItemAttributionState,
+  ItemEffect,
   ServerAction,
   SocketAttachment,
   StoredActionPayload,
@@ -93,6 +96,7 @@ import type {
 import {
   ACTOR_ID_PATTERN,
   fallbackDisplayName,
+  OPAQUE_ID_PATTERN,
   optionalTitle,
   requireActorId,
   requireDisplayName,
@@ -215,6 +219,9 @@ type BoardAssetRow = {
   created_at_ms: number;
   committed_at_ms: number | null;
 };
+
+type ExportActor = { id: string; displayName: string };
+type SnapshotAttributionEntry = { itemId: string; attribution: ItemAttributionState };
 
 export class BoardRoom extends DurableObject<Env> {
   readonly #sql: SqlStorage;
@@ -389,6 +396,10 @@ export class BoardRoom extends DurableObject<Env> {
     if (suffix === "/export.json") {
       requireMethod(request, "GET");
       return this.exportJson(actor, board);
+    }
+    if (suffix === "/export.attributed.json") {
+      requireMethod(request, "GET");
+      return this.exportAttributedJson(actor, board);
     }
     if (suffix === "/export.svg") {
       requireMethod(request, "GET");
@@ -695,6 +706,167 @@ export class BoardRoom extends DurableObject<Env> {
           ? [{ id: member.actor_id, displayName: member.display_name }]
           : [],
       );
+  }
+
+  private exportActorDirectory(actorIds: ReadonlySet<string>): Map<string, ExportActor> {
+    const directory = new Map<string, ExportActor>();
+    for (const actorId of actorIds) {
+      directory.set(actorId, { id: actorId, displayName: fallbackDisplayName(actorId) });
+    }
+    for (const member of this.#sql
+      .exec<{ actor_id: string; display_name: string }>(
+        "SELECT actor_id, display_name FROM members ORDER BY actor_id",
+      )
+      .toArray()) {
+      if (actorIds.has(member.actor_id)) {
+        directory.set(member.actor_id, {
+          id: member.actor_id,
+          displayName: member.display_name,
+        });
+      }
+    }
+    return directory;
+  }
+
+  private readItemAttribution(item: BoardItem): ItemAttributionState {
+    const row = this.#sql
+      .exec<{ data_json: string }>(
+        "SELECT data_json FROM item_attribution WHERE item_id = ?",
+        item.id,
+      )
+      .toArray()[0];
+    if (row === undefined) return this.fallbackItemAttribution(item);
+    return parseItemAttributionState(row.data_json, item.id);
+  }
+
+  private readItemAttributionMap(items: readonly BoardItem[]): Map<string, ItemAttributionState> {
+    const wantedIds = new Set(items.map((item) => item.id));
+    const result = new Map<string, ItemAttributionState>();
+    for (const row of this.#sql
+      .exec<{ item_id: string; data_json: string }>(
+        "SELECT item_id, data_json FROM item_attribution ORDER BY item_id",
+      )
+      .toArray()) {
+      if (wantedIds.has(row.item_id)) {
+        result.set(row.item_id, parseItemAttributionState(row.data_json, row.item_id));
+      }
+    }
+    for (const item of items) {
+      if (!result.has(item.id)) result.set(item.id, this.fallbackItemAttribution(item));
+    }
+    return result;
+  }
+
+  private fallbackItemAttribution(item: BoardItem): ItemAttributionState {
+    const acceptedAt =
+      this.#sql
+        .exec<{ accepted_at_ms: number }>(
+          "SELECT accepted_at_ms FROM activity_log WHERE seq = ?",
+          item.version,
+        )
+        .toArray()[0]?.accepted_at_ms ?? this.requireBoard().created_at_ms;
+    return initialItemAttribution(item, item.createdBy, item.version, acceptedAt);
+  }
+
+  private deriveAttributionEffects(
+    effects: readonly ItemEffect[],
+    actorId: string,
+    seq: number,
+    acceptedAt: number,
+  ): ItemAttributionEffect[] {
+    return effects.map((effect) => {
+      const before = effect.before.exists ? this.readItemAttribution(effect.before.item) : null;
+      const after = effect.after.exists
+        ? deriveItemAttribution(
+            effect.before.exists ? effect.before.item : null,
+            effect.after.item,
+            before,
+            actorId,
+            seq,
+            acceptedAt,
+          )
+        : null;
+      return { itemId: effect.itemId, before, after };
+    });
+  }
+
+  private applyAttributionEffects(
+    effects: readonly ItemAttributionEffect[],
+    side: "before" | "after",
+  ): number {
+    let rowsWritten = 0;
+    for (const effect of effects) {
+      const attribution = effect[side];
+      if (attribution === null) {
+        rowsWritten += this.#sql.exec(
+          "DELETE FROM item_attribution WHERE item_id = ?",
+          effect.itemId,
+        ).rowsWritten;
+        continue;
+      }
+      rowsWritten += this.#sql.exec(
+        `INSERT INTO item_attribution(item_id, data_json) VALUES (?, ?)
+         ON CONFLICT(item_id) DO UPDATE SET data_json = excluded.data_json`,
+        effect.itemId,
+        JSON.stringify(attribution),
+      ).rowsWritten;
+    }
+    return rowsWritten;
+  }
+
+  private captureSnapshotAttribution(items: readonly BoardItem[]): SnapshotAttributionEntry[] {
+    const attribution = this.readItemAttributionMap(items);
+    return items.map((item) => ({
+      itemId: item.id,
+      attribution: attribution.get(item.id) ?? this.fallbackItemAttribution(item),
+    }));
+  }
+
+  private writeSnapshotAttribution(
+    seq: number,
+    attribution: readonly SnapshotAttributionEntry[],
+  ): number {
+    const dataJson = JSON.stringify(attribution);
+    if (utf8(dataJson).byteLength > MAX_SNAPSHOT_BYTES) {
+      throw new BoardDomainError(
+        "MESSAGE_TOO_LARGE",
+        "The snapshot attribution sidecar exceeds 20 MiB.",
+      );
+    }
+    return this.#sql.exec(
+      `INSERT INTO snapshot_attribution(seq, data_json) VALUES (?, ?)
+       ON CONFLICT(seq) DO UPDATE SET data_json = excluded.data_json`,
+      seq,
+      dataJson,
+    ).rowsWritten;
+  }
+
+  private readSnapshotAttribution(seq: number): Map<string, ItemAttributionState> | null {
+    const row = this.#sql
+      .exec<{ data_json: string }>("SELECT data_json FROM snapshot_attribution WHERE seq = ?", seq)
+      .toArray()[0];
+    if (row === undefined) return null;
+    return parseSnapshotAttribution(row.data_json);
+  }
+
+  private replaceCurrentAttribution(
+    items: readonly BoardItem[],
+    snapshotAttribution: ReadonlyMap<string, ItemAttributionState> | null,
+    fallbackSeq: number,
+    fallbackAt: number,
+  ): number {
+    let rowsWritten = this.#sql.exec("DELETE FROM item_attribution").rowsWritten;
+    for (const item of items) {
+      const attribution =
+        snapshotAttribution?.get(item.id) ??
+        initialItemAttribution(item, item.createdBy, fallbackSeq, fallbackAt);
+      rowsWritten += this.#sql.exec(
+        "INSERT INTO item_attribution(item_id, data_json) VALUES (?, ?)",
+        item.id,
+        JSON.stringify(attribution),
+      ).rowsWritten;
+    }
+    return rowsWritten;
   }
 
   private restoredItemCreators(
@@ -1801,6 +1973,7 @@ export class BoardRoom extends DurableObject<Env> {
     }
 
     const snapshot = captureSnapshot(this.#sql, initialBoard);
+    const snapshotAttribution = this.captureSnapshotAttribution(snapshot.items);
     const snapshotStartedAt = performance.now();
     let stored: Awaited<ReturnType<BoardRoom["persistSnapshotObject"]>>;
     try {
@@ -1856,6 +2029,10 @@ export class BoardRoom extends DurableObject<Env> {
         actor.actorId,
         snapshot.createdAt,
       ).rowsWritten;
+      const snapshotAttributionRowsWritten = this.writeSnapshotAttribution(
+        snapshot.seq,
+        snapshotAttribution,
+      );
       const receiptRowsWritten = this.writeHttpReceipt(
         actor.actorId,
         idempotencyKey,
@@ -1877,7 +2054,11 @@ export class BoardRoom extends DurableObject<Env> {
           incomingFrames: recordedFrames,
           rowsReadEstimate: snapshot.items.length + 5,
           rowsWrittenEstimate:
-            stored.sqliteRowsWritten + snapshotRowsWritten + receiptRowsWritten + boardRowsWritten,
+            stored.sqliteRowsWritten +
+            snapshotRowsWritten +
+            snapshotAttributionRowsWritten +
+            receiptRowsWritten +
+            boardRowsWritten,
           r2Reads: stored.r2Reads,
           r2Writes: stored.r2Writes,
           r2Bytes: stored.r2Bytes,
@@ -1972,6 +2153,7 @@ export class BoardRoom extends DurableObject<Env> {
       throw new HttpError(503, "TEMPORARILY_UNAVAILABLE", "Snapshot recovery data is invalid.");
     }
     const snapshot = parseStoredSnapshot(rawSnapshot, initialBoard.public_id);
+    const snapshotAttribution = this.readSnapshotAttribution(snapshotSeq);
     const acceptedAt = Date.now();
     const commandId = crypto.randomUUID();
     const actionId = crypto.randomUUID();
@@ -2042,6 +2224,12 @@ export class BoardRoom extends DurableObject<Env> {
           item,
         });
       }
+      const attributionRowsWritten = this.replaceCurrentAttribution(
+        targetItems,
+        snapshotAttribution,
+        snapshot.seq,
+        snapshot.createdAt,
+      );
 
       const expandedOperation: Record<string, unknown> = {
         kind: "items.batch",
@@ -2108,6 +2296,7 @@ export class BoardRoom extends DurableObject<Env> {
       const rowsWrittenEstimate =
         capacityRowsWritten +
         itemRowsWritten +
+        attributionRowsWritten +
         invalidatedHistoryRows +
         receiptRowsWritten +
         boardRowsWritten +
@@ -2161,6 +2350,90 @@ export class BoardRoom extends DurableObject<Env> {
       headers: {
         "Content-Type": "application/json; charset=utf-8",
         "Content-Disposition": `attachment; filename="whiteboard-${board.public_id}.json"`,
+        "Cache-Control": "no-store",
+        "X-Whiteboard-Seq": String(snapshot.seq),
+        ETag: etag,
+      },
+    });
+  }
+
+  private async exportAttributedJson(
+    actor: InternalActorContext,
+    capturedBoard: BoardRow,
+  ): Promise<Response> {
+    const board = readBoard(this.#sql) ?? capturedBoard;
+    this.requireOwner(board, actor.actorId);
+    const snapshot = captureSnapshot(this.#sql, board);
+    const itemAttribution = this.readItemAttributionMap(snapshot.items);
+    const referencedActorIds = new Set<string>();
+    for (const item of snapshot.items) {
+      referencedActorIds.add(item.createdBy);
+      collectAttributionActorIds(itemAttribution.get(item.id), referencedActorIds);
+    }
+    const directory = this.exportActorDirectory(referencedActorIds);
+    const actorRef = (actorId: string | null): ExportActor | null =>
+      actorId === null
+        ? null
+        : (directory.get(actorId) ?? { id: actorId, displayName: fallbackDisplayName(actorId) });
+    const participants: Array<{
+      id: string;
+      displayName: string;
+      role: BoardRole | null;
+      status: "active" | "revoked" | "referenced";
+    }> = this.#sql
+      .exec<{
+        actor_id: string;
+        display_name: string;
+        role: BoardRole;
+        revoked_at_ms: number | null;
+      }>(
+        `SELECT actor_id, display_name, role, revoked_at_ms
+         FROM members ORDER BY created_at_ms, actor_id`,
+      )
+      .toArray()
+      .map((member) => ({
+        id: member.actor_id,
+        displayName: member.display_name,
+        role: member.role,
+        status: member.revoked_at_ms === null ? "active" : "revoked",
+      }));
+    const memberIds = new Set(participants.map((participant) => participant.id));
+    for (const actorId of [...referencedActorIds].sort()) {
+      if (memberIds.has(actorId)) continue;
+      const reference = actorRef(actorId);
+      if (reference === null) continue;
+      participants.push({ ...reference, role: null, status: "referenced" });
+    }
+    const objects = snapshot.items.map((item) => {
+      const attribution = itemAttribution.get(item.id) ?? this.fallbackItemAttribution(item);
+      return {
+        item,
+        attribution: {
+          createdBy: actorRef(item.createdBy),
+          lastModifiedBy: actorRef(attribution.lastModifiedBy),
+          updatedSeq: attribution.updatedSeq,
+          updatedAt: attribution.updatedAt,
+        },
+        content: exportItemContent(item, attribution, actorRef),
+      };
+    });
+    const body = JSON.stringify({
+      format: "cf-whiteboard-attributed-json",
+      version: 1,
+      board: {
+        id: board.public_id,
+        title: board.title,
+        seq: snapshot.seq,
+        stateCreatedAt: snapshot.createdAt,
+      },
+      participants,
+      objects,
+    });
+    const etag = `"${await sha256Base64Url(body)}"`;
+    return new Response(body, {
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Disposition": `attachment; filename="whiteboard-${board.public_id}-attributed.json"`,
         "Cache-Control": "no-store",
         "X-Whiteboard-Seq": String(snapshot.seq),
         ETag: etag,
@@ -2636,7 +2909,17 @@ export class BoardRoom extends DurableObject<Env> {
         actionId: command.actionId,
         op: prepared.publicOperation,
       };
-      const payload: StoredActionPayload = { publicResult: action, effects: prepared.effects };
+      const attributionEffects = this.deriveAttributionEffects(
+        prepared.effects,
+        attachment.actorId,
+        seq,
+        acceptedAt,
+      );
+      const payload: StoredActionPayload = {
+        publicResult: action,
+        effects: prepared.effects,
+        attributionEffects,
+      };
       const publicBytes = utf8(JSON.stringify(action)).byteLength;
       const payloadJson = JSON.stringify(payload);
       if (
@@ -2665,6 +2948,7 @@ export class BoardRoom extends DurableObject<Env> {
       for (const write of prepared.writes.values()) {
         itemRowsWritten += writeItem(this.#sql, write);
       }
+      const attributionRowsWritten = this.applyAttributionEffects(attributionEffects, "after");
       const invalidatedHistory = this.#sql.exec(
         "UPDATE history_entries SET state = 'invalidated', last_transition_seq = ? WHERE actor_id = ? AND state = 'undone'",
         seq,
@@ -2702,6 +2986,7 @@ export class BoardRoom extends DurableObject<Env> {
         snapshotScheduleRowsWritten +
         (snapshotScheduleRowsWritten > 0 ? 1 : 0) +
         itemRowsWritten +
+        attributionRowsWritten +
         invalidatedHistory.rowsWritten +
         historyRowsWritten +
         historyVersion.rowsWritten +
@@ -2880,6 +3165,24 @@ export class BoardRoom extends DurableObject<Env> {
             : { kind: "item.replace", item: write.item },
         );
       }
+      const targetAttributionEffects =
+        originalPayload.attributionEffects ??
+        effects.map((effect) => {
+          const state = undo ? effect.before : effect.after;
+          const attribution = state.exists
+            ? initialItemAttribution(
+                state.item,
+                state.item.createdBy,
+                state.item.version,
+                acceptedAt,
+              )
+            : null;
+          return { itemId: effect.itemId, before: attribution, after: attribution };
+        });
+      const attributionRowsWritten = this.applyAttributionEffects(
+        targetAttributionEffects,
+        originalPayload.attributionEffects === undefined ? "after" : undo ? "before" : "after",
+      );
       const creators = this.restoredItemCreators(
         changes.flatMap((change) => (change.kind === "item.replace" ? [change.item] : [])),
         attachment.actorId,
@@ -2930,6 +3233,7 @@ export class BoardRoom extends DurableObject<Env> {
         snapshotScheduleRowsWritten +
         (snapshotScheduleRowsWritten > 0 ? 1 : 0) +
         itemRowsWritten +
+        attributionRowsWritten +
         historyRowsWritten +
         historyVersion.rowsWritten +
         boardRowsWritten +
@@ -2998,6 +3302,7 @@ export class BoardRoom extends DurableObject<Env> {
       });
     }
     const snapshot = captureSnapshot(this.#sql, initialBoard);
+    const snapshotAttribution = this.captureSnapshotAttribution(snapshot.items);
     const stored = await this.persistSnapshotObject(snapshot);
     let action!: ServerAction;
     let duplicate: ServerAction | null = null;
@@ -3048,6 +3353,7 @@ export class BoardRoom extends DurableObject<Env> {
         );
         removals.push(record.item.id);
       }
+      const attributionRowsWritten = this.#sql.exec("DELETE FROM item_attribution").rowsWritten;
       const expanded = {
         kind: "board.clear",
         removed: removals.map((itemId) => ({ itemId, version: seq })),
@@ -3087,6 +3393,10 @@ export class BoardRoom extends DurableObject<Env> {
         attachment.actorId,
         snapshot.createdAt,
       ).rowsWritten;
+      const snapshotAttributionRowsWritten = this.writeSnapshotAttribution(
+        snapshot.seq,
+        snapshotAttribution,
+      );
       const invalidatedHistoryRows = this.invalidateAllHistory(acceptedAt);
       snapshotScheduleRowsWritten = this.upsertSnapshotJob(seq, acceptedAt, snapshot.seq);
       const boardRowsWritten = this.#sql.exec(
@@ -3113,7 +3423,9 @@ export class BoardRoom extends DurableObject<Env> {
         stored.sqliteRowsWritten +
         capacityRowsWritten +
         itemRowsWritten +
+        attributionRowsWritten +
         snapshotRowsWritten +
+        snapshotAttributionRowsWritten +
         invalidatedHistoryRows +
         boardRowsWritten +
         ACTION_INSERT_BILLED_ROWS +
@@ -4638,7 +4950,10 @@ export class BoardRoom extends DurableObject<Env> {
           candidate.seq,
           candidate.r2_json_key,
         );
-        if (deleted.rowsWritten > 0) removedKeys.push(candidate.r2_json_key);
+        if (deleted.rowsWritten > 0) {
+          this.#sql.exec("DELETE FROM snapshot_attribution WHERE seq = ?", candidate.seq);
+          removedKeys.push(candidate.r2_json_key);
+        }
       }
     });
     for (const key of removedKeys) {
@@ -4720,6 +5035,7 @@ export class BoardRoom extends DurableObject<Env> {
       return;
     }
     const snapshot = captureSnapshot(this.#sql, board);
+    const snapshotAttribution = this.captureSnapshotAttribution(snapshot.items);
     const snapshotStartedAt = performance.now();
     try {
       const stored = await this.persistSnapshotObject(snapshot);
@@ -4738,6 +5054,10 @@ export class BoardRoom extends DurableObject<Env> {
           stored.bytes.byteLength,
           snapshot.createdAt,
         ).rowsWritten;
+        const snapshotAttributionRowsWritten = this.writeSnapshotAttribution(
+          snapshot.seq,
+          snapshotAttribution,
+        );
         let jobRowsWritten: number;
         let boardRowsWritten: number;
         let physicalAlarmRowsWritten = 0;
@@ -4792,6 +5112,7 @@ export class BoardRoom extends DurableObject<Env> {
             rowsWrittenEstimate:
               stored.sqliteRowsWritten +
               snapshotRowsWritten +
+              snapshotAttributionRowsWritten +
               boardRowsWritten +
               jobRowsWritten +
               physicalAlarmRowsWritten +
@@ -4992,6 +5313,284 @@ function invitationResponse(
   );
 }
 
+function textContentForItem(
+  item: BoardItem,
+): { kind: "text" | "sticky_text" | "zone_title" | "image_alt"; text: string } | null {
+  const protocolItem = item as unknown as ProtocolBoardItem;
+  if (protocolItem.kind === "text") return { kind: "text", text: protocolItem.geometry.text };
+  if (protocolItem.kind === "sticky") {
+    return { kind: "sticky_text", text: protocolItem.geometry.text };
+  }
+  if (protocolItem.kind === "zone") {
+    return { kind: "zone_title", text: protocolItem.geometry.title };
+  }
+  if (protocolItem.kind === "image") {
+    return { kind: "image_alt", text: protocolItem.geometry.alt ?? "" };
+  }
+  return null;
+}
+
+function changedContentAttribution(
+  text: string,
+  actorId: string,
+  seq: number,
+  acceptedAt: number,
+): NonNullable<ItemAttributionState["content"]> {
+  return {
+    responsibleBy: text.trim().length > 0 ? actorId : null,
+    lastChangedBy: actorId,
+    updatedSeq: seq,
+    updatedAt: acceptedAt,
+  };
+}
+
+function initialContentAttribution(
+  text: string,
+  actorId: string,
+  seq: number,
+  acceptedAt: number,
+): NonNullable<ItemAttributionState["content"]> {
+  if (text.trim().length === 0) {
+    return {
+      responsibleBy: null,
+      lastChangedBy: null,
+      updatedSeq: null,
+      updatedAt: null,
+    };
+  }
+  return {
+    responsibleBy: actorId,
+    lastChangedBy: actorId,
+    updatedSeq: seq,
+    updatedAt: acceptedAt,
+  };
+}
+
+function initialItemAttribution(
+  item: BoardItem,
+  actorId: string,
+  seq: number,
+  acceptedAt: number,
+): ItemAttributionState {
+  const protocolItem = item as unknown as ProtocolBoardItem;
+  const textContent = textContentForItem(item);
+  const tableCells =
+    protocolItem.kind === "table"
+      ? protocolItem.geometry.cells.map((row) =>
+          row.map((text) => initialContentAttribution(text, actorId, seq, acceptedAt)),
+        )
+      : null;
+  return {
+    lastModifiedBy: actorId,
+    updatedSeq: seq,
+    updatedAt: acceptedAt,
+    content:
+      textContent === null
+        ? null
+        : initialContentAttribution(textContent.text, actorId, seq, acceptedAt),
+    tableCells,
+  };
+}
+
+function deriveItemAttribution(
+  beforeItem: BoardItem | null,
+  afterItem: BoardItem,
+  before: ItemAttributionState | null,
+  actorId: string,
+  seq: number,
+  acceptedAt: number,
+): ItemAttributionState {
+  if (beforeItem === null) {
+    return initialItemAttribution(afterItem, actorId, seq, acceptedAt);
+  }
+  const afterProtocol = afterItem as unknown as ProtocolBoardItem;
+  const beforeProtocol = beforeItem as unknown as ProtocolBoardItem;
+  const beforeState =
+    before ??
+    initialItemAttribution(beforeItem, beforeItem.createdBy, beforeItem.version, acceptedAt);
+  const afterText = textContentForItem(afterItem);
+  const beforeText = beforeItem === null ? null : textContentForItem(beforeItem);
+  const content =
+    afterText === null
+      ? null
+      : beforeText !== null &&
+          beforeText.kind === afterText.kind &&
+          beforeText.text === afterText.text &&
+          beforeState?.content !== null &&
+          beforeState?.content !== undefined
+        ? structuredClone(beforeState.content)
+        : changedContentAttribution(afterText.text, actorId, seq, acceptedAt);
+  const tableCells =
+    afterProtocol.kind === "table"
+      ? afterProtocol.geometry.cells.map((row, rowIndex) =>
+          row.map((text, columnIndex) => {
+            const previousText =
+              beforeProtocol.kind === "table"
+                ? beforeProtocol.geometry.cells[rowIndex]?.[columnIndex]
+                : undefined;
+            const previousAttribution = beforeState?.tableCells?.[rowIndex]?.[columnIndex];
+            if (previousText === text && previousAttribution !== undefined) {
+              return structuredClone(previousAttribution);
+            }
+            return changedContentAttribution(text, actorId, seq, acceptedAt);
+          }),
+        )
+      : null;
+  return {
+    lastModifiedBy: actorId,
+    updatedSeq: seq,
+    updatedAt: acceptedAt,
+    content,
+    tableCells,
+  };
+}
+
+function collectAttributionActorIds(
+  attribution: ItemAttributionState | undefined,
+  actorIds: Set<string>,
+): void {
+  if (attribution === undefined) return;
+  actorIds.add(attribution.lastModifiedBy);
+  const collectContent = (content: ItemAttributionState["content"]): void => {
+    if (content?.responsibleBy !== null && content?.responsibleBy !== undefined) {
+      actorIds.add(content.responsibleBy);
+    }
+    if (content?.lastChangedBy !== null && content?.lastChangedBy !== undefined) {
+      actorIds.add(content.lastChangedBy);
+    }
+  };
+  collectContent(attribution.content);
+  for (const row of attribution.tableCells ?? []) {
+    for (const cell of row) collectContent(cell);
+  }
+}
+
+function exportItemContent(
+  item: BoardItem,
+  attribution: ItemAttributionState,
+  actorRef: (actorId: string | null) => ExportActor | null,
+): Array<Record<string, unknown>> {
+  const protocolItem = item as unknown as ProtocolBoardItem;
+  if (protocolItem.kind === "table") {
+    return protocolItem.geometry.cells.flatMap((row, rowIndex) =>
+      row.map((text, columnIndex) => {
+        const cell =
+          attribution.tableCells?.[rowIndex]?.[columnIndex] ??
+          initialContentAttribution(
+            text,
+            item.createdBy,
+            attribution.updatedSeq,
+            attribution.updatedAt,
+          );
+        return {
+          kind: "table_cell",
+          row: rowIndex,
+          column: columnIndex,
+          text,
+          responsibleUser: actorRef(cell.responsibleBy),
+          lastChangedBy: actorRef(cell.lastChangedBy),
+          updatedSeq: cell.updatedSeq,
+          updatedAt: cell.updatedAt,
+        };
+      }),
+    );
+  }
+  const textContent = textContentForItem(item);
+  if (textContent === null) return [];
+  const content =
+    attribution.content ??
+    initialContentAttribution(
+      textContent.text,
+      item.createdBy,
+      attribution.updatedSeq,
+      attribution.updatedAt,
+    );
+  return [
+    {
+      kind: textContent.kind,
+      text: textContent.text,
+      responsibleUser: actorRef(content.responsibleBy),
+      lastChangedBy: actorRef(content.lastChangedBy),
+      updatedSeq: content.updatedSeq,
+      updatedAt: content.updatedAt,
+    },
+  ];
+}
+
+function parseItemAttributionState(payloadJson: string, itemId: string): ItemAttributionState {
+  let value: unknown;
+  try {
+    value = JSON.parse(payloadJson);
+  } catch {
+    throw new BoardDomainError("INTERNAL_ERROR", "Stored item attribution is invalid.");
+  }
+  if (!isItemAttributionState(value)) {
+    throw new BoardDomainError("INTERNAL_ERROR", `Stored attribution for ${itemId} is invalid.`);
+  }
+  return value;
+}
+
+function isContentAttribution(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const actorOrNull = (actorId: unknown): boolean =>
+    actorId === null || (typeof actorId === "string" && ACTOR_ID_PATTERN.test(actorId));
+  const safeIntegerOrNull = (entry: unknown): boolean =>
+    entry === null || (Number.isSafeInteger(entry) && (entry as number) >= 0);
+  return (
+    actorOrNull(value.responsibleBy) &&
+    actorOrNull(value.lastChangedBy) &&
+    safeIntegerOrNull(value.updatedSeq) &&
+    safeIntegerOrNull(value.updatedAt)
+  );
+}
+
+function isItemAttributionState(value: unknown): value is ItemAttributionState {
+  if (!isRecord(value)) return false;
+  if (
+    typeof value.lastModifiedBy !== "string" ||
+    !ACTOR_ID_PATTERN.test(value.lastModifiedBy) ||
+    !Number.isSafeInteger(value.updatedSeq) ||
+    (value.updatedSeq as number) < 0 ||
+    !Number.isSafeInteger(value.updatedAt) ||
+    (value.updatedAt as number) < 0 ||
+    (value.content !== null && !isContentAttribution(value.content)) ||
+    (value.tableCells !== null &&
+      (!Array.isArray(value.tableCells) ||
+        !value.tableCells.every(
+          (row) => Array.isArray(row) && row.every((cell) => isContentAttribution(cell)),
+        )))
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function parseSnapshotAttribution(payloadJson: string): Map<string, ItemAttributionState> {
+  let value: unknown;
+  try {
+    value = JSON.parse(payloadJson);
+  } catch {
+    throw new BoardDomainError("INTERNAL_ERROR", "Stored snapshot attribution is invalid.");
+  }
+  if (!Array.isArray(value)) {
+    throw new BoardDomainError("INTERNAL_ERROR", "Stored snapshot attribution is invalid.");
+  }
+  const result = new Map<string, ItemAttributionState>();
+  for (const entry of value) {
+    if (
+      !isRecord(entry) ||
+      typeof entry.itemId !== "string" ||
+      !OPAQUE_ID_PATTERN.test(entry.itemId) ||
+      result.has(entry.itemId) ||
+      !isItemAttributionState(entry.attribution)
+    ) {
+      throw new BoardDomainError("INTERNAL_ERROR", "Stored snapshot attribution is invalid.");
+    }
+    result.set(entry.itemId, entry.attribution);
+  }
+  return result;
+}
+
 function parseStoredActionPayload(payloadJson: string): StoredActionPayload {
   let value: unknown;
   try {
@@ -5001,6 +5600,16 @@ function parseStoredActionPayload(payloadJson: string): StoredActionPayload {
   }
   if (!isRecord(value) || !isRecord(value.publicResult) || !Array.isArray(value.effects)) {
     throw new BoardDomainError("INTERNAL_ERROR", "Stored action data is invalid.");
+  }
+  if (
+    value.attributionEffects !== undefined &&
+    (!Array.isArray(value.attributionEffects) ||
+      value.attributionEffects.length > LIMITS.maxBatchItems ||
+      !value.attributionEffects.every(isStoredAttributionEffect) ||
+      new Set(value.attributionEffects.map((effect) => effect.itemId)).size !==
+        value.attributionEffects.length)
+  ) {
+    throw new BoardDomainError("INTERNAL_ERROR", "Stored action attribution is invalid.");
   }
   const action = value.publicResult;
   if (
@@ -5017,6 +5626,20 @@ function parseStoredActionPayload(payloadJson: string): StoredActionPayload {
     throw new BoardDomainError("INTERNAL_ERROR", "Stored action data is invalid.");
   }
   return value as unknown as StoredActionPayload;
+}
+
+function isStoredAttributionEffect(value: unknown): value is {
+  itemId: string;
+  before: ItemAttributionState | null;
+  after: ItemAttributionState | null;
+} {
+  return (
+    isRecord(value) &&
+    typeof value.itemId === "string" &&
+    OPAQUE_ID_PATTERN.test(value.itemId) &&
+    (value.before === null || isItemAttributionState(value.before)) &&
+    (value.after === null || isItemAttributionState(value.after))
+  );
 }
 
 function isStoredServerActor(value: unknown): value is { id: string; displayName: string } {

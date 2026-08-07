@@ -309,6 +309,21 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
         ON board_assets(state, created_at_ms);
     `,
   },
+  {
+    version: 9,
+    name: "item_content_attribution",
+    sql: `
+      CREATE TABLE item_attribution (
+        item_id TEXT PRIMARY KEY,
+        data_json TEXT NOT NULL CHECK (json_valid(data_json))
+      ) WITHOUT ROWID;
+
+      CREATE TABLE snapshot_attribution (
+        seq INTEGER PRIMARY KEY,
+        data_json TEXT NOT NULL CHECK (json_valid(data_json))
+      );
+    `,
+  },
 ] as const;
 
 export function applyMigrations(

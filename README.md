@@ -33,8 +33,18 @@ and they support selection, movement, copy/delete, undo/redo, offline recovery,
 snapshots, and JSON/SVG export.
 
 Saved sticky notes, image cards, and stamps show the creator's initials. Hovering
-the item reveals the creator's signed display name; the stable user identifier
-remains server-side attribution metadata rather than visible board text.
+the item reveals the creator's signed display name. The Worker uses only an
+opaque actor ID for durable attribution; it does not store or expose the raw
+stable user identifier.
+
+Board owners can choose **Classroom data JSON** from the export menu to download
+the current authoritative objects together with participant names and normalized
+text attribution. Creator and content author are reported separately: for a
+sticky, text item, image description, or zone title, the responsible user is the
+last participant who authored the current value; table cells are attributed
+individually. The same owner-only data is available to trusted backends at
+`GET /api/v1/boards/<board-id>/export.attributed.json`. It contains opaque actor
+IDs and display names, never raw email addresses or `user_identifier` values.
 
 Owners can also enable private **Image cards** for a board. Editors then upload,
 paste, or drop PNG, JPEG, WebP, and static GIF images; the browser removes photo

@@ -1,4 +1,12 @@
-import type { AccessMode, BoardSnapshot, Bootstrap, DrawingPolicy, Member, Role } from "../types";
+import type {
+  AccessMode,
+  BoardItem,
+  BoardSnapshot,
+  Bootstrap,
+  DrawingPolicy,
+  Member,
+  Role,
+} from "../types";
 
 export type FragmentClaim = { type: "invite" | "recovery"; token: string };
 
@@ -49,6 +57,42 @@ export type BoardImageAsset = {
   intrinsicWidth: number;
   intrinsicHeight: number;
   sizeBytes: number;
+};
+
+export type AttributedBoardExport = {
+  format: "cf-whiteboard-attributed-json";
+  version: 1;
+  board: {
+    id: string;
+    title: string;
+    seq: number;
+    stateCreatedAt: number;
+  };
+  participants: Array<{
+    id: string;
+    displayName: string;
+    role: Role | null;
+    status: "active" | "revoked" | "referenced";
+  }>;
+  objects: Array<{
+    item: BoardItem;
+    attribution: {
+      createdBy: { id: string; displayName: string };
+      lastModifiedBy: { id: string; displayName: string };
+      updatedSeq: number;
+      updatedAt: number;
+    };
+    content: Array<{
+      kind: "text" | "sticky_text" | "zone_title" | "image_alt" | "table_cell";
+      text: string;
+      responsibleUser: { id: string; displayName: string } | null;
+      lastChangedBy: { id: string; displayName: string } | null;
+      updatedSeq: number | null;
+      updatedAt: number | null;
+      row?: number;
+      column?: number;
+    }>;
+  }>;
 };
 
 export class ApiError extends Error {
@@ -323,6 +367,12 @@ export class ApiClient {
       );
     }
     return response.blob();
+  }
+
+  async attributedBoardExport(boardId: string): Promise<AttributedBoardExport> {
+    return this.request<AttributedBoardExport>(
+      `/api/v1/boards/${encodeURIComponent(boardId)}/export.attributed.json`,
+    );
   }
 
   async snapshots(boardId: string): Promise<RecoverySnapshot[]> {
