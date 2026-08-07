@@ -50,6 +50,12 @@ cell contains plain text only; double-click or double-tap a cell (or press
 role/lock, copy/delete, snapshot, replay, and safe JSON/SVG export behavior as
 the other durable board items.
 
+Owners and editors can select **Follow me** to share their live canvas position
+and zoom with the class, including while drawing is locked. Participants may
+press `Esc` or choose **Stop** to leave that Spotlight session; a later session
+can be followed normally. Spotlight traffic is ephemeral and never enters board
+history, snapshots, exports, or the offline outbox.
+
 ## Local development
 
 Requirements: Node.js 22.19 or newer. Local development uses Miniflare-backed

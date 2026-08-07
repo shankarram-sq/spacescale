@@ -581,6 +581,62 @@ describe("hostile frame parsing", () => {
     );
   });
 
+  it("strictly normalizes active and stopped facilitation spotlight frames", () => {
+    expect(
+      parseClientFrame(
+        JSON.stringify({
+          v: 1,
+          t: "client.facilitation.spotlight",
+          spotlightId: ID_1,
+          active: true,
+          viewport: { center: { x: 12.345, y: -45.555 }, zoom: 1.23456 },
+        }),
+      ),
+    ).toEqual({
+      v: 1,
+      t: "client.facilitation.spotlight",
+      spotlightId: ID_1,
+      active: true,
+      viewport: { center: { x: 12.35, y: -45.56 }, zoom: 1.2346 },
+    });
+    expect(
+      parseClientFrame(
+        JSON.stringify({
+          v: 1,
+          t: "client.facilitation.spotlight",
+          spotlightId: ID_1,
+          active: false,
+        }),
+      ),
+    ).toEqual({
+      v: 1,
+      t: "client.facilitation.spotlight",
+      spotlightId: ID_1,
+      active: false,
+    });
+  });
+
+  it("rejects malformed facilitation spotlight sessions and viewports", () => {
+    const active = {
+      v: 1,
+      t: "client.facilitation.spotlight",
+      spotlightId: ID_1,
+      active: true,
+      viewport: { center: { x: 0, y: 0 }, zoom: 1 },
+    };
+    for (const frame of [
+      { ...active, spotlightId: "not-a-uuid" },
+      { ...active, viewport: undefined },
+      { ...active, viewport: { center: { x: 0, y: 0 }, zoom: 0.09 } },
+      { ...active, viewport: { center: { x: 0, y: 0 }, zoom: 8.01 } },
+      { ...active, viewport: { center: { x: 1_000_001, y: 0 }, zoom: 1 } },
+      { ...active, viewport: { center: { x: 0, y: 0, z: 0 }, zoom: 1 } },
+      { ...active, active: false, viewport: active.viewport },
+    ]) {
+      expect(() => parseClientFrame(JSON.stringify(frame))).toThrow(ProtocolValidationError);
+    }
+  });
+
   it("always returns a typed rejection for arbitrary hostile JSON operations", () => {
     fc.assert(
       fc.property(fc.jsonValue({ maxDepth: 12 }), (candidate) => {

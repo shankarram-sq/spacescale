@@ -9,6 +9,7 @@ import type {
   Point,
   Presence,
   RemotePreview,
+  SpotlightViewState,
   StampGeometry,
   StampKind,
   StampStyle,
@@ -453,6 +454,7 @@ export class CanvasViewport {
   private zoomValue = 1;
   private readonly resizeObserver: ResizeObserver;
   private readonly listeners = new Set<(zoom: number) => void>();
+  private readonly viewListeners = new Set<(state: SpotlightViewState) => void>();
 
   constructor(private readonly svg: SVGSVGElement) {
     this.resizeObserver = new ResizeObserver(() => this.resize());
@@ -462,6 +464,16 @@ export class CanvasViewport {
 
   get zoom(): number {
     return this.zoomValue;
+  }
+
+  get viewState(): SpotlightViewState {
+    return {
+      center: {
+        x: this.x + this.width / this.zoomValue / 2,
+        y: this.y + this.height / this.zoomValue / 2,
+      },
+      zoom: this.zoomValue,
+    };
   }
 
   get viewBounds(): Bounds {
@@ -476,6 +488,24 @@ export class CanvasViewport {
   subscribe(listener: (zoom: number) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  subscribeView(listener: (state: SpotlightViewState) => void): () => void {
+    this.viewListeners.add(listener);
+    return () => this.viewListeners.delete(listener);
+  }
+
+  setViewState(state: SpotlightViewState): void {
+    const { x, y } = state.center;
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(state.zoom)) {
+      throw new RangeError("Viewport center and zoom must be finite.");
+    }
+    this.zoomValue = Math.max(0.1, Math.min(8, state.zoom));
+    this.x = x - this.width / this.zoomValue / 2;
+    this.y = y - this.height / this.zoomValue / 2;
+    this.update();
+    this.notifyZoom();
+    this.notifyView();
   }
 
   clientToBoard(clientX: number, clientY: number): Point {
@@ -498,6 +528,7 @@ export class CanvasViewport {
     this.x -= deltaX / this.zoomValue;
     this.y -= deltaY / this.zoomValue;
     this.update();
+    this.notifyView();
   }
 
   zoomAt(clientX: number, clientY: number, zoom: number): void {
@@ -507,7 +538,8 @@ export class CanvasViewport {
     this.x += anchorBefore[0] - anchorAfter[0];
     this.y += anchorBefore[1] - anchorAfter[1];
     this.update();
-    for (const listener of this.listeners) listener(this.zoomValue);
+    this.notifyZoom();
+    this.notifyView();
   }
 
   reset(): void {
@@ -515,7 +547,8 @@ export class CanvasViewport {
     this.y = 0;
     this.zoomValue = 1;
     this.update();
-    for (const listener of this.listeners) listener(this.zoomValue);
+    this.notifyZoom();
+    this.notifyView();
   }
 
   fit(bounds: Bounds | undefined, padding = 80): void {
@@ -538,12 +571,14 @@ export class CanvasViewport {
     this.x = (bounds.minX + bounds.maxX) / 2 - this.width / this.zoomValue / 2;
     this.y = (bounds.minY + bounds.maxY) / 2 - this.height / this.zoomValue / 2;
     this.update();
-    for (const listener of this.listeners) listener(this.zoomValue);
+    this.notifyZoom();
+    this.notifyView();
   }
 
   destroy(): void {
     this.resizeObserver.disconnect();
     this.listeners.clear();
+    this.viewListeners.clear();
   }
 
   private resize(): void {
@@ -567,6 +602,15 @@ export class CanvasViewport {
       `${this.x} ${this.y} ${this.width / this.zoomValue} ${this.height / this.zoomValue}`,
     );
     this.svg.style.setProperty("--board-zoom", String(this.zoomValue));
+  }
+
+  private notifyZoom(): void {
+    for (const listener of this.listeners) listener(this.zoomValue);
+  }
+
+  private notifyView(): void {
+    const state = this.viewState;
+    for (const listener of this.viewListeners) listener(state);
   }
 }
 

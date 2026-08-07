@@ -2372,6 +2372,9 @@ export class BoardRoom extends DurableObject<Env> {
         case "client.presence":
           this.handlePresence(socket, attachment, frame, board);
           break;
+        case "client.facilitation.spotlight":
+          this.handleFacilitationSpotlight(socket, attachment, frame, board);
+          break;
         case "client.sync_check":
           this.handleSyncCheck(socket, attachment, frame, board);
           break;
@@ -3199,6 +3202,47 @@ export class BoardRoom extends DurableObject<Env> {
         t: "server.presence",
         cursor: { x: cursor.x, y: cursor.y },
         activeTool,
+        actor: { id: attachment.actorId, displayName: attachment.displayName },
+        connectionId: attachment.connectionId,
+      },
+      socket,
+      true,
+      board,
+    );
+  }
+
+  private handleFacilitationSpotlight(
+    socket: WebSocket,
+    attachment: SocketAttachment,
+    frame: Extract<ClientFrame, { t: "client.facilitation.spotlight" }>,
+    board: BoardRow,
+  ): void {
+    // Facilitation is independent of the drawing policy: an editor may guide
+    // the class while the board is owner-only or locked. Viewers are always
+    // receive-only at this authoritative boundary.
+    if (attachment.role === "viewer") {
+      throw new BoardDomainError("FORBIDDEN", "Viewers cannot broadcast a spotlight.");
+    }
+    const connectionAllowed = frame.active
+      ? this.#buckets.consume(`${attachment.connectionId}:spotlight`, 15, 30)
+      : this.#buckets.consume(`${attachment.connectionId}:spotlight-control`, 2, 4);
+    if (!connectionAllowed) return;
+    const actorAllowed = frame.active
+      ? this.#buckets.consume(`actor:${attachment.actorId}:spotlight`, 20, 40)
+      : this.#buckets.consume(`actor:${attachment.actorId}:spotlight-control`, 4, 8);
+    if (!actorAllowed) return;
+    const boardAllowed = frame.active
+      ? this.#buckets.consume("board:spotlight", 100, 150)
+      : this.#buckets.consume("board:spotlight-control", 10, 20);
+    if (!boardAllowed) return;
+
+    this.broadcastFrame(
+      {
+        v: 1,
+        t: "server.facilitation.spotlight",
+        spotlightId: frame.spotlightId,
+        active: frame.active,
+        ...(frame.active ? { viewport: frame.viewport } : {}),
         actor: { id: attachment.actorId, displayName: attachment.displayName },
         connectionId: attachment.connectionId,
       },

@@ -286,6 +286,38 @@ export type Presence = Actor & {
   updatedAt: number;
 };
 
+export type SpotlightViewState = {
+  center: { x: number; y: number };
+  zoom: number;
+};
+
+export type ClientSpotlightFrame =
+  | {
+      v: typeof PROTOCOL_VERSION;
+      t: "client.facilitation.spotlight";
+      spotlightId: string;
+      active: true;
+      viewport: SpotlightViewState;
+    }
+  | {
+      v: typeof PROTOCOL_VERSION;
+      t: "client.facilitation.spotlight";
+      spotlightId: string;
+      active: false;
+    };
+
+type SpotlightFrameBase = {
+  v: typeof PROTOCOL_VERSION;
+  t: "server.facilitation.spotlight";
+  spotlightId: string;
+  actor: Actor;
+  connectionId: string;
+};
+
+export type SpotlightFrame =
+  | (SpotlightFrameBase & { active: true; viewport: SpotlightViewState })
+  | (SpotlightFrameBase & { active: false });
+
 export type HistoryState = {
   historyVersion: number;
   canUndo: boolean;

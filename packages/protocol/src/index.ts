@@ -450,6 +450,30 @@ export interface ClientPresenceFrame {
   activeTool: ActiveTool;
 }
 
+export interface SpotlightViewport {
+  center: { x: number; y: number };
+  zoom: number;
+}
+
+export interface ClientActiveSpotlightFrame {
+  v: 1;
+  t: "client.facilitation.spotlight";
+  spotlightId: string;
+  active: true;
+  viewport: SpotlightViewport;
+}
+
+export interface ClientStopSpotlightFrame {
+  v: 1;
+  t: "client.facilitation.spotlight";
+  spotlightId: string;
+  active: false;
+}
+
+export type ClientFacilitationSpotlightFrame =
+  | ClientActiveSpotlightFrame
+  | ClientStopSpotlightFrame;
+
 export interface ClientSyncCheckFrame {
   v: 1;
   t: "client.sync_check";
@@ -460,6 +484,7 @@ export type ClientFrame =
   | ClientCommitFrame
   | ClientPreviewFrame
   | ClientPresenceFrame
+  | ClientFacilitationSpotlightFrame
   | ClientSyncCheckFrame;
 
 export interface ServerActor {
@@ -1253,6 +1278,48 @@ export function validateClientFrame(value: unknown, path = "$frame"): ClientFram
           y: fromGeometry(() => normalizeCoordinate(cursor.y, `${path}.cursor.y`)),
         },
         activeTool: expectLiteral(object.activeTool, ACTIVE_TOOLS, `${path}.activeTool`),
+      };
+    }
+    case "client.facilitation.spotlight": {
+      if (!isCanonicalUuid(object.spotlightId)) {
+        fail("Expected a canonical UUID", `${path}.spotlightId`);
+      }
+      if (typeof object.active !== "boolean") {
+        fail("Spotlight active must be a boolean", `${path}.active`);
+      }
+      if (!object.active) {
+        expectExactKeys(object, ["v", "t", "spotlightId", "active"], [], path);
+        return {
+          v: PROTOCOL_VERSION,
+          t: "client.facilitation.spotlight",
+          spotlightId: object.spotlightId,
+          active: false,
+        };
+      }
+      expectExactKeys(object, ["v", "t", "spotlightId", "active", "viewport"], [], path);
+      const viewport = expectRecord(object.viewport, `${path}.viewport`);
+      expectExactKeys(viewport, ["center", "zoom"], [], `${path}.viewport`);
+      const center = expectRecord(viewport.center, `${path}.viewport.center`);
+      expectExactKeys(center, ["x", "y"], [], `${path}.viewport.center`);
+      if (typeof viewport.zoom !== "number" || !Number.isFinite(viewport.zoom)) {
+        fail("Spotlight zoom must be a finite number", `${path}.viewport.zoom`);
+      }
+      const zoom = canonicalNumber(viewport.zoom, 4);
+      if (zoom < 0.1 || zoom > 8) {
+        fail("Spotlight zoom must be between 0.1 and 8", `${path}.viewport.zoom`);
+      }
+      return {
+        v: PROTOCOL_VERSION,
+        t: "client.facilitation.spotlight",
+        spotlightId: object.spotlightId,
+        active: true,
+        viewport: {
+          center: {
+            x: fromGeometry(() => normalizeCoordinate(center.x, `${path}.viewport.center.x`)),
+            y: fromGeometry(() => normalizeCoordinate(center.y, `${path}.viewport.center.y`)),
+          },
+          zoom,
+        },
       };
     }
     case "client.sync_check":

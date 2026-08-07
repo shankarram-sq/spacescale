@@ -216,6 +216,31 @@ textarea:focus-visible,
   background: #f7f6f2;
 }
 
+.spotlight-toggle {
+  white-space: nowrap;
+}
+
+.spotlight-toggle-mark {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border: 2px solid currentcolor;
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px rgb(62 99 221 / 12%);
+}
+
+.spotlight-toggle[aria-pressed="true"] {
+  border-color: #7c8fdf;
+  background: #edf2ff;
+  color: #2b50c7;
+}
+
+.spotlight-toggle[aria-pressed="true"] .spotlight-toggle-mark {
+  background: currentcolor;
+  box-shadow: 0 0 0 4px rgb(62 99 221 / 17%);
+  animation: spotlight-pulse 1.6s ease-in-out infinite;
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: 0.38;
@@ -294,9 +319,71 @@ button:disabled {
   color: #9e3933;
 }
 
+.spotlight-follow-banner {
+  position: fixed;
+  z-index: 46;
+  top: 68px;
+  left: 50%;
+  width: min(520px, calc(100vw - 24px));
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 8px 9px 8px 15px;
+  translate: -50% 0;
+  border: 1px solid #a8b8f2;
+  border-radius: 13px;
+  background: rgb(245 247 255 / 96%);
+  box-shadow: 0 10px 30px rgb(43 80 199 / 14%);
+  color: #243e9a;
+  font-size: 13px;
+  line-height: 1.35;
+  backdrop-filter: blur(14px);
+}
+
+.spotlight-follow-banner[hidden] {
+  display: none;
+}
+
+.spotlight-follow-banner span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spotlight-follow-banner strong {
+  color: #1e3a8a;
+}
+
+.spotlight-stop {
+  min-height: 30px;
+  flex: 0 0 auto;
+  padding: 0 11px;
+  border: 1px solid #9cacdf;
+  border-radius: 8px;
+  background: #fff;
+  color: #243e9a;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.spotlight-stop:hover {
+  border-color: #6f84cf;
+  background: #edf2ff;
+}
+
 @keyframes status-pulse {
   50% {
     opacity: 0.38;
+  }
+}
+
+@keyframes spotlight-pulse {
+  50% {
+    box-shadow: 0 0 0 7px rgb(62 99 221 / 7%);
   }
 }
 
@@ -2072,6 +2159,15 @@ button:disabled {
     padding: 0 7px;
   }
 
+  .spotlight-toggle-label {
+    display: none;
+  }
+
+  .spotlight-follow-banner {
+    top: 60px;
+    width: min(440px, calc(100vw - 16px));
+  }
+
   .history-controls {
     position: fixed;
     z-index: 25;
@@ -2161,6 +2257,14 @@ button:disabled {
 
   .topbar-button {
     font-size: 10px;
+  }
+
+  .spotlight-follow-banner {
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-left: 12px;
+    font-size: 11px;
   }
 
   .canvas-hint {

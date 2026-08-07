@@ -3290,6 +3290,245 @@ describe("BoardRoom table collaboration", () => {
   }, 45_000);
 });
 
+describe("BoardRoom facilitation spotlight", () => {
+  afterEach(async () => reset());
+
+  it("relays owner and editor viewports without durable writes while viewers remain receive-only", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    await runInDurableObject(stub, (_instance, durableState) => {
+      const now = Date.now();
+      durableState.storage.transactionSync(() => {
+        durableState.storage.sql.exec(
+          `INSERT INTO members(actor_id, role, display_name, created_at_ms, updated_at_ms)
+           VALUES (?, 'viewer', 'Viewer', ?, ?)`,
+          studentId,
+          now,
+          now,
+        );
+        durableState.storage.sql.exec("UPDATE board SET acl_version = 3");
+      });
+    });
+
+    const owner = await connect(stub, actorId);
+    const editor = await connect(stub, editorId);
+    const viewer = await connect(stub, studentId);
+    const ownerSpotlightId = "018f0000-0000-7000-8000-000000000930";
+    owner.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.facilitation.spotlight",
+        spotlightId: ownerSpotlightId,
+        active: true,
+        viewport: { center: { x: 125.555, y: -40.125 }, zoom: 1.23456 },
+      }),
+    );
+    const [editorOwnerFrame, viewerOwnerFrame] = await Promise.all([
+      editor.next(
+        (frame) =>
+          frame.t === "server.facilitation.spotlight" && frame.spotlightId === ownerSpotlightId,
+      ),
+      viewer.next(
+        (frame) =>
+          frame.t === "server.facilitation.spotlight" && frame.spotlightId === ownerSpotlightId,
+      ),
+    ]);
+    for (const frame of [editorOwnerFrame, viewerOwnerFrame]) {
+      expect(frame).toMatchObject({
+        v: 1,
+        t: "server.facilitation.spotlight",
+        spotlightId: ownerSpotlightId,
+        active: true,
+        viewport: { center: { x: 125.56, y: -40.13 }, zoom: 1.2346 },
+        actor: { id: actorId, displayName: "Owner 1" },
+        connectionId: expect.any(String),
+      });
+    }
+
+    owner.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.facilitation.spotlight",
+        spotlightId: ownerSpotlightId,
+        active: false,
+      }),
+    );
+    const ownerStopped = await viewer.next(
+      (frame) =>
+        frame.t === "server.facilitation.spotlight" &&
+        frame.spotlightId === ownerSpotlightId &&
+        frame.active === false,
+    );
+    expect(ownerStopped).not.toHaveProperty("viewport");
+
+    const lock = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ drawingPolicy: "locked", expectedAclVersion: 3 }),
+      }),
+    );
+    expect(lock.status).toBe(200);
+    await editor.next((frame) => frame.t === "access.changed" && frame.drawingPolicy === "locked");
+
+    const editorSpotlightId = "018f0000-0000-7000-8000-000000000931";
+    editor.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.facilitation.spotlight",
+        spotlightId: editorSpotlightId,
+        active: true,
+        viewport: { center: { x: 300, y: 220 }, zoom: 0.75 },
+      }),
+    );
+    const [ownerEditorFrame, viewerEditorFrame] = await Promise.all([
+      owner.next(
+        (frame) =>
+          frame.t === "server.facilitation.spotlight" && frame.spotlightId === editorSpotlightId,
+      ),
+      viewer.next(
+        (frame) =>
+          frame.t === "server.facilitation.spotlight" && frame.spotlightId === editorSpotlightId,
+      ),
+    ]);
+    for (const frame of [ownerEditorFrame, viewerEditorFrame]) {
+      expect(frame).toMatchObject({
+        spotlightId: editorSpotlightId,
+        active: true,
+        viewport: { center: { x: 300, y: 220 }, zoom: 0.75 },
+        actor: { id: editorId, displayName: "Editor" },
+        connectionId: expect.any(String),
+      });
+    }
+
+    viewer.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.facilitation.spotlight",
+        spotlightId: "018f0000-0000-7000-8000-000000000932",
+        active: true,
+        viewport: { center: { x: 0, y: 0 }, zoom: 1 },
+      }),
+    );
+    expect(await viewer.next((frame) => frame.t === "server.rejected")).toMatchObject({
+      code: "FORBIDDEN",
+      latestSeq: 0,
+    });
+
+    editor.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.facilitation.spotlight",
+        spotlightId: editorSpotlightId,
+        active: false,
+      }),
+    );
+    expect(
+      await viewer.next(
+        (frame) =>
+          frame.t === "server.facilitation.spotlight" &&
+          frame.spotlightId === editorSpotlightId &&
+          frame.active === false,
+      ),
+    ).toMatchObject({ actor: { id: editorId, displayName: "Editor" } });
+
+    const state = await runInDurableObject(stub, (_instance, durableState) => ({
+      latestSeq: durableState.storage.sql
+        .exec<{ latest_seq: number }>("SELECT latest_seq FROM board")
+        .one().latest_seq,
+      actions: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM actions")
+        .one().count,
+      items: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM items")
+        .one().count,
+    }));
+    expect(state).toEqual({ latestSeq: 0, actions: 0, items: 0 });
+
+    owner.socket.close(1000, "done");
+    editor.socket.close(1000, "done");
+    viewer.socket.close(1000, "done");
+  });
+
+  it("keeps room and stop capacity available after one connection floods spotlight updates", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    await runInDurableObject(stub, (_instance, durableState) => {
+      const now = Date.now();
+      durableState.storage.transactionSync(() => {
+        durableState.storage.sql.exec(
+          `INSERT INTO members(actor_id, role, display_name, created_at_ms, updated_at_ms)
+           VALUES (?, 'viewer', 'Viewer', ?, ?)`,
+          studentId,
+          now,
+          now,
+        );
+        durableState.storage.sql.exec("UPDATE board SET acl_version = 3");
+      });
+    });
+
+    const flooder = await connect(stub, actorId);
+    const teacher = await connect(stub, editorId);
+    const observer = await connect(stub, studentId);
+    const floodSpotlightId = "018f0000-0000-7000-8000-000000000933";
+    const floodFrame = JSON.stringify({
+      v: 1,
+      t: "client.facilitation.spotlight",
+      spotlightId: floodSpotlightId,
+      active: true,
+      viewport: { center: { x: 10, y: 20 }, zoom: 1 },
+    });
+    for (let index = 0; index < 400; index += 1) flooder.socket.send(floodFrame);
+
+    const teacherSpotlightId = "018f0000-0000-7000-8000-000000000934";
+    teacher.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.facilitation.spotlight",
+        spotlightId: teacherSpotlightId,
+        active: true,
+        viewport: { center: { x: 400, y: 250 }, zoom: 1.5 },
+      }),
+    );
+    flooder.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.facilitation.spotlight",
+        spotlightId: floodSpotlightId,
+        active: false,
+      }),
+    );
+
+    const [teacherFrame, stopFrame] = await Promise.all([
+      observer.next(
+        (frame) =>
+          frame.t === "server.facilitation.spotlight" && frame.spotlightId === teacherSpotlightId,
+      ),
+      observer.next(
+        (frame) =>
+          frame.t === "server.facilitation.spotlight" &&
+          frame.spotlightId === floodSpotlightId &&
+          frame.active === false,
+      ),
+    ]);
+    expect(teacherFrame).toMatchObject({
+      active: true,
+      actor: { id: editorId, displayName: "Editor" },
+      viewport: { center: { x: 400, y: 250 }, zoom: 1.5 },
+    });
+    expect(stopFrame).toMatchObject({
+      active: false,
+      actor: { id: actorId, displayName: "Owner 1" },
+    });
+
+    flooder.socket.close(1000, "done");
+    teacher.socket.close(1000, "done");
+    observer.socket.close(1000, "done");
+  });
+});
+
 function loggedEvents(
   output: { mock: { calls: unknown[][] } },
   event: string,

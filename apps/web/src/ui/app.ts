@@ -47,6 +47,7 @@ import type {
   RemotePreview,
   ServerAction,
   ServerFrame,
+  SpotlightFrame,
   StampKind,
   TableGeometry,
   ToolName,
@@ -81,6 +82,18 @@ const DRAW_TOOLS = new Set<ToolName>([
   "table",
   "eraser",
 ]);
+
+const SPOTLIGHT_UPDATE_THROTTLE_MS = 100;
+const SPOTLIGHT_HEARTBEAT_MS = 1_000;
+const SPOTLIGHT_STALE_MS = 3_500;
+
+type FollowedSpotlight = {
+  spotlightId: string;
+  actorId: string;
+  connectionId: string;
+  displayName: string;
+  updatedAt: number;
+};
 
 type StyleState = {
   color: string;
@@ -250,6 +263,14 @@ export class BoardApp {
   };
   private readonly remotePreviews = new Map<string, RemotePreview>();
   private readonly presences = new Map<string, Presence>();
+  private readonly ignoredSpotlightIds = new Set<string>();
+  private readonly localSpotlightIds = new Set<string>();
+  private broadcastSpotlightId: string | null = null;
+  private followedSpotlight: FollowedSpotlight | null = null;
+  private spotlightHeartbeatTimer: number | null = null;
+  private spotlightUpdateTimer: number | null = null;
+  private spotlightLastSentAt = 0;
+  private unsubscribeViewport: (() => void) | null = null;
   private expiredRecovery: OutboxEntry[] = [];
   private previewExpiryTimer: number;
   private textEditor: HTMLTextAreaElement | null = null;
@@ -279,6 +300,9 @@ export class BoardApp {
   private readonly participantCount: HTMLElement;
   private readonly participantDrawer: HTMLElement;
   private readonly participantList: HTMLElement;
+  private readonly spotlightToggle: HTMLButtonElement;
+  private readonly spotlightFollowBanner: HTMLElement;
+  private readonly spotlightFollowText: HTMLElement;
   private readonly accessButton: HTMLButtonElement;
   private readonly accessDrawer: HTMLElement;
   private readonly accessBody: HTMLElement;
@@ -318,6 +342,17 @@ export class BoardApp {
     this.participantCount = query(this.root, "[data-participant-count]", HTMLElement);
     this.participantDrawer = query(this.root, "[data-testid='participant-drawer']", HTMLElement);
     this.participantList = query(this.root, "[data-participant-list]", HTMLElement);
+    this.spotlightToggle = query(this.root, "[data-testid='spotlight-toggle']", HTMLButtonElement);
+    this.spotlightFollowBanner = query(
+      this.root,
+      "[data-testid='spotlight-follow-banner']",
+      HTMLElement,
+    );
+    this.spotlightFollowText = query(
+      this.spotlightFollowBanner,
+      "[data-spotlight-follow-text]",
+      HTMLElement,
+    );
     this.accessButton = query(this.root, "[data-testid='access-button']", HTMLButtonElement);
     this.accessDrawer = query(this.root, "[data-testid='access-drawer']", HTMLElement);
     this.accessBody = query(this.root, "[data-access-body]", HTMLElement);
@@ -343,6 +378,9 @@ export class BoardApp {
     );
     this.renderer.viewport.subscribe((zoom) => {
       this.zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
+    });
+    this.unsubscribeViewport = this.renderer.viewport.subscribeView(() => {
+      this.scheduleSpotlightViewportUpdate();
     });
     this.tools = new ToolController({
       model: this.model,
@@ -397,6 +435,7 @@ export class BoardApp {
         onReady: () => {
           this.flushOutbox();
           this.socket.sendPresence(null, this.tools.tool);
+          this.sendCurrentSpotlight();
         },
         onRejected: (frame) => this.handleRejection(frame),
         onHistory: (state) => {
@@ -407,6 +446,7 @@ export class BoardApp {
         onOwnerRecovery: (token, aclVersion) => this.handleOwnerRecovery(token, aclVersion),
         onPreview: (preview, cancelKey) => this.handlePreview(preview, cancelKey),
         onPresence: (presences, replace) => this.handlePresence(presences, replace),
+        onSpotlight: (frame) => this.handleSpotlight(frame),
         onResync: (reason) => this.resync(reason),
         onNotice: (message, kind) => this.notify(message, kind),
         refreshSession: () => this.api.refreshSession(),
@@ -438,6 +478,10 @@ export class BoardApp {
 
   destroy(): void {
     window.clearInterval(this.previewExpiryTimer);
+    this.stopBroadcastingSpotlight();
+    this.clearFollowingSpotlight();
+    this.unsubscribeViewport?.();
+    this.unsubscribeViewport = null;
     if (this.textEditorTimer !== null) window.clearTimeout(this.textEditorTimer);
     this.pendingStickyDrafts.clear();
     this.rejectedStickyDrafts.length = 0;
@@ -476,6 +520,10 @@ export class BoardApp {
               <span class="status-dot" aria-hidden="true"></span>
               <span data-save-status-text>Connecting…</span>
             </div>
+            <button class="topbar-button spotlight-toggle" type="button" data-testid="spotlight-toggle" aria-label="Start Follow me" aria-pressed="false" hidden>
+              <span class="spotlight-toggle-mark" aria-hidden="true"></span>
+              <span class="spotlight-toggle-label">Follow me</span>
+            </button>
             <button class="topbar-button people-button" type="button" data-testid="participants-button" aria-controls="participant-drawer" aria-expanded="false">
               <span class="avatar-stack" aria-hidden="true"><i></i><i></i></span>
               <span data-participant-count>1</span>
@@ -498,6 +546,11 @@ export class BoardApp {
         <div class="archived-banner" data-testid="archived-banner" role="status" aria-live="polite" hidden>
           <strong>Board archived</strong>
           <span>This board is permanently read only. Existing access and invitation links can no longer open it.</span>
+        </div>
+
+        <div class="spotlight-follow-banner" data-testid="spotlight-follow-banner" role="status" aria-live="polite" hidden>
+          <span data-spotlight-follow-text></span>
+          <button class="spotlight-stop" type="button" data-stop-spotlight>Stop</button>
         </div>
 
         <main class="board-stage">
@@ -796,6 +849,15 @@ export class BoardApp {
     this.renderer.svg.addEventListener("dragover", this.onImageDragOver);
     this.renderer.svg.addEventListener("drop", this.onImageDrop);
     document.addEventListener("paste", this.onImagePaste);
+
+    this.spotlightToggle.addEventListener("click", () => {
+      if (this.broadcastSpotlightId) this.stopBroadcastingSpotlight();
+      else this.startBroadcastingSpotlight();
+    });
+    query(this.spotlightFollowBanner, "[data-stop-spotlight]", HTMLButtonElement).addEventListener(
+      "click",
+      () => this.stopFollowingSpotlight(),
+    );
 
     query(this.root, "[data-testid='participants-button']", HTMLButtonElement).addEventListener(
       "click",
@@ -1481,6 +1543,146 @@ export class BoardApp {
     this.renderer.renderPresence(this.presences.values(), this.bootstrap.actor.id);
   }
 
+  private startBroadcastingSpotlight(): void {
+    if (!this.canBroadcastSpotlight()) return;
+    if (this.followedSpotlight) this.stopFollowingSpotlight();
+    const spotlightId = crypto.randomUUID();
+    this.broadcastSpotlightId = spotlightId;
+    this.localSpotlightIds.add(spotlightId);
+    if (this.localSpotlightIds.size > 32) {
+      const oldest = this.localSpotlightIds.values().next().value;
+      if (oldest) this.localSpotlightIds.delete(oldest);
+    }
+    this.sendCurrentSpotlight();
+    this.spotlightHeartbeatTimer = window.setInterval(
+      () => this.sendCurrentSpotlight(),
+      SPOTLIGHT_HEARTBEAT_MS,
+    );
+    this.renderSpotlightState();
+    this.liveRegion.textContent = "Follow me started. Participants can now follow your view.";
+  }
+
+  private stopBroadcastingSpotlight(sendStop = true): void {
+    const spotlightId = this.broadcastSpotlightId;
+    if (this.spotlightHeartbeatTimer !== null) {
+      window.clearInterval(this.spotlightHeartbeatTimer);
+      this.spotlightHeartbeatTimer = null;
+    }
+    if (this.spotlightUpdateTimer !== null) {
+      window.clearTimeout(this.spotlightUpdateTimer);
+      this.spotlightUpdateTimer = null;
+    }
+    this.broadcastSpotlightId = null;
+    if (spotlightId && sendStop) this.socket.sendSpotlight(spotlightId, false);
+    this.renderSpotlightState();
+  }
+
+  private scheduleSpotlightViewportUpdate(): void {
+    if (!this.broadcastSpotlightId || this.phase !== "ready") return;
+    const elapsed = performance.now() - this.spotlightLastSentAt;
+    if (elapsed >= SPOTLIGHT_UPDATE_THROTTLE_MS) {
+      this.sendCurrentSpotlight();
+      return;
+    }
+    if (this.spotlightUpdateTimer !== null) return;
+    this.spotlightUpdateTimer = window.setTimeout(() => {
+      this.spotlightUpdateTimer = null;
+      this.sendCurrentSpotlight();
+    }, SPOTLIGHT_UPDATE_THROTTLE_MS - elapsed);
+  }
+
+  private sendCurrentSpotlight(): void {
+    const spotlightId = this.broadcastSpotlightId;
+    if (!spotlightId || this.phase !== "ready") return;
+    if (this.socket.sendSpotlight(spotlightId, true, this.renderer.viewport.viewState)) {
+      this.spotlightLastSentAt = performance.now();
+    }
+  }
+
+  private handleSpotlight(frame: SpotlightFrame): void {
+    if (!frame.active) {
+      this.localSpotlightIds.delete(frame.spotlightId);
+      if (
+        this.followedSpotlight?.spotlightId === frame.spotlightId &&
+        this.followedSpotlight.actorId === frame.actor.id &&
+        this.followedSpotlight.connectionId === frame.connectionId
+      ) {
+        this.clearFollowingSpotlight();
+      }
+      return;
+    }
+    if (this.localSpotlightIds.has(frame.spotlightId)) return;
+    if (this.broadcastSpotlightId) return;
+    if (this.followedSpotlight) {
+      if (
+        this.followedSpotlight.spotlightId !== frame.spotlightId ||
+        this.followedSpotlight.actorId !== frame.actor.id ||
+        this.followedSpotlight.connectionId !== frame.connectionId
+      ) {
+        return;
+      }
+      this.followedSpotlight.updatedAt = Date.now();
+      this.renderer.viewport.setViewState(frame.viewport);
+      this.renderSpotlightState();
+      return;
+    }
+    if (this.ignoredSpotlightIds.has(frame.spotlightId)) return;
+
+    this.followedSpotlight = {
+      spotlightId: frame.spotlightId,
+      actorId: frame.actor.id,
+      connectionId: frame.connectionId,
+      displayName: frame.actor.displayName,
+      updatedAt: Date.now(),
+    };
+    this.renderer.viewport.setViewState(frame.viewport);
+    this.renderSpotlightState();
+  }
+
+  private stopFollowingSpotlight(): void {
+    const followed = this.followedSpotlight;
+    if (!followed) return;
+    this.ignoredSpotlightIds.add(followed.spotlightId);
+    if (this.ignoredSpotlightIds.size > 64) {
+      const oldest = this.ignoredSpotlightIds.values().next().value;
+      if (oldest) this.ignoredSpotlightIds.delete(oldest);
+    }
+    this.clearFollowingSpotlight();
+  }
+
+  private clearFollowingSpotlight(): void {
+    this.followedSpotlight = null;
+    this.renderSpotlightState();
+  }
+
+  private canBroadcastSpotlight(): boolean {
+    return (
+      this.phase === "ready" &&
+      (this.bootstrap.actor.role === "owner" || this.bootstrap.actor.role === "editor")
+    );
+  }
+
+  private renderSpotlightState(): void {
+    const broadcasting = this.broadcastSpotlightId !== null;
+    const buttonLabel = query(this.spotlightToggle, ".spotlight-toggle-label", HTMLElement);
+    this.spotlightToggle.setAttribute("aria-pressed", String(broadcasting));
+    this.spotlightToggle.setAttribute(
+      "aria-label",
+      broadcasting ? "Stop Follow me" : "Start Follow me",
+    );
+    this.spotlightToggle.title = broadcasting
+      ? "Stop sharing your canvas view"
+      : "Let participants follow your canvas view";
+    buttonLabel.textContent = broadcasting ? "Following" : "Follow me";
+
+    const followed = this.followedSpotlight;
+    const followText = followed ? `Following ${followed.displayName} — press Esc to stop` : "";
+    this.spotlightFollowBanner.hidden = !followed;
+    if (this.spotlightFollowText.textContent !== followText) {
+      this.spotlightFollowText.textContent = followText;
+    }
+  }
+
   private async resync(reason: string): Promise<void> {
     this.notify(reason, "info");
     const next = await this.api.bootstrap(this.bootstrap.board.id);
@@ -1535,6 +1737,11 @@ export class BoardApp {
   }
 
   private readonly onGlobalKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === "Escape" && this.followedSpotlight) {
+      event.preventDefault();
+      this.stopFollowingSpotlight();
+      return;
+    }
     if (isEditingTarget(event.target) || !(event.ctrlKey || event.metaKey)) return;
     const key = event.key.toLowerCase();
     if (key === "z") {
@@ -2522,6 +2729,9 @@ export class BoardApp {
 
   private expireEphemeralState(): void {
     const now = Date.now();
+    if (this.followedSpotlight && now - this.followedSpotlight.updatedAt > SPOTLIGHT_STALE_MS) {
+      this.clearFollowingSpotlight();
+    }
     let changedPreview = false;
     for (const [key, preview] of this.remotePreviews) {
       if (now - preview.updatedAt > 3_000) {
@@ -2575,6 +2785,8 @@ export class BoardApp {
 
   private enterArchivedState(): void {
     this.archivePending = false;
+    this.stopBroadcastingSpotlight();
+    this.clearFollowingSpotlight();
     void this.closeTextEditor(false);
     void this.closeTableCellEditor(false);
     this.tools.setTool("select");
@@ -2604,6 +2816,14 @@ export class BoardApp {
   private updatePermissions(): void {
     const canEdit = this.canCommit();
     const archived = this.phase === "archived";
+    const roleCanBroadcast =
+      this.bootstrap.actor.role === "owner" || this.bootstrap.actor.role === "editor";
+    if ((!roleCanBroadcast || archived) && this.broadcastSpotlightId) {
+      this.stopBroadcastingSpotlight();
+    }
+    this.spotlightToggle.hidden = !roleCanBroadcast || archived;
+    this.spotlightToggle.disabled = this.phase !== "ready" || archived;
+    this.renderSpotlightState();
     if (
       ((!canEdit || !this.bootstrap.board.imagesEnabled) && this.tools.tool === "image") ||
       (!canEdit && this.tools.tool === "table")

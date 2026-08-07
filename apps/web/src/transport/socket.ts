@@ -1,4 +1,5 @@
 import type {
+  ClientSpotlightFrame,
   CommitFrame,
   ConnectionPhase,
   DrawingPolicy,
@@ -8,6 +9,8 @@ import type {
   Role,
   ServerAction,
   ServerFrame,
+  SpotlightFrame,
+  SpotlightViewState,
   ToolName,
 } from "../types";
 import { PROTOCOL_VERSION } from "../types";
@@ -35,6 +38,7 @@ export type SocketHooks = {
   onOwnerRecovery: (token: string, aclVersion: number) => void;
   onPreview: (preview: RemotePreview | null, cancelKey?: string) => void;
   onPresence: (presences: Presence[], replace: boolean) => void;
+  onSpotlight: (frame: SpotlightFrame) => void;
   onResync: (reason: string) => Promise<void>;
   onNotice: (message: string, kind?: "info" | "warning" | "error") => void;
   refreshSession: () => Promise<void>;
@@ -188,11 +192,33 @@ export class BoardSocket {
     );
   }
 
+  sendSpotlight(spotlightId: string, active: boolean, viewport?: SpotlightViewState): boolean {
+    let frame: ClientSpotlightFrame;
+    if (active) {
+      if (!viewport) return false;
+      frame = {
+        v: PROTOCOL_VERSION,
+        t: "client.facilitation.spotlight",
+        spotlightId,
+        active: true,
+        viewport,
+      };
+    } else {
+      frame = {
+        v: PROTOCOL_VERSION,
+        t: "client.facilitation.spotlight",
+        spotlightId,
+        active: false,
+      };
+    }
+    return this.send(frame, true);
+  }
+
   resynchronize(reason = "Reloading authoritative board state."): void {
     void this.resync(reason);
   }
 
-  private send(frame: Record<string, unknown>, requireReady: boolean): boolean {
+  private send(frame: object, requireReady: boolean): boolean {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
     if (requireReady && this.phaseValue !== "ready") return false;
     this.socket.send(JSON.stringify(frame));
@@ -320,6 +346,15 @@ export class BoardSocket {
       case "server.presence_state":
         this.receivePresence(frame);
         break;
+      case "server.facilitation.spotlight": {
+        const spotlight = asSpotlightFrame(frame);
+        if (!spotlight) {
+          this.socket?.close(1002, "invalid spotlight");
+          return;
+        }
+        this.hooks.onSpotlight(spotlight);
+        break;
+      }
       case "server.previews_cleared":
         if (typeof frame.actorId === "string") this.hooks.onPreview(null, `actor:${frame.actorId}`);
         break;
@@ -569,6 +604,75 @@ function asPresence(value: unknown): Presence | null {
     color: string(value.color) ?? undefined,
     updatedAt: Date.now(),
   };
+}
+
+function asSpotlightFrame(value: unknown): SpotlightFrame | null {
+  if (!isRecord(value) || value.v !== PROTOCOL_VERSION) return null;
+  if (value.t !== "server.facilitation.spotlight" || !isCanonicalUuid(value.spotlightId)) {
+    return null;
+  }
+  if (typeof value.active !== "boolean" || !isCanonicalUuid(value.connectionId)) return null;
+  if (!isRecord(value.actor) || !hasExactKeys(value.actor, ["id", "displayName"])) return null;
+  const actorId = string(value.actor.id);
+  const displayName = string(value.actor.displayName);
+  if (!actorId || !displayName || [...displayName].length > 40) return null;
+
+  const base = {
+    v: PROTOCOL_VERSION,
+    t: "server.facilitation.spotlight" as const,
+    spotlightId: value.spotlightId,
+    actor: { id: actorId, displayName },
+    connectionId: value.connectionId,
+  };
+  if (!value.active) {
+    if (!hasExactKeys(value, ["v", "t", "spotlightId", "active", "actor", "connectionId"])) {
+      return null;
+    }
+    return { ...base, active: false };
+  }
+  if (
+    !hasExactKeys(value, [
+      "v",
+      "t",
+      "spotlightId",
+      "active",
+      "viewport",
+      "actor",
+      "connectionId",
+    ]) ||
+    !isRecord(value.viewport) ||
+    !hasExactKeys(value.viewport, ["center", "zoom"]) ||
+    !isRecord(value.viewport.center) ||
+    !hasExactKeys(value.viewport.center, ["x", "y"])
+  ) {
+    return null;
+  }
+  const x = boundedCoordinate(value.viewport.center.x);
+  const y = boundedCoordinate(value.viewport.center.y);
+  const zoom = number(value.viewport.zoom);
+  if (x === null || y === null || zoom === null || zoom < 0.1 || zoom > 8) return null;
+  return {
+    ...base,
+    active: true,
+    viewport: { center: { x, y }, zoom },
+  };
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expected.length && expected.every((key) => Object.hasOwn(value, key));
+}
+
+function isCanonicalUuid(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value)
+  );
+}
+
+function boundedCoordinate(value: unknown): number | null {
+  const coordinate = number(value);
+  return coordinate !== null && Math.abs(coordinate) <= 1_000_000 ? coordinate : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
