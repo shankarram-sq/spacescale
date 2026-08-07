@@ -1,4 +1,5 @@
 import { STAMP_SVG_PATHS } from "@collab/svg-export";
+import { summarizeBoardVotes, type VoteSummary } from "../activities/voting";
 import type {
   BoardItem,
   BoxGeometry,
@@ -17,6 +18,7 @@ import type {
   StickyStyle,
   StrokeStyle,
   TableGeometry,
+  TableItem,
   TableStyle,
   ToolName,
 } from "../types";
@@ -38,6 +40,7 @@ export class BoardRenderer {
   readonly viewport: CanvasViewport;
 
   private readonly drawingArea: SVGGElement;
+  private readonly voteCountLayer: SVGGElement;
   private readonly remoteLayer: SVGGElement;
   private readonly localLayer: SVGGElement;
   private readonly selectionLayer: SVGGElement;
@@ -84,6 +87,8 @@ export class BoardRenderer {
     background.setAttribute("pointer-events", "none");
 
     this.drawingArea = layer("drawing-area", "Authoritative board content");
+    this.voteCountLayer = layer("vote-count-layer", "Live voting counts");
+    this.voteCountLayer.setAttribute("pointer-events", "none");
     this.remoteLayer = layer("remote-preview-layer", "Collaborator previews");
     this.localLayer = layer("local-preview-layer", "Your current gesture");
     this.selectionLayer = layer("selection-layer", "Current selection");
@@ -92,6 +97,7 @@ export class BoardRenderer {
       defs,
       background,
       this.drawingArea,
+      this.voteCountLayer,
       this.remoteLayer,
       this.localLayer,
       this.selectionLayer,
@@ -345,6 +351,7 @@ export class BoardRenderer {
       this.itemNodes.set(id, replacement);
       this.insertInPaintOrder(replacement, item.z);
     }
+    renderVoteCounts(this.voteCountLayer, this.model.items.values());
     this.imageAssets.retain(
       new Set(
         [...this.model.items.values()].flatMap((item) =>
@@ -367,6 +374,71 @@ export class BoardRenderer {
     }
     this.drawingArea.insertBefore(node, before);
   }
+}
+
+export function renderVoteCounts(layer: SVGGElement, items: Iterable<BoardItem>): void {
+  const nodes = summarizeBoardVotes(items).map((summary) => voteCountNode(summary.table, summary));
+  layer.replaceChildren(...nodes);
+}
+
+export function voteCountNode(table: TableItem, summary: VoteSummary): SVGGElement {
+  const node = svgElement("g");
+  node.classList.add("vote-counts");
+  node.dataset.voteTableId = table.id;
+  node.setAttribute("transform", matrixAttribute(table.transform));
+  node.setAttribute("pointer-events", "none");
+  node.setAttribute("role", "group");
+  node.setAttribute(
+    "aria-label",
+    `Vote counts: ${summary.options
+      .map(({ count, label }) => `${label}, ${count} ${count === 1 ? "vote" : "votes"}`)
+      .join("; ")}`,
+  );
+
+  const headerHeight = table.geometry.rowHeights[0] ?? 0;
+  let x = table.geometry.x;
+  for (const option of summary.options) {
+    const columnWidth = table.geometry.columnWidths[option.column] ?? 0;
+    const label = String(option.count);
+    const badgeWidth = Math.max(24, label.length * 8 + 14);
+    const badgeHeight = 20;
+    const right = x + columnWidth - 7;
+    const top = table.geometry.y + Math.max(4, (headerHeight - badgeHeight) / 2);
+    const badge = svgElement("g");
+    badge.classList.add("vote-count-badge");
+    badge.dataset.voteOption = String(option.column);
+    badge.dataset.voteCount = label;
+    badge.setAttribute(
+      "aria-label",
+      `${option.label}: ${option.count} ${option.count === 1 ? "vote" : "votes"}`,
+    );
+
+    const background = svgElement("rect");
+    background.setAttribute("x", String(right - badgeWidth));
+    background.setAttribute("y", String(top));
+    background.setAttribute("width", String(badgeWidth));
+    background.setAttribute("height", String(badgeHeight));
+    background.setAttribute("rx", "10");
+    background.setAttribute("fill", "#ffffff");
+    background.setAttribute("fill-opacity", "0.94");
+    background.setAttribute("stroke", "#a8a59d");
+    background.setAttribute("stroke-width", "1");
+    background.setAttribute("vector-effect", "non-scaling-stroke");
+
+    const count = svgElement("text");
+    count.setAttribute("x", String(right - badgeWidth / 2));
+    count.setAttribute("y", String(top + 14));
+    count.setAttribute("text-anchor", "middle");
+    count.setAttribute("fill", "#20201e");
+    count.setAttribute("font-size", "12");
+    count.setAttribute("font-family", "Inter, ui-sans-serif, system-ui, sans-serif");
+    count.setAttribute("font-weight", "750");
+    count.textContent = label;
+    badge.append(background, count);
+    node.append(badge);
+    x += columnWidth;
+  }
+  return node;
 }
 
 type ImageAssetEntry = {

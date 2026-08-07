@@ -56,6 +56,12 @@ press `Esc` or choose **Stop** to leave that Spotlight session; a later session
 can be followed normally. Spotlight traffic is ephemeral and never enters board
 history, snapshots, exports, or the offline outbox.
 
+The **Activities** menu adds five local starter layouts—Exit ticket, K-W-L,
+Sort it, Pair share, and Vote with stamps—as one ordinary attributed item batch.
+Vote totals are derived live from each participant's latest stamp in the vote
+table and are not stored in board history or exports. Only owners receive the
+bulk **Clear votes** action; the underlying stamps remain ordinary board items.
+
 ## Local development
 
 Requirements: Node.js 22.19 or newer. Local development uses Miniflare-backed

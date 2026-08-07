@@ -9,6 +9,12 @@ import {
   validateDurableOperation,
 } from "@collab/protocol";
 import { renderSvgItem } from "@collab/svg-export";
+import {
+  ACTIVITY_TEMPLATES,
+  type ActivityTemplateId,
+  buildActivityBatch,
+} from "../activities/templates";
+import { buildClearVoteDeletes, isVoteTable, summarizeVotes } from "../activities/voting";
 import { BoardModel, SequenceError } from "../board/model";
 import { BoardRenderer, STICKY_PADDING } from "../board/renderer";
 import { DurableOutbox, type OutboxEntry, OutboxLimitError } from "../persistence/outbox";
@@ -294,6 +300,7 @@ export class BoardApp {
   private outboxAvailable = true;
   private optimisticRecovery = false;
   private archivePending = false;
+  private activityInsertPending = false;
   private readonly titleInput: HTMLInputElement;
   private readonly saveStatus: HTMLElement;
   private readonly saveStatusText: HTMLElement;
@@ -303,6 +310,8 @@ export class BoardApp {
   private readonly spotlightToggle: HTMLButtonElement;
   private readonly spotlightFollowBanner: HTMLElement;
   private readonly spotlightFollowText: HTMLElement;
+  private readonly activitiesButton: HTMLButtonElement;
+  private readonly activitiesMenu: HTMLElement;
   private readonly accessButton: HTMLButtonElement;
   private readonly accessDrawer: HTMLElement;
   private readonly accessBody: HTMLElement;
@@ -353,6 +362,13 @@ export class BoardApp {
       "[data-spotlight-follow-text]",
       HTMLElement,
     );
+    this.activitiesButton = query(
+      this.root,
+      "[data-testid='activities-button']",
+      HTMLButtonElement,
+    );
+    this.activitiesMenu = query(this.root, "[data-testid='activities-menu']", HTMLElement);
+    this.buildActivitiesMenu();
     this.accessButton = query(this.root, "[data-testid='access-button']", HTMLButtonElement);
     this.accessDrawer = query(this.root, "[data-testid='access-drawer']", HTMLElement);
     this.accessBody = query(this.root, "[data-access-body]", HTMLElement);
@@ -520,6 +536,17 @@ export class BoardApp {
               <span class="status-dot" aria-hidden="true"></span>
               <span data-save-status-text>Connecting…</span>
             </div>
+            <div class="menu-wrap activities-wrap">
+              <button class="topbar-button activities-button" type="button" data-testid="activities-button" aria-label="Add classroom activity" aria-haspopup="menu" aria-controls="activities-menu" aria-expanded="false" hidden>
+                <span class="activities-button-mark" aria-hidden="true">＋</span>
+                <span class="activities-button-label">Activities</span>
+              </button>
+              <div class="floating-menu activities-menu" data-testid="activities-menu" id="activities-menu" role="menu" aria-label="Classroom activities" hidden>
+                <p class="menu-eyebrow">Add an activity</p>
+                <p class="activities-menu-note">Starter layouts made from ordinary board items.</p>
+                <div class="activities-template-list" data-activities-template-list></div>
+              </div>
+            </div>
             <button class="topbar-button spotlight-toggle" type="button" data-testid="spotlight-toggle" aria-label="Start Follow me" aria-pressed="false" hidden>
               <span class="spotlight-toggle-mark" aria-hidden="true"></span>
               <span class="spotlight-toggle-label">Follow me</span>
@@ -573,6 +600,7 @@ export class BoardApp {
             <div class="selection-actions" data-testid="selection-actions" hidden>
               <button type="button" data-selection-alt aria-label="Edit image alt text" hidden>Edit alt text</button>
               <button type="button" data-selection-copy aria-label="Copy selected items">Copy</button>
+              <button type="button" data-selection-clear-votes aria-label="Clear votes from selected activity" hidden>Clear votes</button>
               <button type="button" data-selection-delete aria-label="Delete selected items">Delete</button>
             </div>
             <div class="zoom-controls" aria-label="Canvas zoom">
@@ -723,6 +751,83 @@ export class BoardApp {
     });
   }
 
+  private buildActivitiesMenu(): void {
+    const list = query(this.activitiesMenu, "[data-activities-template-list]", HTMLElement);
+    for (const template of ACTIVITY_TEMPLATES) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.activityTemplate = template.id;
+      button.dataset.testid = `activity-${template.id}`;
+      button.setAttribute("role", "menuitem");
+      button.setAttribute("aria-label", `Add ${template.label} activity`);
+      const label = document.createElement("strong");
+      label.textContent = template.label;
+      const description = document.createElement("span");
+      description.textContent = template.description;
+      button.append(label, description);
+      button.addEventListener("click", () => {
+        void this.insertActivity(template.id);
+      });
+      list.append(button);
+    }
+  }
+
+  private async insertActivity(templateId: ActivityTemplateId): Promise<void> {
+    if (!this.canCommit() || this.activityInsertPending) return;
+    const template = ACTIVITY_TEMPLATES.find((value) => value.id === templateId);
+    if (!template) return;
+    this.activityInsertPending = true;
+    this.updatePermissions();
+    this.activitiesButton.focus();
+    try {
+      const view = this.renderer.viewport.viewState;
+      const activity = buildActivityBatch(templateId, [view.center.x, view.center.y], createId);
+      const accepted = await this.commit(activity.operation);
+      if (!accepted) return;
+      this.closeActivitiesMenu();
+      this.tools.setTool("select");
+      this.tools.selectOnly(activity.itemIds);
+      this.renderer.viewport.fit(this.model.boundsFor(activity.itemIds));
+      this.notify(`${template.label} added.`, "info");
+    } finally {
+      this.activityInsertPending = false;
+      this.updatePermissions();
+    }
+  }
+
+  private async clearSelectedVotes(): Promise<void> {
+    if (
+      this.bootstrap.actor.role !== "owner" ||
+      !this.canCommit() ||
+      this.tools.selection.size !== 1
+    ) {
+      return;
+    }
+    const [selectedId] = this.tools.selection;
+    const table = selectedId ? this.model.authoritativeItems.get(selectedId) : undefined;
+    if (!table || !isVoteTable(table)) return;
+    const clear = buildClearVoteDeletes(table, this.model.authoritativeItems.values());
+    if (clear.operations.length === 0) {
+      this.notify("There are no saved votes to clear.", "info");
+      return;
+    }
+    const amount = clear.operations.length;
+    const cappedNote = clear.remaining > 0 ? ` ${clear.remaining} more will remain.` : "";
+    if (
+      !confirm(`Clear ${amount} vote${amount === 1 ? "" : "s"} from this activity?${cappedNote}`)
+    ) {
+      return;
+    }
+    const accepted = await this.commit({ kind: "items.batch", operations: clear.operations });
+    if (!accepted) return;
+    this.notify(
+      clear.remaining > 0
+        ? `${amount} votes cleared. ${clear.remaining} remain; clear again to remove the next group.`
+        : `${amount} vote${amount === 1 ? "" : "s"} cleared.`,
+      "info",
+    );
+  }
+
   private bindShellEvents(): void {
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("button[data-tool]")) {
       button.addEventListener("click", () => this.activateTool(button.dataset.tool as ToolName));
@@ -807,6 +912,10 @@ export class BoardApp {
       "click",
       () => void this.tools.deleteSelection(),
     );
+    query(this.root, "[data-selection-clear-votes]", HTMLButtonElement).addEventListener(
+      "click",
+      () => void this.clearSelectedVotes(),
+    );
 
     query(this.root, "[data-selection-alt]", HTMLButtonElement).addEventListener("click", () => {
       const [selectedId] = this.tools.selection;
@@ -850,6 +959,40 @@ export class BoardApp {
     this.renderer.svg.addEventListener("drop", this.onImageDrop);
     document.addEventListener("paste", this.onImagePaste);
 
+    this.activitiesButton.addEventListener("click", () => {
+      if (this.activitiesButton.disabled) return;
+      const opening = this.activitiesMenu.hidden;
+      this.togglePopover(this.activitiesMenu, this.activitiesButton);
+      if (opening) {
+        this.activitiesMenu.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
+      }
+    });
+    this.activitiesMenu.addEventListener("keydown", (event) => {
+      const items = [
+        ...this.activitiesMenu.querySelectorAll<HTMLButtonElement>("[role='menuitem']"),
+      ];
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        this.closeActivitiesMenu();
+        this.activitiesButton.focus();
+        return;
+      }
+      if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) || items.length === 0) {
+        return;
+      }
+      event.preventDefault();
+      const current = items.indexOf(document.activeElement as HTMLButtonElement);
+      const next =
+        event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? items.length - 1
+            : event.key === "ArrowUp"
+              ? (current - 1 + items.length) % items.length
+              : (current + 1) % items.length;
+      items[next]?.focus();
+    });
     this.spotlightToggle.addEventListener("click", () => {
       if (this.broadcastSpotlightId) this.stopBroadcastingSpotlight();
       else this.startBroadcastingSpotlight();
@@ -935,6 +1078,13 @@ export class BoardApp {
       ) {
         this.exportMenu.hidden = true;
         exportButton.setAttribute("aria-expanded", "false");
+      }
+      if (
+        !this.activitiesMenu.hidden &&
+        !this.activitiesMenu.contains(target) &&
+        !this.activitiesButton.contains(target)
+      ) {
+        this.closeActivitiesMenu();
       }
     });
   }
@@ -2818,6 +2968,17 @@ export class BoardApp {
     const archived = this.phase === "archived";
     const roleCanBroadcast =
       this.bootstrap.actor.role === "owner" || this.bootstrap.actor.role === "editor";
+    const roleCanAddActivities = roleCanBroadcast && !archived;
+    this.activitiesButton.hidden = !roleCanAddActivities;
+    this.activitiesButton.disabled = !canEdit || this.activityInsertPending;
+    for (const button of this.activitiesMenu.querySelectorAll<HTMLButtonElement>(
+      "[data-activity-template]",
+    )) {
+      button.disabled = !canEdit || this.activityInsertPending;
+    }
+    if (this.activitiesButton.disabled || this.activitiesButton.hidden) {
+      this.closeActivitiesMenu();
+    }
     if ((!roleCanBroadcast || archived) && this.broadcastSpotlightId) {
       this.stopBroadcastingSpotlight();
     }
@@ -2987,10 +3148,38 @@ export class BoardApp {
     query(this.selectionActions, "[data-selection-copy]", HTMLButtonElement).disabled = !canEdit;
     query(this.selectionActions, "[data-selection-delete]", HTMLButtonElement).disabled = !canEdit;
     const alt = query(this.selectionActions, "[data-selection-alt]", HTMLButtonElement);
+    const clearVotes = query(
+      this.selectionActions,
+      "[data-selection-clear-votes]",
+      HTMLButtonElement,
+    );
     const [selectedId] = ids;
     const selected = selectedId ? this.model.getItem(selectedId) : undefined;
     alt.hidden = ids.size !== 1 || selected?.kind !== "image";
     alt.disabled = !canEdit || selected?.version === 0;
+    const voteSummary =
+      ids.size === 1 && selected ? summarizeVotes(selected, this.model.items.values()) : null;
+    const authoritativeTable = selectedId
+      ? this.model.authoritativeItems.get(selectedId)
+      : undefined;
+    const clearableVotes =
+      authoritativeTable && isVoteTable(authoritativeTable)
+        ? buildClearVoteDeletes(authoritativeTable, this.model.authoritativeItems.values())
+        : null;
+    const canClearVotes = this.bootstrap.actor.role === "owner" && canEdit;
+    clearVotes.hidden = !canClearVotes || voteSummary === null;
+    clearVotes.disabled = !canClearVotes || (clearableVotes?.operations.length ?? 0) === 0;
+    const voteCount = voteSummary?.stampIds.length ?? 0;
+    clearVotes.textContent = voteCount > 0 ? `Clear votes (${voteCount})` : "Clear votes";
+    clearVotes.setAttribute(
+      "aria-label",
+      voteCount > 0
+        ? `Clear ${voteCount} vote${voteCount === 1 ? "" : "s"} from selected activity`
+        : "Clear votes from selected activity",
+    );
+    clearVotes.title = voteSummary
+      ? voteSummary.options.map((option) => `${option.label}: ${option.count}`).join(" · ")
+      : "";
   }
 
   private zoomBy(factor: number): void {
@@ -3020,9 +3209,15 @@ export class BoardApp {
     query(this.root, "[data-testid='table-picker']", HTMLElement).hidden = !open;
   }
 
+  private closeActivitiesMenu(): void {
+    this.activitiesMenu.hidden = true;
+    this.activitiesButton.setAttribute("aria-expanded", "false");
+  }
+
   private togglePopover(popover: HTMLElement, trigger: HTMLButtonElement): void {
     const open = popover.hidden;
     this.setStylePopoverOpen(false);
+    if (popover !== this.activitiesMenu) this.closeActivitiesMenu();
     this.exportMenu.hidden = true;
     query(this.root, "[data-testid='export-button']", HTMLButtonElement).setAttribute(
       "aria-expanded",
@@ -3039,6 +3234,7 @@ export class BoardApp {
       String(open),
     );
     if (!open) return;
+    this.closeActivitiesMenu();
     this.exportMenu.hidden = true;
     query(this.root, "[data-testid='export-button']", HTMLButtonElement).setAttribute(
       "aria-expanded",

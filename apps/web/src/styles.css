@@ -220,6 +220,17 @@ textarea:focus-visible,
   white-space: nowrap;
 }
 
+.activities-button {
+  white-space: nowrap;
+}
+
+.activities-button-mark {
+  color: var(--blue);
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1;
+}
+
 .spotlight-toggle-mark {
   width: 9px;
   height: 9px;
@@ -833,7 +844,11 @@ button:disabled {
   background: #f0eee8;
 }
 
-.selection-actions button:last-child {
+.selection-actions button[data-selection-clear-votes] {
+  color: #2b50c7;
+}
+
+.selection-actions button[data-selection-delete] {
   color: #c33d36;
 }
 
@@ -1066,6 +1081,54 @@ button:disabled {
   right: 0;
   width: 245px;
   padding: 8px;
+}
+
+.activities-menu {
+  top: 43px;
+  right: 0;
+  width: min(320px, calc(100vw - 16px));
+  padding: 8px;
+}
+
+.activities-menu-note {
+  margin: 0 9px 8px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.activities-template-list {
+  display: grid;
+  gap: 2px;
+}
+
+.activities-template-list button {
+  width: 100%;
+  min-height: 52px;
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.activities-template-list button:hover:not(:disabled),
+.activities-template-list button:focus-visible {
+  background: #f3f1ec;
+}
+
+.activities-template-list strong {
+  font-size: 12px;
+}
+
+.activities-template-list span {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
 }
 
 .menu-eyebrow {
@@ -2161,6 +2224,19 @@ button:disabled {
 
   .spotlight-toggle-label {
     display: none;
+  }
+
+  .activities-button-label {
+    display: none;
+  }
+
+  .activities-menu {
+    position: fixed;
+    top: 58px;
+    right: 8px;
+    width: min(340px, calc(100vw - 16px));
+    max-height: calc(100dvh - 66px);
+    overflow-y: auto;
   }
 
   .spotlight-follow-banner {

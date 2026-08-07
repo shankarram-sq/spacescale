@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { CanvasViewport, wrapStickyText, wrapTableCellText } from "./renderer";
+import { MAX_RENDERED_VOTE_TABLES, VOTE_TABLE_STYLE } from "../activities/voting";
+import type { BoardItem, TableItem } from "../types";
+import { CanvasViewport, renderVoteCounts, wrapStickyText, wrapTableCellText } from "./renderer";
 
 describe("sticky note text wrapping", () => {
   it("wraps words within the default note and preserves blank paragraphs", () => {
@@ -45,6 +47,138 @@ describe("table cell text wrapping", () => {
       "😀".repeat(11),
     ]);
     expect(wrapTableCellText("", 120, 48, 16)).toEqual([]);
+  });
+});
+
+type FakeSvgNode = {
+  name: string;
+  attributes: Map<string, string>;
+  children: FakeSvgNode[];
+  dataset: Record<string, string>;
+  textContent: string | null;
+  classList: { values: Set<string>; add: (...names: string[]) => void };
+  setAttribute: (name: string, value: string) => void;
+  append: (...children: FakeSvgNode[]) => void;
+  replaceChildren: (...children: FakeSvgNode[]) => void;
+};
+
+function fakeSvgNode(name: string): FakeSvgNode {
+  const node: FakeSvgNode = {
+    name,
+    attributes: new Map(),
+    children: [],
+    dataset: {},
+    textContent: null,
+    classList: {
+      values: new Set(),
+      add: (...names) => {
+        for (const value of names) node.classList.values.add(value);
+      },
+    },
+    setAttribute: (attribute, value) => node.attributes.set(attribute, value),
+    append: (...children) => node.children.push(...children),
+    replaceChildren: (...children) => {
+      node.children = [...children];
+    },
+  };
+  return node;
+}
+
+describe("derived vote counts", () => {
+  beforeEach(() => {
+    vi.stubGlobal("document", {
+      createElementNS: (_namespace: string, name: string) => fakeSvgNode(name),
+    });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("renders pointer-free count pills and replaces them when stamp totals change", () => {
+    const table: TableItem = {
+      id: "vote-table",
+      kind: "table",
+      z: 1,
+      version: 1,
+      createdBy: "teacher",
+      transform: [1, 0, 0, 1, 40, 60],
+      style: { ...VOTE_TABLE_STYLE },
+      geometry: {
+        x: 0,
+        y: 0,
+        columnWidths: [160, 160],
+        rowHeights: [52, 160],
+        cells: [
+          ["Yes", "Not yet"],
+          ["", ""],
+        ],
+        headerRow: true,
+      },
+    };
+    const first: BoardItem = {
+      id: "first-vote",
+      kind: "stamp",
+      z: 2,
+      version: 2,
+      createdBy: "student-a",
+      transform: [1, 0, 0, 1, 40, 60],
+      style: { kind: "stamp", color: "#e5484d", opacity: 1 },
+      geometry: { x: 80, y: 100, size: 36, stamp: "star" },
+    };
+    const second: BoardItem = {
+      ...first,
+      id: "second-vote",
+      z: 3,
+      version: 3,
+      createdBy: "student-b",
+      geometry: { x: 240, y: 100, size: 36, stamp: "check" },
+    };
+    const layer = fakeSvgNode("g");
+
+    renderVoteCounts(layer as unknown as SVGGElement, [table]);
+    expect(layer.children).toHaveLength(1);
+    expect(layer.children[0]?.attributes.get("pointer-events")).toBe("none");
+    expect(layer.children[0]?.attributes.get("transform")).toBe("matrix(1 0 0 1 40 60)");
+    expect(layer.children[0]?.children.map((badge) => badge.dataset.voteCount)).toEqual(["0", "0"]);
+
+    renderVoteCounts(layer as unknown as SVGGElement, [table, first, second]);
+    expect(layer.children).toHaveLength(1);
+    expect(layer.children[0]?.children.map((badge) => badge.dataset.voteCount)).toEqual(["1", "1"]);
+    expect(layer.children[0]?.attributes.get("aria-label")).toContain("Yes, 1 vote");
+  });
+
+  it("renders no more than the classroom-safe vote-table cap", () => {
+    const source: TableItem = {
+      id: "vote-table-source",
+      kind: "table",
+      z: 1,
+      version: 1,
+      createdBy: "teacher",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: { ...VOTE_TABLE_STYLE },
+      geometry: {
+        x: 0,
+        y: 0,
+        columnWidths: [160, 160],
+        rowHeights: [52, 160],
+        cells: [
+          ["Yes", "Not yet"],
+          ["", ""],
+        ],
+        headerRow: true,
+      },
+    };
+    const tables = Array.from({ length: MAX_RENDERED_VOTE_TABLES + 1 }, (_, index) => ({
+      ...structuredClone(source),
+      id: `vote-table-${index}`,
+      z: index + 1,
+    }));
+    const layer = fakeSvgNode("g");
+
+    renderVoteCounts(layer as unknown as SVGGElement, tables);
+    expect(layer.children).toHaveLength(MAX_RENDERED_VOTE_TABLES);
+    expect(layer.children.at(-1)?.dataset.voteTableId).toBe(
+      `vote-table-${MAX_RENDERED_VOTE_TABLES - 1}`,
+    );
   });
 });
 
