@@ -2892,6 +2892,66 @@ describe("BoardRoom initialization", () => {
     viewer.socket.close(1000, "done");
   });
 
+  it("streams private R2 images only for the matching signed-viewer Organisation", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    const launched = await launchClassroom(
+      stub,
+      actorId,
+      "owner",
+      Date.now() - 1_000,
+      "Organisation owner",
+      undefined,
+      undefined,
+      boardId,
+      organisationId,
+    );
+    expect(launched.status).toBe(201);
+    await launched.arrayBuffer();
+
+    const enabled = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ features: { images: true }, expectedAclVersion: 1 }),
+      }),
+    );
+    expect(enabled.status).toBe(200);
+    await enabled.arrayBuffer();
+
+    const imageBytes = Uint8Array.from(
+      atob("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAkQBADs="),
+      (character) => character.charCodeAt(0),
+    );
+    const uploaded = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/assets`, {
+        method: "POST",
+        headers: { "content-type": "image/gif" },
+        body: imageBytes,
+      }),
+    );
+    expect(uploaded.status, await uploaded.clone().text()).toBe(201);
+    const { assetId } = (await uploaded.json()) as { assetId: string };
+
+    const viewed = await stub.fetch(
+      internalRequest(
+        `/__internal/organisation-assets/${assetId}?organisationId=${organisationId}`,
+      ),
+    );
+    expect(viewed.status).toBe(200);
+    expect(viewed.headers.get("content-type")).toBe("image/gif");
+    expect(new Uint8Array(await viewed.arrayBuffer())).toEqual(imageBytes);
+
+    const crossOrganisation = await stub.fetch(
+      internalRequest(
+        `/__internal/organisation-assets/${assetId}?organisationId=o_${"Q".repeat(22)}`,
+      ),
+    );
+    expect(crossOrganisation.status).toBe(404);
+    expect(await crossOrganisation.json()).toMatchObject({
+      error: { message: "Board not found." },
+    });
+  });
+
   it("requires image commits to reference matching committed board assets", async () => {
     const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
     await initializeBoard(stub);

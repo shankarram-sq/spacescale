@@ -16,6 +16,7 @@ import {
   defaultImageCardSize,
   resizedCardGeometry,
   resolveConnectorEndpoint,
+  resolveProtractorCenterMove,
   resolveShapePointerState,
   selectionHitPadding,
   shapeGeometry,
@@ -109,6 +110,60 @@ describe("captured gesture operations", () => {
 
     expect(resolveConnectorEndpoint(model, [94, 53], 2)).toEqual({ point: [100, 50], anchor });
     expect(receivedThreshold).toBe(8);
+  });
+
+  it("keeps an acquired line-edge snap locked through small release jitter", () => {
+    const anchor = {
+      itemId: ITEM_ID,
+      point: [100, 50] as const,
+      z: 4,
+      distance: 1,
+      source: "edge" as const,
+    };
+    const model = { nearestConnectorAnchor: () => undefined };
+
+    const retained = resolveShapePointerState("line", [119, 50], false, model, 1, true, anchor);
+    expect(retained).toEqual({ current: [100, 50], constrained: false, endAnchor: anchor });
+
+    const released = resolveShapePointerState("line", [125, 50], false, model, 1, true, anchor);
+    expect(released).toEqual({ current: [125, 50], constrained: false });
+  });
+
+  it("snaps a moved protractor center while excluding the protractor itself", () => {
+    let excluded: ReadonlySet<string> | undefined;
+    const anchor = {
+      itemId: "018f47a1-7a2b-7c3d-8e4f-123456789abe",
+      point: [130, 100] as const,
+      z: 3,
+      distance: 2,
+      source: "edge" as const,
+    };
+    const model = {
+      nearestConnectorAnchor: (
+        _point: readonly [number, number],
+        _threshold: number,
+        excludedItemIds?: ReadonlySet<string>,
+      ) => {
+        excluded = excludedItemIds;
+        return anchor;
+      },
+    };
+
+    const resolved = resolveProtractorCenterMove(
+      [150, 150],
+      [182, 148],
+      [100, 100],
+      ITEM_ID,
+      model,
+      1,
+    );
+
+    expect(resolved).toEqual({
+      current: [180, 150],
+      center: [130, 100],
+      anchor,
+    });
+    expect(excluded?.has(ITEM_ID)).toBe(true);
   });
 
   it("uses a pointerup-only final coordinate when resolving a connector snap", () => {

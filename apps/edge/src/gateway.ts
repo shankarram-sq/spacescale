@@ -30,6 +30,9 @@ import { randomDisplayName } from "./validation-internal";
 export { BoardRoom, OrganisationRoom };
 
 const BOARD_ROUTE = /^\/api\/v1\/boards\/(b_[A-Za-z0-9_-]{22})(?:\/|$)/u;
+const VIEWER_ASSET_ROUTE = /^\/api\/v1\/viewer\/assets\/(asset_[A-Za-z0-9_-]{43})$/u;
+const VIEWER_ASSET_TOKEN_HEADER = "X-SpaceScale-Viewer-Asset-Token";
+const VIEWER_ASSET_EXPIRY_HEADER = "X-SpaceScale-Viewer-Asset-Expires";
 const MUTATING_METHODS = new Set(["POST", "PATCH", "DELETE", "PUT"]);
 const MAX_GATEWAY_BUCKETS = 10_000;
 
@@ -121,12 +124,34 @@ async function routeRequest(
     );
   }
 
+  const viewerAsset = VIEWER_ASSET_ROUTE.exec(url.pathname);
+  if (viewerAsset !== null) {
+    if (request.method !== "GET") return methodNotAllowed("GET");
+    const assetId = viewerAsset[1];
+    if (assetId === undefined) {
+      throw new HttpError(404, "NOT_FOUND", "Image asset not found.");
+    }
+    const identity = new HmacIdentityService(env);
+    const session = await identity.verifyViewerAssetSession(request);
+    const clientAddress = request.headers.get("cf-connecting-ip") ?? "local";
+    enforceGatewayRateLimit(`viewer-asset:ip:${clientAddress}`, 240, 4);
+    enforceGatewayRateLimit(`viewer-asset:actor:${session.actorId}`, 240, 4);
+    const internal = new Request(
+      `${url.origin}/__internal/organisation-assets/${assetId}?organisationId=${encodeURIComponent(session.organisationId)}`,
+      { method: "GET", headers: { Accept: "image/*" } },
+    );
+    return env.BOARD_ROOMS.getByName(session.boardId).fetch(
+      makeInternalRequest(internal, session.actorId, session.expiresAt, requestId),
+    );
+  }
+
   if (url.pathname === "/api/v1/viewer/session") {
     if (request.method !== "POST") return methodNotAllowed("POST");
     requireSameOrigin(request, env);
     const body = await readJsonBody(request, 12 * 1_024);
     assertExactKeys(body, ["token"], ["token"]);
-    const launch = await new OrganisationAuthService(env).verifyLaunchToken(body.token);
+    const now = Date.now();
+    const launch = await new OrganisationAuthService(env).verifyLaunchToken(body.token, now);
     const clientAddress = request.headers.get("cf-connecting-ip") ?? "local";
     enforceGatewayRateLimit(`viewer:ip:${clientAddress}`, 120, 2);
     enforceGatewayRateLimit(`viewer:actor:${launch.actorId}`, 60, 1);
@@ -138,9 +163,25 @@ async function routeRequest(
         format: "canonical",
       }),
     });
-    return env.BOARD_ROOMS.getByName(launch.boardId).fetch(
+    const exportResponse = await env.BOARD_ROOMS.getByName(launch.boardId).fetch(
       makeInternalRequest(internal, launch.actorId, launch.expiresAtMs, requestId),
     );
+    if (!exportResponse.ok) return exportResponse;
+    const viewerAssetSession = await new HmacIdentityService(env).issueViewerAssetSession(
+      launch.actorId,
+      launch.boardId,
+      launch.organisationId,
+      launch.expiresAtMs,
+      now,
+    );
+    const headers = new Headers(exportResponse.headers);
+    headers.set(VIEWER_ASSET_TOKEN_HEADER, viewerAssetSession.token);
+    headers.set(VIEWER_ASSET_EXPIRY_HEADER, String(viewerAssetSession.session.expiresAt));
+    return new Response(exportResponse.body, {
+      status: exportResponse.status,
+      statusText: exportResponse.statusText,
+      headers,
+    });
   }
 
   if (

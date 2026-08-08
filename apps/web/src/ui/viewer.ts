@@ -318,6 +318,51 @@ export class SpaceViewerExportError extends Error {
   override readonly name = "SpaceViewerExportError";
 }
 
+export const VIEWER_ASSET_TOKEN_HEADER = "X-SpaceScale-Viewer-Asset-Token";
+
+/** Reads the short-lived image capability returned by a successful signed viewer exchange. */
+export function viewerAssetTokenFromSessionResponse(response: Pick<Response, "headers">): string {
+  const token = response.headers.get(VIEWER_ASSET_TOKEN_HEADER);
+  if (token === null || !/^vas1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(token)) {
+    throw new SpaceViewerExportError("The signed viewer image session is missing or invalid.");
+  }
+  return token;
+}
+
+/**
+ * Creates a memory-only loader for private R2 images. The viewer capability is
+ * sent in an Authorization header and cannot authenticate any editing route.
+ */
+export function createSignedViewerImageAssetLoader(
+  token: string,
+  fetcher: typeof fetch = globalThis.fetch,
+): ImageAssetLoader {
+  if (!/^vas1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(token)) {
+    throw new SpaceViewerExportError("The signed viewer image session is invalid.");
+  }
+  return async (assetId) => {
+    if (!/^asset_[A-Za-z0-9_-]{43}$/u.test(assetId)) {
+      throw new SpaceViewerExportError("The Space image identifier is invalid.");
+    }
+    const response = await fetcher(`/api/v1/viewer/assets/${encodeURIComponent(assetId)}`, {
+      method: "GET",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { Accept: "image/*", Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) {
+      throw new SpaceViewerExportError(
+        `The Space image request failed with HTTP ${response.status}.`,
+      );
+    }
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.toLowerCase().startsWith("image/")) {
+      throw new SpaceViewerExportError("The Space image response is invalid.");
+    }
+    return response.blob();
+  };
+}
+
 export interface ReadOnlySpaceViewerOptions {
   /** A canonical `cf-whiteboard-json` export to render immediately. */
   export?: unknown;

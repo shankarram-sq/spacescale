@@ -157,6 +157,8 @@ const INTERNAL_INIT_PATH = "/__internal/initialize";
 const INTERNAL_CLASSROOM_LAUNCH_PATH = "/__internal/classroom-launch";
 const INTERNAL_ORGANISATION_LAUNCH_PATH = "/__internal/organisation-launch";
 const INTERNAL_ORGANISATION_EXPORT_PATH = "/__internal/organisation-export";
+const INTERNAL_ORGANISATION_ASSET_ROUTE =
+  /^\/__internal\/organisation-assets\/(asset_[A-Za-z0-9_-]{43})$/u;
 const WEBHOOK_TIMEOUT_MS = 10_000;
 const TELEMETRY_AGGREGATE_INTERVAL_MS = 60_000;
 // Start graceful shedding before the hard 200 frame/s room ceiling so a
@@ -341,6 +343,15 @@ export class BoardRoom extends DurableObject<Env> {
     if (url.pathname === INTERNAL_ORGANISATION_EXPORT_PATH) {
       requireMethod(request, "POST");
       return this.exportForOrganisation(request);
+    }
+
+    const organisationAsset = INTERNAL_ORGANISATION_ASSET_ROUTE.exec(url.pathname);
+    if (organisationAsset !== null) {
+      requireMethod(request, "GET");
+      const assetId = organisationAsset[1];
+      const organisationId = url.searchParams.get("organisationId");
+      if (assetId === undefined || organisationId === null) throw boardNotFoundError();
+      return this.getOrganisationImageAsset(organisationId, assetId);
     }
 
     const board = this.requireBoard();
@@ -1867,6 +1878,26 @@ export class BoardRoom extends DurableObject<Env> {
   ): Promise<Response> {
     const board = readBoard(this.#sql) ?? capturedBoard;
     this.requireView(board, actor.actorId);
+    return this.streamImageAsset(board, assetId);
+  }
+
+  private async getOrganisationImageAsset(
+    organisationId: string,
+    assetId: string,
+  ): Promise<Response> {
+    if (!/^o_[A-Za-z0-9_-]{22}$/u.test(organisationId)) throw boardNotFoundError();
+    const board = this.requireBoard();
+    if (
+      board.organisation_mode !== 1 ||
+      board.organisation_id === null ||
+      board.organisation_id !== organisationId
+    ) {
+      throw boardNotFoundError();
+    }
+    return this.streamImageAsset(board, assetId);
+  }
+
+  private async streamImageAsset(board: BoardRow, assetId: string): Promise<Response> {
     const row = this.readBoardAsset(assetId);
     if (row === null || row.state !== "committed") {
       throw new HttpError(404, "NOT_FOUND", "Image asset not found.");

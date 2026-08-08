@@ -15,7 +15,11 @@ import {
   type OrganisationAdminSnapshot,
   takeOrganisationAdminLaunch,
 } from "./ui/organisation-admin";
-import { createReadOnlySpaceViewer } from "./ui/viewer";
+import {
+  createReadOnlySpaceViewer,
+  createSignedViewerImageAssetLoader,
+  viewerAssetTokenFromSessionResponse,
+} from "./ui/viewer";
 
 const root = document.querySelector<HTMLElement>("#app");
 if (!root) throw new Error("Application root is missing.");
@@ -147,7 +151,10 @@ async function startViewerRoute(): Promise<void> {
     body: JSON.stringify({ token: viewerLaunchToken }),
   });
   if (!response.ok) await throwApiResponse(response);
-  const viewer = createReadOnlySpaceViewer(root as HTMLElement);
+  const viewerAssetToken = viewerAssetTokenFromSessionResponse(response);
+  const viewer = createReadOnlySpaceViewer(root as HTMLElement, {
+    loadImageAsset: createSignedViewerImageAssetLoader(viewerAssetToken),
+  });
   await viewer.loadApiResponse(response);
 }
 

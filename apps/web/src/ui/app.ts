@@ -107,8 +107,8 @@ const TOOL_DEFINITIONS: Array<{
   { name: "rectangle", label: "Shapes", dockLabel: "Shape", shortcut: "R", glyph: "□" },
   {
     name: "protractor",
-    label: "180 degree protractor",
-    dockLabel: "Measure",
+    label: "Tools",
+    dockLabel: "Tools",
     shortcut: "U",
     glyph: "∠",
   },
@@ -693,6 +693,7 @@ export class BoardApp {
   private readonly settingsDrawer: HTMLElement;
   private readonly settingsBody: HTMLElement;
   private readonly shapeMenu: HTMLElement;
+  private readonly toolsMenu: HTMLElement;
   private readonly stylePopover: HTMLElement;
   private readonly exportMenu: HTMLElement;
   private readonly selectionActions: HTMLElement;
@@ -765,6 +766,7 @@ export class BoardApp {
     this.settingsDrawer = query(this.root, "[data-testid='settings-drawer']", HTMLElement);
     this.settingsBody = query(this.root, "[data-settings-body]", HTMLElement);
     this.shapeMenu = query(this.root, "[data-testid='shape-menu']", HTMLElement);
+    this.toolsMenu = query(this.root, "[data-testid='tools-menu']", HTMLElement);
     this.stylePopover = query(this.root, "[data-testid='style-popover']", HTMLElement);
     this.exportMenu = query(this.root, "[data-testid='export-menu']", HTMLElement);
     this.selectionActions = query(this.root, "[data-testid='selection-actions']", HTMLElement);
@@ -1133,6 +1135,11 @@ export class BoardApp {
           <section class="shape-menu" data-testid="shape-menu" id="shape-menu" role="menu" aria-label="Choose a shape" hidden>
             <div class="shape-menu-grid" data-shape-menu-grid></div>
           </section>
+          <section class="shape-menu tools-menu" data-testid="tools-menu" id="tools-menu" role="menu" aria-label="Choose a tool" hidden>
+            <div class="shape-menu-grid tools-menu-grid">
+              <button type="button" data-tools-tool="protractor" data-testid="tools-protractor" role="menuitemradio" aria-checked="false" aria-label="Protractor"><span class="shape-choice-glyph" aria-hidden="true">∠</span><span>Protractor</span></button>
+            </div>
+          </section>
           <section class="style-popover" data-testid="style-popover" id="style-popover" aria-label="Drawing style" hidden>
             <div class="popover-heading"><strong>Style</strong><span data-style-heading-context>New marks</span></div>
             <fieldset class="stamp-fieldset" data-stamp-fieldset hidden>
@@ -1225,8 +1232,16 @@ export class BoardApp {
         button.setAttribute("aria-haspopup", "menu");
         button.setAttribute("aria-controls", "shape-menu");
         button.setAttribute("aria-expanded", "false");
+      } else if (definition.name === "protractor") {
+        button.setAttribute("aria-label", "Tools");
+        button.setAttribute("aria-haspopup", "menu");
+        button.setAttribute("aria-controls", "tools-menu");
+        button.setAttribute("aria-expanded", "false");
       }
-      button.title = `${definition.label} · ${definition.shortcut}`;
+      button.title =
+        definition.name === "protractor"
+          ? `Tools · Protractor shortcut ${definition.shortcut}`
+          : `${definition.label} · ${definition.shortcut}`;
       const glyph = document.createElement("span");
       glyph.className = `tool-glyph tool-glyph-${definition.name}`;
       glyph.setAttribute("aria-hidden", "true");
@@ -1830,6 +1845,14 @@ export class BoardApp {
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("button[data-tool]")) {
       button.addEventListener("click", () => this.activateTool(button.dataset.tool as ToolName));
     }
+    query(this.toolsMenu, "[data-tools-tool='protractor']", HTMLButtonElement).addEventListener(
+      "click",
+      () => {
+        if (!this.isToolEnabled("protractor") || !this.canCommit()) return;
+        this.setToolsMenuOpen(false);
+        this.tools.setTool("protractor");
+      },
+    );
     for (const button of this.shapeMenu.querySelectorAll<HTMLButtonElement>(
       "[data-shape-variant]",
     )) {
@@ -2229,12 +2252,20 @@ export class BoardApp {
     document.addEventListener("pointerdown", (event) => {
       const target = event.target as Node;
       const shapeButton = query(this.root, "[data-testid='tool-rectangle']", HTMLElement);
+      const toolsButton = query(this.root, "[data-testid='tool-protractor']", HTMLElement);
       if (
         !this.shapeMenu.hidden &&
         !this.shapeMenu.contains(target) &&
         !shapeButton.contains(target)
       ) {
         this.setShapeMenuOpen(false);
+      }
+      if (
+        !this.toolsMenu.hidden &&
+        !this.toolsMenu.contains(target) &&
+        !toolsButton.contains(target)
+      ) {
+        this.setToolsMenuOpen(false);
       }
       if (
         !this.stylePopover.hidden &&
@@ -3293,6 +3324,12 @@ export class BoardApp {
   }
 
   private readonly onGlobalKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === "Escape" && !this.toolsMenu.hidden) {
+      event.preventDefault();
+      this.setToolsMenuOpen(false);
+      query(this.root, "[data-testid='tool-protractor']", HTMLButtonElement).focus();
+      return;
+    }
     if (event.key === "Escape" && !this.shapeMenu.hidden) {
       event.preventDefault();
       this.setShapeMenuOpen(false);
@@ -4770,6 +4807,7 @@ export class BoardApp {
         (!canEdit || !enabled || (name === "image" && this.imageUploadInFlight));
     }
     this.setShapeMenuOpen(!this.shapeMenu.hidden);
+    this.setToolsMenuOpen(!this.toolsMenu.hidden);
     this.accessButton.hidden = this.bootstrap.actor.role !== "owner" || archived;
     this.accessButton.disabled = archived || this.archivePending;
     this.settingsButton.hidden = this.bootstrap.actor.role !== "owner" || archived;
@@ -4962,6 +5000,10 @@ export class BoardApp {
         String(button.dataset.shapeVariant === this.style.shapeVariant),
       );
     }
+    query(this.toolsMenu, "[data-tools-tool='protractor']", HTMLButtonElement).setAttribute(
+      "aria-checked",
+      String(tool === "protractor"),
+    );
     this.updateStyleControls();
   }
 
@@ -5154,10 +5196,19 @@ export class BoardApp {
       const opening = this.shapeMenu.hidden !== false;
       if (opening) this.tools.setTool("select");
       this.setShapeMenuOpen(opening);
+      this.setToolsMenuOpen(false);
+      return;
+    }
+    if (tool === "protractor") {
+      const opening = this.toolsMenu.hidden !== false;
+      if (opening) this.tools.setTool("select");
+      this.setShapeMenuOpen(false);
+      this.setToolsMenuOpen(opening);
       return;
     }
     this.setShapeMenuOpen(false);
     if (this.tools.tool === tool) {
+      this.setToolsMenuOpen(false);
       this.reactivateTool(tool);
       return;
     }
@@ -5191,6 +5242,26 @@ export class BoardApp {
       button.disabled = !variant || !this.isShapeVariantEnabled(variant) || !this.canCommit();
     }
     if (!open) return;
+    this.setToolsMenuOpen(false);
+    this.setStylePopoverOpen(false);
+    this.closeActivitiesMenu();
+    this.exportMenu.hidden = true;
+  }
+
+  private setToolsMenuOpen(open: boolean): void {
+    const enabled = this.isToolEnabled("protractor");
+    if (!enabled) open = false;
+    this.toolsMenu.hidden = !open;
+    query(this.root, "[data-testid='tool-protractor']", HTMLButtonElement).setAttribute(
+      "aria-expanded",
+      String(open),
+    );
+    const protractor = query(this.toolsMenu, "[data-tools-tool='protractor']", HTMLButtonElement);
+    protractor.hidden = !enabled;
+    protractor.disabled = !enabled || !this.canCommit();
+    protractor.setAttribute("aria-checked", String(this.tools.tool === "protractor"));
+    if (!open) return;
+    this.setShapeMenuOpen(false);
     this.setStylePopoverOpen(false);
     this.closeActivitiesMenu();
     this.exportMenu.hidden = true;
@@ -5297,6 +5368,8 @@ export class BoardApp {
       String(open),
     );
     if (!open) return;
+    this.setShapeMenuOpen(false);
+    this.setToolsMenuOpen(false);
     this.closeActivitiesMenu();
     this.exportMenu.hidden = true;
     query(this.root, "[data-testid='export-button']", HTMLButtonElement).setAttribute(

@@ -98,6 +98,11 @@ function makeEnv(options: { allowedOrigins?: string } = {}): {
           },
         );
       }
+      if (/^\/__internal\/organisation-assets\/asset_[A-Za-z0-9_-]{43}$/u.test(pathname)) {
+        return new Response(new Uint8Array([137, 80, 78, 71]), {
+          headers: { "Content-Type": "image/png", "Content-Length": "4" },
+        });
+      }
       if (pathname.endsWith("/socket")) {
         const pair = new WebSocketPair();
         pair[1].accept();
@@ -540,6 +545,19 @@ describe("embed response framing policy", () => {
     );
     expect(response.status, await response.clone().text()).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
+    const viewerAssetToken = response.headers.get("x-spacescale-viewer-asset-token");
+    expect(viewerAssetToken).toMatch(/^vas1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u);
+    await expect(
+      new HmacIdentityService(env).verifyViewerAssetSession(
+        new Request("http://localhost/api/v1/viewer/assets/asset_test", {
+          headers: { Authorization: `Bearer ${viewerAssetToken}` },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      actorId: verified.actorId,
+      boardId: verified.boardId,
+      organisationId: verified.organisationId,
+    });
     expect(await response.json()).toEqual({
       format: "cf-whiteboard-json",
       version: 1,
@@ -553,6 +571,22 @@ describe("embed response framing policy", () => {
       boardId: verified.boardId,
       url: "http://localhost/__internal/organisation-export",
       body: { organisationId: verified.organisationId, format: "canonical" },
+    });
+
+    const assetId = `asset_${"I".repeat(43)}`;
+    const image = await gateway.fetch(
+      new Request(`http://localhost/api/v1/viewer/assets/${assetId}`, {
+        headers: { Authorization: `Bearer ${viewerAssetToken}` },
+      }),
+      env,
+    );
+    expect(image.status).toBe(200);
+    expect(image.headers.get("content-type")).toBe("image/png");
+    expect(new Uint8Array(await image.arrayBuffer())).toEqual(new Uint8Array([137, 80, 78, 71]));
+    expect(captured.at(-1)).toMatchObject({
+      boardId: verified.boardId,
+      url: `http://localhost/__internal/organisation-assets/${assetId}?organisationId=${verified.organisationId}`,
+      body: null,
     });
   });
 

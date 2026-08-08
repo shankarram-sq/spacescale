@@ -6,6 +6,14 @@ import { createBoard, isolatedContextOptions } from "./helpers";
 const LOCAL_PARENT_URL = "http://localhost:4173/";
 const LOCAL_WORKER_ORIGIN = "https://127.0.0.1:8787";
 const EMBED_BEARER_HISTORY_KEY = "cf-collab-canvas.embed-bearer";
+const VIEWER_PNG_FILE = {
+  name: "viewer-image.png",
+  mimeType: "image/png",
+  buffer: Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  ),
+};
 
 type Participant = {
   name: string;
@@ -222,6 +230,19 @@ test("canonical export is faithfully reproduced by the signed read-only viewer",
     "Shared viewer words",
   );
 
+  await frame.getByTestId("settings-button").click();
+  const viewerFlowSettings = frame.getByTestId("settings-drawer");
+  await expect(viewerFlowSettings).toBeVisible();
+  await viewerFlowSettings.getByRole("checkbox", { name: "Enable Images" }).check();
+  await viewerFlowSettings.getByRole("button", { name: "Close settings" }).click();
+  const imageChooser = frame.page().waitForEvent("filechooser");
+  await frame.getByTestId("tool-image").click();
+  await (await imageChooser).setFiles(VIEWER_PNG_FILE);
+  const ownerImage = frame.locator("#drawing-area .board-item-image");
+  await expect(ownerImage).toHaveCount(1);
+  await expect(ownerImage).toHaveAttribute("data-image-state", "ready");
+  await expect(frame.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+
   const ownerToken = new URLSearchParams(new URL(ownerSource).hash.slice(1)).get("launch");
   if (ownerToken === null) throw new Error("The owner assertion is missing.");
   const boardId = new URL(frame.url()).pathname.split("/").at(-1);
@@ -254,6 +275,13 @@ test("canonical export is faithfully reproduced by the signed read-only viewer",
         kind: "text",
         geometry: expect.objectContaining({ text: "Shared viewer words" }),
       }),
+      expect.objectContaining({
+        kind: "image",
+        geometry: expect.objectContaining({
+          assetId: expect.stringMatching(/^asset_[A-Za-z0-9_-]{43}$/u),
+          mimeType: "image/png",
+        }),
+      }),
     ]),
   });
 
@@ -281,6 +309,10 @@ test("canonical export is faithfully reproduced by the signed read-only viewer",
     (exported.body as { items: unknown[] }).items.length,
   );
   await expect(page.locator("#drawing-area .board-item-text")).toContainText("Shared viewer words");
+  const signedViewerImage = page.locator("#drawing-area .board-item-image");
+  await expect(signedViewerImage).toHaveCount(1);
+  await expect(signedViewerImage).toHaveAttribute("data-image-state", "ready");
+  await expect(signedViewerImage.locator(".image-card-content")).toHaveAttribute("href", /^blob:/u);
   await expect(page.getByRole("button", { name: /^Shapes/u })).toHaveCount(0);
   await expect(page.getByTestId("settings-button")).toHaveCount(0);
 

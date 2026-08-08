@@ -279,6 +279,14 @@ describe("BoardModel", () => {
     expect(edge?.t).toBeCloseTo(0.51);
   });
 
+  it("excludes moving items from connector target lookup", () => {
+    const model = new BoardModel();
+    model.load(snapshot([line()], 1));
+
+    expect(model.nearestConnectorAnchor([11, 21], 3, new Set([ITEM_ID]))).toBeUndefined();
+    expect(model.nearestConnectorAnchor([11, 21], 3)).toBeDefined();
+  });
+
   it("does not snap to an erased gap in a line", () => {
     const cut = line();
     cut.geometry.visiblePaths = [

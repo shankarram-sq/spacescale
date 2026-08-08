@@ -9,12 +9,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   copyableTextFromCanonicalSpace,
+  createSignedViewerImageAssetLoader,
   parseCanonicalSpaceExport,
   pointerStartsViewerPan,
   readCanonicalSpaceExportFile,
   readCanonicalSpaceExportResponse,
   SPACE_VIEWER_CSS,
   SpaceViewerExportError,
+  viewerAssetTokenFromSessionResponse,
   zoomFromWheel,
 } from "./viewer";
 
@@ -61,6 +63,40 @@ describe("canonical read-only Space exports", () => {
     expect(copyableTextFromCanonicalSpace(parseCanonicalSpaceExport(canonicalExport()))).toBe(
       "Fixture text\nFixture sticky",
     );
+  });
+
+  it("loads private images with the memory-only signed viewer capability", async () => {
+    const token = `vas1.${"A".repeat(32)}.${"B".repeat(43)}`;
+    const session = new Response(null, {
+      headers: { "X-SpaceScale-Viewer-Asset-Token": token },
+    });
+    expect(viewerAssetTokenFromSessionResponse(session)).toBe(token);
+
+    const fetcher = vi.fn(
+      async () =>
+        new Response(new Uint8Array([71, 73, 70]), {
+          headers: { "Content-Type": "image/gif" },
+        }),
+    );
+    const assetId = `asset_${"C".repeat(43)}`;
+    const image = await createSignedViewerImageAssetLoader(token, fetcher)(assetId);
+    expect(image.type).toBe("image/gif");
+    expect(fetcher).toHaveBeenCalledWith(`/api/v1/viewer/assets/${assetId}`, {
+      method: "GET",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { Accept: "image/*", Authorization: `Bearer ${token}` },
+    });
+
+    expect(() => viewerAssetTokenFromSessionResponse(new Response())).toThrow(
+      "image session is missing",
+    );
+    await expect(
+      createSignedViewerImageAssetLoader(
+        token,
+        async () => new Response("No", { status: 401 }),
+      )(assetId),
+    ).rejects.toThrow("HTTP 401");
   });
 
   it("accepts both raw downloaded JSON and an already-fetched API response", async () => {

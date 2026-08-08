@@ -523,7 +523,7 @@ export class BoardRenderer {
     this.localLayer.append(zone);
   }
 
-  showMovePreview(ids: Iterable<string>, x: number, y: number): void {
+  showMovePreview(ids: Iterable<string>, x: number, y: number, snapPoint?: Point): void {
     this.localLayer.replaceChildren();
     for (const id of ids) {
       const item = this.model.getItem(id);
@@ -543,6 +543,7 @@ export class BoardRenderer {
       );
       this.localLayer.append(node);
     }
+    if (snapPoint) this.localLayer.append(this.snapHalo(snapPoint));
     this.setSelection(ids, { x, y });
   }
 

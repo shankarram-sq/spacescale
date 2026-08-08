@@ -218,10 +218,15 @@ export class BoardModel {
     return undefined;
   }
 
-  nearestConnectorAnchor(point: Point, maxDistance: number): ConnectorAnchor | undefined {
+  nearestConnectorAnchor(
+    point: Point,
+    maxDistance: number,
+    excludedItemIds: ReadonlySet<string> = new Set(),
+  ): ConnectorAnchor | undefined {
     if (!Number.isFinite(maxDistance) || maxDistance < 0) return undefined;
     let nearest: ConnectorAnchor | undefined;
     for (const item of this.rendered.values()) {
+      if (excludedItemIds.has(item.id)) continue;
       const bounds = this.getBounds(item.id);
       if (!bounds || !containsPoint(expandBounds(bounds, maxDistance), point)) continue;
       const hasVisibleFragments =

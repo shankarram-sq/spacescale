@@ -842,14 +842,20 @@ const viewerUrl =
 On load, SpaceScale removes the token from browser-visible history before the
 network request, exchanges it at `POST /api/v1/viewer/session`, fetches the
 authoritative canonical snapshot for the derived Space, and renders it locally.
-It does not join the live board or create an editable member session. The token
-is an HMAC assertion; neither the Organisation signing key nor a raw backend
-secret is present in the URL.
+The successful exchange also returns a short-lived, viewer-only image capability
+that remains in page memory. The viewer uses it in an `Authorization` header on
+`GET /api/v1/viewer/assets/{assetId}` to stream the matching private R2 object.
+The capability is never placed in a URL or persistent browser storage and cannot
+authenticate board mutation, membership, WebSocket, or editing APIs. This header
+flow remains reliable when the viewer is embedded and third-party cookies are
+blocked. The launch token is an HMAC assertion; neither the Organisation signing
+key nor a raw backend secret is present in the URL.
 
 Canonical exports reference private image asset IDs but do not contain image
-bytes. A JSON-only viewer therefore preserves the image object, position, size,
-and attribution but shows the standard image placeholder unless an authorised
-asset loader is added.
+bytes. The **signed** viewer resolves those IDs through the authenticated loader
+and displays the original images. The manual JSON-only viewer has no Space
+authorisation context, so it preserves image position and size but displays the
+standard placeholder.
 
 ### Open Organisation administration
 

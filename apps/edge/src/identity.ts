@@ -13,10 +13,13 @@ export const SESSION_COOKIE = "__Host-wb_session";
 export const CSRF_HEADER = "x-csrf-token";
 const SESSION_LIFETIME_MS = 30 * 24 * 60 * 60 * 1_000;
 const EMBED_SESSION_LIFETIME_MS = 24 * 60 * 60 * 1_000;
+const VIEWER_ASSET_SESSION_LIFETIME_MS = 24 * 60 * 60 * 1_000;
 const MAX_CLOCK_SKEW_MS = 5 * 60 * 1_000;
 const EMBED_SESSION_PREFIX = "es1";
+const VIEWER_ASSET_SESSION_PREFIX = "vas1";
 const ACTOR_ID_PATTERN = /^a_[A-Za-z0-9_-]{22}$/u;
 const BOARD_ID_PATTERN = /^b_[A-Za-z0-9_-]{22}$/u;
+const ORGANISATION_ID_PATTERN = /^o_[A-Za-z0-9_-]{22}$/u;
 
 interface SessionPayload {
   v: 1;
@@ -33,9 +36,23 @@ interface EmbedSessionPayload {
   e: number;
 }
 
+interface ViewerAssetSessionPayload extends EmbedSessionPayload {
+  o: string;
+}
+
 export interface IssuedEmbedSession {
   token: string;
   session: DeviceSession & { boardId: string };
+}
+
+export interface ViewerAssetSession extends DeviceSession {
+  boardId: string;
+  organisationId: string;
+}
+
+export interface IssuedViewerAssetSession {
+  token: string;
+  session: ViewerAssetSession;
 }
 
 export interface EnsuredSession {
@@ -54,6 +71,14 @@ export interface IdentityService {
     expiresAt: number,
     now?: number,
   ): Promise<IssuedEmbedSession>;
+  issueViewerAssetSession(
+    actorId: string,
+    boardId: string,
+    organisationId: string,
+    expiresAt: number,
+    now?: number,
+  ): Promise<IssuedViewerAssetSession>;
+  verifyViewerAssetSession(request: Request, now?: number): Promise<ViewerAssetSession>;
 }
 
 export class HmacIdentityService implements IdentityService {
@@ -205,13 +230,123 @@ export class HmacIdentityService implements IdentityService {
     };
   }
 
+  async issueViewerAssetSession(
+    actorId: string,
+    boardId: string,
+    organisationId: string,
+    expiresAt: number,
+    now = Date.now(),
+  ): Promise<IssuedViewerAssetSession> {
+    if (
+      !ACTOR_ID_PATTERN.test(actorId) ||
+      !BOARD_ID_PATTERN.test(boardId) ||
+      !ORGANISATION_ID_PATTERN.test(organisationId)
+    ) {
+      throw new HttpError(500, "INTERNAL_ERROR", "The viewer asset identity is invalid.");
+    }
+    if (
+      !Number.isSafeInteger(expiresAt) ||
+      expiresAt <= now ||
+      expiresAt - now > VIEWER_ASSET_SESSION_LIFETIME_MS + MAX_CLOCK_SKEW_MS
+    ) {
+      throw new HttpError(401, "AUTH_REQUIRED", "The viewer asset session has expired.");
+    }
+    const payload: ViewerAssetSessionPayload = {
+      v: 1,
+      a: actorId,
+      b: boardId,
+      o: organisationId,
+      i: now,
+      e: expiresAt,
+    };
+    const token = await this.signPayloadWithPrefix(
+      VIEWER_ASSET_SESSION_PREFIX,
+      payload,
+      this.#currentKey,
+    );
+    return {
+      token,
+      session: {
+        actorId,
+        boardId,
+        organisationId,
+        issuedAt: now,
+        expiresAt,
+        keyVersion: "current",
+      },
+    };
+  }
+
+  async verifyViewerAssetSession(request: Request, now = Date.now()): Promise<ViewerAssetSession> {
+    const authorization = request.headers.get("authorization");
+    if (
+      authorization === null ||
+      authorization.length > 4_096 ||
+      !authorization.startsWith("Bearer ")
+    ) {
+      throw invalidViewerAssetSession();
+    }
+    const raw = authorization.slice("Bearer ".length);
+    if (raw.length === 0 || raw.includes(" ") || raw.includes("\t") || raw.includes(",")) {
+      throw invalidViewerAssetSession();
+    }
+    const pieces = raw.split(".");
+    if (pieces.length !== 3 || pieces[0] !== VIEWER_ASSET_SESSION_PREFIX) {
+      throw invalidViewerAssetSession();
+    }
+    const encodedPayload = pieces[1];
+    const signature = pieces[2] === undefined ? null : base64UrlToBytes(pieces[2]);
+    const payloadBytes = encodedPayload === undefined ? null : base64UrlToBytes(encodedPayload);
+    if (
+      encodedPayload === undefined ||
+      signature === null ||
+      signature.byteLength !== 32 ||
+      payloadBytes === null
+    ) {
+      throw invalidViewerAssetSession();
+    }
+    let payload: unknown;
+    try {
+      payload = JSON.parse(
+        new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(payloadBytes),
+      );
+    } catch {
+      throw invalidViewerAssetSession();
+    }
+    if (!isViewerAssetSessionPayload(payload)) throw invalidViewerAssetSession();
+
+    const signed = `${VIEWER_ASSET_SESSION_PREFIX}.${encodedPayload}`;
+    const currentMatches = constantTimeEqual(signature, await hmacSha256(this.#currentKey, signed));
+    let previousMatches = false;
+    if (this.#previousKey !== undefined) {
+      previousMatches = constantTimeEqual(signature, await hmacSha256(this.#previousKey, signed));
+    }
+    if (!currentMatches && !previousMatches) throw invalidViewerAssetSession();
+    if (
+      payload.i > now + MAX_CLOCK_SKEW_MS ||
+      payload.e <= payload.i ||
+      payload.e <= now ||
+      payload.e - payload.i > VIEWER_ASSET_SESSION_LIFETIME_MS + MAX_CLOCK_SKEW_MS
+    ) {
+      throw invalidViewerAssetSession();
+    }
+    return {
+      actorId: payload.a,
+      boardId: payload.b,
+      organisationId: payload.o,
+      issuedAt: payload.i,
+      expiresAt: payload.e,
+      keyVersion: currentMatches ? "current" : "previous",
+    };
+  }
+
   private async signPayload(payload: SessionPayload, secret: string): Promise<string> {
     return this.signPayloadWithPrefix("v1", payload, secret);
   }
 
   private async signPayloadWithPrefix(
     prefix: string,
-    payload: SessionPayload | EmbedSessionPayload,
+    payload: SessionPayload | EmbedSessionPayload | ViewerAssetSessionPayload,
     secret: string,
   ): Promise<string> {
     const encoded = bytesToBase64Url(utf8(JSON.stringify(payload)));
@@ -343,13 +478,36 @@ function isEmbedSessionPayload(value: unknown): value is EmbedSessionPayload {
   );
 }
 
+function isViewerAssetSessionPayload(value: unknown): value is ViewerAssetSessionPayload {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const object = value as Record<string, unknown>;
+  return (
+    Object.keys(object).length === 6 &&
+    object.v === 1 &&
+    typeof object.a === "string" &&
+    ACTOR_ID_PATTERN.test(object.a) &&
+    typeof object.b === "string" &&
+    BOARD_ID_PATTERN.test(object.b) &&
+    typeof object.o === "string" &&
+    ORGANISATION_ID_PATTERN.test(object.o) &&
+    Number.isSafeInteger(object.i) &&
+    Number.isSafeInteger(object.e)
+  );
+}
+
 function invalidSession(): HttpError {
   return new HttpError(401, "AUTH_REQUIRED", "The Space session is invalid or expired.");
 }
 
+function invalidViewerAssetSession(): HttpError {
+  return new HttpError(401, "AUTH_REQUIRED", "The viewer asset session is invalid or expired.");
+}
+
 export const __identityTestUtils = {
   EMBED_SESSION_PREFIX,
+  VIEWER_ASSET_SESSION_PREFIX,
   isEmbedSessionPayload,
+  isViewerAssetSessionPayload,
   isSessionPayload,
   readCookie,
   serializeSessionCookie,

@@ -82,4 +82,38 @@ describe("HmacIdentityService classroom bearer sessions", () => {
       identity.issueEmbedSession(ACTOR_ID, BOARD_ID, NOW + 25 * 60 * 60_000, NOW),
     ).rejects.toMatchObject({ status: 401 });
   });
+  it("issues a viewer-only asset capability that editing APIs cannot consume", async () => {
+    const identity = new HmacIdentityService({
+      SESSION_SIGNING_KEY_CURRENT: "current-session-key-with-enough-entropy",
+    });
+    const organisationId = `o_${"O".repeat(22)}`;
+    const issued = await identity.issueViewerAssetSession(
+      ACTOR_ID,
+      BOARD_ID,
+      organisationId,
+      NOW + 60 * 60_000,
+      NOW,
+    );
+    expect(issued.token).toMatch(/^vas1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u);
+
+    const assetRequest = new Request(
+      `https://board.test/api/v1/viewer/assets/asset_${"A".repeat(43)}`,
+      { headers: { Authorization: `Bearer ${issued.token}` } },
+    );
+    await expect(identity.verifyViewerAssetSession(assetRequest, NOW + 1_000)).resolves.toEqual({
+      actorId: ACTOR_ID,
+      boardId: BOARD_ID,
+      organisationId,
+      issuedAt: NOW,
+      expiresAt: NOW + 60 * 60_000,
+      keyVersion: "current",
+    });
+
+    await expect(identity.verifySession(assetRequest, NOW + 1_000)).rejects.toMatchObject({
+      status: 401,
+    });
+    await expect(
+      identity.verifyViewerAssetSession(assetRequest, NOW + 60 * 60_000 + 1),
+    ).rejects.toMatchObject({ status: 401 });
+  });
 });

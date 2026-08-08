@@ -1315,6 +1315,14 @@ button:disabled {
   translate: -50% 0;
 }
 
+.tools-menu {
+  width: min(180px, calc(100vw - 32px));
+}
+
+.shape-menu-grid.tools-menu-grid {
+  grid-template-columns: 1fr;
+}
+
 .shape-menu-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(44px, 1fr));

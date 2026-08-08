@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { canvasPoint, createBoard, drag, drawShape, moveItem } from "./helpers";
+import { canvasPoint, createBoard, drag, drawShape } from "./helpers";
 
 test("shape palette, rotatable protractor, snapping, partial erase, and feature gates work together", async ({
   page,
@@ -26,6 +26,7 @@ test("shape palette, rotatable protractor, snapping, partial erase, and feature 
 
   const placement = await canvasPoint(page, 0.76, 0.62);
   await page.getByTestId("tool-protractor").click();
+  await page.getByTestId("tools-protractor").click();
   await page.mouse.click(placement.x, placement.y);
   const protractor = page.locator("#drawing-area .board-item-protractor");
   await expect(protractor).toHaveCount(1);
@@ -50,9 +51,49 @@ test("shape palette, rotatable protractor, snapping, partial erase, and feature 
   await expect.poll(() => protractor.getAttribute("transform")).not.toBe(beforeRotation);
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
 
+  const squareEdge = await page
+    .locator("#drawing-area .board-item-rectangle")
+    .first()
+    .evaluate((node) => {
+      const matrix = (node as SVGGraphicsElement).getScreenCTM();
+      if (!matrix) throw new Error("The square has no screen transform.");
+      const x = Number(node.getAttribute("x"));
+      const y = Number(node.getAttribute("y"));
+      const width = Number(node.getAttribute("width"));
+      const height = Number(node.getAttribute("height"));
+      const target = new DOMPoint(x + width, y + height / 2).matrixTransform(matrix);
+      return { x: target.x, y: target.y };
+    });
+  const moveStart = await protractor.evaluate((node) => {
+    const matrix = (node as SVGGraphicsElement).getScreenCTM();
+    if (!matrix) throw new Error("The protractor has no screen transform.");
+    const grab = new DOMPoint(0, -80).matrixTransform(matrix);
+    const center = new DOMPoint(0, 0).matrixTransform(matrix);
+    return {
+      grab: { x: grab.x, y: grab.y },
+      center: { x: center.x, y: center.y },
+    };
+  });
   const beforeMove = await protractor.getAttribute("transform");
-  await moveItem(page, protractor, -45, 24);
-  await expect(protractor).not.toHaveAttribute("transform", beforeMove ?? "");
+  await drag(
+    page,
+    moveStart.grab,
+    {
+      x: moveStart.grab.x + squareEdge.x - moveStart.center.x + 5,
+      y: moveStart.grab.y + squareEdge.y - moveStart.center.y + 4,
+    },
+    { steps: 12 },
+  );
+  await expect.poll(() => protractor.getAttribute("transform")).not.toBe(beforeMove);
+  await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+  const snappedCenter = await protractor.evaluate((node) => {
+    const matrix = (node as SVGGraphicsElement).getScreenCTM();
+    if (!matrix) throw new Error("The moved protractor has no screen transform.");
+    const center = new DOMPoint(0, 0).matrixTransform(matrix);
+    return { x: center.x, y: center.y };
+  });
+  expect(Math.abs(snappedCenter.x - squareEdge.x)).toBeLessThan(1);
+  expect(Math.abs(snappedCenter.y - squareEdge.y)).toBeLessThan(10);
 
   const snapTarget = await protractor.evaluate((node) => {
     const matrix = (node as SVGGraphicsElement).getScreenCTM();
@@ -64,6 +105,7 @@ test("shape palette, rotatable protractor, snapping, partial erase, and feature 
     );
     return {
       center: { x: center.x, y: center.y },
+      tick: { x: tick.x, y: tick.y },
       nearTick: { x: tick.x + 5, y: tick.y + 4 },
     };
   });
@@ -74,6 +116,34 @@ test("shape palette, rotatable protractor, snapping, partial erase, and feature 
   await expect(page.locator("#local-preview-layer .connector-snap-halo")).toHaveCount(2);
   await page.mouse.up();
   await expect(page.locator("#drawing-area .board-item-line")).toHaveCount(1);
+  await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+  const lineEndpoints = await page
+    .locator("#drawing-area .board-item-line .connector-shaft")
+    .evaluate((node) => {
+      const line = node as SVGLineElement;
+      const matrix = line.getScreenCTM();
+      if (!matrix) throw new Error("The snapped line has no screen transform.");
+      const start = new DOMPoint(line.x1.baseVal.value, line.y1.baseVal.value).matrixTransform(
+        matrix,
+      );
+      const end = new DOMPoint(line.x2.baseVal.value, line.y2.baseVal.value).matrixTransform(
+        matrix,
+      );
+      return {
+        start: { x: start.x, y: start.y },
+        end: { x: end.x, y: end.y },
+      };
+    });
+  expect(
+    Math.hypot(
+      lineEndpoints.start.x - snapTarget.center.x,
+      lineEndpoints.start.y - snapTarget.center.y,
+    ),
+  ).toBeLessThan(1);
+  expect(
+    Math.hypot(lineEndpoints.end.x - snapTarget.tick.x, lineEndpoints.end.y - snapTarget.tick.y),
+  ).toBeLessThan(1);
+  await page.screenshot({ path: testInfo.outputPath("line-and-protractor-snapping.png") });
 
   await page.getByTestId("settings-button").click();
   const settings = page.getByTestId("settings-drawer");

@@ -83,6 +83,7 @@ export const DEFAULT_TABLE_ROW_HEIGHT = 48;
 export const DEFAULT_ZONE_WIDTH = 520;
 export const DEFAULT_ZONE_HEIGHT = 320;
 export const CONNECTOR_SNAP_RADIUS_CSS_PX = 16;
+export const CONNECTOR_SNAP_RELEASE_RADIUS_CSS_PX = 24;
 export const DEFAULT_PROTRACTOR_RADIUS = 160;
 
 const TOOL_SHORTCUTS: Partial<Record<string, ToolName>> = {
@@ -497,6 +498,11 @@ type Gesture =
       start: Point;
       current: Point;
       items: Map<string, CapturedMoveItem>;
+      protractorCenter?: {
+        itemId: string;
+        original: Point;
+        anchor?: ConnectorAnchor;
+      };
       previewSeq: number;
       lastPreviewAt: number;
     }
@@ -855,8 +861,12 @@ export class ToolController {
     }
 
     if (this.toolValue === "protractor") {
+      const placement = this.options.canSnapLines()
+        ? resolveConnectorEndpoint(this.options.model, point, this.options.renderer.viewport.zoom)
+            .point
+        : point;
       const itemId = createId();
-      const operation = buildProtractorCreateOperation(itemId, point, style);
+      const operation = buildProtractorCreateOperation(itemId, placement, style);
       void this.options.commit(operation).then((accepted) => {
         if (!accepted) return;
         this.setTool("select");
@@ -1045,13 +1055,19 @@ export class ToolController {
           this.options.model,
           this.options.renderer.viewport.zoom,
           gesture.snapEnabled,
+          gesture.endAnchor,
         ),
       );
       this.renderShapeGesture(gesture, false);
     } else if (gesture.kind === "move") {
-      gesture.current = boardPoint(event, this.options.renderer);
+      this.applyMovePointerState(gesture, boardPoint(event, this.options.renderer));
       const delta = gestureDelta(gesture);
-      this.options.renderer.showMovePreview(this.selected, delta.x, delta.y);
+      this.options.renderer.showMovePreview(
+        this.selected,
+        delta.x,
+        delta.y,
+        gesture.protractorCenter?.anchor?.point,
+      );
       if (now - gesture.lastPreviewAt >= 75) {
         gesture.previewSeq += 1;
         gesture.lastPreviewAt = now;
@@ -1139,10 +1155,11 @@ export class ToolController {
           this.options.model,
           this.options.renderer.viewport.zoom,
           gesture.snapEnabled,
+          gesture.endAnchor,
         ),
       );
     } else if (gesture.kind === "move") {
-      gesture.current = tapPoint;
+      this.applyMovePointerState(gesture, tapPoint);
     } else if (gesture.kind === "resize-card") {
       const localPointer = inverseTransformPoint(tapPoint, gesture.capture.item.transform);
       if (localPointer) {
@@ -1424,6 +1441,12 @@ export class ToolController {
             "warning",
           );
         } else if (items.size === this.selected.size) {
+          const onlySelectedId =
+            this.selected.size === 1 ? this.selected.values().next().value : undefined;
+          const onlySelected =
+            typeof onlySelectedId === "string"
+              ? this.options.model.getItem(onlySelectedId)
+              : undefined;
           this.gesture = {
             kind: "move",
             pointerId: event.pointerId,
@@ -1431,6 +1454,14 @@ export class ToolController {
             start: point,
             current: point,
             items,
+            ...(onlySelected?.kind === "protractor"
+              ? {
+                  protractorCenter: {
+                    itemId: onlySelected.id,
+                    original: [onlySelected.transform[4], onlySelected.transform[5]],
+                  },
+                }
+              : {}),
             previewSeq: 0,
             lastPreviewAt: 0,
           };
@@ -1444,6 +1475,26 @@ export class ToolController {
       this.options.renderer.showMarquee(pointsBounds(point, point));
     }
     event.preventDefault();
+  }
+
+  private applyMovePointerState(gesture: Extract<Gesture, { kind: "move" }>, point: Point): void {
+    if (!gesture.protractorCenter || !this.options.canSnapLines()) {
+      gesture.current = point;
+      if (gesture.protractorCenter) delete gesture.protractorCenter.anchor;
+      return;
+    }
+    const resolved = resolveProtractorCenterMove(
+      gesture.start,
+      point,
+      gesture.protractorCenter.original,
+      gesture.protractorCenter.itemId,
+      this.options.model,
+      this.options.renderer.viewport.zoom,
+      gesture.protractorCenter.anchor,
+    );
+    gesture.current = resolved.current;
+    if (resolved.anchor) gesture.protractorCenter.anchor = resolved.anchor;
+    else delete gesture.protractorCenter.anchor;
   }
 
   private renderShapeGesture(
@@ -1829,10 +1880,59 @@ export function resolveConnectorEndpoint(
   model: Pick<BoardModel, "nearestConnectorAnchor">,
   point: Point,
   zoom: number,
+  options: {
+    lockedAnchor?: ConnectorAnchor;
+    excludedItemIds?: ReadonlySet<string>;
+  } = {},
 ): { point: Point; anchor?: ConnectorAnchor } {
-  const threshold = CONNECTOR_SNAP_RADIUS_CSS_PX / Math.max(0.1, zoom);
-  const anchor = model.nearestConnectorAnchor(point, threshold);
-  return anchor ? { point: anchor.point, anchor } : { point };
+  const scale = Math.max(0.1, zoom);
+  const threshold = CONNECTOR_SNAP_RADIUS_CSS_PX / scale;
+  const anchor = model.nearestConnectorAnchor(point, threshold, options.excludedItemIds);
+  if (anchor) return { point: anchor.point, anchor };
+  const lockedAnchor = options.lockedAnchor;
+  const releaseThreshold = CONNECTOR_SNAP_RELEASE_RADIUS_CSS_PX / scale;
+  if (
+    lockedAnchor &&
+    !options.excludedItemIds?.has(lockedAnchor.itemId) &&
+    pointDistance(point, lockedAnchor.point) <= releaseThreshold
+  ) {
+    return { point: lockedAnchor.point, anchor: lockedAnchor };
+  }
+  return { point };
+}
+
+export type ResolvedProtractorCenterMove = {
+  current: Point;
+  center: Point;
+  anchor?: ConnectorAnchor;
+};
+
+export function resolveProtractorCenterMove(
+  start: Point,
+  point: Point,
+  originalCenter: Point,
+  itemId: string,
+  model: Pick<BoardModel, "nearestConnectorAnchor">,
+  zoom: number,
+  lockedAnchor?: ConnectorAnchor,
+): ResolvedProtractorCenterMove {
+  const intendedCenter: Point = [
+    originalCenter[0] + point[0] - start[0],
+    originalCenter[1] + point[1] - start[1],
+  ];
+  const resolved = resolveConnectorEndpoint(model, intendedCenter, zoom, {
+    lockedAnchor,
+    excludedItemIds: new Set([itemId]),
+  });
+  if (!resolved.anchor) return { current: point, center: intendedCenter };
+  return {
+    current: [
+      point[0] + resolved.point[0] - intendedCenter[0],
+      point[1] + resolved.point[1] - intendedCenter[1],
+    ],
+    center: resolved.point,
+    anchor: resolved.anchor,
+  };
 }
 
 export type ResolvedShapePointerState = {
@@ -1848,9 +1948,10 @@ export function resolveShapePointerState(
   model: Pick<BoardModel, "nearestConnectorAnchor">,
   zoom: number,
   snapEnabled = true,
+  lockedAnchor?: ConnectorAnchor,
 ): ResolvedShapePointerState {
   if (shape !== "line" || !snapEnabled) return { current: point, constrained };
-  const resolved = resolveConnectorEndpoint(model, point, zoom);
+  const resolved = resolveConnectorEndpoint(model, point, zoom, { lockedAnchor });
   return resolved.anchor
     ? { current: resolved.point, constrained, endAnchor: resolved.anchor }
     : { current: point, constrained };
