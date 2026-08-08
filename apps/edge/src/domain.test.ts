@@ -182,7 +182,13 @@ describe("edge domain admission", () => {
     });
     const write = prepared.writes.get(itemId);
     expect(write?.item).toMatchObject({ z: 1, version: 1, createdBy: actorId });
-    expect(write?.item.geometry).toEqual({ x: 5, y: 20, width: 5, height: 8 });
+    expect(write?.item.geometry).toEqual({
+      x: 5,
+      y: 20,
+      width: 5,
+      height: 8,
+      shape: "rectangle",
+    });
     expect(prepared.effects[0]).toMatchObject({
       itemId,
       beforeStateToken: `absent:${itemId}`,

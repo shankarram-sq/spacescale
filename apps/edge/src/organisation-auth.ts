@@ -1,4 +1,11 @@
-import { ProtocolValidationError, validatePlainText } from "@collab/protocol";
+import {
+  BOARD_FEATURE_KEYS,
+  type BoardFeatures,
+  DEFAULT_BOARD_FEATURES,
+  normalizeBoardFeatures,
+  ProtocolValidationError,
+  validatePlainText,
+} from "@collab/protocol";
 import { base64UrlToBytes, bytesToBase64Url, constantTimeEqual, hmacSha256, utf8 } from "./crypto";
 import { HttpError } from "./http/errors";
 import type { BoardRole } from "./types";
@@ -29,6 +36,7 @@ const PAYLOAD_KEYS = [
   "iat",
   "exp",
 ] as const;
+const OPTIONAL_PAYLOAD_KEYS = ["features"] as const;
 
 const ORGANISATION_KEY_SET_KEYS = ["derivation_key", "current", "previous"] as const;
 const SIGNING_KEY_KEYS = ["kid", "key"] as const;
@@ -44,6 +52,7 @@ export interface OrganisationLaunchPayload {
   participant_id: string;
   iat: number;
   exp: number;
+  features?: Partial<BoardFeatures>;
 }
 
 export interface OrganisationSigningKey {
@@ -96,6 +105,7 @@ export interface VerifiedOrganisationLaunch {
   expiresAtMs: number;
   placeholderOwnerActorId: string;
   ownerRecoveryHash: string;
+  features: BoardFeatures;
 }
 
 interface ParsedOrganisationKeys {
@@ -212,6 +222,7 @@ export class OrganisationAuthService {
       expiresAtMs: payload.exp * 1_000,
       placeholderOwnerActorId,
       ownerRecoveryHash,
+      features: payload.features,
     };
   }
 }
@@ -299,8 +310,10 @@ function isValidHmacKey(value: unknown): value is string {
   return byteLength >= MIN_HMAC_KEY_BYTES && byteLength <= MAX_HMAC_KEY_BYTES;
 }
 
-function normalizePayload(value: unknown): OrganisationLaunchPayload {
-  if (!hasExactKeys(value, PAYLOAD_KEYS)) throw invalidLaunchToken();
+function normalizePayload(value: unknown): OrganisationLaunchPayload & { features: BoardFeatures } {
+  if (!hasRequiredAndOptionalKeys(value, PAYLOAD_KEYS, OPTIONAL_PAYLOAD_KEYS)) {
+    throw invalidLaunchToken();
+  }
   if (value.v !== 1) throw invalidLaunchToken();
   const audience = normalizeAudienceClaim(value.aud);
   const organisationId = normalizeStableIdentifier(
@@ -333,6 +346,7 @@ function normalizePayload(value: unknown): OrganisationLaunchPayload {
   ) {
     throw invalidLaunchToken();
   }
+  const features = normalizeInitialFeatures(value.features, invalidLaunchToken);
   return {
     v: 1,
     aud: audience,
@@ -344,7 +358,24 @@ function normalizePayload(value: unknown): OrganisationLaunchPayload {
     participant_id: participantId,
     iat: value.iat as number,
     exp: value.exp as number,
+    features,
   };
+}
+
+function normalizeInitialFeatures(value: unknown, errorFactory: () => HttpError): BoardFeatures {
+  if (value === undefined) return { ...DEFAULT_BOARD_FEATURES };
+  if (!isPlainObject(value)) throw errorFactory();
+  const allowed = new Set<string>(BOARD_FEATURE_KEYS);
+  const patch: Record<string, boolean> = {};
+  for (const [key, enabled] of Object.entries(value)) {
+    if (!allowed.has(key) || typeof enabled !== "boolean") throw errorFactory();
+    patch[key] = enabled;
+  }
+  try {
+    return normalizeBoardFeatures({ ...DEFAULT_BOARD_FEATURES, ...patch });
+  } catch {
+    throw errorFactory();
+  }
 }
 
 function normalizeConfiguredAudience(value: string): string {
@@ -408,6 +439,22 @@ function hasExactKeys<const Keys extends readonly string[]>(
   if (!isPlainObject(value)) return false;
   const actualKeys = Object.keys(value);
   return actualKeys.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+}
+
+function hasRequiredAndOptionalKeys<
+  const Required extends readonly string[],
+  const Optional extends readonly string[],
+>(
+  value: unknown,
+  required: Required,
+  optional: Optional,
+): value is Record<Required[number], unknown> & Partial<Record<Optional[number], unknown>> {
+  if (!isPlainObject(value)) return false;
+  const allowed = new Set<string>([...required, ...optional]);
+  return (
+    required.every((key) => Object.hasOwn(value, key)) &&
+    Object.keys(value).every((key) => allowed.has(key))
+  );
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

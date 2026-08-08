@@ -1,5 +1,4 @@
 import {
-  type BoxGeometry,
   canonicalNumber,
   GeometryValidationError,
   type ImageGeometry,
@@ -13,8 +12,12 @@ import {
   normalizeGeometry,
   normalizePoint,
   normalizeTransform,
+  type OutlineBoxGeometry,
   type PencilGeometry,
   type Point,
+  type PolygonGeometry,
+  type ProtractorGeometry,
+  type RectangleGeometry,
   type StampGeometry,
   type StickyGeometry,
   type TableGeometry,
@@ -31,14 +34,21 @@ export type {
   ImageMimeType,
   ItemGeometry,
   LineGeometry,
+  OutlineBoxGeometry,
   PencilGeometry,
   Point,
+  PolygonGeometry,
+  PolygonKind,
+  ProtractorGeometry,
+  RectangleGeometry,
+  RectangleKind,
   StampGeometry,
   StampKind,
   StickyGeometry,
   TableGeometry,
   TextGeometry,
   Transform,
+  VisiblePaths,
   ZoneGeometry,
 } from "@collab/geometry";
 export {
@@ -48,6 +58,12 @@ export {
   MAX_IMAGE_INTRINSIC_PIXELS,
   MAX_TABLE_COLUMNS,
   MAX_TABLE_ROWS,
+  MAX_VISIBLE_PATH_POINTS,
+  MAX_VISIBLE_PATHS,
+  MIN_VISIBLE_PATH_POINTS,
+  POLYGON_KINDS,
+  PROTRACTOR_SNAP_STEP_DEGREES,
+  RECTANGLE_KINDS,
   STAMP_KINDS,
   ZONE_BORDER_HIT_WIDTH,
   ZONE_TITLE_PADDING,
@@ -58,7 +74,7 @@ export {
 export const PROTOCOL_VERSION = 1 as const;
 export const MAX_ORDINARY_FRAME_BYTES = 64 * 1024;
 export const MAX_PENCIL_FRAME_BYTES = 256 * 1024;
-export const MAX_FRAME_DEPTH = 8;
+export const MAX_FRAME_DEPTH = 10;
 export const MAX_BATCH_OPERATIONS = 100;
 export const MAX_LIVE_ITEMS = 10_000;
 export const MAX_TEXT_CODE_POINTS = 5_000;
@@ -86,11 +102,68 @@ export function textFontStack(fontFamily: TextFontFamily): string {
   return TEXT_FONT_STACKS[fontFamily];
 }
 
+export const BOARD_FEATURE_KEYS = [
+  "pencil",
+  "line",
+  "lineSnapping",
+  "square",
+  "rectangle",
+  "triangle",
+  "rhombus",
+  "pentagon",
+  "hexagon",
+  "circle",
+  "text",
+  "stickyNotes",
+  "stamps",
+  "images",
+  "tables",
+  "sections",
+  "protractor",
+  "eraser",
+  "partialEraser",
+  "templates",
+  "organisationTemplates",
+  "voting",
+  "spotlight",
+] as const;
+
+export type BoardFeatureKey = (typeof BOARD_FEATURE_KEYS)[number];
+export type BoardFeatures = { [Key in BoardFeatureKey]: boolean };
+
+export const DEFAULT_BOARD_FEATURES: BoardFeatures = {
+  pencil: true,
+  line: true,
+  lineSnapping: true,
+  square: true,
+  rectangle: true,
+  triangle: true,
+  rhombus: true,
+  pentagon: true,
+  hexagon: true,
+  circle: true,
+  text: true,
+  stickyNotes: true,
+  stamps: true,
+  images: false,
+  tables: true,
+  sections: true,
+  protractor: true,
+  eraser: true,
+  partialEraser: true,
+  templates: true,
+  organisationTemplates: true,
+  voting: true,
+  spotlight: true,
+};
+
 export const ITEM_KINDS = [
   "pencil",
   "line",
   "rectangle",
   "ellipse",
+  "polygon",
+  "protractor",
   "text",
   "sticky",
   "image",
@@ -138,6 +211,12 @@ export interface LineStyle {
   width: number;
   opacity: number;
   arrowhead: LineArrowhead;
+}
+
+export interface ProtractorStyle {
+  kind: "protractor";
+  color: string;
+  opacity: number;
 }
 
 export interface TextStyle {
@@ -190,6 +269,7 @@ export interface ZoneStyle {
 export type ItemStyle =
   | StrokeStyle
   | LineStyle
+  | ProtractorStyle
   | TextStyle
   | StickyStyle
   | ImageStyle
@@ -220,13 +300,25 @@ export interface LineItem extends BoardItemBase {
 export interface RectangleItem extends BoardItemBase {
   kind: "rectangle";
   style: StrokeStyle;
-  geometry: BoxGeometry;
+  geometry: RectangleGeometry;
 }
 
 export interface EllipseItem extends BoardItemBase {
   kind: "ellipse";
   style: StrokeStyle;
-  geometry: BoxGeometry;
+  geometry: OutlineBoxGeometry;
+}
+
+export interface PolygonItem extends BoardItemBase {
+  kind: "polygon";
+  style: StrokeStyle;
+  geometry: PolygonGeometry;
+}
+
+export interface ProtractorItem extends BoardItemBase {
+  kind: "protractor";
+  style: ProtractorStyle;
+  geometry: ProtractorGeometry;
 }
 
 export interface TextItem extends BoardItemBase {
@@ -270,6 +362,8 @@ export type BoardItem =
   | LineItem
   | RectangleItem
   | EllipseItem
+  | PolygonItem
+  | ProtractorItem
   | TextItem
   | StickyItem
   | ImageItem
@@ -447,8 +541,8 @@ export interface ShapeGeometryPreview {
   kind: "shape.geometry";
   payload: {
     itemId: string;
-    itemKind: "line" | "rectangle" | "ellipse";
-    geometry: LineGeometry | BoxGeometry;
+    itemKind: "line" | "rectangle" | "ellipse" | "polygon";
+    geometry: LineGeometry | RectangleGeometry | OutlineBoxGeometry | PolygonGeometry;
     style: StrokeStyle | LineStyle;
   };
 }
@@ -483,6 +577,8 @@ export const ACTIVE_TOOLS = [
   "line",
   "rectangle",
   "ellipse",
+  "polygon",
+  "protractor",
   "text",
   "sticky",
   "image",
@@ -663,6 +759,19 @@ function expectSafeInteger(value: unknown, path: string, minimum = 0): number {
   return value as number;
 }
 
+export function normalizeBoardFeatures(value: unknown, path = "$features"): BoardFeatures {
+  const object = expectRecord(value, path);
+  expectExactKeys(object, BOARD_FEATURE_KEYS, [], path);
+  const features = {} as BoardFeatures;
+  for (const key of BOARD_FEATURE_KEYS) {
+    if (typeof object[key] !== "boolean") {
+      fail(`${key} must be a boolean`, `${path}.${key}`);
+    }
+    features[key] = object[key];
+  }
+  return features;
+}
+
 export function normalizeBoardAccessPolicy(
   value: unknown,
   path = "$boardPolicy",
@@ -782,6 +891,17 @@ export function normalizeLineStyle(value: unknown, path = "$style"): LineStyle {
     width: normalizeStrokeWidth(object.width, `${path}.width`),
     opacity: normalizeOpacity(object.opacity, `${path}.opacity`),
     arrowhead: expectLiteral(object.arrowhead, LINE_ARROWHEADS, `${path}.arrowhead`),
+  };
+}
+
+export function normalizeProtractorStyle(value: unknown, path = "$style"): ProtractorStyle {
+  const object = expectRecord(value, path);
+  if (object.kind !== "protractor") fail('Expected style kind "protractor"', `${path}.kind`);
+  expectExactKeys(object, ["kind", "color", "opacity"], [], path);
+  return {
+    kind: "protractor",
+    color: normalizeColor(object.color, `${path}.color`),
+    opacity: normalizeOpacity(object.opacity, `${path}.opacity`),
   };
 }
 
@@ -910,6 +1030,7 @@ export function normalizeItemStyle(value: unknown, path = "$style"): ItemStyle {
   const object = expectRecord(value, path);
   if (object.kind === "stroke") return normalizeStrokeStyle(object, path);
   if (object.kind === "line") return normalizeLineStyle(object, path);
+  if (object.kind === "protractor") return normalizeProtractorStyle(object, path);
   if (object.kind === "text") return normalizeTextStyle(object, path);
   if (object.kind === "sticky") return normalizeStickyStyle(object, path);
   if (object.kind === "image") return normalizeImageStyle(object, path);
@@ -917,7 +1038,7 @@ export function normalizeItemStyle(value: unknown, path = "$style"): ItemStyle {
   if (object.kind === "table") return normalizeTableStyle(object, path);
   if (object.kind === "zone") return normalizeZoneStyle(object, path);
   fail(
-    'Style kind must be "stroke", "line", "text", "sticky", "image", "stamp", "table", or "zone"',
+    'Style kind must be "stroke", "line", "protractor", "text", "sticky", "image", "stamp", "table", or "zone"',
     `${path}.kind`,
   );
 }
@@ -1046,6 +1167,7 @@ function normalizeGeometryForItem(kind: ItemKind, value: unknown, path: string):
 
 function normalizeStyleForKind(kind: ItemKind, value: unknown, path: string): ItemStyle {
   if (kind === "line") return normalizeLineStyle(value, path);
+  if (kind === "protractor") return normalizeProtractorStyle(value, path);
   if (kind === "text") return normalizeTextStyle(value, path);
   if (kind === "sticky") return normalizeStickyStyle(value, path);
   if (kind === "image") return normalizeImageStyle(value, path);
@@ -1298,7 +1420,7 @@ function validatePreviewFrame(object: Record<string, unknown>, path: string): Cl
       expectExactKeys(payload, ["itemId", "itemKind", "geometry", "style"], [], `${path}.payload`);
       const itemKind = expectLiteral(
         payload.itemKind,
-        ["line", "rectangle", "ellipse"] as const,
+        ["line", "rectangle", "ellipse", "polygon"] as const,
         `${path}.payload.itemKind`,
       );
       return {
@@ -1310,11 +1432,17 @@ function validatePreviewFrame(object: Record<string, unknown>, path: string): Cl
           geometry: fromGeometry(() =>
             itemKind === "line"
               ? normalizeGeometry("line", payload.geometry, `${path}.payload.geometry`)
-              : normalizeGeometry(itemKind, payload.geometry, `${path}.payload.geometry`),
+              : itemKind === "polygon"
+                ? normalizeGeometry("polygon", payload.geometry, `${path}.payload.geometry`)
+                : itemKind === "rectangle"
+                  ? normalizeGeometry("rectangle", payload.geometry, `${path}.payload.geometry`)
+                  : normalizeGeometry("ellipse", payload.geometry, `${path}.payload.geometry`),
           ),
           style:
             itemKind === "line"
-              ? normalizeLineStyle(payload.style, `${path}.payload.style`)
+              ? isRecord(payload.style) && payload.style.kind === "stroke"
+                ? normalizeStrokeStyle(payload.style, `${path}.payload.style`)
+                : normalizeLineStyle(payload.style, `${path}.payload.style`)
               : normalizeStrokeStyle(payload.style, `${path}.payload.style`),
         },
       };

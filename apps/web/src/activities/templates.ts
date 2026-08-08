@@ -66,7 +66,7 @@ function outline(x: number, y: number, width: number, height: number): ActivityT
   return {
     kind: "rectangle",
     style: { kind: "stroke", color: OUTLINE, width: 3, opacity: 1 },
-    geometry: { x, y, width, height },
+    geometry: { x, y, width, height, shape: "rectangle" },
   };
 }
 

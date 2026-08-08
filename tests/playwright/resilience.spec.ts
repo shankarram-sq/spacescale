@@ -46,7 +46,12 @@ async function createEditorInvite(page: Page): Promise<string> {
 async function drawMouseGesture(page: Page, toolName: string, offset = 0): Promise<void> {
   const canvas = page.locator("#board-canvas");
   const before = await canvas.locator("#drawing-area [data-item-id]").count();
-  await page.getByRole("button", { name: new RegExp(`^${toolName}`, "u") }).click();
+  if (toolName === "Rectangle" || toolName === "Ellipse") {
+    await page.getByTestId("tool-rectangle").click();
+    await page.getByTestId(toolName === "Rectangle" ? "shape-rectangle" : "shape-circle").click();
+  } else {
+    await page.getByRole("button", { name: new RegExp(`^${toolName}`, "u") }).click();
+  }
   const bounds = await canvas.boundingBox();
   expect(bounds).not.toBeNull();
   if (!bounds) throw new Error("Canvas has no layout bounds.");

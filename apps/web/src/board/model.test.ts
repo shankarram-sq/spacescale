@@ -17,7 +17,7 @@ function rectangle(version = 1): BoardItem {
     createdBy: ACTOR_ID,
     style: { kind: "stroke", color: "#20201e", width: 4, opacity: 1 },
     transform: [1, 0, 0, 1, 0, 0],
-    geometry: { x: 10, y: 20, width: 100, height: 60 },
+    geometry: { x: 10, y: 20, width: 100, height: 60, shape: "rectangle" },
   };
 }
 
@@ -96,6 +96,45 @@ function zone(version = 1): BoardItem {
   };
 }
 
+function line(version = 1): Extract<BoardItem, { kind: "line" }> {
+  return {
+    id: ITEM_ID,
+    kind: "line",
+    z: 4,
+    version,
+    createdBy: ACTOR_ID,
+    style: { kind: "line", color: "#1e1e1e", width: 4, opacity: 1, arrowhead: "none" },
+    transform: [1, 0, 0, 1, 10, 20],
+    geometry: { x1: 0, y1: 0, x2: 100, y2: 0 },
+  };
+}
+
+function polygon(): Extract<BoardItem, { kind: "polygon" }> {
+  return {
+    id: ITEM_ID,
+    kind: "polygon",
+    z: 5,
+    version: 1,
+    createdBy: ACTOR_ID,
+    style: { kind: "stroke", color: "#1e1e1e", width: 4, opacity: 1 },
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: { x: 0, y: 0, width: 100, height: 100, polygon: "rhombus" },
+  };
+}
+
+function protractor(): Extract<BoardItem, { kind: "protractor" }> {
+  return {
+    id: ITEM_ID,
+    kind: "protractor",
+    z: 6,
+    version: 1,
+    createdBy: ACTOR_ID,
+    style: { kind: "protractor", color: "#874fff", opacity: 0.78 },
+    transform: [1, 0, 0, 1, 200, 200],
+    geometry: { radius: 100 },
+  };
+}
+
 function snapshot(items: BoardItem[] = [], seq = 0): BoardSnapshot {
   return { format: "cf-whiteboard-json", version: 1, seq, items };
 }
@@ -117,7 +156,7 @@ describe("BoardModel", () => {
           kind: "rectangle",
           style: { kind: "stroke", color: "#20201e", width: 4, opacity: 1 },
           transform: [1, 0, 0, 1, 0, 0],
-          geometry: { x: 10, y: 20, width: 100, height: 60 },
+          geometry: { x: 10, y: 20, width: 100, height: 60, shape: "rectangle" },
         },
       },
     };
@@ -222,6 +261,129 @@ describe("BoardModel", () => {
     model.load(snapshot([lower, higher, excluded], 1));
 
     expect(model.nearestConnectorAnchor([60, 17], 2)?.itemId).toBe(REMOTE_ID);
+  });
+
+  it("snaps to transformed line endpoints and finite segment projections", () => {
+    const model = new BoardModel();
+    model.load(snapshot([line()], 1));
+
+    expect(model.nearestConnectorAnchor([9, 21], 2)).toMatchObject({
+      itemId: ITEM_ID,
+      point: [10, 20],
+      source: "endpoint",
+      t: 0,
+    });
+    const edge = model.nearestConnectorAnchor([61, 24], 5);
+    expect(edge).toMatchObject({ itemId: ITEM_ID, point: [61, 20], source: "edge" });
+    expect(edge?.distance).toBe(4);
+    expect(edge?.t).toBeCloseTo(0.51);
+  });
+
+  it("does not snap to an erased gap in a line", () => {
+    const cut = line();
+    cut.geometry.visiblePaths = [
+      [
+        [0, 0],
+        [40, 0],
+      ],
+      [
+        [60, 0],
+        [100, 0],
+      ],
+    ];
+    const model = new BoardModel();
+    model.load(snapshot([cut], 1));
+
+    expect(model.nearestConnectorAnchor([60, 21], 5)).toBeUndefined();
+    expect(model.hitTest([60, 20], 0)).toBeUndefined();
+    expect(model.nearestConnectorAnchor([50, 21], 2)).toMatchObject({
+      point: [50, 20],
+      source: "endpoint",
+    });
+  });
+
+  it("does not retain cardinal snap anchors where a shape edge was erased", () => {
+    const cut = rectangle() as Extract<BoardItem, { kind: "rectangle" }>;
+    cut.geometry.visiblePaths = [
+      [
+        [10, 20],
+        [50, 20],
+      ],
+      [
+        [70, 20],
+        [110, 20],
+      ],
+    ];
+    const model = new BoardModel();
+    model.load(snapshot([cut], 1));
+
+    expect(model.nearestConnectorAnchor([60, 21], 2)).toBeUndefined();
+  });
+
+  it("snaps to a polygon perimeter rather than only its bounding box cardinals", () => {
+    const model = new BoardModel();
+    model.load(snapshot([polygon()], 1));
+
+    const anchor = model.nearestConnectorAnchor([75, 30], 4);
+    expect(anchor).toMatchObject({ itemId: ITEM_ID, source: "edge" });
+    expect(anchor?.point[0]).toBeCloseTo(77.5);
+    expect(anchor?.point[1]).toBeCloseTo(27.5);
+    expect(anchor?.distance).toBeCloseTo(Math.sqrt(12.5));
+  });
+
+  it("snaps to protractor center, degree ticks, and its baseline", () => {
+    const model = new BoardModel();
+    model.load(snapshot([protractor()], 1));
+
+    expect(model.nearestConnectorAnchor([200, 201], 2)).toMatchObject({
+      point: [200, 200],
+      source: "protractor-center",
+    });
+    expect(model.nearestConnectorAnchor([201, 99], 2)).toMatchObject({
+      point: [200, 100],
+      source: "protractor-tick",
+    });
+    expect(model.nearestConnectorAnchor([230, 202], 3)).toMatchObject({
+      point: [230, 200],
+      source: "edge",
+    });
+  });
+
+  it("transforms protractor snap anchors when the tool is rotated", () => {
+    const rotated = protractor();
+    rotated.transform = [0, 1, -1, 0, 200, 200];
+    const model = new BoardModel();
+    model.load(snapshot([rotated], 1));
+
+    expect(model.nearestConnectorAnchor([299, 201], 2)).toMatchObject({
+      point: [300, 200],
+      source: "protractor-tick",
+    });
+    expect(model.nearestConnectorAnchor([201, 230], 2)).toMatchObject({
+      point: [200, 230],
+      source: "edge",
+    });
+  });
+
+  it("queries every saved, modifiable stroke touched by a swept eraser path", () => {
+    const upper = line();
+    upper.id = REMOTE_ID;
+    upper.z = 8;
+    const model = new BoardModel();
+    model.load(snapshot([line(), upper], 1));
+    const sweep = [
+      [60, 10],
+      [60, 30],
+    ] as const;
+
+    expect(model.strokeItemsNearPath(sweep, 2, () => true).map((item) => item.id)).toEqual([
+      REMOTE_ID,
+      ITEM_ID,
+    ]);
+    expect(
+      model.strokeItemsNearPath(sweep, 2, (item) => item.id === ITEM_ID).map((item) => item.id),
+    ).toEqual([ITEM_ID]);
+    expect(model.strokeItemsNearPath([[400, 400]], 2, () => true)).toEqual([]);
   });
 
   it("uses the complete sticky rectangle for bounds and hit testing", () => {

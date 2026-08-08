@@ -114,17 +114,20 @@ test("live policy changes and private-board revocation update an active editor",
     await closeAccessDrawer(page);
     await expect(page.getByTestId("participants-button")).toContainText("2");
     await page.getByTestId("access-button").click();
-    const drawer = page.getByTestId("access-drawer");
-    await expect(drawer).toBeVisible();
-    await expect(drawer.getByRole("button", { name: /^Remove /u })).toHaveCount(1);
+    const accessDrawer = page.getByTestId("access-drawer");
+    await expect(accessDrawer).toBeVisible();
+    await expect(accessDrawer.getByRole("button", { name: /^Remove /u })).toHaveCount(1);
 
     const ownerPencil = page.getByRole("button", { name: /^Pencil/u });
     const collaboratorPencil = collaborator.getByRole("button", { name: /^Pencil/u });
     await expect(ownerPencil).toBeEnabled();
     await expect(collaboratorPencil).toBeEnabled();
 
-    await drawer.locator("button[data-policy='owner_only']").click();
-    await expect(drawer.locator("button[data-policy='owner_only']")).toHaveAttribute(
+    await page.getByTestId("settings-button").click();
+    const settingsDrawer = page.getByTestId("settings-drawer");
+    await expect(settingsDrawer).toBeVisible();
+    await settingsDrawer.locator("button[data-policy='owner_only']").click();
+    await expect(settingsDrawer.locator("button[data-policy='owner_only']")).toHaveAttribute(
       "aria-pressed",
       "true",
     );
@@ -132,8 +135,8 @@ test("live policy changes and private-board revocation update an active editor",
     await expect(collaboratorPencil).toBeDisabled();
     await expect(collaborator.getByTestId("save-status")).toContainText("Read only");
 
-    await drawer.locator("button[data-policy='locked']").click();
-    await expect(drawer.locator("button[data-policy='locked']")).toHaveAttribute(
+    await settingsDrawer.locator("button[data-policy='locked']").click();
+    await expect(settingsDrawer.locator("button[data-policy='locked']")).toHaveAttribute(
       "aria-pressed",
       "true",
     );
@@ -142,8 +145,8 @@ test("live policy changes and private-board revocation update an active editor",
     await expect(page.getByTestId("save-status")).toContainText("Read only");
     await expect(collaborator.getByTestId("save-status")).toContainText("Read only");
 
-    await drawer.locator("button[data-policy='editors_enabled']").click();
-    await expect(drawer.locator("button[data-policy='editors_enabled']")).toHaveAttribute(
+    await settingsDrawer.locator("button[data-policy='editors_enabled']").click();
+    await expect(settingsDrawer.locator("button[data-policy='editors_enabled']")).toHaveAttribute(
       "aria-pressed",
       "true",
     );
@@ -152,15 +155,19 @@ test("live policy changes and private-board revocation update an active editor",
     await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
     await expect(collaborator.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
 
-    await drawer.getByRole("combobox", { name: "Board link access" }).selectOption("private");
+    await settingsDrawer
+      .getByRole("combobox", { name: "Space link access" })
+      .selectOption("private");
     await expect(page.getByTestId("toast-region")).toContainText(
       "Only members can open this board now.",
     );
-    const removeMember = drawer.getByRole("button", { name: /^Remove /u });
+    await page.getByTestId("access-button").click();
+    await expect(accessDrawer).toBeVisible();
+    const removeMember = accessDrawer.getByRole("button", { name: /^Remove /u });
     await expect(removeMember).toHaveCount(1);
     page.once("dialog", (dialog) => dialog.accept());
     await removeMember.click();
-    await expect(drawer.getByRole("button", { name: /^Remove /u })).toHaveCount(0);
+    await expect(accessDrawer.getByRole("button", { name: /^Remove /u })).toHaveCount(0);
 
     await expect(collaborator.getByTestId("toast-region")).toContainText(
       "Your access to this board was removed.",

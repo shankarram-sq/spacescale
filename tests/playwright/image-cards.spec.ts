@@ -20,13 +20,15 @@ const PNG_FILE = {
 };
 
 async function enableImages(page: Page): Promise<void> {
-  await page.getByTestId("access-button").click();
-  const drawer = page.getByTestId("access-drawer");
-  const toggle = drawer.getByRole("checkbox", { name: "Allow image uploads" });
+  await page.getByTestId("settings-button").click();
+  const drawer = page.getByTestId("settings-drawer");
+  await expect(drawer).toBeVisible();
+  const toggle = drawer.getByRole("checkbox", { name: "Enable Images" });
   await expect(toggle).not.toBeChecked();
   await toggle.check();
   await expect(page.getByTestId("tool-image")).toBeEnabled();
-  await closeAccessDrawer(page);
+  await drawer.getByRole("button", { name: "Close settings" }).click();
+  await expect(drawer).toBeHidden();
 }
 
 async function uploadWithPicker(page: Page): Promise<void> {
@@ -184,13 +186,14 @@ test("image cards converge, remain private, persist, and obey live classroom pol
       await fallbackContext.close();
     }
 
-    await page.getByTestId("access-button").click();
-    await page.getByRole("button", { name: "Lock students" }).click();
+    await page.getByTestId("settings-button").click();
+    const drawer = page.getByTestId("settings-drawer");
+    await expect(drawer).toBeVisible();
+    await drawer.locator("button[data-policy='owner_only']").click();
     await expect(editor.getByTestId("tool-image")).toBeDisabled();
     await expect(page.getByTestId("tool-image")).toBeEnabled();
 
-    const drawer = page.getByTestId("access-drawer");
-    await drawer.getByRole("checkbox", { name: "Allow image uploads" }).uncheck();
+    await drawer.getByRole("checkbox", { name: "Enable Images" }).uncheck();
     await expect(page.getByTestId("tool-image")).toBeDisabled();
     await expect(editor.getByTestId("tool-image")).toBeDisabled();
     await expect(ownerImages).toHaveCount(1);

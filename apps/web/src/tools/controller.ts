@@ -14,6 +14,10 @@ import type {
   Matrix,
   NewBoardItem,
   Point,
+  PolygonGeometry,
+  PolygonKind,
+  ProtractorStyle,
+  RectangleGeometry,
   StampKind,
   StampStyle,
   StickyGeometry,
@@ -32,12 +36,14 @@ import {
   type StructuredResizeHandle,
   structuredResizeGrabOffset,
 } from "./resize";
+import { eraseStrokeItem, isPartiallyErasableItem } from "./stroke-erase";
 
 export type StyleState = {
   color: string;
   width: number;
   opacity: number;
   lineArrowhead: LineArrowhead;
+  shapeVariant: ShapeVariant;
   fontSize: number;
   stickyFill: string;
   stickyTextColor: string;
@@ -50,6 +56,17 @@ export type StyleState = {
   tableColumns: number;
   tableHeaderRow: boolean;
 };
+
+export type ShapeVariant =
+  | "square"
+  | "rectangle"
+  | "triangle"
+  | "rhombus"
+  | "pentagon"
+  | "hexagon"
+  | "circle";
+
+type ShapeTool = "line" | "rectangle" | "ellipse" | "polygon";
 
 export const DEFAULT_STICKY_WIDTH = 180;
 export const DEFAULT_STICKY_HEIGHT = 140;
@@ -66,6 +83,7 @@ export const DEFAULT_TABLE_ROW_HEIGHT = 48;
 export const DEFAULT_ZONE_WIDTH = 520;
 export const DEFAULT_ZONE_HEIGHT = 320;
 export const CONNECTOR_SNAP_RADIUS_CSS_PX = 16;
+export const DEFAULT_PROTRACTOR_RADIUS = 160;
 
 const TOOL_SHORTCUTS: Partial<Record<string, ToolName>> = {
   v: "select",
@@ -80,6 +98,7 @@ const TOOL_SHORTCUTS: Partial<Record<string, ToolName>> = {
   g: "table",
   z: "zone",
   e: "eraser",
+  u: "protractor",
   h: "pan",
 };
 
@@ -88,6 +107,7 @@ const SHORTCUT_DRAW_TOOLS = new Set<ToolName>([
   "line",
   "rectangle",
   "ellipse",
+  "polygon",
   "text",
   "sticky",
   "stamp",
@@ -95,6 +115,7 @@ const SHORTCUT_DRAW_TOOLS = new Set<ToolName>([
   "table",
   "zone",
   "eraser",
+  "protractor",
 ]);
 
 export function toolFromShortcut(key: string, canDraw: boolean): ToolName | undefined {
@@ -410,6 +431,9 @@ export type ToolControllerOptions = {
   canDraw: () => boolean;
   canModifyItem: (item: BoardItem) => boolean;
   canUseImages: () => boolean;
+  canUseTool: (tool: ToolName) => boolean;
+  canSnapLines: () => boolean;
+  usePartialEraser: () => boolean;
   getStyle: () => StyleState;
   commit: (operation: DurableOperation, actionId?: string) => Promise<boolean>;
   preview: (
@@ -454,10 +478,12 @@ type Gesture =
       pointerId: number;
       gestureId: string;
       itemId: string;
-      shape: "line" | "rectangle" | "ellipse";
+      shape: ShapeTool;
+      variant?: ShapeVariant;
       start: Point;
       current: Point;
       constrained: boolean;
+      snapEnabled: boolean;
       startAnchor?: ConnectorAnchor;
       endAnchor?: ConnectorAnchor;
       previewSeq: number;
@@ -494,6 +520,18 @@ type Gesture =
       pointerId: number;
       gestureId: string;
       versions: Map<string, number>;
+      items: Map<string, BoardItem>;
+      points: Point[];
+      radius: number;
+      partial: boolean;
+    }
+  | {
+      kind: "rotate-protractor";
+      pointerId: number;
+      item: Extract<BoardItem, { kind: "protractor" }>;
+      startAngle: number;
+      transform: Matrix;
+      currentTransform: Matrix;
     }
   | {
       kind: "sticky";
@@ -575,6 +613,10 @@ export class ToolController {
   }
 
   setTool(tool: ToolName): void {
+    if (!this.options.canUseTool(tool)) {
+      this.options.notify("That tool is disabled in Space settings.", "warning");
+      return;
+    }
     if (tool === "image" && !this.options.canUseImages()) {
       this.options.notify("Image cards are disabled by the owner.", "warning");
       return;
@@ -728,6 +770,11 @@ export class ToolController {
       this.options.notify("Drawing is currently read only.", "warning");
       return;
     }
+    if (!this.options.canUseTool(this.toolValue)) {
+      this.options.notify("That tool is disabled in Space settings.", "warning");
+      this.setTool("select");
+      return;
+    }
 
     const style = this.options.getStyle();
     if (this.toolValue === "pencil") {
@@ -760,7 +807,8 @@ export class ToolController {
     if (
       this.toolValue === "line" ||
       this.toolValue === "rectangle" ||
-      this.toolValue === "ellipse"
+      this.toolValue === "ellipse" ||
+      this.toolValue === "polygon"
     ) {
       const shapeStyle: StrokeStyle | LineStyle =
         this.toolValue === "line"
@@ -778,7 +826,7 @@ export class ToolController {
               opacity: style.opacity,
             };
       const startAnchor =
-        this.toolValue === "line"
+        this.toolValue === "line" && this.options.canSnapLines()
           ? resolveConnectorEndpoint(this.options.model, point, this.options.renderer.viewport.zoom)
               .anchor
           : undefined;
@@ -789,9 +837,13 @@ export class ToolController {
         gestureId: createId(),
         itemId: createId(),
         shape: this.toolValue,
+        ...(this.toolValue === "line"
+          ? {}
+          : { variant: shapeVariantForTool(this.toolValue, style) }),
         start,
         current: start,
         constrained: event.shiftKey,
+        snapEnabled: this.toolValue === "line" && this.options.canSnapLines(),
         ...(startAnchor ? { startAnchor } : {}),
         previewSeq: 0,
         lastPreviewAt: 0,
@@ -802,12 +854,28 @@ export class ToolController {
       return;
     }
 
+    if (this.toolValue === "protractor") {
+      const itemId = createId();
+      const operation = buildProtractorCreateOperation(itemId, point, style);
+      void this.options.commit(operation).then((accepted) => {
+        if (!accepted) return;
+        this.setTool("select");
+        this.selectOnly([itemId]);
+      });
+      event.preventDefault();
+      return;
+    }
+
     if (this.toolValue === "eraser") {
       const gesture: Gesture = {
         kind: "eraser",
         pointerId: event.pointerId,
         gestureId: createId(),
         versions: new Map(),
+        items: new Map(),
+        points: [],
+        radius: 8 / this.options.renderer.viewport.zoom,
+        partial: this.options.usePartialEraser(),
       };
       this.gesture = gesture;
       this.collectEraser(point, gesture);
@@ -976,6 +1044,7 @@ export class ToolController {
           event.shiftKey,
           this.options.model,
           this.options.renderer.viewport.zoom,
+          gesture.snapEnabled,
         ),
       );
       this.renderShapeGesture(gesture, false);
@@ -1018,11 +1087,23 @@ export class ToolController {
         );
         this.options.renderer.showStructuredResizePreview(gesture.capture.item, gesture.geometry);
       }
+    } else if (gesture.kind === "rotate-protractor") {
+      const pivot: Point = [gesture.transform[4], gesture.transform[5]];
+      const delta = rotationDelta(
+        gesture.startAngle,
+        pointerAngle(pivot, boardPoint(event, this.options.renderer)),
+        event.shiftKey,
+      );
+      gesture.currentTransform = rotatedMatrix(gesture.transform, delta);
+      this.options.renderer.showRotationPreview(gesture.item, gesture.currentTransform);
     } else if (gesture.kind === "marquee") {
       gesture.current = boardPoint(event, this.options.renderer);
       this.options.renderer.showMarquee(pointsBounds(gesture.start, gesture.current));
     } else if (gesture.kind === "eraser") {
-      this.collectEraser(boardPoint(event, this.options.renderer), gesture);
+      const events =
+        typeof event.getCoalescedEvents === "function" ? event.getCoalescedEvents() : [event];
+      for (const sample of events)
+        this.collectEraser(boardPoint(sample, this.options.renderer), gesture);
     } else if (
       gesture.kind === "sticky" ||
       gesture.kind === "stamp" ||
@@ -1057,6 +1138,7 @@ export class ToolController {
           event.shiftKey,
           this.options.model,
           this.options.renderer.viewport.zoom,
+          gesture.snapEnabled,
         ),
       );
     } else if (gesture.kind === "move") {
@@ -1080,6 +1162,14 @@ export class ToolController {
           gesture.grabOffset,
         );
       }
+    } else if (gesture.kind === "rotate-protractor") {
+      const pivot: Point = [gesture.transform[4], gesture.transform[5]];
+      gesture.currentTransform = rotatedMatrix(
+        gesture.transform,
+        rotationDelta(gesture.startAngle, pointerAngle(pivot, tapPoint), event.shiftKey),
+      );
+    } else if (gesture.kind === "eraser") {
+      this.collectEraser(tapPoint, gesture);
     }
     this.gesture = null;
     safeReleaseCapture(this.options.renderer.svg, event.pointerId);
@@ -1116,6 +1206,7 @@ export class ToolController {
 
   private readonly onLostPointerCapture = (event: PointerEvent): void => {
     this.pointers.delete(event.pointerId);
+    if (this.gesture?.pointerId === event.pointerId) this.cancelGesture();
   };
 
   private readonly onWheel = (event: WheelEvent): void => {
@@ -1202,6 +1293,38 @@ export class ToolController {
 
   private beginSelection(event: PointerEvent, point: Point): void {
     const eventTarget = event.target instanceof Element ? event.target : null;
+    const rotateHandle = eventTarget?.closest<SVGGElement>("[data-rotate-handle]");
+    if (rotateHandle) {
+      const itemId = rotateHandle.dataset.itemId;
+      const item = itemId ? this.options.model.getItem(itemId) : undefined;
+      if (!this.options.canDraw()) {
+        this.options.notify("Drawing is currently read only.", "warning");
+      } else if (item && !this.options.canModifyItem(item)) {
+        this.options.notify("You can rotate only items that you created.", "warning");
+      } else if (
+        item?.kind === "protractor" &&
+        item.version > 0 &&
+        this.selected.size === 1 &&
+        this.selected.has(item.id)
+      ) {
+        const pivot: Point = [item.transform[4], item.transform[5]];
+        this.gesture = {
+          kind: "rotate-protractor",
+          pointerId: event.pointerId,
+          item: structuredClone(item),
+          startAngle: pointerAngle(pivot, point),
+          transform: [...item.transform] as Matrix,
+          currentTransform: [...item.transform] as Matrix,
+        };
+      } else {
+        this.options.notify(
+          "Wait for this protractor to finish saving before rotating it.",
+          "info",
+        );
+      }
+      event.preventDefault();
+      return;
+    }
     const resizeHandle = eventTarget?.closest<SVGGElement>("[data-resize-handle]");
     if (resizeHandle) {
       const itemId = resizeHandle.dataset.itemId;
@@ -1331,8 +1454,9 @@ export class ToolController {
       gesture.shape,
       gesture.start,
       gesture.current,
-      gesture.constrained,
+      gesture.constrained || gesture.variant === "square" || gesture.variant === "circle",
       gesture.endAnchor !== undefined,
+      gesture.variant,
     );
     const snapPoints = [gesture.startAnchor?.point, gesture.endAnchor?.point].filter(
       (point): point is Point => point !== undefined,
@@ -1351,7 +1475,21 @@ export class ToolController {
   }
 
   private collectEraser(point: Point, gesture: Extract<Gesture, { kind: "eraser" }>): void {
-    const hit = this.options.model.hitTest(point, 8 / this.options.renderer.viewport.zoom);
+    appendUniquePoint(gesture.points, point);
+    if (gesture.points.length > 10_000) gesture.points.splice(0, gesture.points.length - 10_000);
+    if (gesture.partial) {
+      const recentPath = gesture.points.slice(-2);
+      for (const item of this.options.model.strokeItemsNearPath(
+        recentPath,
+        gesture.radius,
+        (candidate) => this.options.canModifyItem(candidate),
+      )) {
+        if (gesture.versions.has(item.id)) continue;
+        gesture.versions.set(item.id, item.version);
+        gesture.items.set(item.id, structuredClone(item));
+      }
+    }
+    const hit = this.options.model.hitTest(point, gesture.radius);
     if (
       hit &&
       this.options.canModifyItem(hit) &&
@@ -1359,6 +1497,7 @@ export class ToolController {
       !gesture.versions.has(hit.id)
     ) {
       gesture.versions.set(hit.id, hit.version);
+      gesture.items.set(hit.id, structuredClone(hit));
     }
     this.options.renderer.highlightForErase(gesture.versions.keys());
   }
@@ -1438,8 +1577,9 @@ export class ToolController {
         gesture.shape,
         gesture.start,
         gesture.current,
-        gesture.constrained,
+        gesture.constrained || gesture.variant === "square" || gesture.variant === "circle",
         gesture.endAnchor !== undefined,
+        gesture.variant,
       );
       const isEmpty =
         gesture.shape === "line"
@@ -1453,7 +1593,13 @@ export class ToolController {
         return;
       }
       await this.options.commit(
-        buildShapeCreateOperation(gesture.itemId, gesture.shape, geometry, gesture.style),
+        buildShapeCreateOperation(
+          gesture.itemId,
+          gesture.shape,
+          geometry,
+          gesture.style,
+          gesture.variant,
+        ),
         gesture.gestureId,
       );
       return;
@@ -1494,6 +1640,17 @@ export class ToolController {
       );
       return;
     }
+    if (gesture.kind === "rotate-protractor") {
+      this.options.renderer.clearLocalPreview();
+      if (matricesEqual(gesture.transform, gesture.currentTransform)) return;
+      await this.options.commit({
+        kind: "item.update",
+        itemId: gesture.item.id,
+        expectedVersion: gesture.item.version,
+        patch: { transform: gesture.currentTransform },
+      });
+      return;
+    }
     if (gesture.kind === "marquee") {
       const bounds = pointsBounds(gesture.start, gesture.current);
       const hits = this.options.model.intersecting(bounds).map((item) => item.id);
@@ -1502,7 +1659,28 @@ export class ToolController {
     }
     if (gesture.kind === "eraser") {
       this.options.renderer.clearLocalPreview();
-      const operations = buildCapturedDeleteOperations(gesture.versions);
+      const operations: BatchItemOperation[] = [];
+      for (const [itemId, expectedVersion] of gesture.versions) {
+        const item = gesture.items.get(itemId);
+        if (!item) continue;
+        if (gesture.partial && isPartiallyErasableItem(item)) {
+          const result = eraseStrokeItem(item, gesture.points, gesture.radius);
+          if (!result) continue;
+          if (result.erased) {
+            operations.push({ kind: "item.delete", itemId, expectedVersion });
+          } else {
+            operations.push({
+              kind: "item.update",
+              itemId,
+              expectedVersion,
+              patch: { geometry: { ...item.geometry, visiblePaths: result.visiblePaths } },
+            });
+          }
+        } else {
+          operations.push({ kind: "item.delete", itemId, expectedVersion });
+        }
+        if (operations.length >= 100) break;
+      }
       if (operations.length > 0)
         await this.options.commit({ kind: "items.batch", operations }, gesture.gestureId);
     }
@@ -1520,7 +1698,8 @@ export class ToolController {
       gesture.kind === "table" ||
       gesture.kind === "zone" ||
       gesture.kind === "resize-card" ||
-      gesture.kind === "resize-structured"
+      gesture.kind === "resize-structured" ||
+      gesture.kind === "rotate-protractor"
     ) {
       this.options.renderer.clearLocalPreview();
       return;
@@ -1663,13 +1842,14 @@ export type ResolvedShapePointerState = {
 };
 
 export function resolveShapePointerState(
-  shape: "line" | "rectangle" | "ellipse",
+  shape: ShapeTool,
   point: Point,
   constrained: boolean,
   model: Pick<BoardModel, "nearestConnectorAnchor">,
   zoom: number,
+  snapEnabled = true,
 ): ResolvedShapePointerState {
-  if (shape !== "line") return { current: point, constrained };
+  if (shape !== "line" || !snapEnabled) return { current: point, constrained };
   const resolved = resolveConnectorEndpoint(model, point, zoom);
   return resolved.anchor
     ? { current: resolved.point, constrained, endAnchor: resolved.anchor }
@@ -1698,12 +1878,13 @@ function deduplicatePoints(points: readonly Point[]): Point[] {
 }
 
 export function shapeGeometry(
-  shape: "line" | "rectangle" | "ellipse",
+  shape: ShapeTool,
   start: Point,
   end: Point,
   constrained: boolean,
   endpointSnapped = false,
-): LineGeometry | BoxGeometry {
+  variant?: ShapeVariant,
+): LineGeometry | BoxGeometry | PolygonGeometry | RectangleGeometry {
   let next = end;
   if (shape === "line" && constrained && !endpointSnapped) {
     const distance = pointDistance(start, end);
@@ -1721,12 +1902,17 @@ export function shapeGeometry(
     dx = Math.sign(dx || 1) * size;
     dy = Math.sign(dy || 1) * size;
   }
-  return {
+  const box = {
     x: roundBoard(Math.min(start[0], start[0] + dx)),
     y: roundBoard(Math.min(start[1], start[1] + dy)),
     width: roundBoard(Math.abs(dx)),
     height: roundBoard(Math.abs(dy)),
   };
+  if (shape === "rectangle") {
+    return { ...box, shape: variant === "square" ? "square" : "rectangle" };
+  }
+  if (shape !== "polygon") return box;
+  return { ...box, polygon: isPolygonVariant(variant) ? variant : "triangle" };
 }
 
 function gestureDelta(gesture: Extract<Gesture, { kind: "move" }>): { x: number; y: number } {
@@ -1749,12 +1935,82 @@ function pointDistance(a: Point, b: Point): number {
   return Math.hypot(b[0] - a[0], b[1] - a[1]);
 }
 
+function pointerAngle(pivot: Point, point: Point): number {
+  return Math.atan2(point[1] - pivot[1], point[0] - pivot[0]);
+}
+
+export function rotationDelta(
+  startAngle: number,
+  currentAngle: number,
+  constrained: boolean,
+): number {
+  let delta = currentAngle - startAngle;
+  while (delta > Math.PI) delta -= Math.PI * 2;
+  while (delta < -Math.PI) delta += Math.PI * 2;
+  if (constrained) {
+    const step = Math.PI / 12;
+    delta = Math.round(delta / step) * step;
+  }
+  return delta;
+}
+
+export function rotatedMatrix(matrix: Matrix, radians: number): Matrix {
+  const [a, b, c, d, e, f] = matrix;
+  const cosine = Math.cos(radians);
+  const sine = Math.sin(radians);
+  return [
+    roundBoard(cosine * a - sine * b),
+    roundBoard(sine * a + cosine * b),
+    roundBoard(cosine * c - sine * d),
+    roundBoard(sine * c + cosine * d),
+    e,
+    f,
+  ];
+}
+
+function matricesEqual(left: Matrix, right: Matrix): boolean {
+  return left.every((value, index) => value === right[index]);
+}
+
 function midpoint(a: Point, b: Point): Point {
   return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
 }
 
 function identityMatrix(): Matrix {
   return [1, 0, 0, 1, 0, 0];
+}
+
+function isPolygonVariant(value: ShapeVariant | undefined): value is PolygonKind {
+  return value === "triangle" || value === "rhombus" || value === "pentagon" || value === "hexagon";
+}
+
+function shapeVariantForTool(tool: Exclude<ShapeTool, "line">, style: StyleState): ShapeVariant {
+  if (tool === "ellipse") return "circle";
+  if (tool === "polygon")
+    return isPolygonVariant(style.shapeVariant) ? style.shapeVariant : "triangle";
+  return style.shapeVariant === "square" ? "square" : "rectangle";
+}
+
+export function buildProtractorCreateOperation(
+  itemId: string,
+  point: Point,
+  style: Pick<StyleState, "color" | "opacity">,
+): BatchItemOperation {
+  const protractorStyle: ProtractorStyle = {
+    kind: "protractor",
+    color: style.color,
+    opacity: style.opacity,
+  };
+  return {
+    kind: "item.create",
+    item: {
+      id: itemId,
+      kind: "protractor",
+      style: protractorStyle,
+      transform: [1, 0, 0, 1, roundBoard(point[0]), roundBoard(point[1])],
+      geometry: { radius: DEFAULT_PROTRACTOR_RADIUS },
+    },
+  };
 }
 
 export function tableCellAtPoint(
@@ -1791,9 +2047,10 @@ function axisIndex(position: number, sizes: readonly number[]): number | null {
 
 export function buildShapeCreateOperation(
   itemId: string,
-  shape: "line" | "rectangle" | "ellipse",
-  geometry: LineGeometry | BoxGeometry,
+  shape: ShapeTool,
+  geometry: LineGeometry | BoxGeometry | PolygonGeometry,
   style: StrokeStyle | LineStyle,
+  variant?: ShapeVariant,
 ): BatchItemOperation {
   if (shape === "line") {
     if (!("x1" in geometry)) throw new Error("Line geometry is invalid.");
@@ -1819,7 +2076,25 @@ export function buildShapeCreateOperation(
         kind: "rectangle",
         style,
         transform: identityMatrix(),
-        geometry,
+        geometry: {
+          ...geometry,
+          shape: variant === "square" ? "square" : "rectangle",
+        },
+      },
+    };
+  }
+  if (shape === "polygon") {
+    return {
+      kind: "item.create",
+      item: {
+        id: itemId,
+        kind: "polygon",
+        style,
+        transform: identityMatrix(),
+        geometry: {
+          ...geometry,
+          polygon: isPolygonVariant(variant) ? variant : "triangle",
+        } as PolygonGeometry,
       },
     };
   }

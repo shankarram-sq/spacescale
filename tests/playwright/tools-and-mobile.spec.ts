@@ -53,13 +53,10 @@ test("line, text, styles, constrained shapes, eraser, and pen input commit canon
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
 
   const rectangleStart = await canvasPoint(page, 0.16, 0.48);
-  const square = await drawShape(
-    page,
-    "Rectangle",
-    rectangleStart,
-    { x: rectangleStart.x + 72, y: rectangleStart.y + 39 },
-    { shift: true },
-  );
+  const square = await drawShape(page, "Square", rectangleStart, {
+    x: rectangleStart.x + 72,
+    y: rectangleStart.y + 39,
+  });
   await expect(square).toHaveClass(/board-item-rectangle/u);
   const squareSize = await square.evaluate((node) => ({
     width: Number(node.getAttribute("width")),
@@ -69,13 +66,10 @@ test("line, text, styles, constrained shapes, eraser, and pen input commit canon
   expect(squareSize.width).toBe(squareSize.height);
 
   const ellipseStart = await canvasPoint(page, 0.48, 0.48);
-  const circle = await drawShape(
-    page,
-    "Ellipse",
-    ellipseStart,
-    { x: ellipseStart.x + 44, y: ellipseStart.y + 76 },
-    { shift: true },
-  );
+  const circle = await drawShape(page, "Circle", ellipseStart, {
+    x: ellipseStart.x + 44,
+    y: ellipseStart.y + 76,
+  });
   await expect(circle).toHaveClass(/board-item-ellipse/u);
   const radii = await circle.evaluate((node) => ({
     x: Number(node.getAttribute("rx")),
@@ -103,12 +97,36 @@ test("line, text, styles, constrained shapes, eraser, and pen input commit canon
   expect(squareBounds).not.toBeNull();
   if (!squareBounds) throw new Error("The square has no layout bounds.");
   await page.getByRole("button", { name: /^Eraser/u }).click();
-  await page.mouse.click(
-    squareBounds.x + squareBounds.width / 2,
-    squareBounds.y + squareBounds.height / 2,
-  );
-  await expect(page.locator(`#drawing-area [data-item-id="${erasedId}"]`)).toHaveCount(0);
+  await page.mouse.click(squareBounds.x + squareBounds.width / 2, squareBounds.y + 1);
+  const partiallyErased = page.locator(`#drawing-area [data-item-id="${erasedId}"]`);
+  await expect(partiallyErased).toHaveCount(1);
+  await expect(partiallyErased).toHaveClass(/board-item-rectangle/u);
+  await expect(partiallyErased).toHaveAttribute("d", /M/u);
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+});
+
+test("Settings feature toggles hide and restore a tool live", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "Live Settings acceptance runs in Chromium.");
+
+  await createBoard(page, "Feature settings");
+  const pencil = page.getByTestId("tool-pencil");
+  await expect(pencil).toBeVisible();
+  await expect(pencil).toBeEnabled();
+
+  await page.getByTestId("settings-button").click();
+  const settingsDrawer = page.getByTestId("settings-drawer");
+  await expect(settingsDrawer).toBeVisible();
+  const pencilToggle = settingsDrawer.getByRole("checkbox", { name: "Enable Pencil" });
+  await expect(pencilToggle).toBeChecked();
+
+  await pencilToggle.uncheck();
+  await expect(pencil).toBeHidden();
+  await expect(page.getByTestId("toast-region")).toContainText("Pencil disabled.");
+
+  await pencilToggle.check();
+  await expect(pencil).toBeVisible();
+  await expect(pencil).toBeEnabled();
+  await expect(page.getByTestId("toast-region")).toContainText("Pencil enabled.");
 });
 
 test("the complete board remains usable at a 320px viewport", async ({ page }, testInfo) => {
@@ -160,6 +178,7 @@ test("the complete board remains usable at a 320px viewport", async ({ page }, t
   await expect(page.getByTestId("tool-eraser").locator("svg")).toHaveCount(1);
   await expect(page.getByTestId("tool-image")).toBeDisabled();
   for (const tool of await tools.all()) {
+    if (!(await tool.isVisible())) continue;
     await tool.scrollIntoViewIfNeeded();
     const bounds = await tool.boundingBox();
     expect(bounds).not.toBeNull();
@@ -167,6 +186,20 @@ test("the complete board remains usable at a 320px viewport", async ({ page }, t
     expect(bounds?.x).toBeGreaterThanOrEqual(0);
     expect((bounds?.x ?? 0) + (bounds?.width ?? 0)).toBeLessThanOrEqual(320);
   }
+  await page.getByTestId("tool-rectangle").click();
+  const shapeMenu = page.getByTestId("shape-menu");
+  await expect(shapeMenu).toBeVisible();
+  const shapeChoices = shapeMenu.locator("[data-shape-variant]:visible");
+  await expect(shapeChoices).toHaveCount(7);
+  for (const choice of await shapeChoices.all()) {
+    const bounds = await choice.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds?.x).toBeGreaterThanOrEqual(0);
+    expect((bounds?.x ?? 0) + (bounds?.width ?? 0)).toBeLessThanOrEqual(320);
+  }
+  await page.keyboard.press("Escape");
+  await expect(shapeMenu).toBeHidden();
+  await expect(page.getByTestId("tool-rectangle")).toHaveAttribute("aria-expanded", "false");
   const textPoint = await canvasPoint(page, 0.5, 0.34);
   await page.getByRole("button", { name: /^Text/u }).click();
   await page.mouse.click(textPoint.x, textPoint.y);

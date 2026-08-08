@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   boundsForItems,
+  defaultOutlinePaths,
   formatCanonicalNumber,
   GeometryValidationError,
   imageGeometryContainsPoint,
@@ -10,15 +11,23 @@ import {
   lineArrowheadPoints,
   normalizeBoxGeometry,
   normalizeImageGeometry,
+  normalizeLineGeometry,
+  normalizeOutlineBoxGeometry,
   normalizePencilGeometry,
+  normalizePolygonGeometry,
+  normalizeProtractorGeometry,
+  normalizeRectangleGeometry,
   normalizeStampGeometry,
   normalizeStickyGeometry,
   normalizeTableGeometry,
   normalizeTransform,
   normalizeZoneGeometry,
+  polygonPoints,
+  protractorSnapPoints,
   tableGeometryContainsPoint,
   transformBounds,
   translateTransform,
+  visibleOutlinePaths,
   zoneGeometryContainsPoint,
   zoneTitleBandHeight,
 } from "./index.js";
@@ -50,6 +59,156 @@ describe("geometry normalization", () => {
       width: 4.56,
       height: 8,
     });
+  });
+
+  it("canonicalizes legacy rectangles and persists an explicit square subtype", () => {
+    expect(normalizeRectangleGeometry({ x: 0, y: 0, width: 40, height: 20 })).toEqual({
+      x: 0,
+      y: 0,
+      width: 40,
+      height: 20,
+      shape: "rectangle",
+    });
+    expect(
+      normalizeRectangleGeometry({ x: 0, y: 0, width: 40, height: 40, shape: "square" }),
+    ).toEqual({ x: 0, y: 0, width: 40, height: 40, shape: "square" });
+    expect(() =>
+      normalizeRectangleGeometry({ x: 0, y: 0, width: 40, height: 20, shape: "diamond" }),
+    ).toThrow(/Rectangle shape must be one of/);
+    expect(() =>
+      normalizeRectangleGeometry({ x: 0, y: 0, width: 40, height: 20, shape: "square" }),
+    ).toThrow(/width and height must be equal/);
+  });
+
+  it("normalizes visible outline fragments with strict path and point limits", () => {
+    expect(
+      normalizeLineGeometry({
+        x1: 0,
+        y1: 0,
+        x2: 100,
+        y2: 0,
+        visiblePaths: [
+          [
+            [0, 0],
+            [0, 0],
+            [40.126, 0],
+          ],
+          [
+            [60, 0],
+            [100, 0],
+          ],
+        ],
+      }),
+    ).toEqual({
+      x1: 0,
+      y1: 0,
+      x2: 100,
+      y2: 0,
+      visiblePaths: [
+        [
+          [0, 0],
+          [40.13, 0],
+        ],
+        [
+          [60, 0],
+          [100, 0],
+        ],
+      ],
+    });
+    expect(() =>
+      normalizeOutlineBoxGeometry({
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        visiblePaths: [],
+      }),
+    ).toThrow(/between 1 and 256/);
+    expect(() =>
+      normalizeOutlineBoxGeometry({
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        visiblePaths: [[[0, 0]]],
+      }),
+    ).toThrow(/at least 2/);
+    expect(() =>
+      normalizeOutlineBoxGeometry({
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        visiblePaths: Array.from({ length: 257 }, () => [
+          [0, 0],
+          [1, 0],
+        ]),
+      }),
+    ).toThrow(/between 1 and 256/);
+  });
+
+  it("normalizes polygon and protractor geometry with exact keys", () => {
+    expect(
+      normalizePolygonGeometry({
+        x: 10,
+        y: 20,
+        width: -40,
+        height: 30,
+        polygon: "rhombus",
+      }),
+    ).toEqual({ x: -30, y: 20, width: 40, height: 30, polygon: "rhombus" });
+    expect(() =>
+      normalizePolygonGeometry({ x: 0, y: 0, width: 10, height: 10, polygon: "octagon" }),
+    ).toThrow(/Polygon must be one of/);
+    expect(normalizeProtractorGeometry({ radius: 159.999 })).toEqual({ radius: 160 });
+    expect(() => normalizeProtractorGeometry({ radius: 0 })).toThrow(/greater than 0/);
+    expect(() => normalizeProtractorGeometry({ radius: 100, angle: 30 })).toThrow(/Unknown field/);
+  });
+
+  it("derives deterministic default and visible paths for outline items", () => {
+    const rectangle = { x: 10, y: 20, width: 30, height: 40 };
+    expect(defaultOutlinePaths("rectangle", rectangle)).toEqual([
+      [
+        [10, 20],
+        [40, 20],
+        [40, 60],
+        [10, 60],
+        [10, 20],
+      ],
+    ]);
+    expect(defaultOutlinePaths("ellipse", rectangle)[0]).toHaveLength(97);
+    expect(
+      visibleOutlinePaths("rectangle", {
+        ...rectangle,
+        visiblePaths: [
+          [
+            [10, 20],
+            [25, 20],
+          ],
+        ],
+      }),
+    ).toEqual([
+      [
+        [10, 20],
+        [25, 20],
+      ],
+    ]);
+  });
+
+  it("derives canonical polygon vertices and protractor snap marks", () => {
+    expect(polygonPoints({ x: 0, y: 0, width: 100, height: 80, polygon: "triangle" })).toEqual([
+      [50, 0],
+      [100, 80],
+      [0, 80],
+    ]);
+    const snapPoints = protractorSnapPoints({ radius: 100 }, 90);
+    expect(snapPoints).toEqual([
+      [0, 0],
+      [100, 0],
+      [0, -100],
+      [-100, 0],
+    ]);
+    expect(() => protractorSnapPoints({ radius: 100 }, 7)).toThrow(/divisor of 180/);
   });
 
   it("canonicalizes sticky extents while preserving text", () => {
@@ -309,6 +468,39 @@ describe("bounds and transforms", () => {
         style: { kind: "line", width: 4, arrowhead: "none" },
       }),
     ).toEqual({ minX: 1, minY: 3, maxX: 29, maxY: 11 });
+  });
+
+  it("uses only surviving visible paths for outline bounds", () => {
+    expect(
+      itemBounds({
+        kind: "rectangle",
+        geometry: {
+          x: 0,
+          y: 0,
+          width: 100,
+          height: 80,
+          visiblePaths: [
+            [
+              [20, 10],
+              [40, 10],
+            ],
+          ],
+        },
+        transform: [1, 0, 0, 1, 5, 7],
+        style: { kind: "stroke", width: 2 },
+      }),
+    ).toEqual({ minX: 24, minY: 16, maxX: 46, maxY: 18 });
+  });
+
+  it("rotates protractor-local semicircle bounds through its affine transform", () => {
+    expect(
+      itemBounds({
+        kind: "protractor",
+        geometry: { radius: 100 },
+        transform: [0, 1, -1, 0, 300, 200],
+        style: { kind: "protractor" },
+      }),
+    ).toEqual({ minX: 300, minY: 100, maxX: 400, maxY: 300 });
   });
 
   it("uses one deterministic open arrowhead for rendering and transformed bounds", () => {

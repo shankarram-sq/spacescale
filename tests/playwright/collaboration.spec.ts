@@ -36,7 +36,12 @@ async function createBoard(page: Page, title: string): Promise<string> {
 async function drawGesture(page: Page, toolName: string, offset = 0): Promise<number> {
   const canvas = page.locator("#board-canvas");
   const before = await canvas.locator("#drawing-area [data-item-id]").count();
-  await page.getByRole("button", { name: new RegExp(`^${toolName}`, "u") }).click();
+  if (toolName === "Rectangle" || toolName === "Ellipse") {
+    await page.getByTestId("tool-rectangle").click();
+    await page.getByTestId(toolName === "Rectangle" ? "shape-rectangle" : "shape-circle").click();
+  } else {
+    await page.getByRole("button", { name: new RegExp(`^${toolName}`, "u") }).click();
+  }
   const bounds = await canvas.boundingBox();
   expect(bounds).not.toBeNull();
   if (!bounds) throw new Error("Canvas has no layout bounds.");
@@ -143,9 +148,11 @@ test("two editors converge and owner policy changes an existing socket to read-o
     await expect.poll(() => page.locator("#drawing-area [data-item-id]").count()).toBe(expected);
     await expect(page.locator("#remote-preview-layer .remote-preview")).toHaveCount(0);
 
-    const drawer = page.getByTestId("access-drawer");
-    await drawer.locator("button[data-policy='owner_only']").click();
-    await expect(drawer.locator("button[data-policy='owner_only']")).toHaveAttribute(
+    await page.getByTestId("settings-button").click();
+    const settingsDrawer = page.getByTestId("settings-drawer");
+    await expect(settingsDrawer).toBeVisible();
+    await settingsDrawer.locator("button[data-policy='owner_only']").click();
+    await expect(settingsDrawer.locator("button[data-policy='owner_only']")).toHaveAttribute(
       "aria-pressed",
       "true",
     );
@@ -226,7 +233,7 @@ test("a claimed viewer invitation never enables drawing controls", async ({
     await viewer.goto(inviteUrl);
     await expect(viewer.getByTestId("board-shell")).toBeVisible();
     await expect(viewer.getByTestId("save-status")).toContainText("Read only");
-    await expect(viewer.getByRole("button", { name: /^Rectangle/u })).toBeDisabled();
+    await expect(viewer.getByRole("button", { name: /^Shapes/u })).toBeDisabled();
     const rejection = await viewer.evaluate(async () => {
       const boardId = location.pathname.split("/").pop();
       const socketUrl = new URL(`/api/v1/boards/${boardId}/socket`, location.href);
@@ -287,28 +294,32 @@ test("an owner names and restores a recovery point, then revokes an invitation",
   await createBoard(page, "Recovery room");
   await drawGesture(page, "Rectangle");
 
-  await page.getByTestId("access-button").click();
-  const drawer = page.getByTestId("access-drawer");
-  const snapshotForm = drawer.locator("[data-snapshot-form]");
+  await page.getByTestId("settings-button").click();
+  const settingsDrawer = page.getByTestId("settings-drawer");
+  await expect(settingsDrawer).toBeVisible();
+  const snapshotForm = settingsDrawer.locator("[data-snapshot-form]");
   await snapshotForm.locator("input[name='label']").fill("Baseline");
   await snapshotForm.getByRole("button", { name: "Save recovery point" }).click();
-  await expect(drawer.locator("[data-snapshot-seq]").filter({ hasText: "Baseline" })).toBeVisible();
+  await expect(
+    settingsDrawer.locator("[data-snapshot-seq]").filter({ hasText: "Baseline" }),
+  ).toBeVisible();
 
-  await drawer.getByRole("button", { name: "Close access panel" }).click();
+  await settingsDrawer.getByRole("button", { name: "Close settings" }).click();
   await drawGesture(page, "Ellipse", 35);
   await expect(page.locator("#drawing-area [data-item-id]")).toHaveCount(2);
 
-  await page.getByTestId("access-button").click();
+  await page.getByTestId("settings-button").click();
   page.once("dialog", (dialog) => dialog.accept());
-  await drawer.getByRole("button", { name: "Restore Baseline" }).click();
+  await settingsDrawer.getByRole("button", { name: "Restore Baseline" }).click();
   await expect.poll(() => page.locator("#drawing-area [data-item-id]").count()).toBe(1);
   await expect(page.getByTestId("save-status")).toContainText("Saved");
-  await expect(drawer).toBeHidden();
+  await expect(settingsDrawer).toBeHidden();
 
   const inviteUrl = await createInvite(page, "viewer", "Review link");
+  const accessDrawer = page.getByTestId("access-drawer");
   page.once("dialog", (dialog) => dialog.accept());
-  await drawer.getByRole("button", { name: "Revoke Review link" }).click();
-  await expect(drawer.locator("[data-managed-invitations]")).toBeHidden();
+  await accessDrawer.getByRole("button", { name: "Revoke Review link" }).click();
+  await expect(accessDrawer.locator("[data-managed-invitations]")).toBeHidden();
 
   const revokedContext = await browser.newContext(isolatedContextOptions(testInfo));
   const revokedPage = await revokedContext.newPage();

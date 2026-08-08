@@ -1,5 +1,6 @@
 import {
   PROTOCOL_VERSION as SHARED_PROTOCOL_VERSION,
+  type BoardFeatures as SharedBoardFeatures,
   type TextFontFamily as SharedTextFontFamily,
 } from "@collab/protocol";
 
@@ -8,12 +9,15 @@ export const PROTOCOL_VERSION = SHARED_PROTOCOL_VERSION;
 export type Role = "viewer" | "editor" | "owner";
 export type DrawingPolicy = "editors_enabled" | "owner_only" | "locked";
 export type AccessMode = "private" | "link_view";
+export type BoardFeatures = SharedBoardFeatures;
 export type ToolName =
   | "select"
   | "pencil"
   | "line"
   | "rectangle"
   | "ellipse"
+  | "polygon"
+  | "protractor"
   | "text"
   | "sticky"
   | "stamp"
@@ -42,6 +46,12 @@ export type LineStyle = {
   width: number;
   opacity: number;
   arrowhead: LineArrowhead;
+};
+
+export type ProtractorStyle = {
+  kind: "protractor";
+  color: string;
+  opacity: number;
 };
 
 export type TextStyle = {
@@ -96,15 +106,29 @@ export type ZoneStyle = {
 export type ItemStyle =
   | StrokeStyle
   | LineStyle
+  | ProtractorStyle
   | TextStyle
   | StickyStyle
   | StampStyle
   | ImageStyle
   | TableStyle
   | ZoneStyle;
-export type PencilGeometry = { points: Point[] };
-export type LineGeometry = { x1: number; y1: number; x2: number; y2: number };
+export type VisiblePaths = Point[][];
+export type PencilGeometry = { points: Point[]; visiblePaths?: VisiblePaths };
+export type LineGeometry = {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  visiblePaths?: VisiblePaths;
+};
 export type BoxGeometry = { x: number; y: number; width: number; height: number };
+export type OutlineBoxGeometry = BoxGeometry & { visiblePaths?: VisiblePaths };
+export type RectangleKind = "rectangle" | "square";
+export type RectangleGeometry = OutlineBoxGeometry & { shape: RectangleKind };
+export type PolygonKind = "triangle" | "rhombus" | "pentagon" | "hexagon";
+export type PolygonGeometry = OutlineBoxGeometry & { polygon: PolygonKind };
+export type ProtractorGeometry = { radius: number };
 export type TextGeometry = { x: number; y: number; text: string };
 export type StickyGeometry = {
   x: number;
@@ -159,12 +183,22 @@ export type LineItem = ItemBase & {
 export type RectangleItem = ItemBase & {
   kind: "rectangle";
   style: StrokeStyle;
-  geometry: BoxGeometry;
+  geometry: RectangleGeometry;
 };
 export type EllipseItem = ItemBase & {
   kind: "ellipse";
   style: StrokeStyle;
-  geometry: BoxGeometry;
+  geometry: OutlineBoxGeometry;
+};
+export type PolygonItem = ItemBase & {
+  kind: "polygon";
+  style: StrokeStyle;
+  geometry: PolygonGeometry;
+};
+export type ProtractorItem = ItemBase & {
+  kind: "protractor";
+  style: ProtractorStyle;
+  geometry: ProtractorGeometry;
 };
 export type TextItem = ItemBase & {
   kind: "text";
@@ -201,6 +235,8 @@ export type BoardItem =
   | LineItem
   | RectangleItem
   | EllipseItem
+  | PolygonItem
+  | ProtractorItem
   | TextItem
   | StickyItem
   | StampItem
@@ -217,6 +253,10 @@ export type ItemPatch = {
     | PencilGeometry
     | LineGeometry
     | BoxGeometry
+    | OutlineBoxGeometry
+    | RectangleGeometry
+    | PolygonGeometry
+    | ProtractorGeometry
     | TextGeometry
     | StickyGeometry
     | StampGeometry
@@ -292,6 +332,7 @@ export type Bootstrap = {
     accessMode: AccessMode;
     drawingPolicy: DrawingPolicy;
     imagesEnabled: boolean;
+    features: BoardFeatures;
     aclVersion: number;
     latestSeq: number;
     snapshotSeq: number;
@@ -409,6 +450,8 @@ export function isBoardItem(value: unknown): value is BoardItem {
       "line",
       "rectangle",
       "ellipse",
+      "polygon",
+      "protractor",
       "text",
       "sticky",
       "stamp",

@@ -1,4 +1,11 @@
-import { lineArrowheadPoints, ZONE_TITLE_PADDING, zoneTitleBandHeight } from "@collab/geometry";
+import {
+  lineArrowheadPoints,
+  type OutlineGeometry,
+  polygonPoints,
+  visibleOutlinePaths,
+  ZONE_TITLE_PADDING,
+  zoneTitleBandHeight,
+} from "@collab/geometry";
 import { textFontStack } from "@collab/protocol";
 import { STAMP_SVG_PATHS } from "@collab/svg-export";
 import { summarizeBoardVotes, type VoteSummary } from "../activities/voting";
@@ -11,7 +18,10 @@ import type {
   LineStyle,
   Matrix,
   Point,
+  PolygonGeometry,
   Presence,
+  ProtractorGeometry,
+  ProtractorStyle,
   RemotePreview,
   SpotlightViewState,
   StampGeometry,
@@ -43,6 +53,7 @@ export const TABLE_LINE_HEIGHT = 1.2;
 export const TABLE_CHARACTER_WIDTH = 0.56;
 export const RESIZE_HANDLE_RADIUS_CSS_PX = 6;
 export const RESIZE_HANDLE_HIT_RADIUS_CSS_PX = 22;
+export const ROTATE_HANDLE_OFFSET_CSS_PX = 30;
 
 type ResizableCardItem = Extract<BoardItem, { kind: "sticky" | "image" }>;
 export type ResizableStructuredItem = Extract<BoardItem, { kind: "table" | "zone" }>;
@@ -87,6 +98,35 @@ export function selectionResizeHandles(
   const handles = item.kind === "table" ? tableDimensionResizeHandles(item, zoom, translated) : [];
   handles.push(selectionResizeHandle(item, zoom, translated));
   return handles;
+}
+
+export function selectionProtractorRotateHandle(
+  item: Extract<BoardItem, { kind: "protractor" }>,
+  zoom: number,
+): SVGGElement {
+  const safeZoom = Math.max(0.1, zoom);
+  const point = transformedPoint(
+    item,
+    [0, -item.geometry.radius - ROTATE_HANDLE_OFFSET_CSS_PX / safeZoom],
+    { x: 0, y: 0 },
+  );
+  const group = svgElement("g");
+  group.classList.add("selection-rotate-handle");
+  group.dataset.rotateHandle = "protractor";
+  group.dataset.itemId = item.id;
+  group.setAttribute("aria-hidden", "true");
+  const hitTarget = svgElement("circle");
+  hitTarget.classList.add("selection-rotate-hit-target");
+  hitTarget.setAttribute("cx", String(point[0]));
+  hitTarget.setAttribute("cy", String(point[1]));
+  hitTarget.setAttribute("r", String(RESIZE_HANDLE_HIT_RADIUS_CSS_PX / safeZoom));
+  const knob = svgElement("circle");
+  knob.classList.add("selection-rotate-knob");
+  knob.setAttribute("cx", String(point[0]));
+  knob.setAttribute("cy", String(point[1]));
+  knob.setAttribute("r", String(RESIZE_HANDLE_RADIUS_CSS_PX / safeZoom));
+  group.append(hitTarget, knob);
+  return group;
 }
 
 export function tableDimensionResizeHandles(
@@ -221,6 +261,7 @@ export class BoardRenderer {
   private readonly imageAssets: ImageAssetCache;
   private selectedIds = new Set<string>();
   private resizeHandlesEnabled = true;
+  private votingEnabled = true;
 
   constructor(
     container: HTMLElement,
@@ -298,6 +339,12 @@ export class BoardRenderer {
     this.resizeHandlesEnabled = enabled;
   }
 
+  setVotingEnabled(enabled: boolean): void {
+    if (this.votingEnabled === enabled) return;
+    this.votingEnabled = enabled;
+    this.renderVoteCounts();
+  }
+
   setSelection(ids: Iterable<string>, translated?: { x: number; y: number }): void {
     this.selectedIds = new Set(ids);
     const bounds = this.model.boundsFor(this.selectedIds);
@@ -312,7 +359,7 @@ export class BoardRenderer {
       return item ? [item] : [];
     });
     const selected = selectedItems.length === 1 ? selectedItems[0] : undefined;
-    const handles =
+    const resizeHandles =
       selected &&
       this.resizeHandlesEnabled &&
       selected.version > 0 &&
@@ -322,6 +369,14 @@ export class BoardRenderer {
         selected.kind === "zone")
         ? selectionResizeHandles(selected, this.viewport.zoom, { x, y })
         : [];
+    const handles =
+      selected?.kind === "protractor" &&
+      this.resizeHandlesEnabled &&
+      selected.version > 0 &&
+      x === 0 &&
+      y === 0
+        ? [...resizeHandles, selectionProtractorRotateHandle(selected, this.viewport.zoom)]
+        : resizeHandles;
     this.renderSelectionBounds(
       {
         minX: bounds.minX + x,
@@ -391,8 +446,8 @@ export class BoardRenderer {
   }
 
   showLocalShape(
-    kind: "line" | "rectangle" | "ellipse",
-    geometry: LineGeometry | BoxGeometry,
+    kind: "line" | "rectangle" | "ellipse" | "polygon",
+    geometry: LineGeometry | BoxGeometry | PolygonGeometry,
     style: LineStyle | StrokeStyle,
     snapPoints: readonly Point[] = [],
   ): void {
@@ -491,6 +546,17 @@ export class BoardRenderer {
     this.setSelection(ids, { x, y });
   }
 
+  showRotationPreview(item: Extract<BoardItem, { kind: "protractor" }>, transform: Matrix): void {
+    this.localLayer.replaceChildren();
+    const preview = { ...item, transform };
+    const node = itemNode(preview, (assetId) => this.imageAssets.load(assetId));
+    node.classList.add("local-preview", "rotation-preview");
+    this.localLayer.append(node);
+    this.renderSelectionBounds(boardItemBounds(preview), [
+      selectionProtractorRotateHandle(preview, this.viewport.zoom),
+    ]);
+  }
+
   showCardResizePreview(item: ResizableCardItem, geometry: StickyGeometry | ImageGeometry): void {
     this.localLayer.replaceChildren();
     const preview = { ...item, geometry } as ResizableCardItem;
@@ -554,11 +620,14 @@ export class BoardRenderer {
       } else if (preview.kind === "shape.geometry") {
         const kind = payload.itemKind ?? payload.shape ?? payload.kind;
         const geometry = payload.geometry;
-        if ((kind === "line" || kind === "rectangle" || kind === "ellipse") && isRecord(geometry)) {
+        if (
+          (kind === "line" || kind === "rectangle" || kind === "ellipse" || kind === "polygon") &&
+          isRecord(geometry)
+        ) {
           group.append(
             shapeNode(
               kind,
-              geometry as LineGeometry | BoxGeometry,
+              geometry as LineGeometry | BoxGeometry | PolygonGeometry,
               kind === "line"
                 ? previewLineStyle(payload.style, color)
                 : previewStyle(payload.style, color),
@@ -645,7 +714,7 @@ export class BoardRenderer {
       this.itemNodes.set(id, replacement);
       this.insertInPaintOrder(replacement, item.z);
     }
-    renderVoteCounts(this.voteCountLayer, this.model.items.values());
+    this.renderVoteCounts();
     this.imageAssets.retain(
       new Set(
         [...this.model.items.values()].flatMap((item) =>
@@ -654,6 +723,14 @@ export class BoardRenderer {
       ),
     );
     this.setSelection([...this.selectedIds].filter((id) => this.model.getItem(id)));
+  }
+
+  private renderVoteCounts(): void {
+    if (!this.votingEnabled) {
+      this.voteCountLayer.replaceChildren();
+      return;
+    }
+    renderVoteCounts(this.voteCountLayer, this.model.items.values());
   }
 
   private insertInPaintOrder(node: SVGGraphicsElement, z: number): void {
@@ -989,7 +1066,7 @@ function itemNode(
   switch (item.kind) {
     case "pencil": {
       const path = svgElement("path");
-      path.setAttribute("d", pencilPath(item.geometry.points));
+      path.setAttribute("d", outlinePath(visibleOutlinePaths("pencil", item.geometry)));
       setStroke(path, item.style);
       node = path;
       break;
@@ -997,7 +1074,11 @@ function itemNode(
     case "line":
     case "rectangle":
     case "ellipse":
+    case "polygon":
       node = shapeNode(item.kind, item.geometry, item.style);
+      break;
+    case "protractor":
+      node = protractorNode(item.geometry, item.style);
       break;
     case "text": {
       node = textNode(item.geometry, item.style);
@@ -1609,10 +1690,16 @@ export function wrapStickyText(
 }
 
 function shapeNode(
-  kind: "line" | "rectangle" | "ellipse",
-  geometry: LineGeometry | BoxGeometry,
+  kind: "line" | "rectangle" | "ellipse" | "polygon",
+  geometry: LineGeometry | BoxGeometry | PolygonGeometry,
   style: LineStyle | StrokeStyle,
 ): SVGGraphicsElement {
+  if (kind !== "line" && "visiblePaths" in geometry && geometry.visiblePaths !== undefined) {
+    const path = svgElement("path");
+    path.setAttribute("d", outlinePath(visibleOutlinePaths(kind, geometry as OutlineGeometry)));
+    setStroke(path, style);
+    return path;
+  }
   let node: SVGGraphicsElement;
   if (kind === "line") {
     node = lineNode(geometry as LineGeometry, style as LineStyle);
@@ -1625,7 +1712,7 @@ function shapeNode(
     rect.setAttribute("height", String(value.height));
     rect.setAttribute("rx", "2");
     node = rect;
-  } else {
+  } else if (kind === "ellipse") {
     const ellipse = svgElement("ellipse");
     const value = geometry as BoxGeometry;
     ellipse.setAttribute("cx", String(value.x + value.width / 2));
@@ -1633,6 +1720,15 @@ function shapeNode(
     ellipse.setAttribute("rx", String(value.width / 2));
     ellipse.setAttribute("ry", String(value.height / 2));
     node = ellipse;
+  } else {
+    const polygon = svgElement("polygon");
+    polygon.setAttribute(
+      "points",
+      polygonPoints(geometry as PolygonGeometry)
+        .map((point) => point.join(","))
+        .join(" "),
+    );
+    node = polygon;
   }
   setStroke(node, style);
   return node;
@@ -1640,16 +1736,30 @@ function shapeNode(
 
 export function lineNode(geometry: LineGeometry, style: LineStyle): SVGGElement {
   const group = svgElement("g");
-  const shaft = svgElement("line");
+  let shaft: SVGGraphicsElement;
+  if (geometry.visiblePaths) {
+    const path = svgElement("path");
+    path.setAttribute("d", outlinePath(visibleOutlinePaths("line", geometry)));
+    shaft = path;
+  } else {
+    const line = svgElement("line");
+    line.setAttribute("x1", String(geometry.x1));
+    line.setAttribute("y1", String(geometry.y1));
+    line.setAttribute("x2", String(geometry.x2));
+    line.setAttribute("y2", String(geometry.y2));
+    shaft = line;
+  }
   shaft.classList.add("connector-shaft");
-  shaft.setAttribute("x1", String(geometry.x1));
-  shaft.setAttribute("y1", String(geometry.y1));
-  shaft.setAttribute("x2", String(geometry.x2));
-  shaft.setAttribute("y2", String(geometry.y2));
   setStroke(shaft, style);
   group.append(shaft);
 
-  if (style.arrowhead === "arrow") {
+  const terminalVisible =
+    geometry.visiblePaths === undefined ||
+    geometry.visiblePaths.some((path) => {
+      const endpoint = path.at(-1);
+      return endpoint?.[0] === geometry.x2 && endpoint[1] === geometry.y2;
+    });
+  if (style.arrowhead === "arrow" && terminalVisible) {
     const points = lineArrowheadPoints(geometry, style.width);
     if (points) {
       const [left, tip, right] = points;
@@ -1662,6 +1772,71 @@ export function lineNode(geometry: LineGeometry, style: LineStyle): SVGGElement 
       setStroke(arrowhead, style);
       group.append(arrowhead);
     }
+  }
+  return group;
+}
+
+export function protractorNode(geometry: ProtractorGeometry, style: ProtractorStyle): SVGGElement {
+  const group = svgElement("g");
+  group.classList.add("digital-protractor");
+  group.setAttribute("role", "img");
+  group.setAttribute("aria-label", "180 degree protractor");
+  const radius = geometry.radius;
+
+  const body = svgElement("path");
+  body.classList.add("protractor-body");
+  body.setAttribute("d", `M ${-radius} 0 A ${radius} ${radius} 0 0 1 ${radius} 0 L ${-radius} 0 Z`);
+  body.setAttribute("fill", style.color);
+  body.setAttribute("fill-opacity", String(Math.min(0.16, style.opacity * 0.16)));
+  body.setAttribute("stroke", style.color);
+  body.setAttribute("stroke-opacity", String(style.opacity));
+  body.setAttribute("stroke-width", "2");
+  body.setAttribute("vector-effect", "non-scaling-stroke");
+
+  const tickPath = svgElement("path");
+  tickPath.classList.add("protractor-ticks");
+  const ticks: string[] = [];
+  for (let degrees = 0; degrees <= 180; degrees += 5) {
+    const radians = (degrees * Math.PI) / 180;
+    const tickLength = degrees % 10 === 0 ? 15 : 8;
+    const outer: Point = [Math.cos(radians) * radius, -Math.sin(radians) * radius];
+    const inner: Point = [
+      Math.cos(radians) * (radius - tickLength),
+      -Math.sin(radians) * (radius - tickLength),
+    ];
+    ticks.push(`M ${outer[0]} ${outer[1]} L ${inner[0]} ${inner[1]}`);
+  }
+  tickPath.setAttribute("d", ticks.join(" "));
+  tickPath.setAttribute("fill", "none");
+  tickPath.setAttribute("stroke", style.color);
+  tickPath.setAttribute("stroke-opacity", String(style.opacity));
+  tickPath.setAttribute("stroke-width", "1");
+  tickPath.setAttribute("vector-effect", "non-scaling-stroke");
+
+  const center = svgElement("circle");
+  center.classList.add("protractor-center");
+  center.setAttribute("cx", "0");
+  center.setAttribute("cy", "0");
+  center.setAttribute("r", "5");
+  center.setAttribute("fill", "none");
+  center.setAttribute("stroke", style.color);
+  center.setAttribute("stroke-width", "2");
+  center.setAttribute("vector-effect", "non-scaling-stroke");
+  group.append(body, tickPath, center);
+
+  for (let degrees = 10; degrees < 180; degrees += 10) {
+    const radians = (degrees * Math.PI) / 180;
+    const text = svgElement("text");
+    text.classList.add("protractor-label");
+    text.setAttribute("x", String(Math.cos(radians) * (radius - 27)));
+    text.setAttribute("y", String(-Math.sin(radians) * (radius - 27) + 3));
+    text.setAttribute("fill", style.color);
+    text.setAttribute("fill-opacity", String(style.opacity));
+    text.setAttribute("font-size", "9");
+    text.setAttribute("text-anchor", "middle");
+    text.setAttribute("pointer-events", "none");
+    text.textContent = String(degrees);
+    group.append(text);
   }
   return group;
 }
@@ -1683,6 +1858,13 @@ function pencilPath(points: readonly Point[]): string {
   }
   return points
     .map((point, index) => `${index === 0 ? "M" : "L"} ${point[0]} ${point[1]}`)
+    .join(" ");
+}
+
+function outlinePath(paths: readonly (readonly Point[])[]): string {
+  return paths
+    .map((points) => pencilPath(points))
+    .filter(Boolean)
     .join(" ");
 }
 

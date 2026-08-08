@@ -102,14 +102,35 @@ export async function drag(
 
 export async function drawShape(
   page: Page,
-  toolName: "Straight line" | "Rectangle" | "Ellipse" | "Pencil",
+  toolName:
+    | "Straight line"
+    | "Square"
+    | "Rectangle"
+    | "Triangle"
+    | "Rhombus"
+    | "Pentagon"
+    | "Hexagon"
+    | "Ellipse"
+    | "Circle"
+    | "Pencil",
   start: { x: number; y: number },
   end: { x: number; y: number },
   options: { shift?: boolean; waitForSaved?: boolean } = {},
 ): Promise<Locator> {
   const items = page.locator("#drawing-area [data-item-id]");
   const before = await items.count();
-  await page.getByRole("button", { name: new RegExp(`^${toolName}`, "u") }).click();
+  const shapeVariant =
+    toolName === "Ellipse" ? "circle" : toolName.toLocaleLowerCase().replaceAll(" ", "-");
+  if (
+    ["square", "rectangle", "triangle", "rhombus", "pentagon", "hexagon", "circle"].includes(
+      shapeVariant,
+    )
+  ) {
+    await page.getByTestId("tool-rectangle").click();
+    await page.getByTestId(`shape-${shapeVariant}`).click();
+  } else {
+    await page.getByRole("button", { name: new RegExp(`^${toolName}`, "u") }).click();
+  }
   await drag(page, start, end, { shift: options.shift });
   await expect(items).toHaveCount(before + 1);
   if (options.waitForSaved !== false) {

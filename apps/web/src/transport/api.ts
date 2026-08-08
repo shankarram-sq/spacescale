@@ -1,4 +1,4 @@
-import { MAX_BATCH_OPERATIONS, normalizeBoardItem } from "@collab/protocol";
+import { type BoardFeatures, MAX_BATCH_OPERATIONS, normalizeBoardItem } from "@collab/protocol";
 
 import type {
   AccessMode,
@@ -239,14 +239,25 @@ export class ApiClient {
   async createBoard(
     title: string,
     turnstileToken?: string,
+    features?: Partial<BoardFeatures>,
   ): Promise<{
-    board: { id: string; url: string; title: string; accessMode: AccessMode };
+    board: {
+      id: string;
+      url: string;
+      title: string;
+      accessMode: AccessMode;
+      features: BoardFeatures;
+    };
     ownerRecoveryToken: string;
     ownerRecoveryUrl: string;
   }> {
     return this.request("/api/v1/boards", {
       method: "POST",
-      body: JSON.stringify({ title, ...(turnstileToken ? { turnstileToken } : {}) }),
+      body: JSON.stringify({
+        title,
+        ...(turnstileToken ? { turnstileToken } : {}),
+        ...(features === undefined ? {} : { features }),
+      }),
     });
   }
 
@@ -319,6 +330,7 @@ export class ApiClient {
       accessMode?: AccessMode;
       drawingPolicy?: DrawingPolicy;
       imagesEnabled?: boolean;
+      features?: Partial<BoardFeatures>;
     },
     expectedAclVersion: number,
   ): Promise<Record<string, unknown>> {

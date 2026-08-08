@@ -21,7 +21,7 @@ function rectangle(
     createdBy: "actor",
     transform,
     style: { kind: "stroke", color: "#20201e", width: 2, opacity: 1 },
-    geometry: { x, y, width, height },
+    geometry: { x, y, width, height, shape: "rectangle" },
   };
 }
 

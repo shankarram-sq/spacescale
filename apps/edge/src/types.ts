@@ -57,6 +57,7 @@ export interface BoardRow {
   access_mode: AccessMode;
   drawing_policy: DrawingPolicy;
   images_enabled: number;
+  features_json: string;
   owner_actor_id: string;
   classroom_mode: number;
   organisation_mode: number;

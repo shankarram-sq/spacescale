@@ -110,36 +110,39 @@ test("Organisation participants join one Space with live owner controls and attr
       .getByRole("combobox", { name: "Role for Student Asha" })
       .selectOption("viewer");
     await expect(student.getByTestId("save-status")).toContainText("Read only");
-    await expect(student.getByRole("button", { name: /^Rectangle/u })).toBeDisabled();
+    await expect(student.getByRole("button", { name: /^Shapes/u })).toBeDisabled();
 
     await coachAccess
       .getByRole("combobox", { name: "Role for Student Asha" })
       .selectOption("editor");
-    await expect(student.getByRole("button", { name: /^Rectangle/u })).toBeEnabled();
+    await expect(student.getByRole("button", { name: /^Shapes/u })).toBeEnabled();
 
-    await coachAccess.locator("button[data-policy='owner_only']").click();
-    await expect(coachAccess.locator("button[data-policy='owner_only']")).toHaveAttribute(
+    await coach.getByTestId("settings-button").click();
+    const coachSettings = coach.getByTestId("settings-drawer");
+    await expect(coachSettings).toBeVisible();
+    await coachSettings.locator("button[data-policy='owner_only']").click();
+    await expect(coachSettings.locator("button[data-policy='owner_only']")).toHaveAttribute(
       "aria-pressed",
       "true",
     );
-    await expect(student.getByRole("button", { name: /^Rectangle/u })).toBeDisabled();
-    await expect(coach.getByRole("button", { name: /^Rectangle/u })).toBeEnabled();
-    await expect(coOwner.getByRole("button", { name: /^Rectangle/u })).toBeEnabled();
+    await expect(student.getByRole("button", { name: /^Shapes/u })).toBeDisabled();
+    await expect(coach.getByRole("button", { name: /^Shapes/u })).toBeEnabled();
+    await expect(coOwner.getByRole("button", { name: /^Shapes/u })).toBeEnabled();
 
     await drawRectangle(coOwner);
     for (const frame of [coach, student, coOwner]) {
       await expect(frame.locator("#drawing-area [data-item-id]")).toHaveCount(2);
     }
 
-    await coOwner.getByTestId("access-button").click();
-    const coOwnerAccess = coOwner.getByTestId("access-drawer");
-    await expect(coOwnerAccess).toBeVisible();
-    await expect(coOwnerAccess.locator("button[data-policy='owner_only']")).toHaveAttribute(
+    await coOwner.getByTestId("settings-button").click();
+    const coOwnerSettings = coOwner.getByTestId("settings-drawer");
+    await expect(coOwnerSettings).toBeVisible();
+    await expect(coOwnerSettings.locator("button[data-policy='owner_only']")).toHaveAttribute(
       "aria-pressed",
       "true",
     );
-    await coOwnerAccess.locator("button[data-policy='editors_enabled']").click();
-    await expect(student.getByRole("button", { name: /^Rectangle/u })).toBeEnabled();
+    await coOwnerSettings.locator("button[data-policy='editors_enabled']").click();
+    await expect(student.getByRole("button", { name: /^Shapes/u })).toBeEnabled();
 
     const activity = await coach.evaluate(
       async ({ historyKey }) => {
@@ -458,7 +461,8 @@ function sanitizedFrameLocation(frame: Frame | null): string {
 async function drawRectangle(frame: Frame): Promise<string> {
   const items = frame.locator("#drawing-area [data-item-id]");
   const before = await items.count();
-  await frame.getByRole("button", { name: /^Rectangle/u }).click();
+  await frame.getByTestId("tool-rectangle").click();
+  await frame.getByTestId("shape-rectangle").click();
   await frame.locator("#board-canvas").evaluate((node) => {
     const canvas = node as SVGSVGElement;
     const capturedPointers = new Set<number>();

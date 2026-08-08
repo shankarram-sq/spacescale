@@ -4,9 +4,13 @@ import {
   canonicalSnapshotItemByteLength,
 } from "@collab/board-core";
 import {
+  BOARD_FEATURE_KEYS,
+  type BoardFeatures,
   type ClientFrame,
   canonicalRequestHashInput,
+  DEFAULT_BOARD_FEATURES,
   MAX_SNAPSHOT_BYTES,
+  normalizeBoardFeatures,
   type BoardItem as ProtocolBoardItem,
   ProtocolValidationError,
   parseClientFrame,
@@ -448,7 +452,15 @@ export class BoardRoom extends DurableObject<Env> {
     const body = await readJsonBody(request, 16 * 1_024);
     assertExactKeys(
       body,
-      ["publicId", "title", "accessMode", "ownerActorId", "ownerDisplayName", "ownerRecoveryHash"],
+      [
+        "publicId",
+        "title",
+        "accessMode",
+        "ownerActorId",
+        "ownerDisplayName",
+        "ownerRecoveryHash",
+        "features",
+      ],
       ["publicId", "title", "accessMode", "ownerActorId", "ownerDisplayName", "ownerRecoveryHash"],
     );
     if (typeof body.publicId !== "string" || !/^b_[A-Za-z0-9_-]{22}$/u.test(body.publicId)) {
@@ -467,6 +479,7 @@ export class BoardRoom extends DurableObject<Env> {
     if (recoveryHash === null || recoveryHash.byteLength !== 32) {
       throw new HttpError(400, "BAD_REQUEST", "The recovery capability is invalid.");
     }
+    const features = initialBoardFeatures(body.features);
     const now = Date.now();
     let created = false;
     this.ctx.storage.transactionSync(() => {
@@ -480,14 +493,17 @@ export class BoardRoom extends DurableObject<Env> {
       this.#sql.exec(
         `INSERT INTO board(
            singleton, public_id, title, access_mode, drawing_policy,
-           owner_actor_id, owner_recovery_hash, snapshot_live_item_count,
+           owner_actor_id, owner_recovery_hash, images_enabled, features_json,
+           snapshot_live_item_count,
            snapshot_live_item_bytes, created_at_ms, updated_at_ms
-         ) VALUES (1, ?, ?, ?, 'editors_enabled', ?, ?, 0, 0, ?, ?)`,
+         ) VALUES (1, ?, ?, ?, 'editors_enabled', ?, ?, ?, ?, 0, 0, ?, ?)`,
         body.publicId,
         title,
         body.accessMode,
         ownerActorId,
         recoveryHash,
+        features.images ? 1 : 0,
+        JSON.stringify(features),
         now,
         now,
       );
@@ -528,6 +544,7 @@ export class BoardRoom extends DurableObject<Env> {
         "ownerRecoveryHash",
         "importSnapshot",
         "organisationId",
+        "features",
       ],
       [
         "publicId",
@@ -571,9 +588,8 @@ export class BoardRoom extends DurableObject<Env> {
     if (recoveryHash === null || recoveryHash.byteLength !== 32) {
       throw new HttpError(400, "BAD_REQUEST", "The recovery capability is invalid.");
     }
-
-    // A fragment import is initial state only. Once a board row exists, do not
-    // decode or inspect the supplied payload: relaunches must preserve state.
+    // Fragment import and launch features are initial state only. Once a board
+    // row exists, do not inspect either value: relaunches preserve board state.
     const boardBeforeLaunch = readBoard(this.#sql);
     const importedBoard =
       boardBeforeLaunch === null && role === "owner" && body.importSnapshot !== undefined
@@ -591,15 +607,17 @@ export class BoardRoom extends DurableObject<Env> {
     this.ctx.storage.transactionSync(() => {
       let board = readBoard(this.#sql);
       if (board === null) {
+        const launchFeatures = initialBoardFeatures(body.features);
         const importedItems = importedBoard?.items ?? [];
         this.#sql.exec(
           `INSERT INTO board(
              singleton, public_id, title, access_mode, drawing_policy,
              owner_actor_id, owner_recovery_hash, latest_seq, next_z, min_replay_seq,
              snapshot_live_item_count,
-             snapshot_live_item_bytes, classroom_mode, organisation_mode,
+             snapshot_live_item_bytes, images_enabled, features_json,
+             classroom_mode, organisation_mode,
              organisation_id, created_at_ms, updated_at_ms
-           ) VALUES (1, ?, ?, 'private', 'editors_enabled', ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+           ) VALUES (1, ?, ?, 'private', 'editors_enabled', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
           body.publicId,
           title,
           placeholderOwnerActorId,
@@ -609,6 +627,8 @@ export class BoardRoom extends DurableObject<Env> {
           importedBoard === null ? 0 : 1,
           importedAccounting?.itemCount ?? 0,
           importedAccounting?.itemBytes ?? 0,
+          launchFeatures.images ? 1 : 0,
+          JSON.stringify(launchFeatures),
           organisationId === null ? 0 : 1,
           organisationId,
           now,
@@ -716,6 +736,7 @@ export class BoardRoom extends DurableObject<Env> {
     this.#telemetry = await durableObjectTelemetryContext(this.env, body.publicId);
     if (!created && launchApplied) this.broadcastAccessChanged(actor.actorId);
     const board = this.requireBoard();
+    const features = featuresForBoard(board);
     const access = this.requireView(board, actor.actorId);
     return Response.json(
       {
@@ -724,7 +745,8 @@ export class BoardRoom extends DurableObject<Env> {
           title: board.title,
           accessMode: board.access_mode,
           drawingPolicy: board.drawing_policy,
-          imagesEnabled: board.images_enabled === 1,
+          imagesEnabled: features.images,
+          features,
           aclVersion,
         },
         actor: { id: actor.actorId, role: access.role, displayName: access.displayName },
@@ -742,6 +764,7 @@ export class BoardRoom extends DurableObject<Env> {
     origin: string,
   ): Promise<Response> {
     const access = this.requireView(board, actor.actorId);
+    this.requireFeature(board, "organisationTemplates");
     const organisationId = this.organisationIdForBoard(board);
     if (organisationId === null) {
       return Response.json({ organisationId: null, canManage: false, templates: [] });
@@ -772,6 +795,7 @@ export class BoardRoom extends DurableObject<Env> {
     origin: string,
   ): Promise<Response> {
     this.requireOwner(board, actor.actorId);
+    this.requireFeature(board, "organisationTemplates");
     const organisationId = this.organisationIdForBoard(board);
     if (organisationId === null) {
       throw new HttpError(
@@ -802,6 +826,7 @@ export class BoardRoom extends DurableObject<Env> {
     templateId: string,
   ): Promise<Response> {
     this.requireOwner(board, actor.actorId);
+    this.requireFeature(board, "organisationTemplates");
     const organisationId = this.organisationIdForBoard(board);
     if (organisationId === null) {
       throw new HttpError(
@@ -849,6 +874,7 @@ export class BoardRoom extends DurableObject<Env> {
 
   private bootstrap(actor: InternalActorContext, capturedBoard: BoardRow): Response {
     const board = readBoard(this.#sql) ?? capturedBoard;
+    const features = featuresForBoard(board);
     const access = this.requireView(board, actor.actorId);
     const snapshot = captureSnapshot(this.#sql, board);
     const history = this.historyState(actor.actorId);
@@ -862,7 +888,8 @@ export class BoardRoom extends DurableObject<Env> {
           title: board.title,
           accessMode: board.access_mode,
           drawingPolicy: board.drawing_policy,
-          imagesEnabled: board.images_enabled === 1,
+          imagesEnabled: features.images,
+          features,
           aclVersion: board.acl_version,
           latestSeq: board.latest_seq,
           snapshotSeq: snapshot.seq,
@@ -1293,7 +1320,7 @@ export class BoardRoom extends DurableObject<Env> {
     const body = await readJsonBody(request, 8 * 1_024);
     assertExactKeys(
       body,
-      ["title", "accessMode", "drawingPolicy", "imagesEnabled", "expectedAclVersion"],
+      ["title", "accessMode", "drawingPolicy", "imagesEnabled", "features", "expectedAclVersion"],
       ["expectedAclVersion"],
     );
     const expected = requireSafeInteger(
@@ -1320,19 +1347,33 @@ export class BoardRoom extends DurableObject<Env> {
     if (imagesEnabled !== undefined && typeof imagesEnabled !== "boolean") {
       throw new HttpError(400, "BAD_REQUEST", "The image upload setting is invalid.");
     }
+    let featurePatch = body.features === undefined ? undefined : requireFeaturePatch(body.features);
+    if (
+      imagesEnabled !== undefined &&
+      featurePatch?.images !== undefined &&
+      featurePatch.images !== imagesEnabled
+    ) {
+      throw new HttpError(400, "BAD_REQUEST", "The image feature settings conflict.");
+    }
+    if (imagesEnabled !== undefined) {
+      featurePatch = { ...(featurePatch ?? {}), images: imagesEnabled };
+    }
     if (
       title === undefined &&
       accessMode === undefined &&
       drawingPolicy === undefined &&
-      imagesEnabled === undefined
+      featurePatch === undefined
     ) {
       throw new HttpError(400, "BAD_REQUEST", "No setting change was supplied.");
     }
     let updated!: BoardRow;
+    let updatedFeatures!: BoardFeatures;
     this.ctx.storage.transactionSync(() => {
       const board = this.requireBoard();
       this.requireOwner(board, actor.actorId);
       this.checkAcl(board, expected);
+      const currentFeatures = featuresForBoard(board);
+      updatedFeatures = normalizeBoardFeatures({ ...currentFeatures, ...(featurePatch ?? {}) });
       if (title !== undefined && title !== board.title) {
         this.assertProspectiveSnapshotFits(
           board,
@@ -1350,11 +1391,13 @@ export class BoardRoom extends DurableObject<Env> {
       const now = Date.now();
       this.#sql.exec(
         `UPDATE board SET title = ?, access_mode = ?, drawing_policy = ?, images_enabled = ?,
+          features_json = ?,
           acl_version = acl_version + 1, updated_at_ms = ? WHERE singleton = 1`,
         title ?? board.title,
         accessMode ?? board.access_mode,
         drawingPolicy ?? board.drawing_policy,
-        imagesEnabled === undefined ? board.images_enabled : imagesEnabled ? 1 : 0,
+        updatedFeatures.images ? 1 : 0,
+        JSON.stringify(updatedFeatures),
         now,
       );
       updated = this.requireBoard();
@@ -1365,7 +1408,8 @@ export class BoardRoom extends DurableObject<Env> {
         title: updated.title,
         accessMode: updated.access_mode,
         drawingPolicy: updated.drawing_policy,
-        imagesEnabled: updated.images_enabled === 1,
+        imagesEnabled: updatedFeatures.images,
+        features: updatedFeatures,
         aclVersion: updated.acl_version,
       },
     });
@@ -2681,6 +2725,7 @@ export class BoardRoom extends DurableObject<Env> {
     const clientInstanceId = requireOpaqueId(url.searchParams.get("client"), "client instance ID");
     const board = readBoard(this.#sql) ?? capturedBoard;
     const access = this.requireView(board, actor.actorId);
+    const features = featuresForBoard(board);
     const activeSockets = this.activeSocketCounts(actor.actorId);
     if (activeSockets.actor >= MAX_CONNECTIONS_PER_ACTOR) {
       throw new HttpError(
@@ -2725,7 +2770,8 @@ export class BoardRoom extends DurableObject<Env> {
         t: "server.welcome",
         actor: { id: actor.actorId, displayName: access.displayName, role: access.role },
         drawingPolicy: board.drawing_policy,
-        imagesEnabled: board.images_enabled === 1,
+        imagesEnabled: features.images,
+        features,
         aclVersion: board.acl_version,
         historyVersion: history.historyVersion,
         canUndo: history.canUndo,
@@ -3078,6 +3124,7 @@ export class BoardRoom extends DurableObject<Env> {
       this.ensureItemIdentityCapacity(newItemIdentityCount(operation));
       const seq = board.latest_seq + 1;
       const records = readItems(this.#sql, affectedIds(operation));
+      assertOperationFeaturesEnabled(featuresForBoard(board), operation, records);
       const prepared = prepareOwnedItemOperation(operation, records, {
         seq,
         actorId: attachment.actorId,
@@ -3686,6 +3733,13 @@ export class BoardRoom extends DurableObject<Env> {
     // refreshAttachment has already revalidated this socket against the current
     // ACL version. Avoid another membership read on this high-volume path.
     this.requireContentMutationAllowed(board, attachment.role);
+    const features = featuresForBoard(board);
+    if ((kind === "pencil.start" || kind === "pencil.segment") && !features.pencil) {
+      throw new BoardDomainError("FORBIDDEN", "This board feature is disabled.");
+    }
+    if (kind === "shape.geometry") {
+      assertItemFeatureEnabled(features, { kind: payload.itemKind, geometry: payload.geometry });
+    }
     const now = Date.now();
     const connectionKey = `${attachment.connectionId}:preview`;
     const connectionAllowed = this.#buckets.consume(connectionKey, 15, 30, now);
@@ -3763,6 +3817,7 @@ export class BoardRoom extends DurableObject<Env> {
     frame: Extract<ClientFrame, { t: "client.facilitation.spotlight" }>,
     board: BoardRow,
   ): void {
+    if (frame.active) this.requireFeature(board, "spotlight");
     // Facilitation is independent of the drawing policy: an editor may guide
     // the class while the board is owner-only or locked. Viewers are always
     // receive-only at this authoritative boundary.
@@ -4102,6 +4157,7 @@ export class BoardRoom extends DurableObject<Env> {
 
   private broadcastAccessChanged(affectedActorId?: string): void {
     const board = this.requireBoard();
+    const features = featuresForBoard(board);
     const affectedActor =
       affectedActorId === undefined
         ? undefined
@@ -4134,8 +4190,11 @@ export class BoardRoom extends DurableObject<Env> {
           v: 1,
           t: "access.changed",
           role: access.role,
+          title: board.title,
+          accessMode: board.access_mode,
           drawingPolicy: board.drawing_policy,
-          imagesEnabled: board.images_enabled === 1,
+          imagesEnabled: features.images,
+          features,
           aclVersion: board.acl_version,
           ...(affectedActorId ? { affectedActorId, affectedActor } : {}),
         });
@@ -4198,6 +4257,7 @@ export class BoardRoom extends DurableObject<Env> {
     knownBoard?: BoardRow,
   ): SocketAttachment {
     const board = knownBoard ?? this.requireBoard();
+    const features = featuresForBoard(board);
     this.ensureBoardActive(board);
     if (Date.now() >= attachment.sessionExpiresAt) {
       socket.close(4001, "Session expired");
@@ -4220,8 +4280,11 @@ export class BoardRoom extends DurableObject<Env> {
       v: 1,
       t: "access.changed",
       role: refreshed.role,
+      title: board.title,
+      accessMode: board.access_mode,
       drawingPolicy: board.drawing_policy,
-      imagesEnabled: board.images_enabled === 1,
+      imagesEnabled: features.images,
+      features,
       aclVersion: board.acl_version,
     });
     return refreshed;
@@ -4420,10 +4483,16 @@ export class BoardRoom extends DurableObject<Env> {
     }
   }
 
+  private requireFeature(board: BoardRow, feature: keyof BoardFeatures): void {
+    if (!featuresForBoard(board)[feature]) {
+      throw new HttpError(403, "FORBIDDEN", "This board feature is disabled.");
+    }
+  }
+
   private requireImageUploadAllowed(board: BoardRow, actorId: string) {
     const access = this.requireView(board, actorId);
     this.requireContentMutationAllowed(board, access.role);
-    if (board.images_enabled !== 1) {
+    if (!featuresForBoard(board).images) {
       throw new HttpError(403, "FORBIDDEN", "Image uploads are disabled for this board.");
     }
     return access;
@@ -5357,6 +5426,174 @@ export class BoardRoom extends DurableObject<Env> {
     }
     await this.runRetentionSafely(now);
     await this.scheduleNextAlarm();
+  }
+}
+
+function initialBoardFeatures(value: unknown): BoardFeatures {
+  if (value === undefined) return { ...DEFAULT_BOARD_FEATURES };
+  const patch = requireFeaturePatch(value, true);
+  try {
+    return normalizeBoardFeatures({ ...DEFAULT_BOARD_FEATURES, ...patch });
+  } catch {
+    throw new HttpError(400, "BAD_REQUEST", "The board feature settings are invalid.");
+  }
+}
+
+function requireFeaturePatch(value: unknown, allowEmpty = false): Partial<BoardFeatures> {
+  if (!isRecord(value)) {
+    throw new HttpError(400, "BAD_REQUEST", "The board feature settings are invalid.");
+  }
+  const allowed = new Set<string>(BOARD_FEATURE_KEYS);
+  const patch: Record<string, boolean> = {};
+  for (const [key, enabled] of Object.entries(value)) {
+    if (!allowed.has(key) || typeof enabled !== "boolean") {
+      throw new HttpError(400, "BAD_REQUEST", "The board feature settings are invalid.");
+    }
+    patch[key] = enabled;
+  }
+  if (!allowEmpty && Object.keys(patch).length === 0) {
+    throw new HttpError(400, "BAD_REQUEST", "No feature setting change was supplied.");
+  }
+  return patch as Partial<BoardFeatures>;
+}
+
+function featuresForBoard(board: BoardRow): BoardFeatures {
+  try {
+    const features = normalizeBoardFeatures(JSON.parse(board.features_json));
+    if (features.images !== (board.images_enabled === 1)) {
+      throw new Error("The mirrored image feature setting differs.");
+    }
+    return features;
+  } catch {
+    throw new HttpError(500, "INTERNAL_ERROR", "The board feature settings are invalid.");
+  }
+}
+
+function assertOperationFeaturesEnabled(
+  features: BoardFeatures,
+  operation: ParsedCommit["op"],
+  records: ReadonlyMap<string, ItemRecord>,
+): void {
+  if (
+    operation.kind === "history.undo" ||
+    operation.kind === "history.redo" ||
+    operation.kind === "board.clear"
+  ) {
+    return;
+  }
+  const operations = operation.kind === "items.batch" ? operation.operations : [operation];
+  for (const child of operations) {
+    if (child.kind === "item.create") {
+      assertItemFeatureEnabled(features, child.item as { kind: string; geometry?: unknown });
+      if (
+        geometryContainsVisiblePaths(child.item.geometry) &&
+        (!features.eraser || !features.partialEraser)
+      ) {
+        throw new BoardDomainError("FORBIDDEN", "Partial erasing is disabled for this board.");
+      }
+      continue;
+    }
+    if (child.kind === "item.update") {
+      const source = records.get(child.itemId);
+      if (
+        source !== undefined &&
+        !source.deleted &&
+        visiblePathsChanged(source.item.geometry, child.patch.geometry) &&
+        (!features.eraser || !features.partialEraser)
+      ) {
+        throw new BoardDomainError("FORBIDDEN", "Partial erasing is disabled for this board.");
+      }
+      if (source !== undefined && !source.deleted && child.patch.geometry !== undefined) {
+        const currentFeature = itemFeature(source.item as { kind: string; geometry?: unknown });
+        const nextFeature = itemFeature({
+          kind: source.item.kind,
+          geometry: child.patch.geometry,
+        });
+        if (nextFeature !== currentFeature && nextFeature !== null && !features[nextFeature]) {
+          throw new BoardDomainError("FORBIDDEN", "This board feature is disabled.");
+        }
+      }
+      continue;
+    }
+    if (child.kind !== "item.copy") continue;
+    const source = records.get(child.sourceItemId);
+    if (source !== undefined && !source.deleted) {
+      assertItemFeatureEnabled(features, source.item as { kind: string; geometry?: unknown });
+    }
+  }
+}
+
+function visiblePathsChanged(currentGeometry: unknown, nextGeometry: unknown): boolean {
+  if (!isRecord(currentGeometry) || !isRecord(nextGeometry)) return false;
+  const current = currentGeometry.visiblePaths ?? null;
+  const next = nextGeometry.visiblePaths ?? null;
+  return stableStringify(current) !== stableStringify(next);
+}
+
+function geometryContainsVisiblePaths(geometry: unknown): boolean {
+  return isRecord(geometry) && Array.isArray(geometry.visiblePaths);
+}
+
+function assertItemFeatureEnabled(
+  features: BoardFeatures,
+  item: { kind: string; geometry?: unknown },
+): void {
+  const feature = itemFeature(item);
+  if (feature !== null && !features[feature]) {
+    throw new BoardDomainError("FORBIDDEN", "This board feature is disabled.");
+  }
+}
+
+function itemFeature(item: { kind: string; geometry?: unknown }): keyof BoardFeatures | null {
+  if (isRecord(item.geometry)) {
+    const subtype =
+      item.geometry.polygon ?? item.geometry.shape ?? item.geometry.shapeKind ?? item.geometry.kind;
+    if (typeof subtype === "string") {
+      const subtypeFeature = featureForKind(subtype);
+      if (subtypeFeature !== null) return subtypeFeature;
+    }
+  }
+  return featureForKind(item.kind);
+}
+
+function featureForKind(kind: string): keyof BoardFeatures | null {
+  switch (kind) {
+    case "pencil":
+      return "pencil";
+    case "line":
+      return "line";
+    case "square":
+      return "square";
+    case "rectangle":
+      return "rectangle";
+    case "triangle":
+      return "triangle";
+    case "rhombus":
+      return "rhombus";
+    case "pentagon":
+      return "pentagon";
+    case "hexagon":
+      return "hexagon";
+    case "ellipse":
+    case "circle":
+      return "circle";
+    case "text":
+      return "text";
+    case "sticky":
+      return "stickyNotes";
+    case "stamp":
+      return "stamps";
+    case "image":
+      return "images";
+    case "table":
+      return "tables";
+    case "zone":
+    case "section":
+      return "sections";
+    case "protractor":
+      return "protractor";
+    default:
+      return null;
   }
 }
 

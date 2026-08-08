@@ -4,9 +4,12 @@ import { describe, expect, it } from "vitest";
 import {
   ACTIVE_TOOLS,
   assertCanonicalAssetId,
+  BOARD_FEATURE_KEYS,
   canonicalRequestHashInput,
   canonicalStringify,
+  DEFAULT_BOARD_FEATURES,
   normalizeBoardAccessPolicy,
+  normalizeBoardFeatures,
   ProtocolValidationError,
   parseClientFrame,
   TEXT_FONT_FAMILIES,
@@ -39,6 +42,26 @@ function line(id = ID_1, arrowhead = "arrow") {
     style: { kind: "line", color: "#abcdef", width: 2.125, opacity: 0.555, arrowhead },
     transform: [1, 0, 0, 1, 0, 0],
     geometry: { x1: 5.129, y1: 7.555, x2: 25.555, y2: 17.129 },
+  };
+}
+
+function polygon(id = ID_1) {
+  return {
+    id,
+    kind: "polygon",
+    style: { kind: "stroke", color: "#abcdef", width: 2.125, opacity: 0.555 },
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: { x: 5.129, y: 7.555, width: 80, height: 60, polygon: "pentagon" },
+  };
+}
+
+function protractor(id = ID_1) {
+  return {
+    id,
+    kind: "protractor",
+    style: { kind: "protractor", color: "#3dadff", opacity: 0.8 },
+    transform: [0, 1, -1, 0, 100, 200],
+    geometry: { radius: 160.125 },
   };
 }
 
@@ -153,7 +176,7 @@ describe("durable operation validation", () => {
         kind: "rectangle",
         style: { kind: "stroke", color: "#abcdef", width: 2.13, opacity: 0.56 },
         transform: [1, 0, 0, 1, 0, 0],
-        geometry: { x: 3.13, y: 7.56, width: 2, height: 4 },
+        geometry: { x: 3.13, y: 7.56, width: 2, height: 4, shape: "rectangle" },
       },
     });
     expect(() =>
@@ -162,6 +185,29 @@ describe("durable operation validation", () => {
         item: { ...rectangle(), z: 10 },
       }),
     ).toThrow(/Unknown field/);
+  });
+
+  it("persists an explicit square subtype while canonicalizing legacy rectangles", () => {
+    expect(
+      validateDurableOperation({
+        kind: "item.create",
+        item: {
+          ...rectangle(),
+          geometry: { ...rectangle().geometry, width: 40, height: 40, shape: "square" },
+        },
+      }),
+    ).toMatchObject({
+      item: {
+        kind: "rectangle",
+        geometry: { width: 40, height: 40, shape: "square" },
+      },
+    });
+    expect(() =>
+      validateDurableOperation({
+        kind: "item.create",
+        item: { ...rectangle(), geometry: { ...rectangle().geometry, shape: "circle" } },
+      }),
+    ).toThrow(/Rectangle shape must be one of/);
   });
 
   it("requires a strict line-specific arrowhead style", () => {
@@ -199,6 +245,67 @@ describe("durable operation validation", () => {
         item: { ...line(), style: { ...line().style, extra: true } },
       }),
     ).toThrow(/Unknown field/);
+  });
+
+  it("normalizes visible line fragments and strict polygon/protractor items", () => {
+    expect(
+      validateDurableOperation({
+        kind: "item.create",
+        item: {
+          ...line(),
+          geometry: {
+            ...line().geometry,
+            visiblePaths: [
+              [
+                [5.129, 7.555],
+                [10.126, 9],
+              ],
+              [
+                [20, 15],
+                [25.555, 17.129],
+              ],
+            ],
+          },
+        },
+      }),
+    ).toMatchObject({
+      item: {
+        geometry: {
+          visiblePaths: [
+            [
+              [5.13, 7.56],
+              [10.13, 9],
+            ],
+            [
+              [20, 15],
+              [25.56, 17.13],
+            ],
+          ],
+        },
+      },
+    });
+    expect(validateDurableOperation({ kind: "item.create", item: polygon() })).toMatchObject({
+      item: {
+        kind: "polygon",
+        geometry: { x: 5.13, y: 7.56, width: 80, height: 60, polygon: "pentagon" },
+      },
+    });
+    expect(validateDurableOperation({ kind: "item.create", item: protractor() })).toEqual({
+      kind: "item.create",
+      item: {
+        id: ID_1,
+        kind: "protractor",
+        style: { kind: "protractor", color: "#3dadff", opacity: 0.8 },
+        transform: [0, 1, -1, 0, 100, 200],
+        geometry: { radius: 160.13 },
+      },
+    });
+    expect(() =>
+      validateDurableOperation({
+        kind: "item.create",
+        item: { ...protractor(), style: polygon().style },
+      }),
+    ).toThrow(/protractor/);
   });
 
   it("persists only allowlisted text font families with trusted local stacks", () => {
@@ -630,6 +737,20 @@ describe("durable operation validation", () => {
     ).toThrow(/greater than or equal to 1/);
   });
 
+  it("normalizes an exact, complete board feature map with safe image defaults", () => {
+    expect(BOARD_FEATURE_KEYS).toHaveLength(23);
+    expect(DEFAULT_BOARD_FEATURES.images).toBe(false);
+    expect(normalizeBoardFeatures(DEFAULT_BOARD_FEATURES)).toEqual(DEFAULT_BOARD_FEATURES);
+    expect(() => normalizeBoardFeatures({ ...DEFAULT_BOARD_FEATURES, protractor: "yes" })).toThrow(
+      /protractor must be a boolean/,
+    );
+    const { voting: _voting, ...missingVoting } = DEFAULT_BOARD_FEATURES;
+    expect(() => normalizeBoardFeatures(missingVoting)).toThrow(/Missing field "voting"/);
+    expect(() => normalizeBoardFeatures({ ...DEFAULT_BOARD_FEATURES, unknown: true })).toThrow(
+      /Unknown field "unknown"/,
+    );
+  });
+
   it("rejects nested batches, unknown patch fields, and duplicate affected IDs", () => {
     expect(() =>
       validateDurableOperation({
@@ -746,7 +867,61 @@ describe("hostile frame parsing", () => {
     });
   });
 
-  it("normalizes line previews with line styles and rejects shape-style confusion", () => {
+  it("admits bounded visible fragments inside a batched partial erase", () => {
+    expect(
+      parseClientFrame(
+        JSON.stringify({
+          v: 1,
+          t: "client.commit",
+          commandId: ID_2,
+          actionId: ID_3,
+          baseSeq: 0,
+          op: {
+            kind: "items.batch",
+            operations: [
+              {
+                kind: "item.update",
+                itemId: ID_1,
+                expectedVersion: 1,
+                patch: {
+                  geometry: {
+                    ...line().geometry,
+                    visiblePaths: [
+                      [
+                        [5, 7],
+                        [10, 9],
+                      ],
+                    ],
+                  },
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    ).toMatchObject({
+      op: {
+        kind: "items.batch",
+        operations: [
+          {
+            kind: "item.update",
+            patch: {
+              geometry: {
+                visiblePaths: [
+                  [
+                    [5, 7],
+                    [10, 9],
+                  ],
+                ],
+              },
+            },
+          },
+        ],
+      },
+    });
+  });
+
+  it("normalizes line previews and preserves the frozen v1 stroke-style preview", () => {
     const preview = {
       v: 1,
       t: "client.preview",
@@ -767,14 +942,14 @@ describe("hostile frame parsing", () => {
         style: { kind: "line", width: 2.13, opacity: 0.56, arrowhead: "arrow" },
       },
     });
-    expect(() =>
+    expect(
       parseClientFrame(
         JSON.stringify({
           ...preview,
           payload: { ...preview.payload, style: rectangle().style },
         }),
       ),
-    ).toThrow(/line/);
+    ).toMatchObject({ payload: { itemKind: "line", style: { kind: "stroke" } } });
     expect(() =>
       parseClientFrame(
         JSON.stringify({
@@ -789,6 +964,54 @@ describe("hostile frame parsing", () => {
     ).toThrow(/stroke/);
   });
 
+  it("normalizes polygon geometry previews with stroke styles", () => {
+    const preview = {
+      v: 1,
+      t: "client.preview",
+      gestureId: ID_2,
+      previewSeq: 2,
+      kind: "shape.geometry",
+      payload: {
+        itemId: ID_1,
+        itemKind: "polygon",
+        geometry: polygon().geometry,
+        style: polygon().style,
+      },
+    };
+    expect(parseClientFrame(JSON.stringify(preview))).toMatchObject({
+      payload: {
+        itemKind: "polygon",
+        geometry: { x: 5.13, y: 7.56, width: 80, height: 60, polygon: "pentagon" },
+        style: { kind: "stroke", width: 2.13, opacity: 0.56 },
+      },
+    });
+  });
+
+  it("preserves the square subtype in rectangle geometry previews", () => {
+    expect(
+      parseClientFrame(
+        JSON.stringify({
+          v: 1,
+          t: "client.preview",
+          gestureId: ID_2,
+          previewSeq: 3,
+          kind: "shape.geometry",
+          payload: {
+            itemId: ID_1,
+            itemKind: "rectangle",
+            geometry: { x: 5, y: 7, width: 80, height: 80, shape: "square" },
+            style: rectangle().style,
+          },
+        }),
+      ),
+    ).toMatchObject({
+      payload: {
+        itemKind: "rectangle",
+        geometry: { x: 5, y: 7, width: 80, height: 80, shape: "square" },
+      },
+    });
+  });
+
   it("rejects binary, unsupported, unknown, deep, and non-finite frames with typed errors", () => {
     expect(() => parseClientFrame(new Uint8Array([1, 2]))).toThrow(ProtocolValidationError);
     expect(() => parseClientFrame('{"v":2,"t":"client.sync_check","latestSeq":0}')).toThrowError(
@@ -798,10 +1021,10 @@ describe("hostile frame parsing", () => {
       }),
     );
     expect(() => parseClientFrame('{"v":1,"t":"unknown"}')).toThrow(/Unknown frame type/);
+    let nested: unknown = 1;
+    for (let depth = 0; depth < 12; depth += 1) nested = [nested];
     expect(() =>
-      parseClientFrame(
-        JSON.stringify({ v: 1, t: "client.sync_check", latestSeq: 0, nested: [[[[[[[[1]]]]]]]] }),
-      ),
+      parseClientFrame(JSON.stringify({ v: 1, t: "client.sync_check", latestSeq: 0, nested })),
     ).toThrow(/nesting/);
     expect(() =>
       // validateClientFrame accepts programmatic hostile values too; JSON itself

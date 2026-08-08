@@ -25,13 +25,13 @@ const OTHER_ASSET_ID = "asset_CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const ACTION_1 = "018f0000-0000-7000-8000-000000000101";
 const ACTION_2 = "018f0000-0000-7000-8000-000000000102";
 
-function rectangle(id = RECTANGLE_ID) {
+function rectangle(id = RECTANGLE_ID, shape: "rectangle" | "square" = "rectangle") {
   return {
     id,
     kind: "rectangle" as const,
     style: { kind: "stroke" as const, color: "#123456", width: 2, opacity: 1 },
     transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
-    geometry: { x: 10, y: 20, width: 30, height: 40 },
+    geometry: { x: 10, y: 20, width: 30, height: shape === "square" ? 30 : 40, shape },
   };
 }
 
@@ -48,6 +48,36 @@ function line(id = RECTANGLE_ID) {
     },
     transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
     geometry: { x1: 10, y1: 20, x2: 130, y2: 80 },
+  };
+}
+
+function polygon(id = RECTANGLE_ID) {
+  return {
+    id,
+    kind: "polygon" as const,
+    style: { kind: "stroke" as const, color: "#874fff", width: 3, opacity: 0.8 },
+    transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+    geometry: {
+      x: 10,
+      y: 20,
+      width: 100,
+      height: 80,
+      polygon: "hexagon" as const,
+      visiblePaths: [
+        [[60, 20] as [number, number], [110, 40] as [number, number]],
+        [[110, 80] as [number, number], [60, 100] as [number, number]],
+      ],
+    },
+  };
+}
+
+function protractor(id = RECTANGLE_ID) {
+  return {
+    id,
+    kind: "protractor" as const,
+    style: { kind: "protractor" as const, color: "#3dadff", opacity: 0.75 },
+    transform: [0, 1, -1, 0, 300, 200] as [number, number, number, number, number, number],
+    geometry: { radius: 160 },
   };
 }
 
@@ -179,6 +209,24 @@ function corruptImageEffect(
 }
 
 describe("normal board reductions", () => {
+  it("preserves the authoritative square subtype through state and canonical snapshots", () => {
+    const state = applyDurableOperation(
+      createBoardState(),
+      { kind: "item.create", item: rectangle(RECTANGLE_ID, "square") },
+      { seq: 1, actorId: ALICE },
+    ).state;
+    const [item] = liveItemsInPaintOrder(state);
+    expect(item).toMatchObject({ kind: "rectangle", geometry: { shape: "square" } });
+    const serialized = serializeCanonicalSnapshot({
+      boardId: "018f0000-0000-7000-8000-0000000000ff",
+      seq: 1,
+      createdAt: 1_785_840_000_000,
+      settings: { title: "Square gating" },
+      items: item ? [item] : [],
+    });
+    expect(JSON.parse(serialized).items[0].geometry.shape).toBe("square");
+  });
+
   it("assigns paint order/server fields and emits complete before/after effects", () => {
     const original = createBoardState();
     const result = applyDurableOperation(
@@ -587,6 +635,63 @@ describe("normal board reductions", () => {
         { seq: 2, actorId: ALICE },
       ),
     ).toThrowError(expect.objectContaining({ code: "INVALID_FRAME" }));
+  });
+
+  it("persists polygon fragments and rotatable protractors in canonical state", () => {
+    const first = applyDurableOperation(
+      createBoardState(),
+      { kind: "item.create", item: polygon() },
+      { seq: 1, actorId: ALICE },
+    ).state;
+    const second = applyDurableOperation(
+      first,
+      { kind: "item.create", item: protractor(COPY_ID) },
+      { seq: 2, actorId: ALICE },
+    ).state;
+    const items = liveItemsInPaintOrder(second);
+    expect(items).toMatchObject([
+      {
+        kind: "polygon",
+        geometry: {
+          polygon: "hexagon",
+          visiblePaths: [
+            [
+              [60, 20],
+              [110, 40],
+            ],
+            [
+              [110, 80],
+              [60, 100],
+            ],
+          ],
+        },
+      },
+      {
+        kind: "protractor",
+        transform: [0, 1, -1, 0, 300, 200],
+        geometry: { radius: 160 },
+      },
+    ]);
+    const original = items[0];
+    if (original?.kind !== "polygon") throw new Error("Expected a polygon item.");
+    const cloned = cloneBoardItem(original);
+    if (cloned.kind !== "polygon") throw new Error("Expected a polygon clone.");
+    const firstClonedPath = cloned.geometry.visiblePaths?.[0];
+    if (!firstClonedPath) throw new Error("Expected cloned visible paths.");
+    firstClonedPath[0] = [999, 20];
+    expect(original.geometry.visiblePaths).toEqual(polygon().geometry.visiblePaths);
+
+    const serialized = serializeCanonicalSnapshot({
+      boardId: "018f0000-0000-7000-8000-0000000000ff",
+      seq: 2,
+      createdAt: 1_785_840_000_000,
+      settings: { title: "Geometry instruments" },
+      items,
+    });
+    expect(JSON.parse(serialized).items).toMatchObject([
+      { kind: "polygon", geometry: { polygon: "hexagon", visiblePaths: expect.any(Array) } },
+      { kind: "protractor", style: { kind: "protractor" }, geometry: { radius: 160 } },
+    ]);
   });
 
   it("persists stamp create, update, copy, delete, history, and snapshots", () => {

@@ -1,5 +1,12 @@
 import { applyAuthoritativeOperation } from "@collab/board-core";
-import { lineArrowheadPoints, zoneGeometryContainsPoint } from "@collab/geometry";
+import {
+  lineArrowheadPoints,
+  type OutlineGeometry,
+  type OutlineGeometryKind,
+  protractorSnapPoints,
+  visibleOutlinePaths,
+  zoneGeometryContainsPoint,
+} from "@collab/geometry";
 import type {
   AuthoritativeItemOperation,
   AuthoritativeOperation,
@@ -7,6 +14,7 @@ import type {
   BoardItem as SharedBoardItem,
 } from "@collab/protocol";
 import { normalizeBoardItem } from "@collab/protocol";
+import { eraseStrokeItem, isPartiallyErasableItem } from "../tools/stroke-erase";
 import type {
   BatchItemOperation,
   BoardItem,
@@ -29,6 +37,10 @@ export type ConnectorAnchor = {
   point: Point;
   z: number;
   distance: number;
+  source?: "cardinal" | "endpoint" | "edge" | "protractor-center" | "protractor-tick";
+  pathIndex?: number;
+  segmentIndex?: number;
+  t?: number;
 };
 
 type ModelListener = (changedIds: ReadonlySet<string> | null) => void;
@@ -210,22 +222,108 @@ export class BoardModel {
     if (!Number.isFinite(maxDistance) || maxDistance < 0) return undefined;
     let nearest: ConnectorAnchor | undefined;
     for (const item of this.rendered.values()) {
-      if (!supportsConnectorAnchors(item)) continue;
       const bounds = this.getBounds(item.id);
-      if (!bounds) continue;
-      for (const anchorPoint of cardinalAnchorPoints(bounds)) {
-        const distance = Math.hypot(anchorPoint[0] - point[0], anchorPoint[1] - point[1]);
-        if (distance > maxDistance) continue;
-        if (
-          !nearest ||
-          distance < nearest.distance - 1e-9 ||
-          (Math.abs(distance - nearest.distance) <= 1e-9 && item.z > nearest.z)
-        ) {
-          nearest = { itemId: item.id, point: anchorPoint, z: item.z, distance };
+      if (!bounds || !containsPoint(expandBounds(bounds, maxDistance), point)) continue;
+      const hasVisibleFragments =
+        isPartiallyErasableItem(item) && item.geometry.visiblePaths !== undefined;
+      if (supportsConnectorAnchors(item) && !hasVisibleFragments) {
+        for (const anchorPoint of cardinalAnchorPoints(bounds)) {
+          nearest = nearerAnchor(
+            nearest,
+            {
+              itemId: item.id,
+              point: anchorPoint,
+              z: item.z,
+              distance: pointDistance(point, anchorPoint),
+            },
+            maxDistance,
+          );
         }
+      }
+      if (isPartiallyErasableItem(item)) {
+        const paths = worldOutlinePaths(item);
+        paths.forEach((path, pathIndex) => {
+          for (let segmentIndex = 1; segmentIndex < path.length; segmentIndex += 1) {
+            const start = path[segmentIndex - 1];
+            const end = path[segmentIndex];
+            if (!start || !end) continue;
+            const projection = projectPointToSegment(point, start, end);
+            const source = projection.t <= 1e-9 || projection.t >= 1 - 1e-9 ? "endpoint" : "edge";
+            nearest = nearerAnchor(
+              nearest,
+              {
+                itemId: item.id,
+                point: projection.point,
+                z: item.z,
+                distance: projection.distance,
+                source,
+                pathIndex,
+                segmentIndex: segmentIndex - 1,
+                t: projection.t,
+              },
+              maxDistance,
+            );
+          }
+        });
+      } else if (item.kind === "protractor") {
+        protractorSnapPoints(item.geometry).forEach((localPoint, index) => {
+          const anchorPoint = transformPoint(localPoint, item.transform);
+          nearest = nearerAnchor(
+            nearest,
+            {
+              itemId: item.id,
+              point: anchorPoint,
+              z: item.z,
+              distance: pointDistance(point, anchorPoint),
+              source: index === 0 ? "protractor-center" : "protractor-tick",
+            },
+            maxDistance,
+          );
+        });
+        const baselineStart = transformPoint([-item.geometry.radius, 0], item.transform);
+        const baselineEnd = transformPoint([item.geometry.radius, 0], item.transform);
+        const projection = projectPointToSegment(point, baselineStart, baselineEnd);
+        nearest = nearerAnchor(
+          nearest,
+          {
+            itemId: item.id,
+            point: projection.point,
+            z: item.z,
+            distance: projection.distance,
+            source: projection.t <= 1e-9 || projection.t >= 1 - 1e-9 ? "endpoint" : "edge",
+            segmentIndex: 0,
+            t: projection.t,
+          },
+          maxDistance,
+        );
       }
     }
     return nearest;
+  }
+
+  strokeItemsNearPath(
+    path: readonly Point[],
+    radius: number,
+    canModify: (item: BoardItem) => boolean = () => true,
+  ): BoardItem[] {
+    if (
+      path.length === 0 ||
+      !Number.isFinite(radius) ||
+      radius < 0 ||
+      path.some((point) => !Number.isFinite(point[0]) || !Number.isFinite(point[1]))
+    ) {
+      return [];
+    }
+    const area = expandBounds(boundsFromPoints(path), radius);
+    return [...this.rendered.values()]
+      .filter((item) => {
+        if (!isPartiallyErasableItem(item) || item.version <= 0 || !canModify(item)) return false;
+        const bounds = this.getBounds(item.id);
+        return Boolean(
+          bounds && boundsIntersect(bounds, area) && eraseStrokeItem(item, path, radius),
+        );
+      })
+      .sort((left, right) => right.z - left.z || left.id.localeCompare(right.id));
   }
 
   intersecting(area: Bounds): BoardItem[] {
@@ -650,9 +748,10 @@ export function itemBounds(item: BoardItem): Bounds {
           item.kind === "stamp" ||
           item.kind === "image" ||
           item.kind === "table" ||
-          item.kind === "zone"
+          item.kind === "zone" ||
+          item.kind === "protractor"
         ? 0
-        : item.style.width / 2;
+        : (item.style.width / 2) * maximumLinearScale(item.transform);
   return { minX: minX - padding, minY: minY - padding, maxX: maxX + padding, maxY: maxY + padding };
 }
 
@@ -665,6 +764,73 @@ export function cardinalAnchorPoints(bounds: Bounds): readonly Point[] {
     [centerX, bounds.maxY],
     [bounds.minX, centerY],
   ];
+}
+
+function nearerAnchor(
+  current: ConnectorAnchor | undefined,
+  candidate: ConnectorAnchor,
+  maxDistance: number,
+): ConnectorAnchor | undefined {
+  if (candidate.distance > maxDistance + 1e-9) return current;
+  if (!current) return candidate;
+  if (candidate.distance < current.distance - 1e-9) return candidate;
+  if (Math.abs(candidate.distance - current.distance) > 1e-9) return current;
+  const candidatePriority = anchorPriority(candidate.source);
+  const currentPriority = anchorPriority(current.source);
+  if (candidatePriority !== currentPriority) {
+    return candidatePriority > currentPriority ? candidate : current;
+  }
+  if (candidate.z !== current.z) return candidate.z > current.z ? candidate : current;
+  if (candidate.itemId !== current.itemId) {
+    return candidate.itemId.localeCompare(current.itemId) < 0 ? candidate : current;
+  }
+  if ((candidate.pathIndex ?? -1) !== (current.pathIndex ?? -1)) {
+    return (candidate.pathIndex ?? -1) < (current.pathIndex ?? -1) ? candidate : current;
+  }
+  return (candidate.segmentIndex ?? -1) < (current.segmentIndex ?? -1) ? candidate : current;
+}
+
+function anchorPriority(source: ConnectorAnchor["source"]): number {
+  if (source === "endpoint" || source === "protractor-center" || source === "protractor-tick") {
+    return 2;
+  }
+  return source === "edge" ? 1 : 0;
+}
+
+function projectPointToSegment(
+  point: Point,
+  start: Point,
+  end: Point,
+): { point: Point; distance: number; t: number } {
+  const dx = end[0] - start[0];
+  const dy = end[1] - start[1];
+  const denominator = dx * dx + dy * dy;
+  const t =
+    denominator <= 1e-12
+      ? 0
+      : Math.max(
+          0,
+          Math.min(1, ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / denominator),
+        );
+  const projection: Point = [start[0] + t * dx, start[1] + t * dy];
+  return { point: projection, distance: pointDistance(point, projection), t };
+}
+
+function worldOutlinePaths(
+  item: Extract<BoardItem, { kind: "pencil" | "line" | "rectangle" | "ellipse" | "polygon" }>,
+): Point[][] {
+  return visibleOutlinePaths(
+    item.kind as OutlineGeometryKind,
+    item.geometry as OutlineGeometry,
+  ).map((path) => path.map((point) => transformPoint(point, item.transform)));
+}
+
+function lineTerminalIsVisible(item: Extract<BoardItem, { kind: "line" }>): boolean {
+  if (!item.geometry.visiblePaths) return true;
+  const terminal: Point = [item.geometry.x2, item.geometry.y2];
+  return item.geometry.visiblePaths.some(
+    (path) => pointsNear(path[0], terminal) || pointsNear(path.at(-1), terminal),
+  );
 }
 
 function supportsConnectorAnchors(
@@ -685,44 +851,32 @@ function supportsConnectorAnchors(
 
 function geometryBounds(item: BoardItem): Bounds {
   switch (item.kind) {
-    case "pencil": {
-      const xs = item.geometry.points.map((point) => point[0]);
-      const ys = item.geometry.points.map((point) => point[1]);
-      return {
-        minX: Math.min(...xs),
-        minY: Math.min(...ys),
-        maxX: Math.max(...xs),
-        maxY: Math.max(...ys),
-      };
-    }
+    case "pencil":
+    case "rectangle":
+    case "ellipse":
+    case "polygon":
+      return boundsFromPoints(visibleOutlinePaths(item.kind, item.geometry).flat());
     case "line": {
-      let bounds: Bounds = {
-        minX: Math.min(item.geometry.x1, item.geometry.x2),
-        minY: Math.min(item.geometry.y1, item.geometry.y2),
-        maxX: Math.max(item.geometry.x1, item.geometry.x2),
-        maxY: Math.max(item.geometry.y1, item.geometry.y2),
-      };
-      if (item.style.arrowhead === "arrow") {
+      let bounds = boundsFromPoints(visibleOutlinePaths("line", item.geometry).flat());
+      if (item.style.arrowhead === "arrow" && lineTerminalIsVisible(item)) {
         const points = lineArrowheadPoints(item.geometry, item.style.width);
         if (points) {
-          const xs = points.map((point) => point[0]);
-          const ys = points.map((point) => point[1]);
-          bounds = unionBounds(bounds, {
-            minX: Math.min(...xs),
-            minY: Math.min(...ys),
-            maxX: Math.max(...xs),
-            maxY: Math.max(...ys),
-          });
+          bounds = unionBounds(bounds, boundsFromPoints(points));
         }
       }
       return bounds;
     }
-    case "rectangle":
-    case "ellipse":
     case "sticky":
     case "image":
     case "zone":
       return boxBounds(item.geometry);
+    case "protractor":
+      return {
+        minX: -item.geometry.radius,
+        minY: -item.geometry.radius,
+        maxX: item.geometry.radius,
+        maxY: 0,
+      };
     case "table":
       return tableBounds(item.geometry);
     case "stamp":
@@ -768,30 +922,33 @@ function stampBounds(stamp: Extract<BoardItem, { kind: "stamp" }>["geometry"]): 
 function preciseHit(item: BoardItem, point: Point, extra: number): boolean {
   const local = inverseTransformPoint(point, item.transform);
   if (!local) return true;
-  if (item.kind === "line") {
-    const shaftHit =
-      distanceToSegment(
-        local,
-        [item.geometry.x1, item.geometry.y1],
-        [item.geometry.x2, item.geometry.y2],
-      ) <=
-      item.style.width / 2 + extra;
-    if (shaftHit || item.style.arrowhead !== "arrow") return shaftHit;
+  if (item.kind === "line" || item.kind === "pencil") {
+    const threshold = extra + (item.style.width / 2) * maximumLinearScale(item.transform);
+    for (const path of worldOutlinePaths(item)) {
+      for (let index = 1; index < path.length; index += 1) {
+        const start = path[index - 1];
+        const end = path[index];
+        if (start && end && distanceToSegment(point, start, end) <= threshold) return true;
+      }
+    }
+    if (item.kind !== "line" || item.style.arrowhead !== "arrow" || !lineTerminalIsVisible(item)) {
+      return false;
+    }
     const arrowhead = lineArrowheadPoints(item.geometry, item.style.width);
+    if (!arrowhead) return false;
+    const transformed = arrowhead.map((arrowPoint) => transformPoint(arrowPoint, item.transform));
     return (
-      arrowhead !== null &&
-      (distanceToSegment(local, arrowhead[0], arrowhead[1]) <= item.style.width / 2 + extra ||
-        distanceToSegment(local, arrowhead[1], arrowhead[2]) <= item.style.width / 2 + extra)
+      distanceToSegment(point, transformed[0] as Point, transformed[1] as Point) <= threshold ||
+      distanceToSegment(point, transformed[1] as Point, transformed[2] as Point) <= threshold
     );
   }
-  if (item.kind === "pencil") {
-    for (let index = 1; index < item.geometry.points.length; index += 1) {
-      const start = item.geometry.points[index - 1];
-      const end = item.geometry.points[index];
-      if (start && end && distanceToSegment(local, start, end) <= item.style.width / 2 + extra)
-        return true;
-    }
-    return false;
+  if (item.kind === "protractor") {
+    const distance = Math.hypot(local[0], local[1]);
+    return (
+      distance <= item.geometry.radius + extra &&
+      local[1] <= extra &&
+      local[1] >= -item.geometry.radius - extra
+    );
   }
   if (item.kind === "sticky") {
     return containsPoint(expandBounds(boxBounds(item.geometry), extra), local);
@@ -825,6 +982,39 @@ function distanceToSegment(point: Point, start: Point, end: Point): number {
     Math.min(1, ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / (dx * dx + dy * dy)),
   );
   return Math.hypot(point[0] - (start[0] + amount * dx), point[1] - (start[1] + amount * dy));
+}
+
+function pointDistance(left: Point, right: Point): number {
+  return Math.hypot(right[0] - left[0], right[1] - left[1]);
+}
+
+function pointsNear(left: Point | undefined, right: Point, epsilon = 1e-7): boolean {
+  return Boolean(
+    left && Math.abs(left[0] - right[0]) <= epsilon && Math.abs(left[1] - right[1]) <= epsilon,
+  );
+}
+
+function boundsFromPoints(points: readonly Point[]): Bounds {
+  if (points.length === 0) throw new Error("Cannot calculate bounds for an empty point set.");
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const point of points) {
+    minX = Math.min(minX, point[0]);
+    minY = Math.min(minY, point[1]);
+    maxX = Math.max(maxX, point[0]);
+    maxY = Math.max(maxY, point[1]);
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+function maximumLinearScale(matrix: Matrix): number {
+  const [a, b, c, d] = matrix;
+  const sum = a * a + b * b + c * c + d * d;
+  const determinant = a * d - b * c;
+  const discriminant = Math.max(0, sum * sum - 4 * determinant * determinant);
+  return Math.sqrt((sum + Math.sqrt(discriminant)) / 2);
 }
 
 function transformPoint(point: Point, matrix: Matrix): Point {

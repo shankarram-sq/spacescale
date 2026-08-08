@@ -6,6 +6,9 @@ import {
   expandBounds,
   formatCanonicalNumber,
   lineArrowheadPoints,
+  polygonPoints,
+  protractorPoint,
+  visibleOutlinePaths,
   ZONE_TITLE_PADDING,
   zoneTitleBandHeight,
 } from "@collab/geometry";
@@ -13,6 +16,7 @@ import {
   assertCanonicalId,
   type BoardItem,
   normalizeBoardItem,
+  type Point,
   type ProtocolErrorCode,
   ProtocolValidationError,
   textFontStack,
@@ -38,8 +42,12 @@ export const STAMP_SVG_PATHS = {
     "M12 2 14.2 8.2 20.5 10.5 14.2 12.8 12 19 9.8 12.8 3.5 10.5 9.8 8.2Z M19 15.5 20 18 22.5 19 20 20 19 22.5 18 20 15.5 19 18 18Z",
 } as const;
 
-type StrokeBoardItem = Extract<BoardItem, { kind: "pencil" | "line" | "rectangle" | "ellipse" }>;
+type StrokeBoardItem = Extract<
+  BoardItem,
+  { kind: "pencil" | "line" | "rectangle" | "ellipse" | "polygon" }
+>;
 type LineBoardItem = Extract<BoardItem, { kind: "line" }>;
+type ProtractorBoardItem = Extract<BoardItem, { kind: "protractor" }>;
 type StickyBoardItem = Extract<BoardItem, { kind: "sticky" }>;
 type ImageBoardItem = Extract<BoardItem, { kind: "image" }>;
 type StampBoardItem = Extract<BoardItem, { kind: "stamp" }>;
@@ -111,9 +119,43 @@ function commonStrokeAttributes(item: StrokeBoardItem): string {
   ].join(" ");
 }
 
+function outlinePathData(paths: readonly (readonly Point[])[]): string {
+  return paths
+    .map(([first, ...remaining]) => {
+      if (first === undefined) exportFail("A canonical visible path must contain points.");
+      return [
+        `M ${number(first[0])} ${number(first[1])}`,
+        ...remaining.map(([x, y]) => `L ${number(x)} ${number(y)}`),
+      ].join(" ");
+    })
+    .join(" ");
+}
+
+function renderVisibleOutline(item: StrokeBoardItem): string {
+  const paths = visibleOutlinePaths(item.kind, item.geometry);
+  const subtype = item.kind === "rectangle" ? ` data-shape="${item.geometry.shape}"` : "";
+  return `<path d="${outlinePathData(paths)}"${subtype} ${commonStrokeAttributes(item)} />`;
+}
+
 function renderLine(item: LineBoardItem): string {
   const { x1, y1, x2, y2 } = item.geometry;
   const attributes = commonStrokeAttributes(item);
+  if (item.geometry.visiblePaths !== undefined) {
+    const paths = visibleOutlinePaths("line", item.geometry);
+    const shaft = outlinePathData(paths);
+    const tipVisible = paths.some((path) => {
+      const last = path.at(-1);
+      return last?.[0] === x2 && last[1] === y2;
+    });
+    if (item.style.arrowhead === "none" || !tipVisible) {
+      return `<path d="${shaft}" ${attributes} />`;
+    }
+    const arrowhead = lineArrowheadPoints(item.geometry, item.style.width);
+    if (arrowhead === null) return `<path d="${shaft}" ${attributes} />`;
+    const [left, tip, right] = arrowhead;
+    const path = `${shaft} M ${number(left[0])} ${number(left[1])} L ${number(tip[0])} ${number(tip[1])} L ${number(right[0])} ${number(right[1])}`;
+    return `<path d="${path}" ${attributes} />`;
+  }
   if (item.style.arrowhead === "none") {
     return `<line x1="${number(x1)}" y1="${number(y1)}" x2="${number(x2)}" y2="${number(y2)}" ${attributes} />`;
   }
@@ -452,6 +494,37 @@ function renderZone(item: ZoneBoardItem): string {
   return `<g ${attributes}><title>${escapeXmlText(title)}</title>${clip}${fill}${border}${renderedTitle}</g>`;
 }
 
+function renderProtractor(item: ProtractorBoardItem): string {
+  const { radius } = item.geometry;
+  const color = escapeXmlAttribute(item.style.color);
+  const outerPoints = Array.from({ length: 91 }, (_, index) =>
+    protractorPoint(item.geometry, 180 - index * 2),
+  );
+  const arc = outlinePathData([outerPoints]);
+  const silhouette = `${arc} L ${number(-radius)} 0 Z`;
+  const ticks = Array.from({ length: 181 }, (_, degrees) => {
+    const insetRatio = degrees % 10 === 0 ? 0.1 : degrees % 5 === 0 ? 0.065 : 0.035;
+    const outer = protractorPoint(item.geometry, degrees);
+    const inner = protractorPoint(item.geometry, degrees, radius * insetRatio);
+    return `M ${number(outer[0])} ${number(outer[1])} L ${number(inner[0])} ${number(inner[1])}`;
+  }).join(" ");
+  const fontSize = Math.max(8, radius * 0.055);
+  const labels = Array.from({ length: 19 }, (_, index) => index * 10)
+    .map((degrees) => {
+      const point = protractorPoint(item.geometry, degrees, radius * 0.18);
+      return `<text x="${number(point[0])}" y="${number(point[1] + fontSize * 0.34)}" text-anchor="middle" fill="${color}" font-size="${number(fontSize)}" font-family="Inter, ui-sans-serif, system-ui, sans-serif">${degrees}</text>`;
+    })
+    .join("");
+  const attributes = [
+    `transform="${transformAttribute(item)}"`,
+    `opacity="${number(item.style.opacity)}"`,
+    `data-item-id="${escapeXmlAttribute(item.id)}"`,
+    `role="img"`,
+    `aria-label="180 degree protractor"`,
+  ].join(" ");
+  return `<g ${attributes}><title>180 degree protractor</title><path d="${silhouette}" fill="${color}" fill-opacity="0.08" stroke="${color}" stroke-width="1.5" vector-effect="non-scaling-stroke" /><path d="M ${number(-radius)} 0 L ${number(radius)} 0 ${ticks}" fill="none" stroke="${color}" stroke-width="1" stroke-linecap="round" vector-effect="non-scaling-stroke" />${labels}<circle cx="0" cy="0" r="3" fill="${color}" /></g>`;
+}
+
 function renderText(item: Extract<BoardItem, { kind: "text" }>): string {
   const lines = item.geometry.text.split(/\r\n?|\n/u);
   const attributes = [
@@ -479,20 +552,23 @@ function renderText(item: Extract<BoardItem, { kind: "text" }>): string {
 export function renderSvgItem(item: BoardItem): string {
   switch (item.kind) {
     case "pencil": {
-      const [first, ...remaining] = item.geometry.points;
-      if (first === undefined) exportFail("A canonical pencil item must contain points.");
-      const path = [
-        `M ${number(first[0])} ${number(first[1])}`,
-        ...remaining.map(([x, y]) => `L ${number(x)} ${number(y)}`),
-      ].join(" ");
-      return `<path d="${path}" ${commonStrokeAttributes(item)} />`;
+      return renderVisibleOutline(item);
     }
     case "line":
       return renderLine(item);
     case "rectangle":
-      return `<rect x="${number(item.geometry.x)}" y="${number(item.geometry.y)}" width="${number(item.geometry.width)}" height="${number(item.geometry.height)}" ${commonStrokeAttributes(item)} />`;
+      if (item.geometry.visiblePaths !== undefined) return renderVisibleOutline(item);
+      return `<rect x="${number(item.geometry.x)}" y="${number(item.geometry.y)}" width="${number(item.geometry.width)}" height="${number(item.geometry.height)}" data-shape="${item.geometry.shape}" ${commonStrokeAttributes(item)} />`;
     case "ellipse":
+      if (item.geometry.visiblePaths !== undefined) return renderVisibleOutline(item);
       return `<ellipse cx="${number(item.geometry.x + item.geometry.width / 2)}" cy="${number(item.geometry.y + item.geometry.height / 2)}" rx="${number(item.geometry.width / 2)}" ry="${number(item.geometry.height / 2)}" ${commonStrokeAttributes(item)} />`;
+    case "polygon":
+      if (item.geometry.visiblePaths !== undefined) return renderVisibleOutline(item);
+      return `<polygon points="${polygonPoints(item.geometry)
+        .map(([x, y]) => `${number(x)},${number(y)}`)
+        .join(" ")}" ${commonStrokeAttributes(item)} />`;
+    case "protractor":
+      return renderProtractor(item);
     case "text":
       return renderText(item);
     case "sticky":

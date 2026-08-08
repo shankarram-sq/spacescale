@@ -1,5 +1,6 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 
+import type { BoardFeatures } from "@collab/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { MAX_CLASSROOM_IMPORT_ENCODED_CHARS } from "./classroom-import";
 import gateway from "./gateway";
@@ -53,6 +54,7 @@ function makeEnv(options: { allowedOrigins?: string } = {}): {
           title: string;
           role: "owner" | "editor" | "viewer";
           displayName: string;
+          features: Record<string, boolean>;
         };
         return Response.json(
           {
@@ -62,6 +64,7 @@ function makeEnv(options: { allowedOrigins?: string } = {}): {
               accessMode: "private",
               drawingPolicy: "editors_enabled",
               imagesEnabled: false,
+              features: launch.features,
               aclVersion: 1,
             },
             actor: {
@@ -112,6 +115,7 @@ async function launchToken(
     role: "owner" | "editor" | "viewer";
     display_name: string;
     participant_id: string;
+    features: Partial<BoardFeatures>;
   }> = {},
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1_000);
@@ -159,6 +163,7 @@ describe("organisation embed gateway", () => {
         role: "owner",
         display_name: "  Coach Mira  ",
         participant_id: "coach-mira",
+        features: { line: false, protractor: false },
       }),
       "http://localhost",
       "eyJmb3JtYXQiOiJjZi13aGl0ZWJvYXJkLWpzb24ifQ",
@@ -196,6 +201,7 @@ describe("organisation embed gateway", () => {
       launchIssuedAtMs: expect.any(Number),
       placeholderOwnerActorId: expect.stringMatching(/^a_[A-Za-z0-9_-]{22}$/u),
       ownerRecoveryHash: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
+      features: expect.objectContaining({ images: false, line: false, protractor: false }),
       importSnapshot: "eyJmb3JtYXQiOiJjZi13aGl0ZWJvYXJkLWpzb24ifQ",
     });
 

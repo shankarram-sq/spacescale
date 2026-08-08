@@ -109,7 +109,15 @@ function expectSafeInteger(value: unknown, name: string, minimum = 0): number {
 
 function cloneGeometry(geometry: ItemGeometry): ItemGeometry {
   if ("points" in geometry) {
-    return { points: geometry.points.map(([x, y]) => [x, y]) };
+    return {
+      ...geometry,
+      points: geometry.points.map(([x, y]) => [x, y]),
+      ...(geometry.visiblePaths === undefined
+        ? {}
+        : {
+            visiblePaths: geometry.visiblePaths.map((path) => path.map(([x, y]) => [x, y])),
+          }),
+    };
   }
   if ("cells" in geometry) {
     return {
@@ -117,6 +125,12 @@ function cloneGeometry(geometry: ItemGeometry): ItemGeometry {
       columnWidths: [...geometry.columnWidths],
       rowHeights: [...geometry.rowHeights],
       cells: geometry.cells.map((row) => [...row]),
+    };
+  }
+  if ("visiblePaths" in geometry && geometry.visiblePaths !== undefined) {
+    return {
+      ...geometry,
+      visiblePaths: geometry.visiblePaths.map((path) => path.map(([x, y]) => [x, y])),
     };
   }
   return { ...geometry };
@@ -253,14 +267,28 @@ function geometryMatchesKind(item: BoardItem, geometry: ItemGeometry): boolean {
     case "line":
       return "x1" in geometry;
     case "rectangle":
-    case "ellipse":
       return (
         "width" in geometry &&
+        !("polygon" in geometry) &&
         !("text" in geometry) &&
         !("title" in geometry) &&
         !("assetId" in geometry) &&
         !("cells" in geometry)
       );
+    case "ellipse":
+      return (
+        "width" in geometry &&
+        !("shape" in geometry) &&
+        !("polygon" in geometry) &&
+        !("text" in geometry) &&
+        !("title" in geometry) &&
+        !("assetId" in geometry) &&
+        !("cells" in geometry)
+      );
+    case "polygon":
+      return "width" in geometry && "polygon" in geometry;
+    case "protractor":
+      return "radius" in geometry && !("width" in geometry);
     case "text":
       return "text" in geometry && !("width" in geometry);
     case "sticky":
@@ -293,19 +321,21 @@ function validatePatchForItem(item: BoardItem, patch: ItemPatch): void {
     const expectedKind =
       item.kind === "line"
         ? "line"
-        : item.kind === "text"
-          ? "text"
-          : item.kind === "sticky"
-            ? "sticky"
-            : item.kind === "image"
-              ? "image"
-              : item.kind === "stamp"
-                ? "stamp"
-                : item.kind === "table"
-                  ? "table"
-                  : item.kind === "zone"
-                    ? "zone"
-                    : "stroke";
+        : item.kind === "protractor"
+          ? "protractor"
+          : item.kind === "text"
+            ? "text"
+            : item.kind === "sticky"
+              ? "sticky"
+              : item.kind === "image"
+                ? "image"
+                : item.kind === "stamp"
+                  ? "stamp"
+                  : item.kind === "table"
+                    ? "table"
+                    : item.kind === "zone"
+                      ? "zone"
+                      : "stroke";
     if (patch.style.kind !== expectedKind) {
       coreFail("INVALID_FRAME", `The patch style does not match the stored ${item.kind} item.`);
     }
@@ -986,118 +1016,183 @@ function canonicalItem(item: BoardItem): BoardItem {
             opacity: normalized.style.opacity,
             arrowhead: normalized.style.arrowhead,
           }
-        : normalized.style.kind === "text"
+        : normalized.style.kind === "protractor"
           ? {
-              kind: "text" as const,
+              kind: "protractor" as const,
               color: normalized.style.color,
-              fontSize: normalized.style.fontSize,
-              fontFamily: normalized.style.fontFamily,
               opacity: normalized.style.opacity,
             }
-          : normalized.style.kind === "sticky"
+          : normalized.style.kind === "text"
             ? {
-                kind: "sticky" as const,
-                fill: normalized.style.fill,
-                textColor: normalized.style.textColor,
+                kind: "text" as const,
+                color: normalized.style.color,
                 fontSize: normalized.style.fontSize,
+                fontFamily: normalized.style.fontFamily,
                 opacity: normalized.style.opacity,
               }
-            : normalized.style.kind === "image"
+            : normalized.style.kind === "sticky"
               ? {
-                  kind: "image" as const,
+                  kind: "sticky" as const,
+                  fill: normalized.style.fill,
+                  textColor: normalized.style.textColor,
+                  fontSize: normalized.style.fontSize,
                   opacity: normalized.style.opacity,
-                  radius: normalized.style.radius,
                 }
-              : normalized.style.kind === "stamp"
+              : normalized.style.kind === "image"
                 ? {
-                    kind: "stamp" as const,
-                    color: normalized.style.color,
+                    kind: "image" as const,
                     opacity: normalized.style.opacity,
+                    radius: normalized.style.radius,
                   }
-                : normalized.style.kind === "table"
+                : normalized.style.kind === "stamp"
                   ? {
-                      kind: "table" as const,
-                      borderColor: normalized.style.borderColor,
-                      fill: normalized.style.fill,
-                      headerFill: normalized.style.headerFill,
-                      textColor: normalized.style.textColor,
-                      fontSize: normalized.style.fontSize,
+                      kind: "stamp" as const,
+                      color: normalized.style.color,
                       opacity: normalized.style.opacity,
                     }
-                  : {
-                      kind: "zone" as const,
-                      borderColor: normalized.style.borderColor,
-                      fill: normalized.style.fill,
-                      textColor: normalized.style.textColor,
-                      fontSize: normalized.style.fontSize,
-                      opacity: normalized.style.opacity,
-                    };
+                  : normalized.style.kind === "table"
+                    ? {
+                        kind: "table" as const,
+                        borderColor: normalized.style.borderColor,
+                        fill: normalized.style.fill,
+                        headerFill: normalized.style.headerFill,
+                        textColor: normalized.style.textColor,
+                        fontSize: normalized.style.fontSize,
+                        opacity: normalized.style.opacity,
+                      }
+                    : {
+                        kind: "zone" as const,
+                        borderColor: normalized.style.borderColor,
+                        fill: normalized.style.fill,
+                        textColor: normalized.style.textColor,
+                        fontSize: normalized.style.fontSize,
+                        opacity: normalized.style.opacity,
+                      };
   const geometry =
     normalized.kind === "pencil"
-      ? { points: normalized.geometry.points.map(([x, y]) => [x, y] as [number, number]) }
+      ? {
+          points: normalized.geometry.points.map(([x, y]) => [x, y] as [number, number]),
+          ...(normalized.geometry.visiblePaths === undefined
+            ? {}
+            : {
+                visiblePaths: normalized.geometry.visiblePaths.map((path) =>
+                  path.map(([x, y]) => [x, y] as [number, number]),
+                ),
+              }),
+        }
       : normalized.kind === "line"
         ? {
             x1: normalized.geometry.x1,
             y1: normalized.geometry.y1,
             x2: normalized.geometry.x2,
             y2: normalized.geometry.y2,
+            ...(normalized.geometry.visiblePaths === undefined
+              ? {}
+              : {
+                  visiblePaths: normalized.geometry.visiblePaths.map((path) =>
+                    path.map(([x, y]) => [x, y] as [number, number]),
+                  ),
+                }),
           }
-        : normalized.kind === "text"
-          ? { x: normalized.geometry.x, y: normalized.geometry.y, text: normalized.geometry.text }
-          : normalized.kind === "sticky"
-            ? {
-                x: normalized.geometry.x,
-                y: normalized.geometry.y,
-                width: normalized.geometry.width,
-                height: normalized.geometry.height,
-                text: normalized.geometry.text,
-              }
-            : normalized.kind === "image"
+        : normalized.kind === "polygon"
+          ? {
+              x: normalized.geometry.x,
+              y: normalized.geometry.y,
+              width: normalized.geometry.width,
+              height: normalized.geometry.height,
+              polygon: normalized.geometry.polygon,
+              ...(normalized.geometry.visiblePaths === undefined
+                ? {}
+                : {
+                    visiblePaths: normalized.geometry.visiblePaths.map((path) =>
+                      path.map(([x, y]) => [x, y] as [number, number]),
+                    ),
+                  }),
+            }
+          : normalized.kind === "protractor"
+            ? { radius: normalized.geometry.radius }
+            : normalized.kind === "text"
               ? {
                   x: normalized.geometry.x,
                   y: normalized.geometry.y,
-                  width: normalized.geometry.width,
-                  height: normalized.geometry.height,
-                  assetId: normalized.geometry.assetId,
-                  ...(normalized.geometry.alt === undefined
-                    ? {}
-                    : { alt: normalized.geometry.alt }),
-                  mimeType: normalized.geometry.mimeType,
-                  intrinsicWidth: normalized.geometry.intrinsicWidth,
-                  intrinsicHeight: normalized.geometry.intrinsicHeight,
+                  text: normalized.geometry.text,
                 }
-              : normalized.kind === "stamp"
+              : normalized.kind === "sticky"
                 ? {
                     x: normalized.geometry.x,
                     y: normalized.geometry.y,
-                    size: normalized.geometry.size,
-                    stamp: normalized.geometry.stamp,
+                    width: normalized.geometry.width,
+                    height: normalized.geometry.height,
+                    text: normalized.geometry.text,
                   }
-                : normalized.kind === "zone"
+                : normalized.kind === "image"
                   ? {
                       x: normalized.geometry.x,
                       y: normalized.geometry.y,
                       width: normalized.geometry.width,
                       height: normalized.geometry.height,
-                      title: normalized.geometry.title,
+                      assetId: normalized.geometry.assetId,
+                      ...(normalized.geometry.alt === undefined
+                        ? {}
+                        : { alt: normalized.geometry.alt }),
+                      mimeType: normalized.geometry.mimeType,
+                      intrinsicWidth: normalized.geometry.intrinsicWidth,
+                      intrinsicHeight: normalized.geometry.intrinsicHeight,
                     }
-                  : normalized.kind === "table"
+                  : normalized.kind === "stamp"
                     ? {
                         x: normalized.geometry.x,
                         y: normalized.geometry.y,
-                        columnWidths: [...normalized.geometry.columnWidths],
-                        rowHeights: [...normalized.geometry.rowHeights],
-                        cells: normalized.geometry.cells.map((row) => [...row]),
-                        ...(normalized.geometry.headerRow === undefined
-                          ? {}
-                          : { headerRow: normalized.geometry.headerRow }),
+                        size: normalized.geometry.size,
+                        stamp: normalized.geometry.stamp,
                       }
-                    : {
-                        x: normalized.geometry.x,
-                        y: normalized.geometry.y,
-                        width: normalized.geometry.width,
-                        height: normalized.geometry.height,
-                      };
+                    : normalized.kind === "zone"
+                      ? {
+                          x: normalized.geometry.x,
+                          y: normalized.geometry.y,
+                          width: normalized.geometry.width,
+                          height: normalized.geometry.height,
+                          title: normalized.geometry.title,
+                        }
+                      : normalized.kind === "table"
+                        ? {
+                            x: normalized.geometry.x,
+                            y: normalized.geometry.y,
+                            columnWidths: [...normalized.geometry.columnWidths],
+                            rowHeights: [...normalized.geometry.rowHeights],
+                            cells: normalized.geometry.cells.map((row) => [...row]),
+                            ...(normalized.geometry.headerRow === undefined
+                              ? {}
+                              : { headerRow: normalized.geometry.headerRow }),
+                          }
+                        : normalized.kind === "rectangle"
+                          ? {
+                              x: normalized.geometry.x,
+                              y: normalized.geometry.y,
+                              width: normalized.geometry.width,
+                              height: normalized.geometry.height,
+                              shape: normalized.geometry.shape,
+                              ...(normalized.geometry.visiblePaths === undefined
+                                ? {}
+                                : {
+                                    visiblePaths: normalized.geometry.visiblePaths.map((path) =>
+                                      path.map(([x, y]) => [x, y] as [number, number]),
+                                    ),
+                                  }),
+                            }
+                          : {
+                              x: normalized.geometry.x,
+                              y: normalized.geometry.y,
+                              width: normalized.geometry.width,
+                              height: normalized.geometry.height,
+                              ...(normalized.geometry.visiblePaths === undefined
+                                ? {}
+                                : {
+                                    visiblePaths: normalized.geometry.visiblePaths.map((path) =>
+                                      path.map(([x, y]) => [x, y] as [number, number]),
+                                    ),
+                                  }),
+                            };
   return {
     id: normalized.id,
     kind: normalized.kind,

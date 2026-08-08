@@ -1,3 +1,4 @@
+import { DEFAULT_BOARD_FEATURES } from "@collab/protocol";
 import { safeLog } from "./logging";
 import type { DurableObjectTelemetryContext } from "./telemetry";
 
@@ -342,6 +343,22 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
           (organisation_mode = 0 AND organisation_id IS NULL) OR
           (organisation_mode = 1 AND organisation_id IS NOT NULL)
         );
+    `,
+  },
+  {
+    version: 11,
+    name: "board_feature_settings",
+    sql: `
+      ALTER TABLE board ADD COLUMN features_json TEXT NOT NULL
+        DEFAULT '${JSON.stringify(DEFAULT_BOARD_FEATURES)}'
+        CHECK (json_valid(features_json));
+
+      -- Image uploads predate the complete feature map. Carry their effective
+      -- value forward once, then keep the legacy column mirrored while older
+      -- code paths are removed.
+      UPDATE board
+      SET features_json = replace(features_json, '"images":false', '"images":true')
+      WHERE images_enabled = 1;
     `,
   },
 ] as const;

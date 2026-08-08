@@ -11,7 +11,11 @@ import {
 const ACTOR = "018f0000-0000-7000-8000-0000000000a1";
 const BOARD = "018f0000-0000-7000-8000-0000000000ff";
 
-function rectangle(id: string, z: number): BoardItem {
+function rectangle(
+  id: string,
+  z: number,
+  shape: "rectangle" | "square" = "rectangle",
+): Extract<BoardItem, { kind: "rectangle" }> {
   return {
     id,
     kind: "rectangle",
@@ -20,7 +24,7 @@ function rectangle(id: string, z: number): BoardItem {
     createdBy: ACTOR,
     style: { kind: "stroke", color: "#123456", width: 2, opacity: 0.75 },
     transform: [1, 0, 0, 1, 0, 0],
-    geometry: { x: 0, y: 0, width: 10, height: 20 },
+    geometry: { x: 0, y: 0, width: 10, height: 20, shape },
   };
 }
 
@@ -34,6 +38,32 @@ function lineItem(id: string, arrowhead: "none" | "arrow"): Extract<BoardItem, {
     style: { kind: "line", color: "#123456", width: 4, opacity: 0.75, arrowhead },
     transform: [1, 0, 0, 1, 0, 0],
     geometry: { x1: 0, y1: 0, x2: 100, y2: 0 },
+  };
+}
+
+function polygonItem(id: string): Extract<BoardItem, { kind: "polygon" }> {
+  return {
+    id,
+    kind: "polygon",
+    z: 3,
+    version: 1,
+    createdBy: ACTOR,
+    style: { kind: "stroke", color: "#874fff", width: 3, opacity: 0.8 },
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: { x: 10, y: 20, width: 100, height: 80, polygon: "triangle" },
+  };
+}
+
+function protractorItem(id: string): Extract<BoardItem, { kind: "protractor" }> {
+  return {
+    id,
+    kind: "protractor",
+    z: 4,
+    version: 1,
+    createdBy: ACTOR,
+    style: { kind: "protractor", color: "#3dadff", opacity: 0.75 },
+    transform: [0, 1, -1, 0, 300, 200],
+    geometry: { radius: 100 },
   };
 }
 
@@ -217,6 +247,62 @@ describe("safe SVG serialization", () => {
       items: [lineItem("018f0000-0000-7000-8000-000000000003", "none")],
     });
     expect(plain).toContain('<line x1="0" y1="0" x2="100" y2="0"');
+  });
+
+  it("exports only surviving visible line and box outline paths", () => {
+    const line = lineItem("018f0000-0000-7000-8000-000000000012", "arrow");
+    line.geometry.visiblePaths = [
+      [
+        [0, 0],
+        [40, 0],
+      ],
+      [
+        [60, 0],
+        [100, 0],
+      ],
+    ];
+    const box = rectangle("018f0000-0000-7000-8000-000000000013", 3);
+    box.geometry.visiblePaths = [
+      [
+        [0, 0],
+        [10, 0],
+      ],
+    ];
+    const svg = serializeSvg({ boardId: BOARD, seq: 3, items: [line, box] });
+    expect(svg).toContain("M 0 0 L 40 0 M 60 0 L 100 0 M 88 5.4 L 100 0 L 88 -5.4");
+    expect(svg).toContain('d="M 0 0 L 10 0" data-shape="rectangle" fill="none" stroke="#123456"');
+    expect(svg).not.toContain('<rect x="0" y="0" width="10" height="20"');
+  });
+
+  it("preserves rectangle versus square subtype metadata", () => {
+    const square = rectangle("018f0000-0000-7000-8000-000000000016", 1, "square");
+    square.geometry.width = 20;
+    const svg = serializeSvg({ boardId: BOARD, seq: 1, items: [square] });
+    expect(svg).toContain('width="20" height="20" data-shape="square"');
+  });
+
+  it("exports semantic polygons and a deterministic rotatable 180 degree protractor", () => {
+    const polygon = polygonItem("018f0000-0000-7000-8000-000000000014");
+    const protractor = protractorItem("018f0000-0000-7000-8000-000000000015");
+    const first = createSvgExport({
+      boardId: BOARD,
+      seq: 4,
+      padding: 0,
+      items: [polygon, protractor],
+    });
+    const second = createSvgExport({
+      boardId: BOARD,
+      seq: 4,
+      padding: 0,
+      items: [polygon, protractor],
+    });
+    expect(first.svg).toBe(second.svg);
+    expect(first.svg).toContain('<polygon points="60,20 110,100 10,100"');
+    expect(first.svg).toContain('transform="matrix(0 1 -1 0 300 200)"');
+    expect(first.svg).toContain('aria-label="180 degree protractor"');
+    expect(first.svg).toContain("<title>180 degree protractor</title>");
+    expect(first.svg).toContain(">90</text>");
+    expect(first.viewBox).toEqual({ minX: 8.5, minY: 18.5, maxX: 400, maxY: 300 });
   });
 
   it("sorts paint order and supports multiline plain text with tspans", () => {

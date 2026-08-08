@@ -127,7 +127,7 @@ describe("convention-based stamp voting", () => {
       createdBy: "student",
       transform: IDENTITY,
       style: { kind: "stroke", color: "#20201e", width: 2, opacity: 1 },
-      geometry: { x: 400, y: 150, width: 20, height: 20 },
+      geometry: { x: 400, y: 150, width: 20, height: 20, shape: "rectangle" },
     };
 
     expect(summarizeVotes(table, [table, first, second, header, outside, rectangle])).toEqual({

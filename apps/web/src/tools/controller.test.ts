@@ -172,6 +172,23 @@ describe("captured gesture operations", () => {
     ).toEqual({ x1: 0, y1: 0, x2: 10, y2: 3 });
   });
 
+  it("preserves square and rectangle subtypes in local and remote geometry", () => {
+    expect(shapeGeometry("rectangle", [10, 20], [90, 55], true, false, "square")).toEqual({
+      x: 10,
+      y: 20,
+      width: 80,
+      height: 80,
+      shape: "square",
+    });
+    expect(shapeGeometry("rectangle", [10, 20], [90, 55], false, false, "rectangle")).toEqual({
+      x: 10,
+      y: 20,
+      width: 80,
+      height: 35,
+      shape: "rectangle",
+    });
+  });
+
   it("persists connector endpoints as absolute geometry with its arrow variant", () => {
     expect(
       buildShapeCreateOperation(

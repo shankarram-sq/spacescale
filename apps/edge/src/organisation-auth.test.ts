@@ -64,6 +64,7 @@ describe("OrganisationAuthService", () => {
           space_id: "  Fractions cafe\u0301  ",
           display_name: "  Asha  ",
           participant_id: "  student-42  ",
+          features: { line: false, images: true },
         }),
         ORG_A_CURRENT_KEY,
       ),
@@ -79,6 +80,7 @@ describe("OrganisationAuthService", () => {
       role: "editor",
       displayName: "Asha",
       participantId: "student-42",
+      features: expect.objectContaining({ line: false, images: true, pencil: true }),
     });
     expect(first.organisationId).toMatch(/^o_[A-Za-z0-9_-]{22}$/u);
     expect(first.boardId).toMatch(/^b_[A-Za-z0-9_-]{22}$/u);
@@ -200,6 +202,8 @@ describe("OrganisationAuthService", () => {
       { ...payload(), organisation_id: "\u0000school" },
       { ...payload(), space_id: "" },
       { ...payload(), participant_id: "p".repeat(321) },
+      { ...payload(), features: { unknown: true } },
+      { ...payload(), features: { line: "yes" } },
     ];
     for (const value of variants) {
       const token = await signOrganisationLaunchToken(

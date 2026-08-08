@@ -98,7 +98,7 @@ export function newRectangleItem(overrides: Partial<NewBoardItem> = {}): NewBoar
     kind: "rectangle",
     style: strokeStyle(),
     transform: [1, 0, 0, 1, 0, 0],
-    geometry: { x: 10, y: 20, width: 100, height: 60 },
+    geometry: { x: 10, y: 20, width: 100, height: 60, shape: "rectangle" },
     ...overrides,
   } as NewBoardItem;
 }

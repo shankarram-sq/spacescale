@@ -75,6 +75,7 @@ Organisation signing key. The JSON payload has exactly these fields:
 | `participant_id` | Stable email address or application identifier, up to 320 Unicode characters. It is never returned to the browser or export. |
 | `iat` | Issued-at Unix time in seconds. |
 | `exp` | Expiry Unix time in seconds, later than `iat` and no more than 24 hours after it. |
+| `features` | Optional partial object of board feature booleans. It seeds a new Space only; omitted keys use SpaceScale defaults. Unknown keys are rejected. |
 
 This Node.js helper creates a URL without exposing the signing key:
 
@@ -92,6 +93,7 @@ export function createSpaceUrl({
   role,
   displayName,
   participantId,
+  features,
   expiresInSeconds = 60 * 60,
   initialExport,
 }) {
@@ -107,6 +109,7 @@ export function createSpaceUrl({
     participant_id: participantId,
     iat: now,
     exp: now + expiresInSeconds,
+    ...(features === undefined ? {} : { features }),
   };
   const encoded = base64url(JSON.stringify(payload));
   const signed = `el1.${encoded}`;
@@ -150,7 +153,13 @@ allows every origin.
 All participants with the same Organisation and Space IDs resolve to one
 Durable Object and see the same state in real time. If the Space already
 exists, a launch only refreshes that Participant's current role and display
-name; it never resets the canvas.
+name; it never resets the canvas or reapplies launch-time feature settings.
+
+Feature settings in the signed claim are trusted because the HMAC covers the
+entire payload. They are applied only by the first launch that creates the
+Space. Generate every participant URL for one activity from the same feature
+configuration. Afterwards an owner can change the stored configuration from
+the Space settings; replaying an older participant URL cannot undo that change.
 
 An owner launch may include `import=<base64url canonical JSON export>` in the
 fragment. The import is applied only while creating a brand-new Space. It is

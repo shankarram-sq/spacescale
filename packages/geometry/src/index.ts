@@ -4,6 +4,11 @@ export const TRANSFORM_LINEAR_COMPONENT_LIMIT = COORDINATE_LIMIT;
 export const WORLD_COORDINATE_LIMIT = DIMENSION_LIMIT;
 export const MAX_PENCIL_POINTS = 10_000;
 export const MIN_PENCIL_POINTS = 2;
+export const MAX_VISIBLE_PATHS = 256;
+export const MAX_VISIBLE_PATH_POINTS = 10_000;
+export const MIN_VISIBLE_PATH_POINTS = 2;
+export const ELLIPSE_OUTLINE_SEGMENTS = 96;
+export const PROTRACTOR_SNAP_STEP_DEGREES = 5;
 export const IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
 export const MAX_IMAGE_ALT_CODE_POINTS = 500;
 export const MAX_IMAGE_INTRINSIC_DIMENSION = 4_096;
@@ -18,11 +23,12 @@ export const ZONE_BORDER_HIT_WIDTH = 6;
 
 const IMAGE_ASSET_ID_PATTERN = /^asset_[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u;
 
-export type Point = [number, number];
+export type Point = readonly [number, number];
 export type Transform = [number, number, number, number, number, number];
 
 export interface PencilGeometry {
   points: Point[];
+  visiblePaths?: VisiblePaths;
 }
 
 export interface LineGeometry {
@@ -30,6 +36,7 @@ export interface LineGeometry {
   y1: number;
   x2: number;
   y2: number;
+  visiblePaths?: VisiblePaths;
 }
 
 export interface BoxGeometry {
@@ -37,6 +44,30 @@ export interface BoxGeometry {
   y: number;
   width: number;
   height: number;
+}
+
+export type VisiblePaths = Point[][];
+
+export interface OutlineBoxGeometry extends BoxGeometry {
+  visiblePaths?: VisiblePaths;
+}
+
+export const RECTANGLE_KINDS = ["rectangle", "square"] as const;
+export type RectangleKind = (typeof RECTANGLE_KINDS)[number];
+
+export interface RectangleGeometry extends OutlineBoxGeometry {
+  shape: RectangleKind;
+}
+
+export const POLYGON_KINDS = ["triangle", "rhombus", "pentagon", "hexagon"] as const;
+export type PolygonKind = (typeof POLYGON_KINDS)[number];
+
+export interface PolygonGeometry extends OutlineBoxGeometry {
+  polygon: PolygonKind;
+}
+
+export interface ProtractorGeometry {
+  radius: number;
 }
 
 export interface TextGeometry {
@@ -86,6 +117,10 @@ export type ItemGeometry =
   | PencilGeometry
   | LineGeometry
   | BoxGeometry
+  | OutlineBoxGeometry
+  | RectangleGeometry
+  | PolygonGeometry
+  | ProtractorGeometry
   | TextGeometry
   | StickyGeometry
   | ZoneGeometry
@@ -98,6 +133,8 @@ export type GeometryKind =
   | "line"
   | "rectangle"
   | "ellipse"
+  | "polygon"
+  | "protractor"
   | "text"
   | "sticky"
   | "zone"
@@ -119,6 +156,7 @@ export interface BoundsItem {
   style:
     | { kind: "stroke"; width: number }
     | { kind: "line"; width: number; arrowhead: "none" | "arrow" }
+    | { kind: "protractor" }
     | { kind: "text"; fontSize: number }
     | { kind: "sticky"; fontSize: number }
     | { kind: "zone"; fontSize: number }
@@ -168,6 +206,25 @@ function expectOnlyKeys(
     }
   }
   for (const key of allowed) {
+    if (!own.call(value, key)) {
+      throw new GeometryValidationError(`Missing field ${JSON.stringify(key)}`, `${path}.${key}`);
+    }
+  }
+}
+
+function expectKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[],
+  path: string,
+): void {
+  const allowedSet = new Set([...required, ...optional]);
+  for (const key of Object.keys(value)) {
+    if (!allowedSet.has(key)) {
+      throw new GeometryValidationError(`Unknown field ${JSON.stringify(key)}`, `${path}.${key}`);
+    }
+  }
+  for (const key of required) {
     if (!own.call(value, key)) {
       throw new GeometryValidationError(`Missing field ${JSON.stringify(key)}`, `${path}.${key}`);
     }
@@ -250,9 +307,50 @@ export function normalizeTransform(value: unknown, path = "$transform"): Transfo
   ];
 }
 
+export function normalizeVisiblePaths(
+  value: unknown,
+  path = "$geometry.visiblePaths",
+): VisiblePaths {
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_VISIBLE_PATHS) {
+    throw new GeometryValidationError(
+      `Visible paths must contain between 1 and ${MAX_VISIBLE_PATHS} paths`,
+      path,
+    );
+  }
+  let totalPoints = 0;
+  return value.map((rawPath, pathIndex) => {
+    const pathLocation = `${path}[${pathIndex}]`;
+    if (!Array.isArray(rawPath)) {
+      throw new GeometryValidationError("Expected an array of points", pathLocation);
+    }
+    const points: Point[] = [];
+    for (let pointIndex = 0; pointIndex < rawPath.length; pointIndex += 1) {
+      const point = normalizePoint(rawPath[pointIndex], `${pathLocation}[${pointIndex}]`);
+      const previous = points.at(-1);
+      if (previous === undefined || previous[0] !== point[0] || previous[1] !== point[1]) {
+        points.push(point);
+        totalPoints += 1;
+        if (totalPoints > MAX_VISIBLE_PATH_POINTS) {
+          throw new GeometryValidationError(
+            `Visible paths may contain at most ${MAX_VISIBLE_PATH_POINTS} points`,
+            path,
+          );
+        }
+      }
+    }
+    if (points.length < MIN_VISIBLE_PATH_POINTS) {
+      throw new GeometryValidationError(
+        `Each visible path requires at least ${MIN_VISIBLE_PATH_POINTS} distinct adjacent points`,
+        pathLocation,
+      );
+    }
+    return points;
+  });
+}
+
 export function normalizePencilGeometry(value: unknown, path = "$geometry"): PencilGeometry {
   const object = expectRecord(value, path);
-  expectOnlyKeys(object, ["points"], path);
+  expectKeys(object, ["points"], ["visiblePaths"], path);
   if (!Array.isArray(object.points)) {
     throw new GeometryValidationError("Expected an array of points", `${path}.points`);
   }
@@ -278,17 +376,24 @@ export function normalizePencilGeometry(value: unknown, path = "$geometry"): Pen
       `${path}.points`,
     );
   }
-  return { points };
+  const visiblePaths = own.call(object, "visiblePaths")
+    ? normalizeVisiblePaths(object.visiblePaths, `${path}.visiblePaths`)
+    : undefined;
+  return { points, ...(visiblePaths === undefined ? {} : { visiblePaths }) };
 }
 
 export function normalizeLineGeometry(value: unknown, path = "$geometry"): LineGeometry {
   const object = expectRecord(value, path);
-  expectOnlyKeys(object, ["x1", "y1", "x2", "y2"], path);
+  expectKeys(object, ["x1", "y1", "x2", "y2"], ["visiblePaths"], path);
+  const visiblePaths = own.call(object, "visiblePaths")
+    ? normalizeVisiblePaths(object.visiblePaths, `${path}.visiblePaths`)
+    : undefined;
   return {
     x1: normalizeCoordinate(object.x1, `${path}.x1`),
     y1: normalizeCoordinate(object.y1, `${path}.y1`),
     x2: normalizeCoordinate(object.x2, `${path}.x2`),
     y2: normalizeCoordinate(object.y2, `${path}.y2`),
+    ...(visiblePaths === undefined ? {} : { visiblePaths }),
   };
 }
 
@@ -315,6 +420,90 @@ export function normalizeBoxGeometry(value: unknown, path = "$geometry"): BoxGeo
   normalizeCoordinate(x + width, `${path}.x+width`);
   normalizeCoordinate(y + height, `${path}.y+height`);
   return { x, y, width, height };
+}
+
+export function normalizeOutlineBoxGeometry(
+  value: unknown,
+  path = "$geometry",
+): OutlineBoxGeometry {
+  const object = expectRecord(value, path);
+  expectKeys(object, ["x", "y", "width", "height"], ["visiblePaths"], path);
+  const box = normalizeBoxGeometry(
+    { x: object.x, y: object.y, width: object.width, height: object.height },
+    path,
+  );
+  const visiblePaths = own.call(object, "visiblePaths")
+    ? normalizeVisiblePaths(object.visiblePaths, `${path}.visiblePaths`)
+    : undefined;
+  return { ...box, ...(visiblePaths === undefined ? {} : { visiblePaths }) };
+}
+
+export function normalizeRectangleGeometry(value: unknown, path = "$geometry"): RectangleGeometry {
+  const object = expectRecord(value, path);
+  expectKeys(object, ["x", "y", "width", "height"], ["shape", "visiblePaths"], path);
+  const box = normalizeOutlineBoxGeometry(
+    {
+      x: object.x,
+      y: object.y,
+      width: object.width,
+      height: object.height,
+      ...(own.call(object, "visiblePaths") ? { visiblePaths: object.visiblePaths } : {}),
+    },
+    path,
+  );
+  const shape = own.call(object, "shape")
+    ? typeof object.shape === "string" && RECTANGLE_KINDS.includes(object.shape as RectangleKind)
+      ? (object.shape as RectangleKind)
+      : null
+    : "rectangle";
+  if (shape === null) {
+    throw new GeometryValidationError(
+      `Rectangle shape must be one of ${RECTANGLE_KINDS.map((kind) => JSON.stringify(kind)).join(", ")}`,
+      `${path}.shape`,
+    );
+  }
+  if (shape === "square" && box.width !== box.height) {
+    throw new GeometryValidationError("Square width and height must be equal", `${path}.shape`);
+  }
+  return { ...box, shape };
+}
+
+export function normalizePolygonGeometry(value: unknown, path = "$geometry"): PolygonGeometry {
+  const object = expectRecord(value, path);
+  expectKeys(object, ["x", "y", "width", "height", "polygon"], ["visiblePaths"], path);
+  const box = normalizeOutlineBoxGeometry(
+    {
+      x: object.x,
+      y: object.y,
+      width: object.width,
+      height: object.height,
+      ...(own.call(object, "visiblePaths") ? { visiblePaths: object.visiblePaths } : {}),
+    },
+    path,
+  );
+  if (
+    typeof object.polygon !== "string" ||
+    !POLYGON_KINDS.includes(object.polygon as PolygonKind)
+  ) {
+    throw new GeometryValidationError(
+      `Polygon must be one of ${POLYGON_KINDS.map((kind) => JSON.stringify(kind)).join(", ")}`,
+      `${path}.polygon`,
+    );
+  }
+  return { ...box, polygon: object.polygon as PolygonKind };
+}
+
+export function normalizeProtractorGeometry(
+  value: unknown,
+  path = "$geometry",
+): ProtractorGeometry {
+  const object = expectRecord(value, path);
+  expectOnlyKeys(object, ["radius"], path);
+  const radius = normalizeDimension(object.radius, `${path}.radius`);
+  if (radius === 0) {
+    throw new GeometryValidationError("Protractor radius must be greater than 0", `${path}.radius`);
+  }
+  return { radius };
 }
 
 export function normalizeTextGeometry(value: unknown, path = "$geometry"): TextGeometry {
@@ -647,10 +836,21 @@ export function normalizeTableGeometry(value: unknown, path = "$geometry"): Tabl
 export function normalizeGeometry(kind: "pencil", value: unknown, path?: string): PencilGeometry;
 export function normalizeGeometry(kind: "line", value: unknown, path?: string): LineGeometry;
 export function normalizeGeometry(
-  kind: "rectangle" | "ellipse",
+  kind: "rectangle",
   value: unknown,
   path?: string,
-): BoxGeometry;
+): RectangleGeometry;
+export function normalizeGeometry(
+  kind: "ellipse",
+  value: unknown,
+  path?: string,
+): OutlineBoxGeometry;
+export function normalizeGeometry(kind: "polygon", value: unknown, path?: string): PolygonGeometry;
+export function normalizeGeometry(
+  kind: "protractor",
+  value: unknown,
+  path?: string,
+): ProtractorGeometry;
 export function normalizeGeometry(kind: "text", value: unknown, path?: string): TextGeometry;
 export function normalizeGeometry(kind: "sticky", value: unknown, path?: string): StickyGeometry;
 export function normalizeGeometry(kind: "zone", value: unknown, path?: string): ZoneGeometry;
@@ -669,8 +869,13 @@ export function normalizeGeometry(
     case "line":
       return normalizeLineGeometry(value, path);
     case "rectangle":
+      return normalizeRectangleGeometry(value, path);
     case "ellipse":
-      return normalizeBoxGeometry(value, path);
+      return normalizeOutlineBoxGeometry(value, path);
+    case "polygon":
+      return normalizePolygonGeometry(value, path);
+    case "protractor":
+      return normalizeProtractorGeometry(value, path);
     case "text":
       return normalizeTextGeometry(value, path);
     case "sticky":
@@ -690,6 +895,11 @@ export function inferAndNormalizeGeometry(value: unknown, path = "$geometry"): I
   const object = expectRecord(value, path);
   if (own.call(object, "points")) return normalizePencilGeometry(object, path);
   if (own.call(object, "x1")) return normalizeLineGeometry(object, path);
+  if (own.call(object, "polygon")) return normalizePolygonGeometry(object, path);
+  if (own.call(object, "shape")) return normalizeRectangleGeometry(object, path);
+  if (own.call(object, "radius") && !own.call(object, "width")) {
+    return normalizeProtractorGeometry(object, path);
+  }
   if (own.call(object, "stamp")) return normalizeStampGeometry(object, path);
   if (own.call(object, "assetId")) return normalizeImageGeometry(object, path);
   if (own.call(object, "cells")) return normalizeTableGeometry(object, path);
@@ -697,7 +907,7 @@ export function inferAndNormalizeGeometry(value: unknown, path = "$geometry"): I
   if (own.call(object, "width") && own.call(object, "text")) {
     return normalizeStickyGeometry(object, path);
   }
-  if (own.call(object, "width")) return normalizeBoxGeometry(object, path);
+  if (own.call(object, "width")) return normalizeOutlineBoxGeometry(object, path);
   if (own.call(object, "text")) return normalizeTextGeometry(object, path);
   throw new GeometryValidationError("Unrecognized geometry shape", path);
 }
@@ -779,6 +989,142 @@ function codePointLength(value: string): number {
   return Array.from(value).length;
 }
 
+export type OutlineGeometryKind = "pencil" | "line" | "rectangle" | "ellipse" | "polygon";
+export type OutlineGeometry = PencilGeometry | LineGeometry | OutlineBoxGeometry | PolygonGeometry;
+
+export function polygonPoints(geometry: PolygonGeometry): Point[] {
+  const { x, y, width, height } = geometry;
+  if (geometry.polygon === "triangle") {
+    return [
+      [canonicalNumber(x + width / 2, 2), y],
+      [canonicalNumber(x + width, 2), canonicalNumber(y + height, 2)],
+      [x, canonicalNumber(y + height, 2)],
+    ];
+  }
+  if (geometry.polygon === "rhombus") {
+    return [
+      [canonicalNumber(x + width / 2, 2), y],
+      [canonicalNumber(x + width, 2), canonicalNumber(y + height / 2, 2)],
+      [canonicalNumber(x + width / 2, 2), canonicalNumber(y + height, 2)],
+      [x, canonicalNumber(y + height / 2, 2)],
+    ];
+  }
+  const sides = geometry.polygon === "pentagon" ? 5 : 6;
+  const centerX = x + width / 2;
+  const centerY = y + height / 2;
+  return Array.from({ length: sides }, (_, index) => {
+    const angle = -Math.PI / 2 + (index * Math.PI * 2) / sides;
+    return [
+      canonicalNumber(centerX + Math.cos(angle) * (width / 2), 2),
+      canonicalNumber(centerY + Math.sin(angle) * (height / 2), 2),
+    ];
+  });
+}
+
+function closedPath(points: readonly Point[]): Point[] {
+  const first = points[0];
+  if (!first) return [];
+  return [...points.map(([x, y]) => [x, y] as Point), [first[0], first[1]]];
+}
+
+function ellipseOutlinePoints(geometry: OutlineBoxGeometry): Point[] {
+  const centerX = geometry.x + geometry.width / 2;
+  const centerY = geometry.y + geometry.height / 2;
+  const points = Array.from({ length: ELLIPSE_OUTLINE_SEGMENTS }, (_, index) => {
+    const angle = (index * Math.PI * 2) / ELLIPSE_OUTLINE_SEGMENTS;
+    return [
+      canonicalNumber(centerX + Math.cos(angle) * (geometry.width / 2), 2),
+      canonicalNumber(centerY + Math.sin(angle) * (geometry.height / 2), 2),
+    ] as Point;
+  });
+  return closedPath(points);
+}
+
+export function defaultOutlinePaths(
+  kind: OutlineGeometryKind,
+  geometry: OutlineGeometry,
+): VisiblePaths {
+  switch (kind) {
+    case "pencil":
+      return [(geometry as PencilGeometry).points.map(([x, y]) => [x, y])];
+    case "line": {
+      const line = geometry as LineGeometry;
+      return [
+        [
+          [line.x1, line.y1],
+          [line.x2, line.y2],
+        ],
+      ];
+    }
+    case "rectangle": {
+      const box = geometry as OutlineBoxGeometry;
+      return [
+        closedPath([
+          [box.x, box.y],
+          [box.x + box.width, box.y],
+          [box.x + box.width, box.y + box.height],
+          [box.x, box.y + box.height],
+        ]),
+      ];
+    }
+    case "ellipse":
+      return [ellipseOutlinePoints(geometry as OutlineBoxGeometry)];
+    case "polygon":
+      return [closedPath(polygonPoints(geometry as PolygonGeometry))];
+  }
+}
+
+export function visibleOutlinePaths(
+  kind: OutlineGeometryKind,
+  geometry: OutlineGeometry,
+): VisiblePaths {
+  if ("visiblePaths" in geometry && geometry.visiblePaths !== undefined) {
+    return geometry.visiblePaths.map((path) => path.map(([x, y]) => [x, y]));
+  }
+  return defaultOutlinePaths(kind, geometry);
+}
+
+export function protractorPoint(geometry: ProtractorGeometry, degrees: number, inset = 0): Point {
+  if (!Number.isFinite(degrees) || degrees < 0 || degrees > 180) {
+    throw new GeometryValidationError("Protractor degrees must be between 0 and 180", "$degrees");
+  }
+  if (!Number.isFinite(inset) || inset < 0 || inset > geometry.radius) {
+    throw new GeometryValidationError(
+      "Protractor inset must be between 0 and its radius",
+      "$inset",
+    );
+  }
+  const angle = (degrees * Math.PI) / 180;
+  const radius = geometry.radius - inset;
+  return [
+    canonicalNumber(Math.cos(angle) * radius, 2),
+    canonicalNumber(-Math.sin(angle) * radius, 2),
+  ];
+}
+
+export function protractorSnapPoints(
+  geometry: ProtractorGeometry,
+  stepDegrees = PROTRACTOR_SNAP_STEP_DEGREES,
+): Point[] {
+  if (
+    !Number.isSafeInteger(stepDegrees) ||
+    stepDegrees < 1 ||
+    stepDegrees > 180 ||
+    180 % stepDegrees !== 0
+  ) {
+    throw new GeometryValidationError(
+      "Protractor snap step must be a positive divisor of 180",
+      "$stepDegrees",
+    );
+  }
+  return [
+    [0, 0],
+    ...Array.from({ length: 180 / stepDegrees + 1 }, (_, index) =>
+      protractorPoint(geometry, index * stepDegrees),
+    ),
+  ];
+}
+
 export function geometryBounds(
   kind: GeometryKind,
   geometry: ItemGeometry,
@@ -786,16 +1132,45 @@ export function geometryBounds(
 ): Bounds {
   switch (kind) {
     case "pencil":
-      return boundsFromPoints((geometry as PencilGeometry).points);
+      return boundsFromPoints(visibleOutlinePaths("pencil", geometry as PencilGeometry).flat());
     case "line": {
       const line = geometry as LineGeometry;
-      return boundsFromPoints([
-        [line.x1, line.y1],
-        [line.x2, line.y2],
-      ]);
+      return boundsFromPoints(visibleOutlinePaths("line", line).flat());
     }
     case "rectangle":
-    case "ellipse":
+    case "ellipse": {
+      const outline = geometry as OutlineBoxGeometry;
+      if (outline.visiblePaths !== undefined) {
+        return boundsFromPoints(visibleOutlinePaths(kind, outline).flat());
+      }
+      return {
+        minX: outline.x,
+        minY: outline.y,
+        maxX: outline.x + outline.width,
+        maxY: outline.y + outline.height,
+      };
+    }
+    case "polygon": {
+      const polygon = geometry as PolygonGeometry;
+      if (polygon.visiblePaths !== undefined) {
+        return boundsFromPoints(visibleOutlinePaths("polygon", polygon).flat());
+      }
+      return {
+        minX: polygon.x,
+        minY: polygon.y,
+        maxX: polygon.x + polygon.width,
+        maxY: polygon.y + polygon.height,
+      };
+    }
+    case "protractor": {
+      const protractor = geometry as ProtractorGeometry;
+      return {
+        minX: -protractor.radius,
+        minY: -protractor.radius,
+        maxX: protractor.radius,
+        maxY: 0,
+      };
+    }
     case "sticky":
     case "zone":
     case "image":

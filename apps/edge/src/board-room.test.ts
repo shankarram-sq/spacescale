@@ -463,7 +463,7 @@ describe("BoardRoom initialization", () => {
         .one(),
     }));
     expect(state).toEqual({
-      migrations: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+      migrations: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
       boards: 1,
       owners: 1,
       classroomMode: 0,
@@ -476,7 +476,266 @@ describe("BoardRoom initialization", () => {
     );
     expect(bootstrap.status).toBe(200);
     const value = (await bootstrap.json()) as Record<string, unknown>;
-    expect(value).toMatchObject({ protocolVersion: 1, creators: [] });
+    expect(value).toMatchObject({
+      protocolVersion: 1,
+      board: { features: { images: false, rectangle: true, protractor: true } },
+      creators: [],
+    });
+  });
+
+  it("persists feature settings and rejects disabled item creation", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+
+    const disabled = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          features: { rectangle: false, protractor: false },
+          expectedAclVersion: 1,
+        }),
+      }),
+    );
+    expect(disabled.status).toBe(200);
+    expect(await disabled.json()).toMatchObject({
+      board: { aclVersion: 2, features: { rectangle: false, protractor: false } },
+    });
+
+    const connected = await connect(stub, actorId);
+    const rejected = createCommit(
+      "018f0000-0000-7000-8000-000000000091",
+      "018f0000-0000-7000-8000-000000000092",
+      "018f0000-0000-7000-8000-000000000093",
+    );
+    connected.socket.send(JSON.stringify(rejected));
+    expect(
+      await connected.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === rejected.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 0 });
+
+    const enabled = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ features: { rectangle: true }, expectedAclVersion: 2 }),
+      }),
+    );
+    expect(enabled.status).toBe(200);
+    expect(await enabled.json()).toMatchObject({
+      board: { aclVersion: 3, features: { rectangle: true, protractor: false } },
+    });
+    await connected.next(
+      (frame) =>
+        frame.t === "access.changed" &&
+        (frame.features as Record<string, unknown> | undefined)?.rectangle === true,
+    );
+
+    const accepted = createCommit(
+      "018f0000-0000-7000-8000-000000000094",
+      "018f0000-0000-7000-8000-000000000095",
+      "018f0000-0000-7000-8000-000000000096",
+    );
+    connected.socket.send(JSON.stringify(accepted));
+    expect(
+      await connected.next(
+        (frame) => frame.t === "server.action" && frame.commandId === accepted.commandId,
+      ),
+    ).toMatchObject({ seq: 1 });
+
+    const disablePartialEraser = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          features: { partialEraser: false, square: false },
+          expectedAclVersion: 3,
+        }),
+      }),
+    );
+    expect(disablePartialEraser.status).toBe(200);
+    await disablePartialEraser.arrayBuffer();
+    await connected.next(
+      (frame) =>
+        frame.t === "access.changed" &&
+        (frame.features as Record<string, unknown> | undefined)?.partialEraser === false,
+    );
+
+    const partialErase = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-000000000097",
+      actionId: "018f0000-0000-7000-8000-000000000098",
+      baseSeq: 1,
+      op: {
+        kind: "item.update",
+        itemId: accepted.op.item.id,
+        expectedVersion: 1,
+        patch: {
+          geometry: {
+            ...accepted.op.item.geometry,
+            visiblePaths: [
+              [
+                [1, 2],
+                [4, 2],
+              ],
+            ],
+          },
+        },
+      },
+    };
+    connected.socket.send(JSON.stringify(partialErase));
+    expect(
+      await connected.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === partialErase.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 1 });
+
+    const erasedCreate = {
+      ...createCommit(
+        "018f0000-0000-7000-8000-000000000101",
+        "018f0000-0000-7000-8000-000000000102",
+        "018f0000-0000-7000-8000-000000000103",
+      ),
+      baseSeq: 1,
+      op: {
+        kind: "item.create",
+        item: {
+          ...createCommit(
+            "018f0000-0000-7000-8000-000000000101",
+            "018f0000-0000-7000-8000-000000000102",
+            "018f0000-0000-7000-8000-000000000103",
+          ).op.item,
+          geometry: {
+            x: 1,
+            y: 2,
+            width: 3,
+            height: 4,
+            shape: "rectangle",
+            visiblePaths: [
+              [
+                [1, 2],
+                [4, 2],
+              ],
+            ],
+          },
+        },
+      },
+    };
+    connected.socket.send(JSON.stringify(erasedCreate));
+    expect(
+      await connected.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === erasedCreate.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 1 });
+
+    const disabledSubtypeUpdate = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-000000000104",
+      actionId: "018f0000-0000-7000-8000-000000000105",
+      baseSeq: 1,
+      op: {
+        kind: "item.update",
+        itemId: accepted.op.item.id,
+        expectedVersion: 1,
+        patch: {
+          geometry: { x: 1, y: 2, width: 4, height: 4, shape: "square" },
+        },
+      },
+    };
+    connected.socket.send(JSON.stringify(disabledSubtypeUpdate));
+    expect(
+      await connected.next(
+        (frame) =>
+          frame.t === "server.rejected" && frame.commandId === disabledSubtypeUpdate.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 1 });
+
+    const transformOnly = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-000000000099",
+      actionId: "018f0000-0000-7000-8000-000000000100",
+      baseSeq: 1,
+      op: {
+        kind: "item.update",
+        itemId: accepted.op.item.id,
+        expectedVersion: 1,
+        patch: { transform: [1, 0, 0, 1, 10, 10] },
+      },
+    };
+    connected.socket.send(JSON.stringify(transformOnly));
+    expect(
+      await connected.next(
+        (frame) => frame.t === "server.action" && frame.commandId === transformOnly.commandId,
+      ),
+    ).toMatchObject({ seq: 2 });
+    connected.socket.close(1000, "done");
+  });
+
+  it("gates square and rectangle previews by their canonical subtype", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const disableSquare = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          features: { square: false, rectangle: true },
+          expectedAclVersion: 1,
+        }),
+      }),
+    );
+    expect(disableSquare.status).toBe(200);
+    await disableSquare.arrayBuffer();
+
+    const sender = await connect(stub, actorId);
+    const receiver = await connect(stub, actorId);
+    const squarePreview = {
+      v: 1,
+      t: "client.preview",
+      gestureId: "018f0000-0000-7000-8000-000000000106",
+      previewSeq: 1,
+      kind: "shape.geometry",
+      payload: {
+        itemId: "018f0000-0000-7000-8000-000000000107",
+        itemKind: "rectangle",
+        geometry: { x: 10, y: 20, width: 80, height: 80, shape: "square" },
+        style: { kind: "stroke", color: "#112233", width: 2, opacity: 1 },
+      },
+    };
+    sender.socket.send(JSON.stringify(squarePreview));
+    expect(await sender.next((frame) => frame.t === "server.rejected")).toMatchObject({
+      code: "FORBIDDEN",
+    });
+
+    const enableSquareOnly = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          features: { square: true, rectangle: false },
+          expectedAclVersion: 2,
+        }),
+      }),
+    );
+    expect(enableSquareOnly.status).toBe(200);
+    await enableSquareOnly.arrayBuffer();
+    await Promise.all([
+      sender.next((frame) => frame.t === "access.changed"),
+      receiver.next((frame) => frame.t === "access.changed"),
+    ]);
+
+    sender.socket.send(JSON.stringify({ ...squarePreview, previewSeq: 2 }));
+    expect(
+      await receiver.next(
+        (frame) => frame.t === "server.preview" && frame.gestureId === squarePreview.gestureId,
+      ),
+    ).toMatchObject({ payload: { geometry: { shape: "square" } } });
+    sender.socket.close(1000, "done");
+    receiver.socket.close(1000, "done");
   });
 
   it("returns names only for visible-item creators, including revoked members", async () => {
@@ -2367,6 +2626,15 @@ describe("BoardRoom initialization", () => {
   it("requires image commits to reference matching committed board assets", async () => {
     const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
     await initializeBoard(stub);
+    const enableImages = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ features: { images: true }, expectedAclVersion: 1 }),
+      }),
+    );
+    expect(enableImages.status).toBe(200);
+    await enableImages.arrayBuffer();
     const connected = await connect(stub, actorId);
 
     const missing = createImageCommit(

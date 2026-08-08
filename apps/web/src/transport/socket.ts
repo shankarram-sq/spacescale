@@ -1,3 +1,5 @@
+import { type BoardFeatures, normalizeBoardFeatures } from "@collab/protocol";
+
 import type {
   ClientSpotlightFrame,
   CommitFrame,
@@ -19,6 +21,7 @@ type WelcomeState = {
   role: Role;
   drawingPolicy: DrawingPolicy;
   imagesEnabled: boolean;
+  features: BoardFeatures;
   aclVersion: number;
   historyVersion: number;
   sessionExpiresAt: number;
@@ -325,9 +328,15 @@ export class BoardSocket {
         break;
       }
       case "access.changed":
-      case "server.access_changed":
-        this.hooks.onAccessChanged(frame);
+      case "server.access_changed": {
+        const features = boardFeatures(frame.features);
+        if (features === null || frame.imagesEnabled !== features.images) {
+          void this.resync("Board feature settings changed; refreshing policy.");
+          return;
+        }
+        this.hooks.onAccessChanged({ ...frame, features });
         break;
+      }
       case "server.owner_recovery": {
         const token = string(frame.ownerRecoveryToken);
         const aclVersion = number(frame.aclVersion);
@@ -524,10 +533,13 @@ function welcomeState(frame: ServerFrame): WelcomeState | null {
   const aclVersion = number(frame.aclVersion);
   const historyVersion = number(frame.historyVersion);
   const sessionExpiresAt = number(frame.sessionExpiresAt);
+  const features = boardFeatures(frame.features);
   if (
     (role !== "viewer" && role !== "editor" && role !== "owner") ||
     (policy !== "editors_enabled" && policy !== "owner_only" && policy !== "locked") ||
     typeof frame.imagesEnabled !== "boolean" ||
+    features === null ||
+    frame.imagesEnabled !== features.images ||
     aclVersion === null ||
     historyVersion === null ||
     sessionExpiresAt === null
@@ -538,12 +550,21 @@ function welcomeState(frame: ServerFrame): WelcomeState | null {
     role,
     drawingPolicy: policy,
     imagesEnabled: frame.imagesEnabled,
+    features,
     aclVersion,
     historyVersion,
     sessionExpiresAt,
     canUndo: frame.canUndo === true,
     canRedo: frame.canRedo === true,
   };
+}
+
+function boardFeatures(value: unknown): BoardFeatures | null {
+  try {
+    return normalizeBoardFeatures(value);
+  } catch {
+    return null;
+  }
 }
 
 function asServerAction(value: unknown): ServerAction | null {
@@ -638,6 +659,8 @@ function asPresence(value: unknown): Presence | null {
         "line",
         "rectangle",
         "ellipse",
+        "polygon",
+        "protractor",
         "text",
         "sticky",
         "stamp",

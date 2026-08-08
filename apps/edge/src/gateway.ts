@@ -1,3 +1,9 @@
+import {
+  BOARD_FEATURE_KEYS,
+  type BoardFeatures,
+  DEFAULT_BOARD_FEATURES,
+  normalizeBoardFeatures,
+} from "@collab/protocol";
 import { BoardRoom } from "./board-room";
 import { MAX_CLASSROOM_IMPORT_ENCODED_CHARS } from "./classroom-import";
 import { bytesToBase64Url, randomBoardId, randomToken, sha256 } from "./crypto";
@@ -139,6 +145,7 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
         launchIssuedAtMs: launch.issuedAtMs,
         placeholderOwnerActorId: launch.placeholderOwnerActorId,
         ownerRecoveryHash: launch.ownerRecoveryHash,
+        features: launch.features,
         ...(body.importSnapshot === undefined ? {} : { importSnapshot: body.importSnapshot }),
       }),
     });
@@ -190,7 +197,7 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
     enforceGatewayRateLimit(`create:ip:${clientAddress}`, 30, 1 / 5);
     enforceGatewayRateLimit(`create:actor:${session.actorId}`, 3, 1 / 60);
     const body = await readJsonBody(request, 16 * 1_024);
-    assertExactKeys(body, ["title", "accessMode", "displayName", "turnstileToken"]);
+    assertExactKeys(body, ["title", "accessMode", "displayName", "turnstileToken", "features"]);
     const title = optionalTitle(body.title);
     const accessMode = body.accessMode ?? "link_view";
     if (accessMode !== "private" && accessMode !== "link_view") {
@@ -200,6 +207,7 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
       body.displayName === undefined
         ? randomDisplayName(session.actorId, true)
         : requireDisplayName(body.displayName);
+    const features = initialBoardFeatures(body.features);
     await validateTurnstile(body.turnstileToken, env);
 
     const boardId = randomBoardId();
@@ -222,6 +230,7 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
         ownerActorId: session.actorId,
         ownerDisplayName: displayName,
         ownerRecoveryHash: recoveryHash,
+        features,
       }),
     });
     const initialized = await stub.fetch(internalRequest);
@@ -241,6 +250,7 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
           url: `${origin}/b/${boardId}`,
           title,
           accessMode,
+          features,
         },
         ownerRecoveryToken: recoveryToken,
         ownerRecoveryUrl: `${origin}/b/${boardId}#recovery=${recoveryToken}`,
@@ -327,6 +337,7 @@ type OrganisationLaunchResponse = {
     accessMode: "private" | "link_view";
     drawingPolicy: "editors_enabled" | "owner_only" | "locked";
     imagesEnabled: boolean;
+    features: BoardFeatures;
     aclVersion: number;
   };
   actor: {
@@ -345,6 +356,7 @@ function parseOrganisationLaunchResponse(
   }
   const board = value.board;
   const actor = value.actor;
+  const features = responseBoardFeatures(board.features);
   if (
     board.id !== launch.boardId ||
     typeof board.title !== "string" ||
@@ -353,6 +365,7 @@ function parseOrganisationLaunchResponse(
       board.drawingPolicy !== "owner_only" &&
       board.drawingPolicy !== "locked") ||
     typeof board.imagesEnabled !== "boolean" ||
+    board.imagesEnabled !== features.images ||
     !Number.isSafeInteger(board.aclVersion) ||
     (board.aclVersion as number) < 1 ||
     actor.id !== launch.actorId ||
@@ -370,10 +383,39 @@ function parseOrganisationLaunchResponse(
       accessMode: board.accessMode,
       drawingPolicy: board.drawingPolicy,
       imagesEnabled: board.imagesEnabled,
+      features,
       aclVersion: board.aclVersion as number,
     },
     actor: { id: launch.actorId, role: actor.role, displayName },
   };
+}
+
+function initialBoardFeatures(value: unknown): BoardFeatures {
+  if (value === undefined) return { ...DEFAULT_BOARD_FEATURES };
+  if (!isRecord(value)) {
+    throw new HttpError(400, "BAD_REQUEST", "The board feature settings are invalid.");
+  }
+  const allowed = new Set<string>(BOARD_FEATURE_KEYS);
+  const patch: Record<string, boolean> = {};
+  for (const [key, enabled] of Object.entries(value)) {
+    if (!allowed.has(key) || typeof enabled !== "boolean") {
+      throw new HttpError(400, "BAD_REQUEST", "The board feature settings are invalid.");
+    }
+    patch[key] = enabled;
+  }
+  try {
+    return normalizeBoardFeatures({ ...DEFAULT_BOARD_FEATURES, ...patch });
+  } catch {
+    throw new HttpError(400, "BAD_REQUEST", "The board feature settings are invalid.");
+  }
+}
+
+function responseBoardFeatures(value: unknown): BoardFeatures {
+  try {
+    return normalizeBoardFeatures(value);
+  } catch {
+    throw new HttpError(500, "INTERNAL_ERROR", "The Space response is invalid.");
+  }
 }
 
 function authenticateWebSocketRequest(request: Request): {

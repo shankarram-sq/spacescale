@@ -1,10 +1,14 @@
 import { boundsForItems, ZONE_TITLE_PADDING, zoneTitleBandHeight } from "@collab/geometry";
 import {
+  BOARD_FEATURE_KEYS,
+  type BoardFeatureKey,
+  type BoardFeatures,
   MAX_IMAGE_INTRINSIC_DIMENSION,
   MAX_IMAGE_INTRINSIC_PIXELS,
   MAX_STICKY_TEXT_CODE_POINTS,
   MAX_TABLE_CELL_TEXT_CODE_POINTS,
   MAX_ZONE_TITLE_CODE_POINTS,
+  normalizeBoardFeatures,
   normalizeBoardItem,
   textFontStack,
   validateClientFrame,
@@ -45,6 +49,7 @@ import {
   type CapturedTextEdit,
   DEFAULT_STICKY_HEIGHT,
   DEFAULT_STICKY_WIDTH,
+  type ShapeVariant,
   ToolController,
 } from "../tools/controller";
 import {
@@ -98,8 +103,14 @@ const TOOL_DEFINITIONS: Array<{
   { name: "pan", label: "Pan canvas", dockLabel: "Hand", shortcut: "H", glyph: "✋" },
   { name: "pencil", label: "Pencil", dockLabel: "Draw", shortcut: "P", glyph: "✎" },
   { name: "line", label: "Straight line", dockLabel: "Line", shortcut: "L", glyph: "╱" },
-  { name: "rectangle", label: "Rectangle", dockLabel: "Shape", shortcut: "R", glyph: "□" },
-  { name: "ellipse", label: "Ellipse", dockLabel: "Circle", shortcut: "O", glyph: "○" },
+  { name: "rectangle", label: "Shapes", dockLabel: "Shape", shortcut: "R", glyph: "□" },
+  {
+    name: "protractor",
+    label: "180 degree protractor",
+    dockLabel: "Measure",
+    shortcut: "U",
+    glyph: "∠",
+  },
   { name: "text", label: "Text", dockLabel: "Text", shortcut: "T", glyph: "T" },
   { name: "sticky", label: "Sticky note", dockLabel: "Sticky", shortcut: "N", glyph: "▣" },
   {
@@ -130,6 +141,7 @@ const DRAW_TOOLS = new Set<ToolName>([
   "line",
   "rectangle",
   "ellipse",
+  "polygon",
   "text",
   "sticky",
   "stamp",
@@ -137,7 +149,113 @@ const DRAW_TOOLS = new Set<ToolName>([
   "table",
   "zone",
   "eraser",
+  "protractor",
 ]);
+
+const SHAPE_CHOICES: ReadonlyArray<{
+  variant: ShapeVariant;
+  label: string;
+  glyph: string;
+  tool: Extract<ToolName, "rectangle" | "ellipse" | "polygon">;
+}> = [
+  { variant: "square", label: "Square", glyph: "□", tool: "rectangle" },
+  { variant: "rectangle", label: "Rectangle", glyph: "▭", tool: "rectangle" },
+  { variant: "triangle", label: "Triangle", glyph: "△", tool: "polygon" },
+  { variant: "rhombus", label: "Rhombus", glyph: "◇", tool: "polygon" },
+  { variant: "pentagon", label: "Pentagon", glyph: "⬠", tool: "polygon" },
+  { variant: "hexagon", label: "Hexagon", glyph: "⬡", tool: "polygon" },
+  { variant: "circle", label: "Circle", glyph: "○", tool: "ellipse" },
+];
+
+const FEATURE_LABELS: Readonly<Record<BoardFeatureKey, { label: string; detail: string }>> = {
+  pencil: { label: "Pencil", detail: "Freehand drawing" },
+  line: { label: "Lines", detail: "Straight line tool" },
+  lineSnapping: { label: "Line snapping", detail: "Snap endpoints to nearby edges" },
+  square: { label: "Square", detail: "Square shape preset" },
+  rectangle: { label: "Rectangle", detail: "Rectangle shape preset" },
+  triangle: { label: "Triangle", detail: "Triangle shape preset" },
+  rhombus: { label: "Rhombus", detail: "Rhombus shape preset" },
+  pentagon: { label: "Pentagon", detail: "Pentagon shape preset" },
+  hexagon: { label: "Hexagon", detail: "Hexagon shape preset" },
+  circle: { label: "Circle", detail: "Circle shape preset" },
+  text: { label: "Text", detail: "Canvas text" },
+  stickyNotes: { label: "Sticky notes", detail: "Resizable note cards" },
+  stamps: { label: "Stickers", detail: "Stamps and reactions" },
+  images: { label: "Images", detail: "Upload image cards" },
+  tables: { label: "Tables", detail: "Resizable grids" },
+  sections: { label: "Sections", detail: "Organise areas of the Space" },
+  protractor: { label: "Protractor", detail: "Movable 180° measuring tool" },
+  eraser: { label: "Eraser", detail: "Erase board work" },
+  partialEraser: { label: "Partial eraser", detail: "Cut only touched line segments" },
+  templates: { label: "Templates", detail: "Built-in starter layouts" },
+  organisationTemplates: { label: "Organisation templates", detail: "Shared reusable layouts" },
+  voting: { label: "Voting", detail: "Vote controls on templates" },
+  spotlight: { label: "Follow me", detail: "Coach-led viewport spotlight" },
+};
+
+function templateFeatureIssue(
+  items: readonly { kind: string; geometry?: unknown }[],
+  features: BoardFeatures,
+): string | null {
+  const unavailable = new Set<BoardFeatureKey>();
+  for (const item of items) {
+    const feature = featureForTemplateItem(item);
+    if (feature !== null && !features[feature]) unavailable.add(feature);
+    if (
+      item.geometry !== null &&
+      typeof item.geometry === "object" &&
+      !Array.isArray(item.geometry) &&
+      Array.isArray((item.geometry as Record<string, unknown>).visiblePaths) &&
+      (!features.eraser || !features.partialEraser)
+    ) {
+      unavailable.add("partialEraser");
+    }
+  }
+  if (unavailable.size === 0) return null;
+  const labels = [...unavailable].map((feature) => FEATURE_LABELS[feature].label);
+  return `Enable ${new Intl.ListFormat("en", { style: "long", type: "conjunction" }).format(labels)} to use this template.`;
+}
+
+function featureForTemplateItem(item: {
+  kind: string;
+  geometry?: unknown;
+}): BoardFeatureKey | null {
+  const geometry =
+    item.geometry !== null && typeof item.geometry === "object" && !Array.isArray(item.geometry)
+      ? (item.geometry as Record<string, unknown>)
+      : {};
+  if (item.kind === "rectangle") return geometry.shape === "square" ? "square" : "rectangle";
+  if (item.kind === "polygon") {
+    const polygon = geometry.polygon;
+    return polygon === "triangle" ||
+      polygon === "rhombus" ||
+      polygon === "pentagon" ||
+      polygon === "hexagon"
+      ? polygon
+      : null;
+  }
+  switch (item.kind) {
+    case "pencil":
+    case "line":
+    case "text":
+    case "protractor":
+      return item.kind;
+    case "image":
+      return "images";
+    case "table":
+      return "tables";
+    case "ellipse":
+      return "circle";
+    case "sticky":
+      return "stickyNotes";
+    case "stamp":
+      return "stamps";
+    case "zone":
+      return "sections";
+    default:
+      return null;
+  }
+}
 
 const BRUSH_PRESETS = {
   pen: { width: 4, opacity: 1 },
@@ -164,6 +282,7 @@ type StyleState = {
   width: number;
   opacity: number;
   lineArrowhead: "none" | "arrow";
+  shapeVariant: ShapeVariant;
   fontSize: number;
   fontFamily: TextFontFamily;
   stickyFill: string;
@@ -488,6 +607,7 @@ export class BoardApp {
     width: 4,
     opacity: 1,
     lineArrowhead: "none",
+    shapeVariant: "rectangle",
     fontSize: 28,
     fontFamily: "sans",
     stickyFill: STICKY_COLORS[0].value,
@@ -564,6 +684,10 @@ export class BoardApp {
   private readonly accessButton: HTMLButtonElement;
   private readonly accessDrawer: HTMLElement;
   private readonly accessBody: HTMLElement;
+  private readonly settingsButton: HTMLButtonElement;
+  private readonly settingsDrawer: HTMLElement;
+  private readonly settingsBody: HTMLElement;
+  private readonly shapeMenu: HTMLElement;
   private readonly stylePopover: HTMLElement;
   private readonly exportMenu: HTMLElement;
   private readonly selectionActions: HTMLElement;
@@ -632,6 +756,10 @@ export class BoardApp {
     this.accessButton = query(this.root, "[data-testid='access-button']", HTMLButtonElement);
     this.accessDrawer = query(this.root, "[data-testid='access-drawer']", HTMLElement);
     this.accessBody = query(this.root, "[data-access-body]", HTMLElement);
+    this.settingsButton = query(this.root, "[data-testid='settings-button']", HTMLButtonElement);
+    this.settingsDrawer = query(this.root, "[data-testid='settings-drawer']", HTMLElement);
+    this.settingsBody = query(this.root, "[data-settings-body]", HTMLElement);
+    this.shapeMenu = query(this.root, "[data-testid='shape-menu']", HTMLElement);
     this.stylePopover = query(this.root, "[data-testid='style-popover']", HTMLElement);
     this.exportMenu = query(this.root, "[data-testid='export-menu']", HTMLElement);
     this.selectionActions = query(this.root, "[data-testid='selection-actions']", HTMLElement);
@@ -685,6 +813,7 @@ export class BoardApp {
       (assetId) => this.api.boardImage(this.bootstrap.board.id, assetId),
       (actorId) => this.creatorNames.get(actorId),
     );
+    this.renderer.setVotingEnabled(this.bootstrap.board.features.voting);
     this.renderer.viewport.subscribe((zoom) => {
       this.zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
       this.renderer.refreshSelection();
@@ -698,6 +827,9 @@ export class BoardApp {
       canDraw: () => this.canCommit(),
       canModifyItem: (item) => this.canModifyItem(item),
       canUseImages: () => this.canUploadImages(),
+      canUseTool: (tool) => this.isToolEnabled(tool),
+      canSnapLines: () => this.bootstrap.board.features.lineSnapping,
+      usePartialEraser: () => this.bootstrap.board.features.partialEraser,
       getStyle: () => this.style,
       commit: (operation, actionId) => this.commit(operation, actionId),
       preview: (gestureId, previewSeq, kind, payload) =>
@@ -743,6 +875,7 @@ export class BoardApp {
           this.bootstrap.actor.sessionExpiresAt = state.sessionExpiresAt;
           this.bootstrap.board.drawingPolicy = state.drawingPolicy;
           this.bootstrap.board.imagesEnabled = state.imagesEnabled;
+          this.bootstrap.board.features = state.features;
           this.bootstrap.board.aclVersion = state.aclVersion;
           this.history.historyVersion = state.historyVersion;
           this.history.canUndo = state.canUndo;
@@ -792,7 +925,7 @@ export class BoardApp {
     const app = new BoardApp(root, api, bootstrap);
     await app.restoreOutbox();
     app.updateAll();
-    void app.loadOrganisationTemplates();
+    if (bootstrap.board.features.organisationTemplates) void app.loadOrganisationTemplates();
     app.socket.connect();
     return app;
   }
@@ -853,9 +986,9 @@ export class BoardApp {
                 <span class="activities-button-label">Templates</span>
               </button>
               <div class="floating-menu activities-menu" data-testid="activities-menu" id="activities-menu" role="menu" aria-label="Space templates" hidden>
-                <p class="menu-eyebrow">Built-in templates</p>
-                <p class="activities-menu-note">Starter layouts made from ordinary board items.</p>
-                <div class="activities-template-list" data-activities-template-list></div>
+                <p class="menu-eyebrow" data-built-in-templates>Built-in templates</p>
+                <p class="activities-menu-note" data-built-in-templates>Starter layouts made from ordinary board items.</p>
+                <div class="activities-template-list" data-activities-template-list data-built-in-templates></div>
                 <section class="organisation-templates-section" data-organisation-templates-section hidden>
                   <div class="activities-menu-divider" aria-hidden="true"></div>
                   <p class="menu-eyebrow">Organisation templates</p>
@@ -876,6 +1009,7 @@ export class BoardApp {
               <span class="wide-label">here</span>
             </button>
             <button class="topbar-button" type="button" data-testid="access-button" aria-controls="access-drawer" aria-expanded="false">Share</button>
+            <button class="icon-button settings-button" type="button" data-testid="settings-button" aria-label="Space settings" aria-controls="settings-drawer" aria-expanded="false" title="Settings">⚙</button>
             <div class="menu-wrap">
               <button class="icon-button" type="button" data-testid="export-button" aria-label="Export board" aria-controls="export-menu" aria-expanded="false" title="Export">↓</button>
               <div class="floating-menu export-menu" data-testid="export-menu" id="export-menu" hidden>
@@ -991,6 +1125,9 @@ export class BoardApp {
             <span class="style-swatch" data-style-swatch aria-hidden="true"></span>
             <span class="style-width" data-style-width aria-hidden="true"></span>
           </button>
+          <section class="shape-menu" data-testid="shape-menu" id="shape-menu" role="menu" aria-label="Choose a shape" hidden>
+            <div class="shape-menu-grid" data-shape-menu-grid></div>
+          </section>
           <section class="style-popover" data-testid="style-popover" id="style-popover" aria-label="Drawing style" hidden>
             <div class="popover-heading"><strong>Style</strong><span data-style-heading-context>New marks</span></div>
             <fieldset class="stamp-fieldset" data-stamp-fieldset hidden>
@@ -1022,8 +1159,12 @@ export class BoardApp {
         </aside>
 
         <aside class="side-drawer access-drawer" id="access-drawer" data-testid="access-drawer" aria-label="Board access" hidden>
-          <div class="drawer-heading"><div><span class="eyebrow">Owner controls</span><h2>Share & access</h2></div><button type="button" data-close-drawer aria-label="Close access panel">×</button></div>
+          <div class="drawer-heading"><div><span class="eyebrow">People</span><h2>Share & access</h2></div><button type="button" data-close-drawer aria-label="Close access panel">×</button></div>
           <div data-access-body></div>
+        </aside>
+        <aside class="side-drawer settings-drawer" id="settings-drawer" data-testid="settings-drawer" aria-label="Space settings" hidden>
+          <div class="drawer-heading"><div><span class="eyebrow">Owner controls</span><h2>Space settings</h2></div><button type="button" data-close-drawer aria-label="Close settings">×</button></div>
+          <div data-settings-body></div>
         </aside>
         <dialog class="claim-dialog organisation-template-dialog" data-testid="organisation-template-dialog" aria-labelledby="organisation-template-title">
           <form data-organisation-template-form>
@@ -1075,6 +1216,11 @@ export class BoardApp {
       button.dataset.testid = `tool-${definition.name}`;
       button.setAttribute("aria-label", `${definition.label} (${definition.shortcut})`);
       button.setAttribute("aria-pressed", definition.name === "pencil" ? "true" : "false");
+      if (definition.name === "rectangle") {
+        button.setAttribute("aria-haspopup", "menu");
+        button.setAttribute("aria-controls", "shape-menu");
+        button.setAttribute("aria-expanded", "false");
+      }
       button.title = `${definition.label} · ${definition.shortcut}`;
       const glyph = document.createElement("span");
       glyph.className = `tool-glyph tool-glyph-${definition.name}`;
@@ -1101,6 +1247,25 @@ export class BoardApp {
     styleShortcut.innerHTML =
       '<span class="rail-color-dot" aria-hidden="true"></span><span class="tool-label">Style</span>';
     rail.append(styleShortcut);
+
+    const shapeGrid = query(this.root, "[data-shape-menu-grid]", HTMLElement);
+    for (const choice of SHAPE_CHOICES) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.shapeVariant = choice.variant;
+      button.dataset.shapeTool = choice.tool;
+      button.dataset.testid = `shape-${choice.variant}`;
+      button.setAttribute("aria-label", choice.label);
+      button.setAttribute("aria-pressed", String(choice.variant === this.style.shapeVariant));
+      const glyph = document.createElement("span");
+      glyph.className = "shape-choice-glyph";
+      glyph.setAttribute("aria-hidden", "true");
+      glyph.textContent = choice.glyph;
+      const label = document.createElement("span");
+      label.textContent = choice.label;
+      button.append(glyph, label);
+      shapeGrid.append(button);
+    }
 
     const colorGrid = query(this.root, "[data-color-grid]", HTMLElement);
     const quickColours = query(this.root, "[data-quick-colours]", HTMLElement);
@@ -1199,9 +1364,16 @@ export class BoardApp {
   }
 
   private async insertActivity(templateId: ActivityTemplateId): Promise<void> {
-    if (!this.canCommit() || this.activityInsertPending) return;
+    if (!this.bootstrap.board.features.templates || !this.canCommit() || this.activityInsertPending)
+      return;
+    if (templateId === "vote-with-stamps" && !this.bootstrap.board.features.voting) return;
     const template = ACTIVITY_TEMPLATES.find((value) => value.id === templateId);
     if (!template) return;
+    const featureIssue = templateFeatureIssue(template.items, this.bootstrap.board.features);
+    if (featureIssue) {
+      this.notify(featureIssue, "warning");
+      return;
+    }
     this.activityInsertPending = true;
     this.updatePermissions();
     this.activitiesButton.focus();
@@ -1222,6 +1394,7 @@ export class BoardApp {
   }
 
   private async loadOrganisationTemplates(): Promise<void> {
+    if (!this.bootstrap.board.features.organisationTemplates) return;
     if (this.organisationTemplatesLoading) return;
     this.organisationTemplatesLoading = true;
     this.organisationTemplatesError = null;
@@ -1250,7 +1423,8 @@ export class BoardApp {
     );
     const list = query(section, "[data-organisation-template-list]", HTMLElement);
     const status = query(section, "[data-organisation-template-status]", HTMLElement);
-    section.hidden = this.organisationId === null;
+    section.hidden =
+      !this.bootstrap.board.features.organisationTemplates || this.organisationId === null;
     list.replaceChildren();
     status.textContent = "";
     if (section.hidden) return;
@@ -1269,6 +1443,9 @@ export class BoardApp {
       const description = document.createElement("span");
       description.textContent = template.description ?? `${template.items.length} objects`;
       add.append(label, description);
+      const featureIssue = templateFeatureIssue(template.items, this.bootstrap.board.features);
+      add.disabled = featureIssue !== null;
+      add.title = featureIssue ?? "";
       add.addEventListener("click", () => void this.insertOrganisationTemplate(template));
       row.append(add);
 
@@ -1299,7 +1476,17 @@ export class BoardApp {
   }
 
   private async insertOrganisationTemplate(template: OrganisationTemplate): Promise<void> {
-    if (!this.canCommit() || this.activityInsertPending) return;
+    if (
+      !this.bootstrap.board.features.organisationTemplates ||
+      !this.canCommit() ||
+      this.activityInsertPending
+    )
+      return;
+    const featureIssue = templateFeatureIssue(template.items, this.bootstrap.board.features);
+    if (featureIssue) {
+      this.notify(featureIssue, "warning");
+      return;
+    }
     const maxBatchItems = Math.max(
       1,
       Math.min(100, Math.floor(this.bootstrap.limits.maxBatchItems)),
@@ -1341,6 +1528,7 @@ export class BoardApp {
   private openOrganisationTemplateDialog(): void {
     if (
       this.bootstrap.actor.role !== "owner" ||
+      !this.bootstrap.board.features.organisationTemplates ||
       !this.organisationTemplatesCanManage ||
       this.organisationId === null
     ) {
@@ -1381,7 +1569,12 @@ export class BoardApp {
   }
 
   private async saveOrganisationTemplate(): Promise<void> {
-    if (this.organisationTemplateSavePending) return;
+    if (
+      this.organisationTemplateSavePending ||
+      this.bootstrap.actor.role !== "owner" ||
+      !this.bootstrap.board.features.organisationTemplates
+    )
+      return;
     const name = this.organisationTemplateName.value.trim();
     const description = this.organisationTemplateDescription.value.trim();
     const error = query(
@@ -1442,6 +1635,7 @@ export class BoardApp {
   private async deleteOrganisationTemplate(template: OrganisationTemplate): Promise<void> {
     if (
       this.bootstrap.actor.role !== "owner" ||
+      !this.bootstrap.board.features.organisationTemplates ||
       !this.organisationTemplatesCanManage ||
       this.organisationTemplateDeletesPending.has(template.id) ||
       !confirm(
@@ -1477,6 +1671,7 @@ export class BoardApp {
     );
     if (!button) return;
     const canManage =
+      this.bootstrap.board.features.organisationTemplates &&
       this.organisationId !== null &&
       this.organisationTemplatesCanManage &&
       this.bootstrap.actor.role === "owner";
@@ -1498,6 +1693,7 @@ export class BoardApp {
   private async clearSelectedVotes(): Promise<void> {
     if (
       this.bootstrap.actor.role !== "owner" ||
+      !this.bootstrap.board.features.voting ||
       !this.canCommit() ||
       this.tools.selection.size !== 1
     ) {
@@ -1628,6 +1824,19 @@ export class BoardApp {
   private bindShellEvents(): void {
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("button[data-tool]")) {
       button.addEventListener("click", () => this.activateTool(button.dataset.tool as ToolName));
+    }
+    for (const button of this.shapeMenu.querySelectorAll<HTMLButtonElement>(
+      "[data-shape-variant]",
+    )) {
+      button.addEventListener("click", () => {
+        const variant = button.dataset.shapeVariant as ShapeVariant | undefined;
+        const tool = button.dataset.shapeTool as ToolName | undefined;
+        if (!variant || !tool || !this.isShapeVariantEnabled(variant)) return;
+        this.style.shapeVariant = variant;
+        this.setShapeMenuOpen(false);
+        this.tools.setTool(tool);
+        this.setActiveToolButton(tool);
+      });
     }
     const tableColumns = query(this.root, "[data-table-columns]", HTMLSelectElement);
     const tableRows = query(this.root, "[data-table-rows]", HTMLSelectElement);
@@ -1951,6 +2160,10 @@ export class BoardApp {
       this.toggleDrawer(this.accessDrawer, this.accessButton);
       if (!this.accessDrawer.hidden) void this.loadAccessPanel();
     });
+    this.settingsButton.addEventListener("click", () => {
+      this.toggleDrawer(this.settingsDrawer, this.settingsButton);
+      if (!this.settingsDrawer.hidden) void this.loadSettingsPanel();
+    });
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-close-drawer]")) {
       button.addEventListener("click", () => this.closeDrawers());
     }
@@ -2010,6 +2223,14 @@ export class BoardApp {
     window.addEventListener("keydown", this.onGlobalKeyDown);
     document.addEventListener("pointerdown", (event) => {
       const target = event.target as Node;
+      const shapeButton = query(this.root, "[data-testid='tool-rectangle']", HTMLElement);
+      if (
+        !this.shapeMenu.hidden &&
+        !this.shapeMenu.contains(target) &&
+        !shapeButton.contains(target)
+      ) {
+        this.setShapeMenuOpen(false);
+      }
       if (
         !this.stylePopover.hidden &&
         !this.stylePopover.contains(target) &&
@@ -2072,11 +2293,16 @@ export class BoardApp {
   };
 
   private canUploadImages(): boolean {
-    return this.bootstrap.board.imagesEnabled && !this.imageUploadInFlight && this.canCommit();
+    return (
+      this.bootstrap.board.features.images &&
+      this.bootstrap.board.imagesEnabled &&
+      !this.imageUploadInFlight &&
+      this.canCommit()
+    );
   }
 
   private openImagePicker(): void {
-    if (!this.bootstrap.board.imagesEnabled) {
+    if (!this.bootstrap.board.features.images || !this.bootstrap.board.imagesEnabled) {
       this.notify("Image cards are disabled by the owner.", "warning");
       return;
     }
@@ -2738,8 +2964,16 @@ export class BoardApp {
 
   private handleAccessChanged(frame: ServerFrame): void {
     const access = isRecord(frame.access) ? frame.access : frame;
-    if (typeof access.imagesEnabled !== "boolean") {
-      this.socket.resynchronize("Board image permissions changed; refreshing policy.");
+    const organisationTemplatesWereEnabled = this.bootstrap.board.features.organisationTemplates;
+    let features: BoardFeatures;
+    try {
+      features = normalizeBoardFeatures(access.features);
+    } catch {
+      this.socket.resynchronize("Space feature settings changed; refreshing policy.");
+      return;
+    }
+    if (typeof access.imagesEnabled !== "boolean" || access.imagesEnabled !== features.images) {
+      this.socket.resynchronize("Space image permissions changed; refreshing policy.");
       return;
     }
     const affectedActor = actorFromAccessChanged(frame);
@@ -2754,6 +2988,7 @@ export class BoardApp {
       this.bootstrap.board.drawingPolicy = access.drawingPolicy;
     }
     this.bootstrap.board.imagesEnabled = access.imagesEnabled;
+    this.bootstrap.board.features = features;
     if (access.accessMode === "private" || access.accessMode === "link_view")
       this.bootstrap.board.accessMode = access.accessMode;
     if (typeof access.aclVersion === "number") this.bootstrap.board.aclVersion = access.aclVersion;
@@ -2763,13 +2998,16 @@ export class BoardApp {
     );
     if (organisationTemplatesCanManage !== null) {
       this.organisationTemplatesCanManage = organisationTemplatesCanManage;
-      this.renderOrganisationTemplates();
+    }
+    this.renderOrganisationTemplates();
+    if (!organisationTemplatesWereEnabled && features.organisationTemplates) {
+      void this.loadOrganisationTemplates();
     }
     if (!canRoleDraw(this.bootstrap.actor.role, this.bootstrap.board.drawingPolicy))
       this.tools.setTool("select");
-    if (!this.bootstrap.board.imagesEnabled && this.tools.tool === "image")
-      this.tools.setTool("select");
+    if (!this.isToolEnabled(this.tools.tool)) this.tools.setTool("select");
     this.updatePermissions();
+    if (!this.settingsDrawer.hidden) this.renderSettingsPanel();
   }
 
   private handleOwnerRecovery(token: string, aclVersion: number): void {
@@ -2887,6 +3125,10 @@ export class BoardApp {
   }
 
   private handleSpotlight(frame: SpotlightFrame): void {
+    if (!this.bootstrap.board.features.spotlight) {
+      this.clearFollowingSpotlight();
+      return;
+    }
     if (!frame.active) {
       this.localSpotlightIds.delete(frame.spotlightId);
       if (
@@ -2945,6 +3187,7 @@ export class BoardApp {
   private canBroadcastSpotlight(): boolean {
     return (
       this.phase === "ready" &&
+      this.bootstrap.board.features.spotlight &&
       (this.bootstrap.actor.role === "owner" || this.bootstrap.actor.role === "editor")
     );
   }
@@ -3045,6 +3288,12 @@ export class BoardApp {
   }
 
   private readonly onGlobalKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === "Escape" && !this.shapeMenu.hidden) {
+      event.preventDefault();
+      this.setShapeMenuOpen(false);
+      query(this.root, "[data-testid='tool-rectangle']", HTMLButtonElement).focus();
+      return;
+    }
     if (event.key === "Escape" && this.followedSpotlight) {
       event.preventDefault();
       this.stopFollowingSpotlight();
@@ -3455,10 +3704,7 @@ export class BoardApp {
     if (this.bootstrap.actor.role !== "owner") return;
     this.accessBody.replaceChildren(loadingBlock("Loading access…"));
     try {
-      [this.accessMembers, this.recoverySnapshots] = await Promise.all([
-        this.api.members(this.bootstrap.board.id),
-        this.api.snapshots(this.bootstrap.board.id),
-      ]);
+      this.accessMembers = await this.api.members(this.bootstrap.board.id);
       this.renderAccessPanel();
     } catch (error) {
       this.accessBody.replaceChildren(errorBlock("Access controls could not be loaded."));
@@ -3468,41 +3714,6 @@ export class BoardApp {
 
   private renderAccessPanel(): void {
     this.accessBody.replaceChildren();
-
-    const section = document.createElement("section");
-    section.className = "access-section";
-    section.innerHTML = `
-      <h3>Who can draw now</h3>
-      <div class="segmented-control" data-policy-controls aria-label="Drawing policy">
-        <button type="button" data-policy="editors_enabled">Students can edit</button>
-        <button type="button" data-policy="owner_only">Lock students</button>
-        <button type="button" data-policy="locked">Lock everyone</button>
-      </div>
-      <label class="field-row image-policy-row"><span><strong>Image cards</strong><small>Allow participants who can draw to upload images</small></span><input type="checkbox" data-images-enabled aria-label="Allow image uploads" /></label>
-      <label class="field-row"><span>Board link</span><select data-access-mode aria-label="Board link access"><option value="link_view">Anyone with link can view</option><option value="private">Members only</option></select></label>
-    `;
-    for (const button of section.querySelectorAll<HTMLButtonElement>("[data-policy]")) {
-      const selected = button.dataset.policy === this.bootstrap.board.drawingPolicy;
-      button.classList.toggle("active", selected);
-      button.setAttribute("aria-pressed", String(selected));
-      button.addEventListener(
-        "click",
-        () => void this.setPolicy(button.dataset.policy as DrawingPolicy),
-      );
-    }
-    const accessMode = query(section, "[data-access-mode]", HTMLSelectElement);
-    accessMode.value = this.bootstrap.board.accessMode;
-    accessMode.addEventListener(
-      "change",
-      () => void this.setAccessMode(accessMode.value as AccessMode),
-    );
-    const imagesEnabled = query(section, "[data-images-enabled]", HTMLInputElement);
-    imagesEnabled.checked = this.bootstrap.board.imagesEnabled;
-    imagesEnabled.addEventListener(
-      "change",
-      () => void this.setImagesEnabled(imagesEnabled.checked),
-    );
-    this.accessBody.append(section);
 
     const inviteSection = document.createElement("section");
     inviteSection.className = "access-section";
@@ -3549,12 +3760,92 @@ export class BoardApp {
     for (const member of this.accessMembers) list.append(this.memberRow(member));
     membersSection.append(list);
     this.accessBody.append(membersSection);
+  }
+
+  private async loadSettingsPanel(): Promise<void> {
+    if (this.bootstrap.actor.role !== "owner") return;
+    this.settingsBody.replaceChildren(loadingBlock("Loading settings…"));
+    try {
+      [this.recoverySnapshots, this.accessMembers] = await Promise.all([
+        this.api.snapshots(this.bootstrap.board.id),
+        this.api.members(this.bootstrap.board.id),
+      ]);
+      this.renderSettingsPanel();
+    } catch (error) {
+      this.settingsBody.replaceChildren(errorBlock("Space settings could not be loaded."));
+      this.apiError(error);
+    }
+  }
+
+  private renderSettingsPanel(): void {
+    this.settingsBody.replaceChildren();
+
+    const boardSection = document.createElement("section");
+    boardSection.className = "access-section";
+    boardSection.innerHTML = `
+      <h3>Space</h3>
+      <label class="settings-title-field"><span>Name</span><input data-settings-title maxlength="100" autocomplete="off" /></label>
+      <h4>Who can draw now</h4>
+      <div class="segmented-control" data-policy-controls aria-label="Drawing policy">
+        <button type="button" data-policy="editors_enabled">Editors can draw</button>
+        <button type="button" data-policy="owner_only">Lock editors</button>
+        <button type="button" data-policy="locked">Lock everyone</button>
+      </div>
+      <label class="field-row"><span><strong>Space link</strong><small>Choose whether non-members can view</small></span><select data-access-mode aria-label="Space link access"><option value="link_view">Anyone with link can view</option><option value="private">Members only</option></select></label>
+    `;
+    const settingsTitle = query(boardSection, "[data-settings-title]", HTMLInputElement);
+    settingsTitle.value = this.bootstrap.board.title;
+    settingsTitle.addEventListener("change", () => {
+      this.titleInput.value = settingsTitle.value;
+      void this.updateTitle().then(() => this.renderSettingsPanel());
+    });
+    for (const button of boardSection.querySelectorAll<HTMLButtonElement>("[data-policy]")) {
+      const selected = button.dataset.policy === this.bootstrap.board.drawingPolicy;
+      button.classList.toggle("active", selected);
+      button.setAttribute("aria-pressed", String(selected));
+      button.addEventListener(
+        "click",
+        () => void this.setPolicy(button.dataset.policy as DrawingPolicy),
+      );
+    }
+    const accessMode = query(boardSection, "[data-access-mode]", HTMLSelectElement);
+    accessMode.value = this.bootstrap.board.accessMode;
+    accessMode.addEventListener(
+      "change",
+      () => void this.setAccessMode(accessMode.value as AccessMode),
+    );
+    this.settingsBody.append(boardSection);
+
+    const featureSection = document.createElement("section");
+    featureSection.className = "access-section";
+    featureSection.innerHTML = `
+      <div class="section-heading"><h3>Features</h3><span>${BOARD_FEATURE_KEYS.filter((key) => this.bootstrap.board.features[key]).length}/${BOARD_FEATURE_KEYS.length}</span></div>
+      <p class="section-note">Changes apply immediately to everyone in this Space. Existing objects remain visible and movable.</p>
+      <div class="feature-toggle-grid" data-feature-toggle-grid></div>
+    `;
+    const featureGrid = query(featureSection, "[data-feature-toggle-grid]", HTMLElement);
+    for (const key of BOARD_FEATURE_KEYS) {
+      const metadata = FEATURE_LABELS[key];
+      const row = document.createElement("label");
+      row.className = "feature-toggle";
+      row.innerHTML = `<span><strong>${metadata.label}</strong><small>${metadata.detail}</small></span>`;
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.dataset.feature = key;
+      input.checked = this.bootstrap.board.features[key];
+      input.disabled = key === "partialEraser" && !this.bootstrap.board.features.eraser;
+      input.setAttribute("aria-label", `Enable ${metadata.label}`);
+      input.addEventListener("change", () => void this.setFeature(key, input.checked));
+      row.append(input);
+      featureGrid.append(row);
+    }
+    this.settingsBody.append(featureSection);
 
     const snapshotSection = document.createElement("section");
     snapshotSection.className = "access-section";
     snapshotSection.innerHTML = `
       <div class="section-heading"><h3>Recovery points</h3><span>${this.recoverySnapshots.length}</span></div>
-      <p class="section-note">Snapshots restore drawing content as a new board action. Access and ownership are unchanged.</p>
+      <p class="section-note">Restore drawing content without changing access, ownership, or feature settings.</p>
       <form class="snapshot-form" data-snapshot-form>
         <label><span>Snapshot name</span><input name="label" maxlength="80" required placeholder="Before workshop" /></label>
         <button class="primary-button" type="submit">Save recovery point</button>
@@ -3566,7 +3857,6 @@ export class BoardApp {
     );
     const snapshotList = document.createElement("div");
     snapshotList.className = "management-list snapshot-list";
-    snapshotList.dataset.snapshotList = "true";
     if (this.recoverySnapshots.length === 0) {
       const empty = document.createElement("p");
       empty.className = "empty-management-list";
@@ -3577,20 +3867,20 @@ export class BoardApp {
         snapshotList.append(this.snapshotRow(snapshot));
     }
     snapshotSection.append(snapshotList);
-    this.accessBody.append(snapshotSection);
+    this.settingsBody.append(snapshotSection);
 
     const safety = document.createElement("section");
     safety.className = "access-section safety-section";
     safety.innerHTML = `
-      <h3>Recovery & board</h3>
+      <h3>Recovery & Space</h3>
       <p>Primary ownership recovery links are shown once and must be stored privately.</p>
       <button type="button" data-rotate-recovery>Rotate recovery link</button>
-      <button class="danger-button" type="button" data-clear-board>Clear board</button>
+      <button class="danger-button" type="button" data-clear-board>Clear Space</button>
       <div class="archive-danger-zone">
         <strong>Archive permanently</strong>
-        <p>Archiving cannot be undone. The board becomes read only, and its existing access and invitation links stop opening it.</p>
-        <button class="danger-button" type="button" data-archive-board>Archive board</button>
-        <small>Available only when the board is connected and every edit is saved.</small>
+        <p>Archiving cannot be undone. The Space becomes read only and existing links stop opening it.</p>
+        <button class="danger-button" type="button" data-archive-board>Archive Space</button>
+        <small>Available only when connected and every edit is saved.</small>
       </div>
       <div class="one-time-secret" data-recovery-result hidden></div>
     `;
@@ -3606,7 +3896,7 @@ export class BoardApp {
     const archiveButton = query(safety, "[data-archive-board]", HTMLButtonElement);
     archiveButton.disabled = !this.canArchiveBoard();
     archiveButton.addEventListener("click", () => void this.archiveBoard());
-    this.accessBody.append(safety);
+    this.settingsBody.append(safety);
   }
 
   private memberRow(member: Member): HTMLElement {
@@ -3719,28 +4009,35 @@ export class BoardApp {
       this.bootstrap.board.drawingPolicy = policy;
       this.adoptAclVersion(result);
       this.updatePermissions();
-      this.renderAccessPanel();
+      this.renderSettingsPanel();
     } catch (error) {
       this.apiError(error);
     }
   }
 
-  private async setImagesEnabled(enabled: boolean): Promise<void> {
+  private async setFeature(feature: BoardFeatureKey, enabled: boolean): Promise<void> {
+    const previous = this.bootstrap.board.features[feature];
     try {
       const result = await this.api.updateSettings(
         this.bootstrap.board.id,
-        { imagesEnabled: enabled },
+        { features: { [feature]: enabled } },
         this.bootstrap.board.aclVersion,
       );
-      this.bootstrap.board.imagesEnabled = enabled;
+      this.bootstrap.board.features[feature] = enabled;
+      if (feature === "images") this.bootstrap.board.imagesEnabled = enabled;
       this.adoptAclVersion(result);
-      if (!enabled && this.tools.tool === "image") this.tools.setTool("select");
+      if (!this.isToolEnabled(this.tools.tool)) this.tools.setTool("select");
       this.updatePermissions();
-      this.renderAccessPanel();
-      this.notify(enabled ? "Image uploads are enabled." : "Image uploads are disabled.", "info");
+      if (feature === "organisationTemplates") {
+        this.renderOrganisationTemplates();
+        if (enabled) void this.loadOrganisationTemplates();
+      }
+      this.renderSettingsPanel();
+      this.notify(`${FEATURE_LABELS[feature].label} ${enabled ? "enabled" : "disabled"}.`, "info");
     } catch (error) {
+      this.bootstrap.board.features[feature] = previous;
       this.apiError(error);
-      this.renderAccessPanel();
+      this.renderSettingsPanel();
     }
   }
 
@@ -3753,6 +4050,7 @@ export class BoardApp {
       );
       this.bootstrap.board.accessMode = accessMode;
       this.adoptAclVersion(result);
+      this.renderSettingsPanel();
       this.notify(
         accessMode === "private"
           ? "Only members can open this board now."
@@ -3761,7 +4059,7 @@ export class BoardApp {
       );
     } catch (error) {
       this.apiError(error);
-      this.renderAccessPanel();
+      this.renderSettingsPanel();
     }
   }
 
@@ -3830,7 +4128,7 @@ export class BoardApp {
         snapshot,
         ...this.recoverySnapshots.filter((value) => value.seq !== snapshot.seq),
       ].sort((left, right) => right.seq - left.seq);
-      this.renderAccessPanel();
+      this.renderSettingsPanel();
       this.notify(`Recovery point “${label}” saved at sequence ${snapshot.seq}.`, "info");
     } catch (error) {
       this.apiError(error);
@@ -3984,7 +4282,7 @@ export class BoardApp {
         (token
           ? `${location.origin}/b/${this.bootstrap.board.id}#recovery=${encodeURIComponent(token)}`
           : null);
-      const output = query(this.accessBody, "[data-recovery-result]", HTMLElement);
+      const output = query(this.settingsBody, "[data-recovery-result]", HTMLElement);
       this.renderOneTimeLink(
         output,
         url,
@@ -4209,18 +4507,51 @@ export class BoardApp {
     const archived = this.phase === "archived";
     const roleCanBroadcast =
       this.bootstrap.actor.role === "owner" || this.bootstrap.actor.role === "editor";
-    const roleCanAddActivities = roleCanBroadcast && !archived;
+    const roleCanAddActivities =
+      roleCanBroadcast &&
+      !archived &&
+      (this.bootstrap.board.features.templates ||
+        this.bootstrap.board.features.organisationTemplates);
     this.activitiesButton.hidden = !roleCanAddActivities;
     this.activitiesButton.disabled = !canEdit || this.activityInsertPending;
+    for (const element of this.activitiesMenu.querySelectorAll<HTMLElement>(
+      "[data-built-in-templates]",
+    )) {
+      element.hidden = !this.bootstrap.board.features.templates;
+    }
     for (const button of this.activitiesMenu.querySelectorAll<HTMLButtonElement>(
       "[data-activity-template]",
     )) {
-      button.disabled = !canEdit || this.activityInsertPending;
+      const votingTemplate = button.dataset.activityTemplate === "vote-with-stamps";
+      const template = ACTIVITY_TEMPLATES.find(
+        (candidate) => candidate.id === button.dataset.activityTemplate,
+      );
+      const featureIssue = template
+        ? templateFeatureIssue(template.items, this.bootstrap.board.features)
+        : null;
+      button.hidden = votingTemplate && !this.bootstrap.board.features.voting;
+      button.disabled =
+        !canEdit ||
+        this.activityInsertPending ||
+        (votingTemplate && !this.bootstrap.board.features.voting) ||
+        featureIssue !== null;
+      button.title = featureIssue ?? "";
     }
     for (const button of this.activitiesMenu.querySelectorAll<HTMLButtonElement>(
       "[data-organisation-template]",
     )) {
-      button.disabled = !canEdit || this.activityInsertPending;
+      const template = this.organisationTemplates.find(
+        (candidate) => candidate.id === button.dataset.organisationTemplate,
+      );
+      const featureIssue = template
+        ? templateFeatureIssue(template.items, this.bootstrap.board.features)
+        : null;
+      button.disabled =
+        !canEdit ||
+        this.activityInsertPending ||
+        !this.bootstrap.board.features.organisationTemplates ||
+        featureIssue !== null;
+      button.title = featureIssue ?? "";
     }
     for (const button of this.activitiesMenu.querySelectorAll<HTMLButtonElement>(
       "[data-delete-organisation-template]",
@@ -4229,34 +4560,53 @@ export class BoardApp {
       button.disabled =
         archived ||
         this.bootstrap.actor.role !== "owner" ||
+        !this.bootstrap.board.features.organisationTemplates ||
         !this.organisationTemplatesCanManage ||
         (templateId !== undefined && this.organisationTemplateDeletesPending.has(templateId));
     }
     this.updateOrganisationTemplateSaveButton();
+    if (
+      !this.bootstrap.board.features.organisationTemplates &&
+      this.organisationTemplateDialog.open
+    ) {
+      this.organisationTemplateDialog.close();
+    }
+    this.renderer.setVotingEnabled(this.bootstrap.board.features.voting);
     if (this.activitiesButton.disabled || this.activitiesButton.hidden) {
       this.closeActivitiesMenu();
     }
-    if ((!roleCanBroadcast || archived) && this.broadcastSpotlightId) {
+    if (
+      (!roleCanBroadcast || archived || !this.bootstrap.board.features.spotlight) &&
+      this.broadcastSpotlightId
+    ) {
       this.stopBroadcastingSpotlight();
     }
-    this.spotlightToggle.hidden = !roleCanBroadcast || archived;
+    if (!this.bootstrap.board.features.spotlight && this.followedSpotlight) {
+      this.clearFollowingSpotlight();
+    }
+    this.spotlightToggle.hidden =
+      !roleCanBroadcast || archived || !this.bootstrap.board.features.spotlight;
     this.spotlightToggle.disabled = this.phase !== "ready" || archived;
     this.renderSpotlightState();
-    if (
-      ((!canEdit || !this.bootstrap.board.imagesEnabled) && this.tools.tool === "image") ||
-      (!canEdit && this.tools.tool === "table")
-    ) {
+    if (!canEdit || !this.isToolEnabled(this.tools.tool)) {
       this.tools.setTool("select");
     }
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-tool]")) {
       const name = button.dataset.tool as ToolName;
+      const enabled =
+        name === "rectangle"
+          ? SHAPE_CHOICES.some((choice) => this.isShapeVariantEnabled(choice.variant))
+          : this.isToolEnabled(name);
+      button.hidden = !enabled;
       button.disabled =
         DRAW_TOOLS.has(name) &&
-        (!canEdit ||
-          (name === "image" && (!this.bootstrap.board.imagesEnabled || this.imageUploadInFlight)));
+        (!canEdit || !enabled || (name === "image" && this.imageUploadInFlight));
     }
+    this.setShapeMenuOpen(!this.shapeMenu.hidden);
     this.accessButton.hidden = this.bootstrap.actor.role !== "owner" || archived;
     this.accessButton.disabled = archived || this.archivePending;
+    this.settingsButton.hidden = this.bootstrap.actor.role !== "owner" || archived;
+    this.settingsButton.disabled = archived || this.archivePending;
     query(this.root, "[data-export-attributed-json]", HTMLButtonElement).hidden =
       !attributedDataDownloadAllowed(this.bootstrap.actor.role);
     this.titleInput.readOnly = this.bootstrap.actor.role !== "owner" || archived;
@@ -4266,13 +4616,16 @@ export class BoardApp {
       this.bootstrap.actor.role === "owner" && !archived,
     );
     if (archived) {
-      for (const control of this.accessDrawer.querySelectorAll<
+      for (const control of this.root.querySelectorAll<
         HTMLButtonElement | HTMLInputElement | HTMLSelectElement
-      >("button, input, select")) {
+      >(
+        "[data-testid='access-drawer'] button, [data-testid='access-drawer'] input, [data-testid='access-drawer'] select, [data-testid='settings-drawer'] button, [data-testid='settings-drawer'] input, [data-testid='settings-drawer'] select",
+      )) {
         control.disabled = true;
       }
     }
-    const archiveButton = this.accessBody.querySelector<HTMLButtonElement>("[data-archive-board]");
+    const archiveButton =
+      this.settingsBody.querySelector<HTMLButtonElement>("[data-archive-board]");
     if (archiveButton) archiveButton.disabled = !this.canArchiveBoard();
     this.renderer.svg.setAttribute("aria-readonly", String(!canEdit));
     this.tools.reconcileSelection();
@@ -4324,7 +4677,8 @@ export class BoardApp {
     }
     this.saveStatus.dataset.state = state;
     this.saveStatusText.textContent = label;
-    const archiveButton = this.accessBody.querySelector<HTMLButtonElement>("[data-archive-board]");
+    const archiveButton =
+      this.settingsBody.querySelector<HTMLButtonElement>("[data-archive-board]");
     if (archiveButton) archiveButton.disabled = !this.canArchiveBoard();
   }
 
@@ -4427,8 +4781,18 @@ export class BoardApp {
   }
 
   private setActiveToolButton(tool: ToolName): void {
+    const activeButtonTool =
+      tool === "polygon" || tool === "ellipse" ? ("rectangle" satisfies ToolName) : tool;
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-tool]")) {
-      button.setAttribute("aria-pressed", String(button.dataset.tool === tool));
+      button.setAttribute("aria-pressed", String(button.dataset.tool === activeButtonTool));
+    }
+    for (const button of this.shapeMenu.querySelectorAll<HTMLButtonElement>(
+      "[data-shape-variant]",
+    )) {
+      button.setAttribute(
+        "aria-pressed",
+        String(button.dataset.shapeVariant === this.style.shapeVariant),
+      );
     }
     this.updateStyleControls();
   }
@@ -4580,7 +4944,9 @@ export class BoardApp {
     alt.disabled =
       !canEdit || selected?.version === 0 || !selected || !this.canModifyItem(selected);
     const voteSummary =
-      ids.size === 1 && selected ? summarizeVotes(selected, this.model.items.values()) : null;
+      this.bootstrap.board.features.voting && ids.size === 1 && selected
+        ? summarizeVotes(selected, this.model.items.values())
+        : null;
     const authoritativeTable = selectedId
       ? this.model.authoritativeItems.get(selectedId)
       : undefined;
@@ -4588,7 +4954,8 @@ export class BoardApp {
       authoritativeTable && isVoteTable(authoritativeTable)
         ? buildClearVoteDeletes(authoritativeTable, this.model.authoritativeItems.values())
         : null;
-    const canClearVotes = this.bootstrap.actor.role === "owner" && canEdit;
+    const canClearVotes =
+      this.bootstrap.board.features.voting && this.bootstrap.actor.role === "owner" && canEdit;
     clearVotes.hidden = !canClearVotes || voteSummary === null;
     clearVotes.disabled = !canClearVotes || (clearableVotes?.operations.length ?? 0) === 0;
     const voteCount = voteSummary?.stampIds.length ?? 0;
@@ -4615,6 +4982,13 @@ export class BoardApp {
   }
 
   private activateTool(tool: ToolName): void {
+    if (tool === "rectangle") {
+      const opening = this.shapeMenu.hidden !== false;
+      if (opening) this.tools.setTool("select");
+      this.setShapeMenuOpen(opening);
+      return;
+    }
+    this.setShapeMenuOpen(false);
     if (this.tools.tool === tool) {
       this.reactivateTool(tool);
       return;
@@ -4623,9 +4997,83 @@ export class BoardApp {
   }
 
   private reactivateTool(tool: ToolName): void {
+    if (tool === "rectangle" || tool === "ellipse" || tool === "polygon") {
+      this.setShapeMenuOpen(true);
+    }
     if (tool === "stamp") this.setStylePopoverOpen(true);
     if (tool === "image") this.openImagePicker();
     if (tool === "table") this.setTablePickerOpen(true);
+  }
+
+  private setShapeMenuOpen(open: boolean): void {
+    const enabledChoices = SHAPE_CHOICES.filter((choice) =>
+      this.isShapeVariantEnabled(choice.variant),
+    );
+    if (enabledChoices.length === 0) open = false;
+    this.shapeMenu.hidden = !open;
+    query(this.root, "[data-testid='tool-rectangle']", HTMLButtonElement).setAttribute(
+      "aria-expanded",
+      String(open),
+    );
+    for (const button of this.shapeMenu.querySelectorAll<HTMLButtonElement>(
+      "[data-shape-variant]",
+    )) {
+      const variant = button.dataset.shapeVariant as ShapeVariant | undefined;
+      button.hidden = !variant || !this.isShapeVariantEnabled(variant);
+      button.disabled = !variant || !this.isShapeVariantEnabled(variant) || !this.canCommit();
+    }
+    if (!open) return;
+    this.setStylePopoverOpen(false);
+    this.closeActivitiesMenu();
+    this.exportMenu.hidden = true;
+  }
+
+  private isShapeVariantEnabled(variant: ShapeVariant): boolean {
+    return this.bootstrap.board.features[variant];
+  }
+
+  private isToolEnabled(tool: ToolName): boolean {
+    const features = this.bootstrap.board.features;
+    switch (tool) {
+      case "select":
+      case "pan":
+        return true;
+      case "pencil":
+        return features.pencil;
+      case "line":
+        return features.line;
+      case "rectangle":
+        return this.isShapeVariantEnabled(
+          this.style.shapeVariant === "square" ? "square" : "rectangle",
+        );
+      case "ellipse":
+        return features.circle;
+      case "polygon":
+        return this.isShapeVariantEnabled(
+          this.style.shapeVariant === "triangle" ||
+            this.style.shapeVariant === "rhombus" ||
+            this.style.shapeVariant === "pentagon" ||
+            this.style.shapeVariant === "hexagon"
+            ? this.style.shapeVariant
+            : "triangle",
+        );
+      case "text":
+        return features.text;
+      case "sticky":
+        return features.stickyNotes;
+      case "stamp":
+        return features.stamps;
+      case "image":
+        return features.images && this.bootstrap.board.imagesEnabled;
+      case "table":
+        return features.tables;
+      case "zone":
+        return features.sections;
+      case "protractor":
+        return features.protractor;
+      case "eraser":
+        return features.eraser;
+    }
   }
 
   private setTablePickerOpen(open: boolean): void {
@@ -4699,11 +5147,13 @@ export class BoardApp {
   private closeDrawers(): void {
     this.participantDrawer.hidden = true;
     this.accessDrawer.hidden = true;
+    this.settingsDrawer.hidden = true;
     query(this.root, "[data-testid='participants-button']", HTMLButtonElement).setAttribute(
       "aria-expanded",
       "false",
     );
     this.accessButton.setAttribute("aria-expanded", "false");
+    this.settingsButton.setAttribute("aria-expanded", "false");
   }
 
   private downloadLocalJson(): void {
