@@ -170,17 +170,22 @@ Tokens → Create Token → Create Custom Token**. For first-time bootstrap, gra
 | Resource scope | Dashboard permission | API permission name | Why |
 | --- | --- | --- | --- |
 | Include only the target account | Workers Scripts: Edit | `Workers Scripts Write` | Upload/deploy Worker modules and Static Assets, manage Worker secrets, and provision/bind the declared SQLite Durable Object class. |
-| Include only the target account | Workers R2 Storage: Edit | `Workers R2 Storage Write` | Look up and create the private R2 bucket during bootstrap. |
+| Include only the target account | Workers R2 Storage: Edit | `Workers R2 Storage Write` | Look up and create both private R2 buckets during bootstrap. |
+| Include only the zone that owns `APP_HOSTNAME` | Zone: Read | `Zone Read` | Discover the exact active zone without committing its identifier. |
+| Include only the zone that owns `APP_HOSTNAME` | WAF: Edit | `Zone WAF Write` | Create, verify, or repair the narrow server-API Super Bot Fight Mode skip rule. |
 
-Add no Zone, DNS, SSL, Workers Routes, D1, KV, Pages, Workers Tail, or broad
-account permissions when using `workers.dev` or a Worker Custom Domain. Add a
-TTL and client-IP restriction when CI has stable egress. Review the policy,
-create the token, copy it once, and store it only in the local/CI secret store.
+Do not add DNS, SSL, Workers Routes, D1, KV, Pages, Workers Tail, or broad account
+permissions. Add a TTL and client-IP restriction when CI has stable egress.
+Review the policy, create the token, copy it once, and store it only in the
+local/CI secret store. If the Worker and DNS zone belong to different accounts,
+the token must include the target Worker account plus the specific DNS zone.
 
-Automatic deployment verifies or provisions both buckets on every run, so its
-environment token keeps both permissions. Runtime object access comes from the
-private `BOARD_SNAPSHOTS` and `BOARD_ASSETS` bindings, not an API or S3
-credential.
+Automatic bootstrap/deployment verifies or provisions both buckets and the WAF
+rule on every run, so its environment token keeps all four permissions. A
+separate deploy-only workflow that does not invoke bootstrap may retain only
+Workers Scripts: Edit, but it will not provision buckets or repair WAF-rule
+drift. Runtime object access comes from the private `BOARD_SNAPSHOTS` and
+`BOARD_ASSETS` bindings, not an API or S3 credential.
 
 Cloudflare does not support managing Turnstile widgets with account-owned API
 tokens. Create the production widget in the dashboard, or use a short-lived
@@ -248,9 +253,21 @@ npm run cf:bootstrap -- --env production
 
 The command reads `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` from the
 process environment (the npm script loads ignored `.env` when present), verifies
-the committed configuration, creates both private buckets only when absent, and
-emits a machine-readable result without secrets. Reruns against correctly
-configured buckets succeed without mutation.
+the committed configuration, and creates both private buckets only when absent.
+For each non-local hostname it discovers the owning zone, then creates or repairs
+a first-position custom WAF rule matching only that exact host and
+`/api/v1/organisations/*`. The rule skips only the Super Bot Fight Mode phase;
+managed WAF rules, other custom rules, Browser Integrity Check, rate limiting,
+and every browser/embed route remain enabled. Matching requests are logged in
+Cloudflare Security Events and still need valid Organisation HMAC authentication
+inside the Worker.
+
+The command emits a machine-readable result without secrets, including
+`serverApiBotBypass.created` and `serverApiBotBypass.updated`. Reruns against
+correctly configured buckets and rules succeed without mutation. Cloudflare Free
+plan Bot Fight Mode cannot be skipped by a WAF custom rule; use Super Bot Fight
+Mode for a path exception, or disable Bot Fight Mode if it challenges legitimate
+server clients.
 
 To deploy only after successful provisioning:
 

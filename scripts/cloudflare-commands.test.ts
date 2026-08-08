@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   environment: "staging" as "staging" | "production",
   assetScenario: "existing" as "existing" | "missing" | "conflict",
   assetLookupCount: 0,
+  wafScenario: "existing" as "existing" | "missing-ruleset" | "missing-rule" | "drifted",
   requiredCalls: [] as string[][],
   requestPaths: [] as string[],
   requestCalls: [] as Array<{
@@ -71,10 +72,70 @@ vi.mock("./env.ts", () => ({
       mocks.environment === "production"
         ? "cloudflare-collab-canvas"
         : "cloudflare-collab-canvas-staging";
+    const zoneId = "b".repeat(32);
+    const rulesetId = "c".repeat(32);
+    const wafRuleId = "d".repeat(32);
+    const wafDescription = `SpaceScale: skip bot checks for authenticated ${mocks.environment} server APIs`;
+    const expectedWafRule = {
+      id: wafRuleId,
+      action: "skip",
+      action_parameters: { phases: ["http_request_sbfm"] },
+      description: wafDescription,
+      enabled: true,
+      expression: `(http.host eq "${hostname}" and starts_with(http.request.uri.path, "/api/v1/organisations/"))`,
+      logging: { enabled: true },
+    };
     let result: unknown = {};
     let status = 200;
     let success = true;
-    if (path.endsWith("/tokens/verify")) result = { status: "active" };
+    let errors: Array<{ code: number; message?: string }> | undefined;
+    if (path.startsWith("/zones?")) {
+      const requestedZone = new URL(`https://api.test${path}`).searchParams.get("name");
+      result =
+        requestedZone === "spacescale.net"
+          ? [{ id: zoneId, name: "spacescale.net", status: "active" }]
+          : [];
+    } else if (
+      path === `/zones/${zoneId}/rulesets/phases/http_request_firewall_custom/entrypoint`
+    ) {
+      if (mocks.wafScenario === "missing-ruleset") {
+        status = 404;
+        success = false;
+        result = undefined;
+        errors = [{ code: 10003, message: "entrypoint ruleset not found" }];
+      } else {
+        result = {
+          id: rulesetId,
+          phase: "http_request_firewall_custom",
+          rules:
+            mocks.wafScenario === "missing-rule"
+              ? [{ id: "e".repeat(32), action: "block", description: "Existing rule" }]
+              : [
+                  mocks.wafScenario === "drifted"
+                    ? {
+                        ...expectedWafRule,
+                        action_parameters: { phases: ["http_request_firewall_managed"] },
+                      }
+                    : expectedWafRule,
+                ],
+        };
+      }
+    } else if (method === "POST" && path === `/zones/${zoneId}/rulesets`) {
+      result = {
+        id: rulesetId,
+        phase: "http_request_firewall_custom",
+        rules: [expectedWafRule],
+      };
+    } else if (
+      (method === "POST" || method === "PATCH") &&
+      path.startsWith(`/zones/${zoneId}/rulesets/${rulesetId}/rules`)
+    ) {
+      result = {
+        id: rulesetId,
+        phase: "http_request_firewall_custom",
+        rules: [expectedWafRule],
+      };
+    } else if (path.endsWith("/tokens/verify")) result = { status: "active" };
     else if (path.endsWith("/workers/scripts")) result = [];
     else if (path.includes("/workers/domains?")) {
       result = [{ hostname, service: workerService, cert_id: "certificate" }];
@@ -116,7 +177,7 @@ vi.mock("./env.ts", () => ({
     }
     return {
       response: new Response(null, { status }),
-      envelope: { success, result },
+      envelope: { success, result, errors },
     };
   }),
 }));
@@ -129,6 +190,7 @@ beforeEach(() => {
   mocks.environment = "staging";
   mocks.assetScenario = "existing";
   mocks.assetLookupCount = 0;
+  mocks.wafScenario = "existing";
   mocks.requiredCalls.length = 0;
   mocks.requestPaths.length = 0;
   mocks.requestCalls.length = 0;
@@ -179,6 +241,77 @@ describe.sequential("Cloudflare command Turnstile configuration", () => {
     expect(mocks.requestPaths.some((path) => path.includes("staging-cloud-collab-assets"))).toBe(
       true,
     );
+  });
+
+  it("creates the zone custom-rules entrypoint when it is absent", async () => {
+    mocks.wafScenario = "missing-ruleset";
+    process.argv = ["node", "bootstrap-cloudflare.ts", "--env", "staging"];
+
+    await import("./bootstrap-cloudflare.ts");
+
+    const creation = mocks.requestCalls.find(
+      (call) => call.method === "POST" && call.path === `/zones/${"b".repeat(32)}/rulesets`,
+    );
+    expect(JSON.parse(creation?.body ?? "{}")).toMatchObject({
+      kind: "zone",
+      phase: "http_request_firewall_custom",
+      rules: [
+        {
+          action: "skip",
+          action_parameters: { phases: ["http_request_sbfm"] },
+          enabled: true,
+          expression:
+            '(http.host eq "staging-cloud-collab.spacescale.net" and starts_with(http.request.uri.path, "/api/v1/organisations/"))',
+        },
+      ],
+    });
+    expect(JSON.parse(mocks.output.at(-1) ?? "{}").serverApiBotBypass).toMatchObject({
+      applicable: true,
+      created: true,
+      updated: false,
+      zoneName: "spacescale.net",
+    });
+  });
+
+  it("adds a missing bot-bypass rule without replacing the ruleset", async () => {
+    mocks.wafScenario = "missing-rule";
+    process.argv = ["node", "bootstrap-cloudflare.ts", "--env", "staging"];
+
+    await import("./bootstrap-cloudflare.ts");
+
+    const creation = mocks.requestCalls.find(
+      (call) =>
+        call.method === "POST" &&
+        call.path === `/zones/${"b".repeat(32)}/rulesets/${"c".repeat(32)}/rules`,
+    );
+    expect(JSON.parse(creation?.body ?? "{}")).toMatchObject({
+      position: { before: "e".repeat(32) },
+    });
+    expect(JSON.parse(mocks.output.at(-1) ?? "{}").serverApiBotBypass).toMatchObject({
+      created: true,
+      updated: false,
+    });
+  });
+
+  it("repairs a drifted bot-bypass rule in place", async () => {
+    mocks.wafScenario = "drifted";
+    process.argv = ["node", "bootstrap-cloudflare.ts", "--env", "staging"];
+
+    await import("./bootstrap-cloudflare.ts");
+
+    const update = mocks.requestCalls.find((call) => call.method === "PATCH");
+    expect(update?.path).toBe(
+      `/zones/${"b".repeat(32)}/rulesets/${"c".repeat(32)}/rules/${"d".repeat(32)}`,
+    );
+    expect(JSON.parse(update?.body ?? "{}")).toMatchObject({
+      action: "skip",
+      action_parameters: { phases: ["http_request_sbfm"] },
+      enabled: true,
+    });
+    expect(JSON.parse(mocks.output.at(-1) ?? "{}").serverApiBotBypass).toMatchObject({
+      created: false,
+      updated: true,
+    });
   });
 
   it("provisions production without requiring deploy-only public configuration", async () => {

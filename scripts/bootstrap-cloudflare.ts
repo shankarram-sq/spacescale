@@ -25,6 +25,32 @@ type Bucket = {
   location?: string;
   storage_class?: string;
 };
+type Zone = { id: string; name: string; status?: string };
+type WafRule = {
+  id?: string;
+  action?: string;
+  action_parameters?: { phases?: string[] };
+  description?: string;
+  enabled?: boolean;
+  expression?: string;
+  logging?: { enabled?: boolean };
+};
+type WafRuleset = {
+  id: string;
+  name?: string;
+  phase?: string;
+  rules?: WafRule[];
+};
+type WafProvisioning = {
+  applicable: boolean;
+  created: boolean;
+  updated: boolean;
+  zoneName: string | null;
+  ruleId: string | null;
+};
+
+const SERVER_API_PREFIX = "/api/v1/organisations/";
+const BOT_PHASE = "http_request_sbfm";
 
 function jurisdictionHeaders(
   configuration: EnvironmentConfiguration,
@@ -184,6 +210,151 @@ async function provisionPrivateBucket(
   return created;
 }
 
+function zoneCandidates(hostname: string): string[] {
+  const labels = hostname.split(".");
+  return labels.slice(0, -1).map((_, index) => labels.slice(index).join("."));
+}
+
+async function findOwningZone(hostname: string): Promise<Zone> {
+  for (const candidate of zoneCandidates(hostname)) {
+    const lookup = await cloudflareRequest<Zone[]>(
+      `/zones?name=${encodeURIComponent(candidate)}&status=active&per_page=50`,
+    );
+    if (!lookup.response.ok || !lookup.envelope.success || !lookup.envelope.result) {
+      throw publicApiFailure("Cloudflare zone lookup", lookup.response, lookup.envelope);
+    }
+    const exact = lookup.envelope.result.find(
+      (zone) => zone.name === candidate && zone.status === "active",
+    );
+    if (exact) return exact;
+  }
+  throw new Error(`No active Cloudflare zone is accessible for ${hostname}.`);
+}
+
+function desiredBotBypassRule(environment: EnvironmentName, hostname: string): WafRule {
+  return {
+    action: "skip",
+    action_parameters: { phases: [BOT_PHASE] },
+    description: `SpaceScale: skip bot checks for authenticated ${environment} server APIs`,
+    enabled: true,
+    expression: `(http.host eq "${hostname}" and starts_with(http.request.uri.path, "${SERVER_API_PREFIX}"))`,
+    logging: { enabled: true },
+  };
+}
+
+function botBypassRuleMatches(actual: WafRule, expected: WafRule): boolean {
+  return (
+    actual.action === expected.action &&
+    actual.description === expected.description &&
+    actual.enabled === true &&
+    actual.expression === expected.expression &&
+    actual.logging?.enabled === true &&
+    actual.action_parameters?.phases?.length === 1 &&
+    actual.action_parameters.phases[0] === BOT_PHASE
+  );
+}
+
+function verifiedRule(ruleset: WafRuleset, expected: WafRule): WafRule {
+  const rule = ruleset.rules?.find((candidate) => candidate.description === expected.description);
+  if (!rule?.id || !botBypassRuleMatches(rule, expected)) {
+    throw new Error("Cloudflare did not return the expected server API bot-bypass rule.");
+  }
+  return rule;
+}
+
+async function provisionServerApiBotBypass(
+  environment: EnvironmentName,
+  hostname: string,
+): Promise<WafProvisioning> {
+  if (hostname === "localhost" || hostname.endsWith(".workers.dev")) {
+    return {
+      applicable: false,
+      created: false,
+      updated: false,
+      zoneName: null,
+      ruleId: null,
+    };
+  }
+
+  const zone = await findOwningZone(hostname);
+  if (!/^[a-f\d]{32}$/iu.test(zone.id)) {
+    throw new Error("Cloudflare returned an invalid zone identifier.");
+  }
+  const zoneId = encodeURIComponent(zone.id);
+  const entrypointPath = `/zones/${zoneId}/rulesets/phases/http_request_firewall_custom/entrypoint`;
+  const entrypoint = await cloudflareRequest<WafRuleset>(entrypointPath);
+  const expected = desiredBotBypassRule(environment, hostname);
+  const noEntrypoint =
+    entrypoint.response.status === 404 &&
+    entrypoint.envelope.errors?.some((error) => error.code === 10003) === true;
+
+  if (noEntrypoint) {
+    const created = await cloudflareRequest<WafRuleset>(`/zones/${zoneId}/rulesets`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: "SpaceScale zone custom rules",
+        description: "SpaceScale zone-level custom firewall rules",
+        kind: "zone",
+        phase: "http_request_firewall_custom",
+        rules: [expected],
+      }),
+    });
+    if (!created.response.ok || !created.envelope.success || !created.envelope.result) {
+      throw publicApiFailure("WAF ruleset creation", created.response, created.envelope);
+    }
+    const rule = verifiedRule(created.envelope.result, expected);
+    return {
+      applicable: true,
+      created: true,
+      updated: false,
+      zoneName: zone.name,
+      ruleId: rule.id ?? null,
+    };
+  }
+
+  if (!entrypoint.response.ok || !entrypoint.envelope.success || !entrypoint.envelope.result) {
+    throw publicApiFailure("WAF ruleset lookup", entrypoint.response, entrypoint.envelope);
+  }
+  const ruleset = entrypoint.envelope.result;
+  const rules = ruleset.rules ?? [];
+  const existingIndex = rules.findIndex((rule) => rule.description === expected.description);
+  const existing = existingIndex >= 0 ? rules[existingIndex] : undefined;
+  const firstRule = rules[0];
+  if (existing && existingIndex === 0 && botBypassRuleMatches(existing, expected)) {
+    return {
+      applicable: true,
+      created: false,
+      updated: false,
+      zoneName: zone.name,
+      ruleId: existing.id ?? null,
+    };
+  }
+
+  const position = existingIndex !== 0 && firstRule?.id ? { before: firstRule.id } : undefined;
+  const mutationPath = existing?.id
+    ? `/zones/${zoneId}/rulesets/${encodeURIComponent(ruleset.id)}/rules/${encodeURIComponent(existing.id)}`
+    : `/zones/${zoneId}/rulesets/${encodeURIComponent(ruleset.id)}/rules`;
+  const mutation = await cloudflareRequest<WafRuleset>(mutationPath, {
+    method: existing ? "PATCH" : "POST",
+    body: JSON.stringify({ ...expected, ...(position ? { position } : {}) }),
+  });
+  if (!mutation.response.ok || !mutation.envelope.success || !mutation.envelope.result) {
+    throw publicApiFailure(
+      existing ? "WAF rule update" : "WAF rule creation",
+      mutation.response,
+      mutation.envelope,
+    );
+  }
+  const rule = verifiedRule(mutation.envelope.result, expected);
+  return {
+    applicable: true,
+    created: !existing,
+    updated: Boolean(existing),
+    zoneName: zone.name,
+    ruleId: rule.id ?? null,
+  };
+}
+
 loadLocalEnv();
 const args = parseArguments(process.argv.slice(2));
 const configuration = configurationFor(args.environment);
@@ -246,6 +417,10 @@ const assetBucketConfiguration: EnvironmentConfiguration = {
   bucketName: configuration.assetBucketName,
 };
 const assetCreated = await provisionPrivateBucket(account, assetBucketConfiguration);
+const serverApiBotBypass = await provisionServerApiBotBypass(
+  args.environment,
+  configuration.hostname,
+);
 
 const result = {
   ok: true,
@@ -259,6 +434,7 @@ const result = {
   created,
   assetCreated,
   private: true,
+  serverApiBotBypass,
   deployment: args.deploy ? "starting" : "not_requested",
   nextCommand: args.deploy ? null : `npm run cf:bootstrap -- --env ${args.environment} --deploy`,
 };
