@@ -6,7 +6,15 @@ test("shape palette, rotatable protractor, snapping, partial erase, and feature 
 }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "Geometry acceptance runs in Chromium.");
 
+  const browserErrors: string[] = [];
+  page.on("pageerror", (error) => browserErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") browserErrors.push(message.text());
+  });
+
   await createBoard(page, "Geometry lab");
+  await expect(page).toHaveTitle("Geometry lab — SpaceScale");
+  await expect(page.locator("vite-error-overlay")).toHaveCount(0);
   const presets = [
     ["Square", 0.12, 0.2],
     ["Rectangle", 0.28, 0.2],
@@ -110,11 +118,11 @@ test("shape palette, rotatable protractor, snapping, partial erase, and feature 
     };
   });
   await page.getByTestId("tool-line").click();
-  await page.mouse.move(snapTarget.center.x, snapTarget.center.y);
-  await page.mouse.down();
+  await page.mouse.click(snapTarget.center.x, snapTarget.center.y);
+  await expect(page.locator("#local-preview-layer .connector-snap-halo")).toHaveCount(1);
   await page.mouse.move(snapTarget.nearTick.x, snapTarget.nearTick.y, { steps: 5 });
   await expect(page.locator("#local-preview-layer .connector-snap-halo")).toHaveCount(2);
-  await page.mouse.up();
+  await page.mouse.click(snapTarget.nearTick.x, snapTarget.nearTick.y);
   await expect(page.locator("#drawing-area .board-item-line")).toHaveCount(1);
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
   const lineEndpoints = await page
@@ -154,4 +162,5 @@ test("shape palette, rotatable protractor, snapping, partial erase, and feature 
   await expect(page.getByTestId("tool-protractor")).toBeHidden();
   await protractorGate.check();
   await expect(page.getByTestId("tool-protractor")).toBeVisible();
+  expect(browserErrors).toEqual([]);
 });

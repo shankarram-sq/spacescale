@@ -14,6 +14,7 @@ import {
   type CapturedMoveItem,
   cardResizeGrabOffset,
   defaultImageCardSize,
+  lineCreationReleaseAction,
   resizedCardGeometry,
   resolveConnectorEndpoint,
   resolveProtractorCenterMove,
@@ -33,6 +34,13 @@ describe("captured gesture operations", () => {
     expect(stickyTapMoveThreshold("touch", 1)).toBe(10);
     expect(stickyTapMoveThreshold("touch", 2)).toBe(5);
     expect(stickyTapMoveThreshold("mouse", 1)).toBe(3);
+  });
+
+  it("arms a first line click for mouse and touch, then commits the second click", () => {
+    expect(lineCreationReleaseAction("first", [20, 30], [22.9, 30], "mouse", 1)).toBe("arm");
+    expect(lineCreationReleaseAction("first", [20, 30], [24.9, 30], "touch", 2)).toBe("arm");
+    expect(lineCreationReleaseAction("first", [20, 30], [23.1, 30], "mouse", 1)).toBe("commit");
+    expect(lineCreationReleaseAction("second", [20, 30], [20, 30], "touch", 1)).toBe("commit");
   });
 
   it("keeps selection padding comfortable in CSS pixels across zoom levels", () => {

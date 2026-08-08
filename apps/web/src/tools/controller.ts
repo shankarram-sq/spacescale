@@ -146,6 +146,18 @@ export function tapAdjustedMovePoint(
     : current;
 }
 
+export function lineCreationReleaseAction(
+  phase: "first" | "second",
+  start: Point,
+  current: Point,
+  pointerType: string,
+  zoom: number,
+): "arm" | "commit" {
+  return phase === "first" && tapAdjustedMovePoint(start, current, pointerType, zoom) === start
+    ? "arm"
+    : "commit";
+}
+
 export type CapturedMoveItem = {
   transform: Matrix;
   expectedVersion: number;
@@ -477,6 +489,9 @@ type Gesture =
   | {
       kind: "shape";
       pointerId: number;
+      phase: "first" | "second";
+      pointerStart: Point;
+      pointerType: string;
       gestureId: string;
       itemId: string;
       shape: ShapeTool;
@@ -582,6 +597,7 @@ type PinchState = {
 export class ToolController {
   private toolValue: ToolName = "pencil";
   private gesture: Gesture | null = null;
+  private pendingLine: Extract<Gesture, { kind: "shape" }> | null = null;
   private readonly selected = new Set<string>();
   private spaceHeld = false;
   private readonly pointers = new Map<number, Point>();
@@ -782,6 +798,31 @@ export class ToolController {
       return;
     }
 
+    if (this.toolValue === "line" && this.pendingLine) {
+      const gesture = this.pendingLine;
+      this.pendingLine = null;
+      gesture.pointerId = event.pointerId;
+      gesture.phase = "second";
+      gesture.pointerStart = point;
+      gesture.pointerType = event.pointerType;
+      applyShapePointerState(
+        gesture,
+        resolveShapePointerState(
+          "line",
+          point,
+          event.shiftKey,
+          this.options.model,
+          this.options.renderer.viewport.zoom,
+          gesture.snapEnabled,
+          gesture.endAnchor,
+        ),
+      );
+      this.gesture = gesture;
+      this.renderShapeGesture(gesture, true);
+      event.preventDefault();
+      return;
+    }
+
     const style = this.options.getStyle();
     if (this.toolValue === "pencil") {
       const gestureId = createId();
@@ -840,6 +881,9 @@ export class ToolController {
       this.gesture = {
         kind: "shape",
         pointerId: event.pointerId,
+        phase: "first",
+        pointerStart: point,
+        pointerType: event.pointerType,
         gestureId: createId(),
         itemId: createId(),
         shape: this.toolValue,
@@ -1011,6 +1055,25 @@ export class ToolController {
         this.pinch.zoom * (distance / this.pinch.distance),
       );
       this.pinch = { ...this.pinch, center };
+      event.preventDefault();
+      return;
+    }
+
+    if (!this.gesture && this.pendingLine) {
+      const point = boardPoint(event, this.options.renderer);
+      applyShapePointerState(
+        this.pendingLine,
+        resolveShapePointerState(
+          "line",
+          point,
+          event.shiftKey,
+          this.options.model,
+          this.options.renderer.viewport.zoom,
+          this.pendingLine.snapEnabled,
+          this.pendingLine.endAnchor,
+        ),
+      );
+      this.renderShapeGesture(this.pendingLine, false);
       event.preventDefault();
       return;
     }
@@ -1187,6 +1250,27 @@ export class ToolController {
       );
     } else if (gesture.kind === "eraser") {
       this.collectEraser(tapPoint, gesture);
+    }
+    if (
+      gesture.kind === "shape" &&
+      gesture.shape === "line" &&
+      gesture.phase === "first" &&
+      lineCreationReleaseAction(
+        gesture.phase,
+        gesture.pointerStart,
+        tapPoint,
+        gesture.pointerType,
+        this.options.renderer.viewport.zoom,
+      ) === "arm"
+    ) {
+      gesture.current = gesture.start;
+      delete gesture.endAnchor;
+      this.gesture = null;
+      this.pendingLine = gesture;
+      safeReleaseCapture(this.options.renderer.svg, event.pointerId);
+      this.renderShapeGesture(gesture, true);
+      event.preventDefault();
+      return;
     }
     this.gesture = null;
     safeReleaseCapture(this.options.renderer.svg, event.pointerId);
@@ -1738,8 +1822,9 @@ export class ToolController {
   }
 
   private cancelGesture(): void {
-    const gesture = this.gesture;
+    const gesture = this.gesture ?? this.pendingLine;
     this.gesture = null;
+    this.pendingLine = null;
     if (
       !gesture ||
       gesture.kind === "pan" ||
