@@ -161,8 +161,9 @@ export class OrganisationRoom extends DurableObject<Env> {
       const organisationId = requireOrganisationId(itemMatch[1]);
       const templateId = requireTemplateId(itemMatch[2]);
       this.bindOrganisation(organisationId);
+      if (request.method === "PATCH") return this.patchTemplate(request, templateId);
       if (request.method === "DELETE") return this.deleteTemplate(templateId);
-      return methodNotAllowed("DELETE");
+      return methodNotAllowed("PATCH, DELETE");
     }
     throw new HttpError(404, "NOT_FOUND", "The requested endpoint does not exist.");
   }
@@ -442,6 +443,75 @@ export class OrganisationRoom extends DurableObject<Env> {
       } satisfies OrganisationTemplate,
       { status: 201 },
     );
+  }
+
+  private async patchTemplate(request: Request, templateId: string): Promise<Response> {
+    const body = await readJsonBody(request, MAX_ORGANISATION_TEMPLATE_BYTES + 16 * 1_024);
+    assertExactKeys(body, ["name", "description", "items"]);
+    if (Object.keys(body).length === 0) {
+      throw new HttpError(400, "BAD_REQUEST", "At least one template field is required.");
+    }
+    const existingRow = this.#sql
+      .exec<TemplateRow>(
+        `SELECT template_id, name, description, items_json, byte_count,
+          created_by, created_at_ms, updated_at_ms
+         FROM templates WHERE template_id = ?`,
+        templateId,
+      )
+      .toArray()[0];
+    if (existingRow === undefined) {
+      throw new HttpError(404, "NOT_FOUND", "Template not found.");
+    }
+    const existing = templateFromRow(existingRow);
+    const name = Object.hasOwn(body, "name") ? requireTemplateName(body.name) : existing.name;
+    const description = Object.hasOwn(body, "description")
+      ? optionalTemplateDescription(body.description)
+      : existing.description;
+    const items = Object.hasOwn(body, "items")
+      ? normalizeTemplateItems(body.items)
+      : existing.items;
+    const itemsJson = JSON.stringify(items);
+    const byteCount = new TextEncoder().encode(itemsJson).byteLength;
+    if (byteCount > MAX_ORGANISATION_TEMPLATE_BYTES) {
+      throw new HttpError(413, "PAYLOAD_TOO_LARGE", "The template contents are too large.");
+    }
+    const now = Date.now();
+    this.ctx.storage.transactionSync(() => {
+      const usage = this.#sql
+        .exec<{ byte_count: number }>(
+          "SELECT COALESCE(SUM(byte_count), 0) AS byte_count FROM templates",
+        )
+        .one();
+      if (
+        usage.byte_count - existingRow.byte_count + byteCount >
+        MAX_ORGANISATION_TEMPLATE_TOTAL_BYTES
+      ) {
+        throw new HttpError(
+          413,
+          "PAYLOAD_TOO_LARGE",
+          "The organisation template storage limit was reached.",
+        );
+      }
+      this.#sql.exec(
+        `UPDATE templates SET name = ?, description = ?, items_json = ?,
+          byte_count = ?, updated_at_ms = ? WHERE template_id = ?`,
+        name,
+        description,
+        itemsJson,
+        byteCount,
+        now,
+        templateId,
+      );
+    });
+    return Response.json({
+      id: templateId,
+      name,
+      description,
+      items,
+      createdBy: existing.createdBy,
+      createdAt: existing.createdAt,
+      updatedAt: now,
+    } satisfies OrganisationTemplate);
   }
 
   private deleteTemplate(templateId: string): Response {

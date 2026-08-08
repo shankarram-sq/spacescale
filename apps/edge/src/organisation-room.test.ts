@@ -75,10 +75,27 @@ describe("OrganisationRoom templates", () => {
       updatedAt: expect.any(Number),
     });
 
+    const updatedResponse = await stub.fetch(
+      request(`${collectionPath}/${created.id}`, "PATCH", {
+        name: "  Revised reflection  ",
+        description: "  Updated prompts  ",
+      }),
+    );
+    expect(updatedResponse.status, await updatedResponse.clone().text()).toBe(200);
+    const updated = (await updatedResponse.json()) as typeof created;
+    expect(updated).toEqual({
+      ...created,
+      name: "Revised reflection",
+      description: "Updated prompts",
+      updatedAt: expect.any(Number),
+    });
+    expect(updated.createdAt).toBe(created.createdAt);
+    expect(updated.createdBy).toBe(created.createdBy);
+
     await evictDurableObject(stub);
     const listed = await stub.fetch(request(collectionPath));
     expect(listed.status).toBe(200);
-    expect(await listed.json()).toEqual([created]);
+    expect(await listed.json()).toEqual([updated]);
     const state = await runInDurableObject(stub, (_instance, durableState) => ({
       migrations: durableState.storage.sql
         .exec<{ version: number }>("SELECT version FROM _sql_schema_migrations ORDER BY version")

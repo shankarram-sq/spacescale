@@ -271,6 +271,41 @@ Sign a separate URL for every participant. Do not share a single editor URL:
 attribution is derived from `organisation_id` + `participant_id`, so shared
 credentials intentionally look like one person.
 
+### Complete JavaScript and Python examples
+
+The repository includes equivalent dependency-free parent-backend examples:
+
+- [JavaScript sample](examples/partner-integration.mjs) for Node.js 18 or newer;
+- [Python sample](examples/partner_integration.py) for Python 3.10 or newer.
+
+Both examples:
+
+1. create owner and editor assertions using `key_id`;
+2. produce participant-specific iframe URLs;
+3. attach a canonical initial template to the owner URL;
+4. optionally pre-create the Space and apply that template atomically;
+5. call canonical and attributed export APIs;
+6. list, create, and edit Organisation templates.
+
+Run either with the same parent-server configuration:
+
+```sh
+export SPACESCALE_ORIGIN=https://spacescale.net
+export SPACESCALE_ORGANISATION_ID=acme-learning
+export SPACESCALE_KEY_ID=2026-08
+export SPACESCALE_SIGNING_KEY='replace-with-the-current-organisation-signing-key'
+export SPACESCALE_SPACE_ID=geometry-2026-08-lesson-04
+
+node examples/partner-integration.mjs
+# or
+python3 examples/partner_integration.py
+```
+
+The programs print signed iframe URLs, so run them only in a trusted backend
+environment and do not put their output in application logs. Omit
+`SPACESCALE_SPACE_ID` to generate a fresh sample Space name. Reusing the same
+stable Space ID resumes that Space; its initial template is not reapplied.
+
 ## 4. Embed the Space
 
 ```html
@@ -900,8 +935,26 @@ Board-facing routes, authenticated by the current Space session, are:
 ```text
 GET    /api/v1/boards/<board-id>/organisation/templates
 POST   /api/v1/boards/<board-id>/organisation/templates
+PATCH  /api/v1/boards/<board-id>/organisation/templates/<template-id>
 DELETE /api/v1/boards/<board-id>/organisation/templates/<template-id>
 ```
+
+A trusted parent backend can manage the same Organisation-wide collection
+without an iframe session:
+
+```text
+GET    /api/v1/organisations/<organisation-key>/templates
+POST   /api/v1/organisations/<organisation-key>/templates
+PATCH  /api/v1/organisations/<organisation-key>/templates/<template-id>
+DELETE /api/v1/organisations/<organisation-key>/templates/<template-id>
+```
+
+Send a fresh owner `el1` assertion in
+`Authorization: Bearer <assertion>`. The assertion's `organisation_id` must
+exactly match the URL-decoded Organisation path. Editor and viewer assertions
+receive `403 FORBIDDEN`; a cross-Organisation path receives `404 NOT_FOUND`.
+The server `GET` response contains `organisationId` and `templates`; the
+board-facing response additionally contains `canManage`.
 
 `GET` returns:
 
@@ -981,8 +1034,33 @@ An owner creates a template with the public board request body:
 }
 ```
 
+Creation returns the stored template with status `201`. Editing uses a
+partial `PATCH`: include at least one of `name`, `description`, or `items`.
+Setting `description` to `null` clears it. Supplying `items` replaces the
+complete object list after normal validation; omitted fields remain unchanged.
+
+```http
+PATCH /api/v1/organisations/acme-learning/templates/tpl_AAAAAAAAAAAAAAAAAAAAAA
+Authorization: Bearer <fresh-owner-el1-assertion>
+Content-Type: application/json
+
+{
+  "name": "Revised two-column reflection",
+  "description": null
+}
+```
+
+A successful edit returns the complete updated template with status `200`;
+delete returns `204`. The
+[JavaScript sample](examples/partner-integration.mjs) calls
+`createOrganisationTemplate`, `updateOrganisationTemplate`, and
+`listOrganisationTemplates`. The
+[Python sample](examples/partner_integration.py) provides the equivalent
+`create_organisation_template`, `update_organisation_template`, and
+`list_organisation_templates` functions.
+
 The UI automatically supplies `Idempotency-Key` for creation and sends the
-creator identity internally. Owners may create/delete templates; editors and
+creator identity internally. Owners may create, edit, and delete templates; editors and
 viewers may insert them only when their role, board lock, and item feature flags
 permit drawing.
 

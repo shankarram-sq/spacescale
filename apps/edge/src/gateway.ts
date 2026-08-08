@@ -20,7 +20,11 @@ import {
 import { HmacIdentityService } from "./identity";
 import { safeLog } from "./logging";
 import { OrganisationAuthService, type VerifiedOrganisationLaunch } from "./organisation-auth";
-import { normalizeOrganisationWebhookUrl, OrganisationRoom } from "./organisation-room";
+import {
+  MAX_ORGANISATION_TEMPLATE_BYTES,
+  normalizeOrganisationWebhookUrl,
+  OrganisationRoom,
+} from "./organisation-room";
 import { runtimeTelemetryContext } from "./telemetry";
 import { turnstileRequiredForRequest, validateTurnstile } from "./turnstile";
 import type { Env } from "./types";
@@ -306,7 +310,10 @@ async function routeRequest(
 
   const organisationApi = matchOrganisationApiRoute(url.pathname);
   if (organisationApi !== null) {
-    const launch = await authenticateOrganisationApiRequest(request, env);
+    const launch = await authenticateOrganisationOwnerApiRequest(request, env);
+    if (launch.role !== "owner") {
+      throw new HttpError(403, "FORBIDDEN", "An organisation owner assertion is required.");
+    }
     if (launch.organisationKey !== organisationApi.organisationKey) throw boardNotFoundError();
     enforceGatewayRateLimit(`organisation-api:${launch.organisationId}`, 120, 2);
 
@@ -327,7 +334,74 @@ async function routeRequest(
     }
 
     const organisationRoom = env.ORGANISATION_ROOMS.getByName(launch.organisationId);
-    const internalUrl = `${url.origin}/__internal/organisations/${launch.organisationId}/settings`;
+    const internalBase = `${url.origin}/__internal/organisations/${launch.organisationId}`;
+    if (organisationApi.kind === "templates") {
+      const internalUrl = `${internalBase}/templates`;
+      if (request.method === "GET") {
+        const response = await organisationRoom.fetch(
+          new Request(internalUrl, {
+            method: "GET",
+            headers: { "x-whiteboard-internal-request-id": requestId },
+          }),
+        );
+        if (!response.ok) return response;
+        const templates: unknown = await response.json();
+        if (!Array.isArray(templates)) {
+          throw new HttpError(
+            500,
+            "INTERNAL_ERROR",
+            "The organisation template response is invalid.",
+          );
+        }
+        return Response.json({ organisationId: launch.organisationId, templates });
+      }
+      if (request.method === "POST") {
+        const body = await readJsonBody(request, MAX_ORGANISATION_TEMPLATE_BYTES + 32 * 1_024);
+        assertExactKeys(body, ["name", "description", "items"], ["name", "items"]);
+        return organisationRoom.fetch(
+          new Request(internalUrl, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-whiteboard-internal-request-id": requestId,
+            },
+            body: JSON.stringify({ ...body, createdBy: launch.actorId }),
+          }),
+        );
+      }
+      return methodNotAllowed("GET, POST");
+    }
+    if (organisationApi.kind === "template") {
+      const internalUrl = `${internalBase}/templates/${organisationApi.templateId}`;
+      if (request.method === "PATCH") {
+        const body = await readJsonBody(request, MAX_ORGANISATION_TEMPLATE_BYTES + 32 * 1_024);
+        assertExactKeys(body, ["name", "description", "items"]);
+        if (Object.keys(body).length === 0) {
+          throw new HttpError(400, "BAD_REQUEST", "At least one template field is required.");
+        }
+        return organisationRoom.fetch(
+          new Request(internalUrl, {
+            method: "PATCH",
+            headers: {
+              "content-type": "application/json",
+              "x-whiteboard-internal-request-id": requestId,
+            },
+            body: JSON.stringify(body),
+          }),
+        );
+      }
+      if (request.method === "DELETE") {
+        return organisationRoom.fetch(
+          new Request(internalUrl, {
+            method: "DELETE",
+            headers: { "x-whiteboard-internal-request-id": requestId },
+          }),
+        );
+      }
+      return methodNotAllowed("PATCH, DELETE");
+    }
+
+    const internalUrl = `${internalBase}/settings`;
     if (request.method === "GET") {
       const response = await organisationRoom.fetch(
         new Request(internalUrl, {
@@ -771,20 +845,29 @@ type OrganisationApiRoute =
       boardId: string;
       format: "canonical" | "attributed";
     }
-  | { kind: "webhook-settings"; organisationKey: string };
+  | { kind: "webhook-settings"; organisationKey: string }
+  | { kind: "templates"; organisationKey: string }
+  | { kind: "template"; organisationKey: string; templateId: string };
 
 function matchOrganisationApiRoute(pathname: string): OrganisationApiRoute | null {
+  const templateMatch =
+    /^\/api\/v1\/organisations\/([^/]{1,720})\/templates(?:\/(tpl_[A-Za-z0-9_-]{22}))?$/u.exec(
+      pathname,
+    );
+  if (templateMatch !== null) {
+    const organisationKey = decodeOrganisationKey(templateMatch[1]);
+    const templateId = templateMatch[2];
+    return templateId === undefined
+      ? { kind: "templates", organisationKey }
+      : { kind: "template", organisationKey, templateId };
+  }
+
   const match =
     /^\/api\/v1\/organisations\/([^/]{1,720})(?:\/boards\/(b_[A-Za-z0-9_-]{22})\/(export(?:\.attributed)?\.json)|\/webhook)$/u.exec(
       pathname,
     );
   if (match === null) return null;
-  let organisationKey: string;
-  try {
-    organisationKey = decodeURIComponent(match[1] ?? "");
-  } catch {
-    throw new HttpError(404, "NOT_FOUND", "The requested endpoint does not exist.");
-  }
+  const organisationKey = decodeOrganisationKey(match[1]);
   const boardId = match[2];
   const exportName = match[3];
   if (boardId !== undefined && exportName !== undefined) {
@@ -798,7 +881,15 @@ function matchOrganisationApiRoute(pathname: string): OrganisationApiRoute | nul
   return { kind: "webhook-settings", organisationKey };
 }
 
-async function authenticateOrganisationApiRequest(
+function decodeOrganisationKey(value: string | undefined): string {
+  try {
+    return decodeURIComponent(value ?? "");
+  } catch {
+    throw new HttpError(404, "NOT_FOUND", "The requested endpoint does not exist.");
+  }
+}
+
+async function authenticateOrganisationOwnerApiRequest(
   request: Request,
   env: Env,
 ): Promise<VerifiedOrganisationLaunch> {

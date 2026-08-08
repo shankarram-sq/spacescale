@@ -414,12 +414,17 @@ export class BoardRoom extends DurableObject<Env> {
       suffix,
     );
     if (organisationTemplateMatch !== null) {
-      if (request.method !== "DELETE") return methodNotAllowed("DELETE");
       const templateId = organisationTemplateMatch[1];
       if (templateId === undefined) {
         throw new HttpError(404, "NOT_FOUND", "Template not found.");
       }
-      return this.deleteOrganisationTemplate(actor, board, url.origin, templateId);
+      if (request.method === "PATCH") {
+        return this.patchOrganisationTemplate(request, actor, board, url.origin, templateId);
+      }
+      if (request.method === "DELETE") {
+        return this.deleteOrganisationTemplate(actor, board, url.origin, templateId);
+      }
+      return methodNotAllowed("PATCH, DELETE");
     }
     const memberMatch = /^\/members\/(a_[A-Za-z0-9_-]{22})$/u.exec(suffix);
     if (memberMatch !== null) {
@@ -900,6 +905,41 @@ export class BoardRoom extends DurableObject<Env> {
           [INTERNAL_REQUEST_ID_HEADER]: actor.requestId,
         },
         body: JSON.stringify({ ...body, createdBy: actor.actorId }),
+      }),
+    );
+  }
+
+  private async patchOrganisationTemplate(
+    request: Request,
+    actor: InternalActorContext,
+    board: BoardRow,
+    origin: string,
+    templateId: string,
+  ): Promise<Response> {
+    this.requireOwner(board, actor.actorId);
+    this.requireFeature(board, "organisationTemplates");
+    const organisationId = this.organisationIdForBoard(board);
+    if (organisationId === null) {
+      throw new HttpError(
+        403,
+        "FORBIDDEN",
+        "Organisation templates are not available for this board.",
+      );
+    }
+    const body = await readJsonBody(request, MAX_ORGANISATION_TEMPLATE_BYTES + 32 * 1_024);
+    assertExactKeys(body, ["name", "description", "items"]);
+    if (Object.keys(body).length === 0) {
+      throw new HttpError(400, "BAD_REQUEST", "At least one template field is required.");
+    }
+    return this.organisationRoomFetch(
+      organisationId,
+      new Request(`${origin}/__internal/organisations/${organisationId}/templates/${templateId}`, {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          [INTERNAL_REQUEST_ID_HEADER]: actor.requestId,
+        },
+        body: JSON.stringify(body),
       }),
     );
   }

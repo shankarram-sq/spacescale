@@ -427,6 +427,98 @@ describe("organisation embed gateway", () => {
     expect(crossOrganisation.status).toBe(404);
   });
 
+  it("lets only owner assertions manage Organisation templates through server APIs", async () => {
+    const { env } = makeEnv();
+    const token = await launchToken("service-templates", { role: "owner" });
+    const launch = await new OrganisationAuthService(env).verifyLaunchToken(token);
+    const templateId = `tpl_${"T".repeat(22)}`;
+    const template = {
+      id: templateId,
+      name: "Reflection",
+      description: null,
+      items: [],
+      createdBy: launch.actorId,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const organisationFetch = vi.fn(async (request: Request) => {
+      if (request.method === "GET") return Response.json([template]);
+      if (request.method === "POST") return Response.json(template, { status: 201 });
+      if (request.method === "PATCH") {
+        return Response.json({ ...template, name: "Revised reflection", updatedAt: 2 });
+      }
+      if (request.method === "DELETE") return new Response(null, { status: 204 });
+      return new Response(null, { status: 405 });
+    });
+    env.ORGANISATION_ROOMS = {
+      getByName: vi.fn(() => ({ fetch: organisationFetch })),
+    } as unknown as Env["ORGANISATION_ROOMS"];
+    const route = `/api/v1/organisations/${encodeURIComponent(ORGANISATION_KEY)}/templates`;
+    const authorization = { Authorization: `Bearer ${token}` };
+
+    const listed = await gateway.fetch(
+      new Request(`http://localhost${route}`, { headers: authorization }),
+      env,
+    );
+    expect(listed.status).toBe(200);
+    expect(await listed.json()).toEqual({
+      organisationId: launch.organisationId,
+      templates: [template],
+    });
+
+    const created = await gateway.fetch(
+      new Request(`http://localhost${route}`, {
+        method: "POST",
+        headers: { ...authorization, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Reflection", items: [{ id: "source-item" }] }),
+      }),
+      env,
+    );
+    expect(created.status).toBe(201);
+    expect(await organisationFetch.mock.calls[1]?.[0].clone().json()).toEqual({
+      name: "Reflection",
+      items: [{ id: "source-item" }],
+      createdBy: launch.actorId,
+    });
+
+    const updated = await gateway.fetch(
+      new Request(`http://localhost${route}/${templateId}`, {
+        method: "PATCH",
+        headers: { ...authorization, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Revised reflection" }),
+      }),
+      env,
+    );
+    expect(updated.status).toBe(200);
+    expect(await organisationFetch.mock.calls[2]?.[0].clone().json()).toEqual({
+      name: "Revised reflection",
+    });
+
+    const deleted = await gateway.fetch(
+      new Request(`http://localhost${route}/${templateId}`, {
+        method: "DELETE",
+        headers: authorization,
+      }),
+      env,
+    );
+    expect(deleted.status).toBe(204);
+
+    const viewerToken = await launchToken("service-templates-viewer", { role: "viewer" });
+    const rejected = await gateway.fetch(
+      new Request(`http://localhost${route}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${viewerToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ name: "Forbidden", items: [{ id: "source-item" }] }),
+      }),
+      env,
+    );
+    expect(rejected.status).toBe(403);
+    expect(organisationFetch).toHaveBeenCalledTimes(4);
+  });
+
   it("extracts WebSocket bearer auth, strips it before forwarding, and negotiates only v1", async () => {
     const { env, captured } = makeEnv();
     const launch = await exchange(env, await launchToken("socket"));

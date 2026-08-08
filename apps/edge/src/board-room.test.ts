@@ -1133,6 +1133,34 @@ describe("BoardRoom initialization", () => {
       templates: [created],
     });
 
+    const rejectedUpdate = await stub.fetch(
+      internalActorRequest(studentId, `${route}/${created.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Student rewrite" }),
+      }),
+    );
+    expect(rejectedUpdate.status).toBe(403);
+
+    const updatedResponse = await stub.fetch(
+      internalActorRequest(coOwnerId, `${route}/${created.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "Revised exit reflection",
+          description: null,
+        }),
+      }),
+    );
+    expect(updatedResponse.status, await updatedResponse.clone().text()).toBe(200);
+    const updated = (await updatedResponse.json()) as typeof created;
+    expect(updated).toMatchObject({
+      ...created,
+      name: "Revised exit reflection",
+      description: null,
+      updatedAt: expect.any(Number),
+    });
+
     const siblingBoardId = `b_${"R".repeat(21)}A`;
     const siblingStub = binding.getByName(siblingBoardId);
     const siblingLaunch = await launchClassroom(
@@ -1155,7 +1183,7 @@ describe("BoardRoom initialization", () => {
     expect(await siblingList.json()).toMatchObject({
       organisationId,
       canManage: true,
-      templates: [created],
+      templates: [updated],
     });
 
     const deleted = await stub.fetch(
