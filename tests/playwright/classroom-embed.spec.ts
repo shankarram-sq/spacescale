@@ -26,8 +26,8 @@ type OrganisationSigningRegistry = Record<
   string,
   {
     derivation_key: string;
-    current: { kid: string; key: string };
-    previous: Array<{ kid: string; key: string }>;
+    current: { key_id: string; key: string };
+    previous: Array<{ key_id: string; key: string }>;
   }
 >;
 
@@ -636,7 +636,7 @@ function readDevVar(name: string): string {
 }
 
 function readOrganisationSigningEntry(organisationId: string): {
-  current: { kid: string; key: string };
+  current: { key_id: string; key: string };
 } {
   const registry = JSON.parse(
     readDevVar("ORGANISATION_SIGNING_KEYS"),
@@ -644,7 +644,7 @@ function readOrganisationSigningEntry(organisationId: string): {
   const entry = registry[organisationId];
   if (
     entry === undefined ||
-    typeof entry.current?.kid !== "string" ||
+    typeof entry.current?.key_id !== "string" ||
     typeof entry.current.key !== "string"
   ) {
     throw new Error(`Organisation ${organisationId} is missing a current signing key.`);
@@ -656,7 +656,7 @@ function launchUrl(
   workerOrigin: string,
   organisationId: string,
   spaceId: string,
-  signing: { current: { kid: string; key: string } },
+  signing: { current: { key_id: string; key: string } },
   participant: Participant,
   issuedAt: number,
 ): string {
@@ -665,7 +665,7 @@ function launchUrl(
     aud: "localhost",
     organisation_id: organisationId,
     space_id: spaceId,
-    kid: signing.current.kid,
+    key_id: signing.current.key_id,
     role: participant.role,
     display_name: participant.displayName,
     participant_id: participant.participantId,

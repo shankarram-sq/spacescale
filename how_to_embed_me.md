@@ -68,7 +68,7 @@ Add the Organisation to the JSON value of the encrypted Worker secret
   "acme-learning": {
     "derivation_key": "WORKER_ONLY_STABLE_SECRET_AT_LEAST_32_BYTES",
     "current": {
-      "kid": "2026-08",
+      "key_id": "2026-08",
       "key": "PARTNER_AND_WORKER_SIGNING_SECRET_AT_LEAST_32_BYTES"
     },
     "previous": []
@@ -85,14 +85,14 @@ npx wrangler secret put ORGANISATION_SIGNING_KEYS --env staging
 
 The registry supports at most 256 Organisations. An Organisation key is the
 exact NFC-normalised, trimmed `organisation_id` used in launch claims. A signing
-`kid` is 1–64 characters matching `[A-Za-z0-9][A-Za-z0-9._-]*`. Every
+`key_id` is 1–64 characters matching `[A-Za-z0-9][A-Za-z0-9._-]*`. Every
 derivation/signing secret must be unique across the registry. Up to eight
 previous signing keys may be retained per Organisation.
 
 Give the partner backend only these two current values:
 
 ```text
-SPACESCALE_KID=2026-08
+SPACESCALE_KEY_ID=2026-08
 SPACESCALE_SIGNING_KEY=PARTNER_AND_WORKER_SIGNING_SECRET_AT_LEAST_32_BYTES
 ```
 
@@ -121,7 +121,7 @@ and recovery identities. Changing it would change those identities.
 To rotate without interrupting active launch URLs:
 
 1. Move the former `current` object into `previous`.
-2. Generate a new independent key and unique `kid`, and make it `current`.
+2. Generate a new independent key and unique `key_id`, and make it `current`.
 3. Install the registry in the Worker.
 4. Update the trusted partner backend to sign with the new current key.
 5. Keep the previous key until all launch assertions it signed have expired,
@@ -149,7 +149,7 @@ The signature covers the literal bytes of `el1.<base64url JSON payload>`.
 | `aud` | yes | SpaceScale hostname only, such as `spacescale.net`; no scheme, path, or port. |
 | `organisation_id` | yes | Stable Organisation key, 1–120 Unicode code points after NFC normalisation and trimming. |
 | `space_id` | yes | Stable Space key and initial title, 1–120 Unicode code points after NFC normalisation and trimming. |
-| `kid` | yes | Key ID present in this Organisation's `current` or `previous` registry entry. |
+| `key_id` | yes | Key ID present in this Organisation's `current` or `previous` registry entry. |
 | `role` | yes | `owner`, `editor`, or `viewer`. |
 | `display_name` | yes | Name shown to other participants and in attributed exports, 1–40 visible Unicode code points after NFC normalisation and trimming. |
 | `participant_id` | yes | Stable email or application identifier, at most 320 Unicode code points. It is present in the signed launch payload but is not returned in the resulting session/bootstrap or ordinary board-facing exports; the Organisation-authorised attributed export returns it to the trusted partner backend. |
@@ -175,7 +175,7 @@ export function createLaunchToken({
   hostname,
   organisationId,
   spaceId,
-  kid,
+  keyId,
   signingKey,
   role,
   displayName,
@@ -193,7 +193,7 @@ export function createLaunchToken({
     aud: hostname,
     organisation_id: organisationId,
     space_id: spaceId,
-    kid,
+    key_id: keyId,
     role,
     display_name: displayName,
     participant_id: participantId,
@@ -226,7 +226,7 @@ const common = {
   hostname: "spacescale.net",
   organisationId: "acme-learning",
   spaceId: "geometry-2026-08-lesson-04",
-  kid: process.env.SPACESCALE_KID,
+  keyId: process.env.SPACESCALE_KEY_ID,
   signingKey: process.env.SPACESCALE_SIGNING_KEY,
 };
 
@@ -575,7 +575,7 @@ Create a fresh `el1` launch assertion with:
 - `role: "owner"`;
 - a stable backend/service `participant_id` and useful `display_name`;
 - a short practical expiry;
-- the Organisation's current `kid` and signing key.
+- the Organisation's current `key_id` and signing key.
 
 Send the assertion directly as a bearer token. Do not put an embed session,
 Cloudflare API token, raw signing key, or derivation key in this header.
@@ -657,7 +657,7 @@ const token = createLaunchToken({
   hostname: "spacescale.net",
   organisationId: "acme-learning",
   spaceId: "geometry-2026-08-lesson-04",
-  kid: process.env.SPACESCALE_KID,
+  keyId: process.env.SPACESCALE_KEY_ID,
   signingKey: process.env.SPACESCALE_SIGNING_KEY,
   role: "owner",
   displayName: "Acme export service",
@@ -1159,11 +1159,11 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 export function verifySpaceScaleWebhook({ rawBody, headers, keysById }) {
   const deliveryId = headers.get("x-spacescale-webhook-id");
   const timestamp = headers.get("x-spacescale-webhook-timestamp");
-  const kid = headers.get("x-spacescale-webhook-key-id");
+  const keyId = headers.get("x-spacescale-webhook-key-id");
   const supplied = headers.get("x-spacescale-webhook-signature");
-  const signingKey = kid === null ? undefined : keysById[kid];
+  const signingKey = keyId === null ? undefined : keysById[keyId];
 
-  if (!deliveryId || !timestamp || !kid || !signingKey || !supplied?.startsWith("v1=")) {
+  if (!deliveryId || !timestamp || !keyId || !signingKey || !supplied?.startsWith("v1=")) {
     throw new Error("Invalid SpaceScale webhook headers");
   }
   if (!/^\d+$/.test(timestamp)) throw new Error("Invalid webhook timestamp");
@@ -1540,7 +1540,7 @@ they should not be served from an intermediary cache.
 
 - Use a unique stable `organisation_id` and preserve the Worker-only derivation
   key for the lifetime of that Organisation.
-- Store only `kid` and the current signing key in the trusted partner backend.
+- Store only `key_id` and the current signing key in the trusted partner backend.
 - Generate a fresh participant-specific assertion; never expose the signing
   key or share one participant URL.
 - Use the same stable `space_id` whenever participants should resume the same

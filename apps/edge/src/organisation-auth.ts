@@ -29,7 +29,7 @@ const PAYLOAD_KEYS = [
   "aud",
   "organisation_id",
   "space_id",
-  "kid",
+  "key_id",
   "role",
   "display_name",
   "participant_id",
@@ -39,14 +39,14 @@ const PAYLOAD_KEYS = [
 const OPTIONAL_PAYLOAD_KEYS = ["features"] as const;
 
 const ORGANISATION_KEY_SET_KEYS = ["derivation_key", "current", "previous"] as const;
-const SIGNING_KEY_KEYS = ["kid", "key"] as const;
+const SIGNING_KEY_KEYS = ["key_id", "key"] as const;
 
 export interface OrganisationLaunchPayload {
   v: 1;
   aud: string;
   organisation_id: string;
   space_id: string;
-  kid: string;
+  key_id: string;
   role: BoardRole;
   display_name: string;
   participant_id: string;
@@ -56,7 +56,7 @@ export interface OrganisationLaunchPayload {
 }
 
 export interface OrganisationSigningKey {
-  kid: string;
+  key_id: string;
   key: string;
 }
 
@@ -66,8 +66,8 @@ export interface OrganisationSigningKey {
  * {
  *   "school-42": {
  *     "derivation_key": "stable, organisation-specific secret (32+ UTF-8 bytes)",
- *     "current": { "kid": "2026-08", "key": "current signing secret (32+ bytes)" },
- *     "previous": [{ "kid": "2026-07", "key": "previous signing secret (32+ bytes)" }]
+ *     "current": { "key_id": "2026-08", "key": "current signing secret (32+ bytes)" },
+ *     "previous": [{ "key_id": "2026-07", "key": "previous signing secret (32+ bytes)" }]
  *   }
  * }
  *
@@ -167,7 +167,7 @@ export class OrganisationAuthService {
     const payload = normalizePayload(rawPayload);
 
     const organisationKeys = this.#organisations.get(payload.organisation_id);
-    const signingKey = organisationKeys?.signingKeysById.get(payload.kid);
+    const signingKey = organisationKeys?.signingKeysById.get(payload.key_id);
     if (organisationKeys === undefined || signingKey === undefined) throw invalidLaunchToken();
 
     const signed = `${TOKEN_PREFIX}.${encodedPayload}`;
@@ -223,7 +223,7 @@ export class OrganisationAuthService {
       spaceId: payload.space_id,
       spaceTitle: payload.space_id,
       boardId,
-      keyId: payload.kid,
+      keyId: payload.key_id,
       role: payload.role,
       displayName: payload.display_name,
       participantId: payload.participant_id,
@@ -268,7 +268,7 @@ export class OrganisationAuthService {
         aud: this.#audience,
         organisation_id: organisationKey,
         space_id: spaceId,
-        kid: keys.currentSigningKey.kid,
+        key_id: keys.currentSigningKey.key_id,
         role: "viewer",
         display_name: "Space viewer",
         participant_id: `spacescale-viewer:${boardId}`,
@@ -296,7 +296,7 @@ export class OrganisationAuthService {
       if (candidateId !== organisationId) continue;
       const signed = `v1.${timestampSeconds}.${body}`;
       return {
-        keyId: keys.currentSigningKey.kid,
+        keyId: keys.currentSigningKey.key_id,
         signature: bytesToBase64Url(await hmacSha256(keys.currentSigningKey.key, signed)),
       };
     }
@@ -356,9 +356,9 @@ function parseSigningKeyRegistry(
     const previous = rawKeySet.previous.map(parseSigningKey);
     const signingKeysById = new Map<string, string>();
     for (const entry of [current, ...previous]) {
-      if (signingKeysById.has(entry.kid)) throw configurationError();
-      signingKeysById.set(entry.kid, entry.key);
-      recordUniqueSecret(keyOwners, entry.key, `${organisationKey}:${entry.kid}`);
+      if (signingKeysById.has(entry.key_id)) throw configurationError();
+      signingKeysById.set(entry.key_id, entry.key);
+      recordUniqueSecret(keyOwners, entry.key, `${organisationKey}:${entry.key_id}`);
     }
     organisations.set(organisationKey, {
       derivationKey,
@@ -374,13 +374,13 @@ const ORGANISATION_OPAQUE_ID_PATTERN = /^o_[A-Za-z0-9_-]{22}$/u;
 function parseSigningKey(value: unknown): OrganisationSigningKey {
   if (!hasExactKeys(value, SIGNING_KEY_KEYS)) throw configurationError();
   if (
-    typeof value.kid !== "string" ||
-    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(value.kid) ||
+    typeof value.key_id !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(value.key_id) ||
     !isValidHmacKey(value.key)
   ) {
     throw configurationError();
   }
-  return { kid: value.kid, key: value.key };
+  return { key_id: value.key_id, key: value.key };
 }
 
 function recordUniqueSecret(owners: Map<string, string>, key: string, owner: string): void {
@@ -410,7 +410,10 @@ function normalizePayload(value: unknown): OrganisationLaunchPayload & { feature
     MAX_SPACE_ID_CODE_POINTS,
     invalidLaunchToken,
   );
-  if (typeof value.kid !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(value.kid)) {
+  if (
+    typeof value.key_id !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(value.key_id)
+  ) {
     throw invalidLaunchToken();
   }
   if (value.role !== "owner" && value.role !== "editor" && value.role !== "viewer") {
@@ -436,7 +439,7 @@ function normalizePayload(value: unknown): OrganisationLaunchPayload & { feature
     aud: audience,
     organisation_id: organisationId,
     space_id: spaceId,
-    kid: value.kid,
+    key_id: value.key_id,
     role: value.role,
     display_name: displayName,
     participant_id: participantId,

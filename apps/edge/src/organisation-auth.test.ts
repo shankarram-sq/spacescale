@@ -20,12 +20,12 @@ function registry(): OrganisationSigningKeyRegistry {
   return {
     "Café School": {
       derivation_key: ORG_A_DERIVATION_KEY,
-      current: { kid: "2026-08", key: ORG_A_CURRENT_KEY },
-      previous: [{ kid: "2026-07", key: ORG_A_PREVIOUS_KEY }],
+      current: { key_id: "2026-08", key: ORG_A_CURRENT_KEY },
+      previous: [{ key_id: "2026-07", key: ORG_A_PREVIOUS_KEY }],
     },
     "Other School": {
       derivation_key: ORG_B_DERIVATION_KEY,
-      current: { kid: "2026-08", key: ORG_B_CURRENT_KEY },
+      current: { key_id: "2026-08", key: ORG_B_CURRENT_KEY },
       previous: [],
     },
   };
@@ -45,7 +45,7 @@ function payload(overrides: Partial<OrganisationLaunchPayload> = {}): Organisati
     aud: "localhost",
     organisation_id: "Café School",
     space_id: "Algebra workshop",
-    kid: "2026-08",
+    key_id: "2026-08",
     role: "editor",
     display_name: "Asha",
     participant_id: "student-42",
@@ -134,13 +134,13 @@ describe("OrganisationAuthService", () => {
     expect(second.ownerRecoveryHash).not.toBe(first.ownerRecoveryHash);
   });
 
-  it("accepts current and previous kids while stable derivations survive rotation", async () => {
+  it("accepts current and previous key IDs while stable derivations survive rotation", async () => {
     const current = await service().verifyLaunchToken(
       await signOrganisationLaunchToken(payload(), ORG_A_CURRENT_KEY),
       NOW,
     );
     const previous = await service().verifyLaunchToken(
-      await signOrganisationLaunchToken(payload({ kid: "2026-07" }), ORG_A_PREVIOUS_KEY),
+      await signOrganisationLaunchToken(payload({ key_id: "2026-07" }), ORG_A_PREVIOUS_KEY),
       NOW,
     );
     expect(previous).toMatchObject({
@@ -155,11 +155,11 @@ describe("OrganisationAuthService", () => {
     const rotatedRegistry = registry();
     rotatedRegistry["Café School"] = {
       derivation_key: ORG_A_DERIVATION_KEY,
-      current: { kid: "2026-09", key: ORG_A_NEXT_KEY },
-      previous: [{ kid: "2026-08", key: ORG_A_CURRENT_KEY }],
+      current: { key_id: "2026-09", key: ORG_A_NEXT_KEY },
+      previous: [{ key_id: "2026-08", key: ORG_A_CURRENT_KEY }],
     };
     const afterRotation = await service(rotatedRegistry).verifyLaunchToken(
-      await signOrganisationLaunchToken(payload({ kid: "2026-09" }), ORG_A_NEXT_KEY),
+      await signOrganisationLaunchToken(payload({ key_id: "2026-09" }), ORG_A_NEXT_KEY),
       NOW,
     );
     expect(afterRotation).toMatchObject({
@@ -190,20 +190,20 @@ describe("OrganisationAuthService", () => {
     ).rejects.toMatchObject({ status: 500, code: "INTERNAL_ERROR" });
   });
 
-  it("rejects unknown organisations, unknown kids, wrong keys, and tampering", async () => {
+  it("rejects unknown organisations, unknown key IDs, wrong keys, and tampering", async () => {
     const unknownOrganisation = await signOrganisationLaunchToken(
       payload({ organisation_id: "Unknown School" }),
       ORG_A_CURRENT_KEY,
     );
-    const unknownKid = await signOrganisationLaunchToken(
-      payload({ kid: "unknown" }),
+    const unknownKeyId = await signOrganisationLaunchToken(
+      payload({ key_id: "unknown" }),
       ORG_A_CURRENT_KEY,
     );
     const wrongKey = await signOrganisationLaunchToken(payload(), ORG_B_CURRENT_KEY);
     const valid = await signOrganisationLaunchToken(payload(), ORG_A_CURRENT_KEY);
     const tampered = valid.slice(0, -1) + (valid.endsWith("A") ? "B" : "A");
 
-    for (const token of [unknownOrganisation, unknownKid, wrongKey, tampered]) {
+    for (const token of [unknownOrganisation, unknownKeyId, wrongKey, tampered]) {
       await expect(service().verifyLaunchToken(token, NOW)).rejects.toMatchObject({
         status: 401,
         code: "AUTH_REQUIRED",
@@ -217,7 +217,7 @@ describe("OrganisationAuthService", () => {
       Object.fromEntries(Object.entries(payload()).filter(([key]) => key !== "participant_id")),
       { ...payload(), v: 2 },
       { ...payload(), role: "admin" },
-      { ...payload(), kid: "bad kid" },
+      { ...payload(), key_id: "bad key_id" },
       { ...payload(), organisation_id: "\u0000school" },
       { ...payload(), space_id: "" },
       { ...payload(), participant_id: "p".repeat(321) },
@@ -257,7 +257,7 @@ describe("OrganisationAuthService", () => {
     }
   });
 
-  it("fails closed for malformed registries, short keys, duplicate kids, and reused secrets", () => {
+  it("fails closed for malformed registries, short keys, duplicate key IDs, and reused secrets", () => {
     const malformedRegistries: unknown[] = [
       "not-json",
       [],
@@ -265,47 +265,47 @@ describe("OrganisationAuthService", () => {
       {
         School: {
           derivation_key: "short",
-          current: { kid: "current", key: ORG_A_CURRENT_KEY },
+          current: { key_id: "current", key: ORG_A_CURRENT_KEY },
           previous: [],
         },
       },
       {
         School: {
           derivation_key: ORG_A_DERIVATION_KEY,
-          current: { kid: "current", key: "short" },
+          current: { key_id: "current", key: "short" },
           previous: [],
         },
       },
       {
         School: {
           derivation_key: ORG_A_DERIVATION_KEY,
-          current: { kid: "same", key: ORG_A_CURRENT_KEY },
-          previous: [{ kid: "same", key: ORG_A_PREVIOUS_KEY }],
+          current: { key_id: "same", key: ORG_A_CURRENT_KEY },
+          previous: [{ key_id: "same", key: ORG_A_PREVIOUS_KEY }],
         },
       },
       {
         School: {
           derivation_key: ORG_A_DERIVATION_KEY,
-          current: { kid: "current", key: ORG_A_CURRENT_KEY },
-          previous: [{ kid: "old", key: ORG_A_CURRENT_KEY }],
+          current: { key_id: "current", key: ORG_A_CURRENT_KEY },
+          previous: [{ key_id: "old", key: ORG_A_CURRENT_KEY }],
         },
       },
       {
         School: {
           derivation_key: ORG_A_DERIVATION_KEY,
-          current: { kid: "current", key: ORG_A_CURRENT_KEY },
+          current: { key_id: "current", key: ORG_A_CURRENT_KEY },
           previous: [],
         },
         Other: {
           derivation_key: ORG_B_DERIVATION_KEY,
-          current: { kid: "current", key: ORG_A_CURRENT_KEY },
+          current: { key_id: "current", key: ORG_A_CURRENT_KEY },
           previous: [],
         },
       },
       {
         " School ": {
           derivation_key: ORG_A_DERIVATION_KEY,
-          current: { kid: "current", key: ORG_A_CURRENT_KEY },
+          current: { key_id: "current", key: ORG_A_CURRENT_KEY },
           previous: [],
         },
       },

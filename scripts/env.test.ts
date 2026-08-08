@@ -45,8 +45,8 @@ describe("ORGANISATION_SIGNING_KEYS private configuration", () => {
   const valid = {
     alpha: {
       derivation_key: Buffer.alloc(32, "d").toString("base64"),
-      current: { kid: "2026-08", key: Buffer.alloc(32, "c").toString("base64") },
-      previous: [{ kid: "2026-07", key: Buffer.alloc(32, "p").toString("base64") }],
+      current: { key_id: "2026-08", key: Buffer.alloc(32, "c").toString("base64") },
+      previous: [{ key_id: "2026-07", key: Buffer.alloc(32, "p").toString("base64") }],
     },
   };
 
@@ -60,11 +60,13 @@ describe("ORGANISATION_SIGNING_KEYS private configuration", () => {
     "not-json",
     "{}",
     JSON.stringify({ alpha: { ...valid.alpha, derivation_key: "short" } }),
-    JSON.stringify({ alpha: { ...valid.alpha, current: { kid: "bad kid", key: "c".repeat(32) } } }),
+    JSON.stringify({
+      alpha: { ...valid.alpha, current: { key_id: "bad key_id", key: "c".repeat(32) } },
+    }),
     JSON.stringify({
       alpha: {
         ...valid.alpha,
-        previous: [{ kid: "2026-08", key: "p".repeat(32) }],
+        previous: [{ key_id: "2026-08", key: "p".repeat(32) }],
       },
     }),
   ])("rejects malformed or unsafe registries", (value) => {

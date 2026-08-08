@@ -1345,7 +1345,7 @@ describe("BoardRoom initialization", () => {
       string,
       {
         derivation_key: string;
-        current: { kid: string; key: string };
+        current: { key_id: string; key: string };
       }
     >;
     const configured = Object.entries(registry)[0];
@@ -1429,7 +1429,7 @@ describe("BoardRoom initialization", () => {
     const expectedSignature = bytesToBase64Url(
       await hmacSha256(keys.current.key, `v1.${timestamp}.${rawBody}`),
     );
-    expect(new Headers(init?.headers).get("x-spacescale-webhook-key-id")).toBe(keys.current.kid);
+    expect(new Headers(init?.headers).get("x-spacescale-webhook-key-id")).toBe(keys.current.key_id);
     expect(new Headers(init?.headers).get("x-spacescale-webhook-signature")).toBe(
       `v1=${expectedSignature}`,
     );

@@ -134,24 +134,24 @@ function assertOrganisationSigningKeys(source: string): void {
       !isRecord(rawOrganisation) ||
       !hasStrongKey(rawOrganisation.derivation_key) ||
       !isRecord(rawOrganisation.current) ||
-      !validKeyId(rawOrganisation.current.kid) ||
+      !validKeyId(rawOrganisation.current.key_id) ||
       !hasStrongKey(rawOrganisation.current.key) ||
       !Array.isArray(rawOrganisation.previous) ||
       rawOrganisation.previous.length > 8
     ) {
       throw new Error(`ORGANISATION_SIGNING_KEYS has an invalid entry for ${organisationId}.`);
     }
-    const keyIds = new Set<string>([rawOrganisation.current.kid as string]);
+    const keyIds = new Set<string>([rawOrganisation.current.key_id as string]);
     for (const previous of rawOrganisation.previous) {
       if (
         !isRecord(previous) ||
-        !validKeyId(previous.kid) ||
+        !validKeyId(previous.key_id) ||
         !hasStrongKey(previous.key) ||
-        keyIds.has(previous.kid as string)
+        keyIds.has(previous.key_id as string)
       ) {
         throw new Error(`ORGANISATION_SIGNING_KEYS has an invalid rotation for ${organisationId}.`);
       }
-      keyIds.add(previous.kid as string);
+      keyIds.add(previous.key_id as string);
     }
   }
 }

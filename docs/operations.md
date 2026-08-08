@@ -99,7 +99,7 @@ Never reuse signing keys between environments.
 Each `ORGANISATION_SIGNING_KEYS` entry separates its stable `derivation_key`
 from rotatable launch keys. Back up the derivation key: changing it creates new
 opaque Organisation, Space, and Participant IDs. Rotate only the `current`
-launch key by moving it into `previous`, adding a new `kid`, and removing the
+launch key by moving it into `previous`, adding a new `key_id`, and removing the
 old key after issued launch URLs have expired.
 
 ## Deploy and recovery

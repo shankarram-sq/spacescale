@@ -29,7 +29,7 @@ function configuredValue(name: string): string {
     ORGANISATION_SIGNING_KEYS: JSON.stringify({
       demo: {
         derivation_key: "d".repeat(32),
-        current: { kid: "v1", key: "c".repeat(32) },
+        current: { key_id: "v1", key: "c".repeat(32) },
         previous: [],
       },
     }),

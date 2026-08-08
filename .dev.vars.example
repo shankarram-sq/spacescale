@@ -4,7 +4,7 @@ SESSION_SIGNING_KEY_PREVIOUS=""
 # Local-only organisation registry. Each organisation has one stable derivation
 # key plus a current launch-signing key and optional previous rotation keys.
 # Never deploy or share these example values.
-ORGANISATION_SIGNING_KEYS='{"demo":{"derivation_key":"local-development-organisation-derivation-key-change-before-sharing","current":{"kid":"local-v1","key":"local-development-organisation-signing-key-change-before-sharing"},"previous":[]}}'
+ORGANISATION_SIGNING_KEYS='{"demo":{"derivation_key":"local-development-organisation-derivation-key-change-before-sharing","current":{"key_id":"local-v1","key":"local-development-organisation-signing-key-change-before-sharing"},"previous":[]}}'
 # Default-deny. Put an exact HTTPS receiver origin here only when testing webhooks.
 WEBHOOK_ALLOWED_ORIGINS=""
 # Cloudflare's always-pass test secret. Never deploy it.

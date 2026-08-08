@@ -21,7 +21,7 @@ const SESSION_KEY = "classroom-session-key-with-enough-entropy";
 const SIGNING_KEYS: OrganisationSigningKeyRegistry = {
   [ORGANISATION_KEY]: {
     derivation_key: DERIVATION_KEY,
-    current: { kid: "2026-08", key: SIGNING_KEY },
+    current: { key_id: "2026-08", key: SIGNING_KEY },
     previous: [],
   },
 };
@@ -150,7 +150,7 @@ async function launchToken(
       aud: "localhost",
       organisation_id: ORGANISATION_KEY,
       space_id: `Classroom Space ${suffix}`,
-      kid: "2026-08",
+      key_id: "2026-08",
       role: "editor",
       display_name: `Student ${suffix}`,
       participant_id: `student-${suffix}`,
