@@ -156,6 +156,7 @@ The signature covers the literal bytes of `el1.<base64url JSON payload>`.
 | `iat` | yes | Issued-at Unix time in seconds. Up to five minutes of positive clock skew is accepted. |
 | `exp` | yes | Expiry Unix time in seconds; later than `iat`, in the future, and no more than 24 hours after `iat`. |
 | `features` | no | Partial object of the feature booleans in section 5. It seeds a new Space only. |
+| `organisation_admin` | no | Boolean. `true`, together with `role: "owner"`, authorises Organisation administration and trusted-backend webhook settings. Never add it to an ordinary participant launch. |
 
 Unknown claims and unknown feature keys are rejected. The complete assertion,
 including a feature patch, is limited to 8 KiB.
@@ -181,6 +182,7 @@ export function createLaunchToken({
   displayName,
   participantId,
   features,
+  organisationAdmin,
   expiresInSeconds = 60 * 60,
 }) {
   if (expiresInSeconds <= 0 || expiresInSeconds > 24 * 60 * 60) {
@@ -200,6 +202,9 @@ export function createLaunchToken({
     iat: now,
     exp: now + expiresInSeconds,
     ...(features === undefined ? {} : { features }),
+    ...(organisationAdmin === undefined
+      ? {}
+      : { organisation_admin: organisationAdmin }),
   };
 
   const encodedPayload = base64url(JSON.stringify(payload));
@@ -282,10 +287,11 @@ Both examples:
 
 1. create owner and editor assertions using `key_id`;
 2. produce participant-specific iframe URLs;
-3. attach a canonical initial template to the owner URL;
-4. optionally pre-create the Space and apply that template atomically;
-5. call canonical and attributed export APIs;
-6. list, create, and edit Organisation templates.
+3. create a separate short-lived Organisation administrator assertion;
+4. attach a canonical initial template to the owner URL;
+5. optionally pre-create the Space and apply that template atomically;
+6. call canonical and attributed export APIs;
+7. list, create, and edit Organisation templates.
 
 Run either with the same parent-server configuration:
 
@@ -962,10 +968,21 @@ standard placeholder.
 
 ### Open Organisation administration
 
-Create a standard owner assertion for any Space in the Organisation and use:
+Create a separate, short-lived owner assertion with `organisation_admin: true`.
+Do not reuse a coach or participant's ordinary Space launch:
 
-```text
-https://spacescale.net/organisation/admin#launch=<owner-el1-assertion>
+```js
+const adminToken = createLaunchToken({
+  ...common,
+  role: "owner",
+  displayName: "Organisation administrator",
+  participantId: "service:organisation-admin",
+  organisationAdmin: true,
+  expiresInSeconds: 15 * 60,
+});
+
+const adminUrl =
+  `https://spacescale.net/organisation/admin#launch=${encodeURIComponent(adminToken)}`;
 ```
 
 The admin application removes the fragment before loading. It shows every
@@ -986,7 +1003,8 @@ POST /api/v1/organisation-admin/session
 POST /api/v1/organisation-admin/webhook
 ```
 
-Both accept the signed owner assertion as `token` in same-origin JSON. The
+Both accept the signed owner assertion as `token` in same-origin JSON and
+require `organisation_admin: true`; otherwise they return `403 FORBIDDEN`. The
 second also accepts `webhookUrl` as a public HTTPS URL or `null`. They are
 browser implementation endpoints, not a substitute for the bearer-authenticated
 server export and webhook APIs in sections 8 and 11. Admin-generated viewer
@@ -1148,8 +1166,9 @@ destination used by every Space in that Organisation.
 ### Configure from a trusted partner backend
 
 The partner backend can read or replace the Organisation-wide setting using a
-fresh owner-signed `el1` assertion. The assertion's Organisation must match the
-URL path. URL-encode the external Organisation key when constructing the path.
+fresh owner-signed `el1` assertion with `organisation_admin: true`. The
+assertion's Organisation must match the URL path. URL-encode the external
+Organisation key when constructing the path.
 
 ```text
 GET /api/v1/organisations/<organisation-key>/webhook
@@ -1159,7 +1178,7 @@ PUT /api/v1/organisations/<organisation-key>/webhook
 ```http
 PUT /api/v1/organisations/acme-learning/webhook
 Host: spacescale.net
-Authorization: Bearer <fresh-owner-el1-assertion>
+Authorization: Bearer <fresh-owner-admin-el1-assertion>
 Content-Type: application/json
 
 {"webhookUrl":"https://partner.example/webhooks/spacescale"}

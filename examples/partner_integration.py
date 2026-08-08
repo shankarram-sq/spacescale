@@ -56,6 +56,7 @@ def create_launch_token(
     display_name: str,
     participant_id: str,
     features: dict[str, bool] | None = None,
+    organisation_admin: bool | None = None,
     expires_in_seconds: int = 60 * 60,
 ) -> str:
     if role not in {"owner", "editor", "viewer"}:
@@ -78,6 +79,8 @@ def create_launch_token(
     }
     if features is not None:
         payload["features"] = features
+    if organisation_admin is not None:
+        payload["organisation_admin"] = organisation_admin
 
     encoded_payload = base64url_json(payload)
     signed = f"el1.{encoded_payload}"
@@ -275,6 +278,14 @@ def main() -> None:
         display_name="Student Sample",
         participant_id="student:sample-001",
     )
+    admin_token = create_launch_token(
+        **common,
+        role="owner",
+        display_name="Organisation administrator",
+        participant_id="service:organisation-admin",
+        organisation_admin=True,
+        expires_in_seconds=15 * 60,
+    )
 
     print("Owner iframe URL:")
     print(
@@ -286,6 +297,8 @@ def main() -> None:
     )
     print("\nStudent iframe URL:")
     print(create_embed_url(origin=ORIGIN, launch_token=editor_token))
+    print("\nOrganisation admin URL:")
+    print(f"{ORIGIN}/organisation/admin#launch={quote(admin_token, safe='')}")
 
     # Optional backend preflight: creates the Space and atomically applies the
     # initial template before any iframe is rendered.

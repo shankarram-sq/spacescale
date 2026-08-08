@@ -33,6 +33,7 @@ export function createLaunchToken({
   displayName,
   participantId,
   features,
+  organisationAdmin,
   expiresInSeconds = 60 * 60,
 }) {
   if (!["owner", "editor", "viewer"].includes(role)) throw new Error("Invalid role");
@@ -52,6 +53,7 @@ export function createLaunchToken({
     iat: now,
     exp: now + expiresInSeconds,
     ...(features === undefined ? {} : { features }),
+    ...(organisationAdmin === undefined ? {} : { organisation_admin: organisationAdmin }),
   };
   const encodedPayload = base64urlJson(payload);
   const signed = `el1.${encodedPayload}`;
@@ -214,11 +216,21 @@ async function main() {
     displayName: "Student Sample",
     participantId: "student:sample-001",
   });
+  const adminToken = createLaunchToken({
+    ...common,
+    role: "owner",
+    displayName: "Organisation administrator",
+    participantId: "service:organisation-admin",
+    organisationAdmin: true,
+    expiresInSeconds: 15 * 60,
+  });
 
   console.log("Owner iframe URL:");
   console.log(createEmbedUrl({ origin: config.origin, launchToken: ownerToken, initialTemplate }));
   console.log("\nStudent iframe URL:");
   console.log(createEmbedUrl({ origin: config.origin, launchToken: editorToken }));
+  console.log("\nOrganisation admin URL:");
+  console.log(`${config.origin}/organisation/admin#launch=${encodeURIComponent(adminToken)}`);
 
   // Optional backend preflight: creates the Space and atomically applies the
   // initial template before any iframe is rendered.

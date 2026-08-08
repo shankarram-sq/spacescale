@@ -211,6 +211,32 @@ describe("OrganisationAuthService", () => {
     }
   });
 
+  it("reports Organisation administration authority only for an explicit boolean claim", async () => {
+    const plain = await service().verifyLaunchToken(
+      await signOrganisationLaunchToken(payload({ role: "owner" }), ORG_A_CURRENT_KEY),
+      NOW,
+    );
+    const admin = await service().verifyLaunchToken(
+      await signOrganisationLaunchToken(
+        payload({ role: "owner", organisation_admin: true }),
+        ORG_A_CURRENT_KEY,
+      ),
+      NOW,
+    );
+
+    expect(plain.organisationAdmin).toBe(false);
+    expect(admin.organisationAdmin).toBe(true);
+
+    const notBoolean = await signOrganisationLaunchToken(
+      { ...payload(), organisation_admin: "yes" } as unknown as OrganisationLaunchPayload,
+      ORG_A_CURRENT_KEY,
+    );
+    await expect(service().verifyLaunchToken(notBoolean, NOW)).rejects.toMatchObject({
+      status: 401,
+      code: "AUTH_REQUIRED",
+    });
+  });
+
   it("requires the el1 prefix and exactly the version 1 organisation claims", async () => {
     const variants: unknown[] = [
       { ...payload(), unexpected: true },

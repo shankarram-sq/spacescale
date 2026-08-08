@@ -107,7 +107,7 @@
       "vars": {
         "APP_HOSTNAME": "localhost",
         "BOARD_CREATION_ENABLED": "true",
-        "ALLOWED_ORIGINS": "http://localhost,http://localhost:4173,http://localhost:5173,https://127.0.0.1:8787",
+        "ALLOWED_ORIGINS": "http://localhost,http://localhost:3000,http://localhost:4173,http://localhost:5173,https://127.0.0.1:8787",
         "TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
         "TURNSTILE_ENABLED": "false",
         "ENVIRONMENT": "development"

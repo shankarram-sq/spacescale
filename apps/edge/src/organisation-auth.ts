@@ -36,7 +36,7 @@ const PAYLOAD_KEYS = [
   "iat",
   "exp",
 ] as const;
-const OPTIONAL_PAYLOAD_KEYS = ["features"] as const;
+const OPTIONAL_PAYLOAD_KEYS = ["features", "organisation_admin"] as const;
 
 const ORGANISATION_KEY_SET_KEYS = ["derivation_key", "current", "previous"] as const;
 const SIGNING_KEY_KEYS = ["key_id", "key"] as const;
@@ -48,6 +48,8 @@ export interface OrganisationLaunchPayload {
   space_id: string;
   key_id: string;
   role: BoardRole;
+  /** Explicit Organisation-wide administration authority. */
+  organisation_admin?: boolean;
   display_name: string;
   participant_id: string;
   iat: number;
@@ -94,6 +96,7 @@ export interface VerifiedOrganisationLaunch {
   organisationId: string;
   organisationKey: string;
   spaceId: string;
+  organisationAdmin: boolean;
   spaceTitle: string;
   boardId: string;
   keyId: string;
@@ -221,6 +224,7 @@ export class OrganisationAuthService {
       organisationId,
       organisationKey: payload.organisation_id,
       spaceId: payload.space_id,
+      organisationAdmin: payload.organisation_admin === true,
       spaceTitle: payload.space_id,
       boardId,
       keyId: payload.key_id,
@@ -419,6 +423,9 @@ function normalizePayload(value: unknown): OrganisationLaunchPayload & { feature
   if (value.role !== "owner" && value.role !== "editor" && value.role !== "viewer") {
     throw invalidLaunchToken();
   }
+  if (value.organisation_admin !== undefined && typeof value.organisation_admin !== "boolean") {
+    throw invalidLaunchToken();
+  }
   const displayName = normalizeDisplayName(value.display_name);
   const participantId = normalizeStableIdentifier(
     value.participant_id,
@@ -441,6 +448,9 @@ function normalizePayload(value: unknown): OrganisationLaunchPayload & { feature
     space_id: spaceId,
     key_id: value.key_id,
     role: value.role,
+    ...(value.organisation_admin === undefined
+      ? {}
+      : { organisation_admin: value.organisation_admin }),
     display_name: displayName,
     participant_id: participantId,
     iat: value.iat as number,
