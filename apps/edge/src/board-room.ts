@@ -108,6 +108,7 @@ import type {
 } from "./types";
 import {
   ACTOR_ID_PATTERN,
+  BOARD_ID_PATTERN,
   fallbackDisplayName,
   OPAQUE_ID_PATTERN,
   optionalTitle,
@@ -157,6 +158,7 @@ const INTERNAL_INIT_PATH = "/__internal/initialize";
 const INTERNAL_CLASSROOM_LAUNCH_PATH = "/__internal/classroom-launch";
 const INTERNAL_ORGANISATION_LAUNCH_PATH = "/__internal/organisation-launch";
 const INTERNAL_ORGANISATION_EXPORT_PATH = "/__internal/organisation-export";
+const INTERNAL_ORGANISATION_DELETE_PATH = "/__internal/organisation-delete";
 const INTERNAL_ORGANISATION_ASSET_ROUTE =
   /^\/__internal\/organisation-assets\/(asset_[A-Za-z0-9_-]{43})$/u;
 const WEBHOOK_TIMEOUT_MS = 10_000;
@@ -262,6 +264,7 @@ export class BoardRoom extends DurableObject<Env> {
   #quotaEmissionScheduled = false;
   #assetUploadTail = Promise.resolve();
   #webhookDeliveryTail = Promise.resolve();
+  #boardDeletion: Promise<void> | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -291,7 +294,12 @@ export class BoardRoom extends DurableObject<Env> {
     let internalError = false;
     try {
       response = await this.route(request, requestId);
-      if (response.ok && request.method !== "GET" && request.method !== "HEAD") {
+      if (
+        response.ok &&
+        request.method !== "GET" &&
+        request.method !== "HEAD" &&
+        new URL(request.url).pathname !== INTERNAL_ORGANISATION_DELETE_PATH
+      ) {
         try {
           await this.syncOrganisationAdminSummary(new URL(request.url).origin, requestId);
         } catch (error) {
@@ -343,6 +351,11 @@ export class BoardRoom extends DurableObject<Env> {
     if (url.pathname === INTERNAL_ORGANISATION_EXPORT_PATH) {
       requireMethod(request, "POST");
       return this.exportForOrganisation(request);
+    }
+
+    if (url.pathname === INTERNAL_ORGANISATION_DELETE_PATH) {
+      requireMethod(request, "DELETE");
+      return this.deleteForOrganisation(request);
     }
 
     const organisationAsset = INTERNAL_ORGANISATION_ASSET_ROUTE.exec(url.pathname);
@@ -1195,6 +1208,65 @@ export class BoardRoom extends DurableObject<Env> {
         "The Organisation admin summary could not be synchronized.",
       );
     }
+  }
+
+  private async deleteForOrganisation(request: Request): Promise<Response> {
+    const body = await readJsonBody(request, 4 * 1_024);
+    assertExactKeys(body, ["organisationId", "boardId"], ["organisationId", "boardId"]);
+    if (
+      typeof body.organisationId !== "string" ||
+      !ORGANISATION_ID_PATTERN.test(body.organisationId) ||
+      typeof body.boardId !== "string" ||
+      !BOARD_ID_PATTERN.test(body.boardId)
+    ) {
+      throw boardNotFoundError();
+    }
+
+    const organisationId = body.organisationId;
+    const boardId = body.boardId;
+    const board = readBoard(this.#sql);
+    if (
+      board !== null &&
+      (board.public_id !== boardId ||
+        board.organisation_mode !== 1 ||
+        board.organisation_id !== organisationId)
+    ) {
+      throw boardNotFoundError();
+    }
+
+    const deletion =
+      this.#boardDeletion ??
+      Promise.resolve()
+        .then(() => this.performBoardDeletion(boardId))
+        .finally(() => {
+          this.#boardDeletion = null;
+        });
+    this.#boardDeletion = deletion;
+    await deletion;
+    return new Response(null, { status: 204 });
+  }
+
+  private async performBoardDeletion(boardId: string): Promise<void> {
+    for (const socket of this.ctx.getWebSockets()) {
+      socket.close(4012, "Board deleted");
+    }
+
+    try {
+      await Promise.all([
+        deleteR2Prefix(this.env.BOARD_SNAPSHOTS, `boards/${boardId}/snapshots/`),
+        deleteR2Prefix(this.env.BOARD_ASSETS, `boards/${boardId}/assets/`),
+      ]);
+    } catch {
+      throw new HttpError(
+        503,
+        "TEMPORARILY_UNAVAILABLE",
+        "Board deletion is temporarily unavailable.",
+      );
+    }
+
+    await this.ctx.storage.deleteAll();
+    applyMigrations(this.ctx.storage, this.#telemetry);
+    backfillSnapshotAccounting(this.ctx.storage);
   }
 
   private organisationIdForBoard(board: BoardRow): string | null {
@@ -3449,6 +3521,7 @@ export class BoardRoom extends DurableObject<Env> {
     }
     this.#buckets.deletePrefix(`${connectionId}:`);
     this.cleanupActorRateBuckets(socket);
+    if (this.#boardDeletion !== null || readBoard(this.#sql) === null) return;
     this.broadcastPresenceState(socket);
     this.log("info", "socket.disconnected", { closeCode: code, result: "closed" });
     this.flushTrafficMetrics(true);
@@ -3463,6 +3536,7 @@ export class BoardRoom extends DurableObject<Env> {
     } catch {
       // Ignore malformed attachment during error cleanup.
     }
+    if (this.#boardDeletion !== null || readBoard(this.#sql) === null) return;
     this.broadcastPresenceState(socket);
     socket.close(1011, "WebSocket error");
   }
@@ -6107,6 +6181,15 @@ function methodNotAllowed(allow: string): Response {
     { error: { code: "METHOD_NOT_ALLOWED", message: "The method is not allowed." } },
     { status: 405, headers: { Allow: allow } },
   );
+}
+
+async function deleteR2Prefix(bucket: R2Bucket, prefix: string): Promise<void> {
+  while (true) {
+    const listed = await bucket.list({ prefix, limit: 1_000 });
+    const keys = listed.objects.map((object) => object.key);
+    if (keys.length === 0) return;
+    await bucket.delete(keys);
+  }
 }
 
 function mapRoomError(error: unknown): HttpError {

@@ -1230,6 +1230,87 @@ describe("BoardRoom initialization", () => {
     });
   });
 
+  it("deletes Organisation board state, private R2 objects, and active connections", async () => {
+    const typedEnv = env as unknown as Env;
+    const stub = typedEnv.BOARD_ROOMS.getByName(boardId);
+    const issuedAt = Date.now() - 10_000;
+    const launch = await launchClassroom(
+      stub,
+      actorId,
+      "owner",
+      issuedAt,
+      "Coach",
+      undefined,
+      undefined,
+      boardId,
+      organisationId,
+    );
+    expect(launch.status, await launch.clone().text()).toBe(201);
+    await launch.arrayBuffer();
+    const connection = await openSocket(stub, actorId);
+
+    const snapshotKey = `boards/${boardId}/snapshots/7.json`;
+    const assetKey = `boards/${boardId}/assets/asset_${"I".repeat(43)}`;
+    const unrelatedSnapshotKey = `boards/b_${"Z".repeat(22)}/snapshots/7.json`;
+    const unrelatedAssetKey = `boards/b_${"Z".repeat(22)}/assets/asset_${"J".repeat(43)}`;
+    await Promise.all([
+      typedEnv.BOARD_SNAPSHOTS.put(snapshotKey, "{}"),
+      typedEnv.BOARD_ASSETS.put(assetKey, new Uint8Array([137, 80, 78, 71])),
+      typedEnv.BOARD_SNAPSHOTS.put(unrelatedSnapshotKey, "{}"),
+      typedEnv.BOARD_ASSETS.put(unrelatedAssetKey, new Uint8Array([1])),
+    ]);
+
+    const crossOrganisation = await stub.fetch(
+      internalRequest("/__internal/organisation-delete", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ organisationId: `o_${"Q".repeat(21)}A`, boardId }),
+      }),
+    );
+    expect(crossOrganisation.status).toBe(404);
+    expect(await typedEnv.BOARD_SNAPSHOTS.head(snapshotKey)).not.toBeNull();
+    expect(await typedEnv.BOARD_ASSETS.head(assetKey)).not.toBeNull();
+
+    const deleted = await stub.fetch(
+      internalRequest("/__internal/organisation-delete", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ organisationId, boardId }),
+      }),
+    );
+    expect(deleted.status, await deleted.clone().text()).toBe(204);
+    expect(await deleted.text()).toBe("");
+    expect((await connection.closed).code).toBe(4012);
+    expect(await typedEnv.BOARD_SNAPSHOTS.head(snapshotKey)).toBeNull();
+    expect(await typedEnv.BOARD_ASSETS.head(assetKey)).toBeNull();
+    expect(await typedEnv.BOARD_SNAPSHOTS.head(unrelatedSnapshotKey)).not.toBeNull();
+    expect(await typedEnv.BOARD_ASSETS.head(unrelatedAssetKey)).not.toBeNull();
+
+    const missing = await stub.fetch(internalRequest(`/api/v1/boards/${boardId}/bootstrap`));
+    expect(missing.status).toBe(404);
+    const repeated = await stub.fetch(
+      internalRequest("/__internal/organisation-delete", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ organisationId, boardId }),
+      }),
+    );
+    expect(repeated.status).toBe(204);
+
+    const recreated = await launchClassroom(
+      stub,
+      actorId,
+      "owner",
+      issuedAt + 1,
+      "Coach",
+      undefined,
+      undefined,
+      boardId,
+      organisationId,
+    );
+    expect(recreated.status, await recreated.clone().text()).toBe(201);
+  });
+
   it("maps responsible users to participant IDs only in same-organisation trusted exports", async () => {
     const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
     const issuedAt = Date.now() - 10_000;

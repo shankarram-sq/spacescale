@@ -324,5 +324,15 @@ describe("OrganisationRoom Space registry", () => {
         },
       ],
     });
+
+    const deleted = await stub.fetch(request(path, "DELETE"));
+    expect(deleted.status).toBe(204);
+    expect(await deleted.text()).toBe("");
+    expect(
+      await (await stub.fetch(request(`/__internal/organisations/${organisationId}/admin`))).json(),
+    ).toMatchObject({ boards: [] });
+
+    const repeated = await stub.fetch(request(path, "DELETE"));
+    expect(repeated.status).toBe(204);
   });
 });

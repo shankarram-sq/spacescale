@@ -350,8 +350,8 @@ the lightweight release flow are in
 
 Trusted-backend signing, Organisation and Space isolation, initial JSON import,
 iframe setup, participant-owned editing, live owner controls, co-owners,
-all feature flags, Organisation templates, export APIs, every object format,
-and signed webhooks are documented in the single partner reference:
+all feature flags, Organisation templates, export and board-deletion APIs,
+every object format, and signed webhooks are documented in the single partner reference:
 [how_to_embed_me.md](how_to_embed_me.md). Runnable parent-backend integrations
 are available for
 [JavaScript](examples/partner-integration.mjs) and

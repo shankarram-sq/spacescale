@@ -592,15 +592,16 @@ const ownerUrl = createEmbedUrl({
 });
 ```
 
-## 8. Export APIs
+## 8. Board data APIs
 
 There are two ways to export:
 
 1. In-board exports use a Space-scoped embed session and are intended for the
    SpaceScale UI. Owners can download attributed JSON from Settings; any member
    who can view may download canonical JSON or SVG.
-2. Organisation server APIs let a trusted partner backend fetch JSON by
-   Organisation and board ID without handling the iframe's session.
+2. Organisation server APIs let a trusted partner backend fetch JSON or
+   permanently delete a board by Organisation and board ID without handling the
+   iframe's session.
 
 ### Server-to-server authentication
 
@@ -614,6 +615,7 @@ Create a fresh `el1` launch assertion with:
 
 Send the assertion directly as a bearer token. Do not put an embed session,
 Cloudflare API token, raw signing key, or derivation key in this header.
+The same authentication contract applies to export and board deletion.
 
 ```http
 Authorization: Bearer el1.<payload>.<signature>
@@ -838,6 +840,72 @@ actor reference. Content entries use these kinds:
 be null for older/restored data without content-level attribution. This format
 supports questions such as which participant asked a question, who gave a piece
 of feedback, and which participant left a table cell incomplete.
+
+### Delete a board
+
+```http
+DELETE /api/v1/organisations/acme-learning/boards/b_xxxxxxxxxxxxxxxxxxxxxx
+Host: spacescale.net
+Authorization: Bearer <fresh-owner-el1-assertion>
+```
+
+Or from a command line:
+
+```sh
+curl -i -X DELETE \
+  -H "Authorization: Bearer $SPACESCALE_OWNER_TOKEN" \
+  "https://spacescale.net/api/v1/organisations/acme-learning/boards/b_xxxxxxxxxxxxxxxxxxxxxx"
+```
+
+A successful deletion returns `204 No Content`. The operation is idempotent, so
+retry the identical request after a network failure or `503`. Only an owner
+assertion for the exact Organisation and Space-derived board ID is accepted;
+editor, viewer, cross-Organisation, and cross-Space assertions cannot delete it.
+
+Deletion permanently removes the authoritative board database, action history,
+memberships, settings, recovery snapshots, private image assets, and the board's
+row in Organisation administration. Connected participants are disconnected.
+Existing board, viewer, and asset sessions stop working. Export anything that
+must be retained before calling this endpoint.
+
+Because board IDs are deterministically derived from `organisation_id` and
+`space_id`, a later fresh owner launch using the same pair creates a new blank
+Space with the same board ID. It does not restore any deleted content. A launch
+that supplies an initial template may initialise that newly recreated Space.
+
+JavaScript:
+
+```js
+export async function deleteBoard({ origin, organisationId, boardId, ownerToken }) {
+  const response = await fetch(
+    `${origin}/api/v1/organisations/${encodeURIComponent(organisationId)}` +
+      `/boards/${encodeURIComponent(boardId)}`,
+    { method: "DELETE", headers: { Authorization: `Bearer ${ownerToken}` } },
+  );
+  if (!response.ok) throw new Error(await response.text());
+}
+```
+
+Python:
+
+```python
+def delete_board(origin, organisation_id, board_id, owner_token):
+    path = (
+        f"/api/v1/organisations/{quote(organisation_id, safe='')}"
+        f"/boards/{quote(board_id, safe='')}"
+    )
+    request = Request(
+        f"{origin.rstrip('/')}{path}",
+        method="DELETE",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    with urlopen(request, timeout=30) as response:
+        if response.status != 204:
+            raise RuntimeError(f"Unexpected status: {response.status}")
+```
+
+The runnable JavaScript and Python examples in `examples/` also expose this
+helper without invoking it automatically.
 
 ## 9. Read-only JSON viewer and Organisation administration
 

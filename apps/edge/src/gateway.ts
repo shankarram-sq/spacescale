@@ -333,6 +333,41 @@ async function routeRequest(
       );
     }
 
+    if (organisationApi.kind === "board") {
+      if (request.method !== "DELETE") return methodNotAllowed("DELETE");
+      if (launch.boardId !== organisationApi.boardId) throw boardNotFoundError();
+      const boardResponse = await env.BOARD_ROOMS.getByName(organisationApi.boardId).fetch(
+        makeInternalRequest(
+          new Request(`${url.origin}/__internal/organisation-delete`, {
+            method: "DELETE",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              organisationId: launch.organisationId,
+              boardId: organisationApi.boardId,
+            }),
+          }),
+          launch.actorId,
+          launch.expiresAtMs,
+          requestId,
+        ),
+      );
+      if (!boardResponse.ok) return boardResponse;
+
+      const organisationResponse = await env.ORGANISATION_ROOMS.getByName(
+        launch.organisationId,
+      ).fetch(
+        new Request(
+          `${url.origin}/__internal/organisations/${launch.organisationId}/spaces/${organisationApi.boardId}`,
+          {
+            method: "DELETE",
+            headers: { "x-whiteboard-internal-request-id": requestId },
+          },
+        ),
+      );
+      if (!organisationResponse.ok) return organisationResponse;
+      return new Response(null, { status: 204 });
+    }
+
     const organisationRoom = env.ORGANISATION_ROOMS.getByName(launch.organisationId);
     const internalBase = `${url.origin}/__internal/organisations/${launch.organisationId}`;
     if (organisationApi.kind === "templates") {
@@ -845,6 +880,7 @@ type OrganisationApiRoute =
       boardId: string;
       format: "canonical" | "attributed";
     }
+  | { kind: "board"; organisationKey: string; boardId: string }
   | { kind: "webhook-settings"; organisationKey: string }
   | { kind: "templates"; organisationKey: string }
   | { kind: "template"; organisationKey: string; templateId: string };
@@ -860,6 +896,16 @@ function matchOrganisationApiRoute(pathname: string): OrganisationApiRoute | nul
     return templateId === undefined
       ? { kind: "templates", organisationKey }
       : { kind: "template", organisationKey, templateId };
+  }
+
+  const boardMatch =
+    /^\/api\/v1\/organisations\/([^/]{1,720})\/boards\/(b_[A-Za-z0-9_-]{22})$/u.exec(pathname);
+  if (boardMatch !== null) {
+    return {
+      kind: "board",
+      organisationKey: decodeOrganisationKey(boardMatch[1]),
+      boardId: requireBoardId(boardMatch[2] ?? ""),
+    };
   }
 
   const match =

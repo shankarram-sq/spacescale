@@ -144,7 +144,8 @@ export class OrganisationRoom extends DurableObject<Env> {
       const boardId = requireBoardId(spaceMatch[2]);
       this.bindOrganisation(organisationId);
       if (request.method === "PUT") return this.upsertSpaceSummary(request, boardId);
-      return methodNotAllowed("PUT");
+      if (request.method === "DELETE") return this.deleteSpaceSummary(boardId);
+      return methodNotAllowed("PUT, DELETE");
     }
 
     const collectionMatch = TEMPLATE_COLLECTION_PATH.exec(url.pathname);
@@ -342,6 +343,11 @@ export class OrganisationRoom extends DurableObject<Env> {
         updated_at_ms: now,
       }),
     );
+  }
+
+  private deleteSpaceSummary(boardId: string): Response {
+    this.#sql.exec("DELETE FROM spaces WHERE board_id = ?", boardId);
+    return new Response(null, { status: 204 });
   }
 
   private bindOrganisation(organisationId: string): void {

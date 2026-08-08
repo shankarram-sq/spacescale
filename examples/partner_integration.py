@@ -245,6 +245,14 @@ def delete_organisation_template(owner_token: str, template_id: str) -> None:
     )
 
 
+def delete_board(owner_token: str, board_id: str) -> None:
+    http_json(
+        organisation_path(f"/boards/{quote(board_id, safe='')}"),
+        method="DELETE",
+        token=owner_token,
+    )
+
+
 def main() -> None:
     initial_template = create_initial_template("Notice and wonder")
     common = {
@@ -327,8 +335,9 @@ def main() -> None:
     listed = list_organisation_templates(api_token)
     print("Organisation template count:", len(listed["templates"]))
 
-    # Delete is available when needed:
+    # Destructive operations are available when needed, but are not run by this sample:
     # delete_organisation_template(api_token, created["id"])
+    # delete_board(api_token, board_id)
 
 
 if __name__ == "__main__":

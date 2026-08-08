@@ -28,6 +28,7 @@ const SIGNING_KEYS: OrganisationSigningKeyRegistry = {
 
 type CapturedRequest = {
   boardId: string;
+  method: string;
   url: string;
   headers: Headers;
   body: unknown;
@@ -44,6 +45,7 @@ function makeEnv(options: { allowedOrigins?: string } = {}): {
       const body = request.body === null ? null : await request.clone().json();
       captured.push({
         boardId,
+        method: request.method,
         url: request.url,
         headers: new Headers(request.headers),
         body,
@@ -373,6 +375,67 @@ describe("organisation embed gateway", () => {
       env,
     );
     expect(viewer.status).toBe(403);
+  });
+
+  it("deletes only the token-derived board for an owner Organisation assertion", async () => {
+    const { env, captured } = makeEnv();
+    const organisationFetch = vi.fn(
+      async (_request: Request) => new Response(null, { status: 204 }),
+    );
+    env.ORGANISATION_ROOMS = {
+      getByName: vi.fn(() => ({ fetch: organisationFetch })),
+    } as unknown as DurableObjectNamespace;
+    const token = await launchToken("service-delete", {
+      role: "owner",
+      participant_id: "board-lifecycle-service",
+    });
+    const launch = await new OrganisationAuthService(env).verifyLaunchToken(token);
+    const route = `/api/v1/organisations/${encodeURIComponent(ORGANISATION_KEY)}/boards/${launch.boardId}`;
+
+    const response = await gateway.fetch(
+      new Request(`http://localhost${route}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      env,
+    );
+    expect(response.status, await response.clone().text()).toBe(204);
+    expect(await response.text()).toBe("");
+    expect(captured.at(-1)).toMatchObject({
+      boardId: launch.boardId,
+      method: "DELETE",
+      url: "http://localhost/__internal/organisation-delete",
+      body: { organisationId: launch.organisationId, boardId: launch.boardId },
+    });
+    expect(captured.at(-1)?.headers.get("authorization")).toBeNull();
+    expect(captured.at(-1)?.headers.get("x-whiteboard-internal-actor")).toBe(launch.actorId);
+    const organisationRequest = organisationFetch.mock.calls[0]?.[0];
+    expect(organisationRequest?.method).toBe("DELETE");
+    expect(organisationRequest?.url).toBe(
+      `http://localhost/__internal/organisations/${launch.organisationId}/spaces/${launch.boardId}`,
+    );
+
+    captured.length = 0;
+    const wrongBoard = await gateway.fetch(
+      new Request(
+        `http://localhost/api/v1/organisations/${encodeURIComponent(ORGANISATION_KEY)}/boards/b_ZZZZZZZZZZZZZZZZZZZZZZ`,
+        { method: "DELETE", headers: { Authorization: `Bearer ${token}` } },
+      ),
+      env,
+    );
+    expect(wrongBoard.status).toBe(404);
+    expect(captured).toHaveLength(0);
+
+    const viewerToken = await launchToken("service-delete", { role: "viewer" });
+    const viewer = await gateway.fetch(
+      new Request(`http://localhost${route}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${viewerToken}` },
+      }),
+      env,
+    );
+    expect(viewer.status).toBe(403);
+    expect(captured).toHaveLength(0);
   });
 
   it("lets an owner assertion configure only its own organisation webhook", async () => {

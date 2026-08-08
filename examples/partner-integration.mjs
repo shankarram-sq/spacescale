@@ -185,6 +185,13 @@ export function deleteOrganisationTemplate(ownerToken, templateId) {
   });
 }
 
+export function deleteBoard(ownerToken, boardId) {
+  return jsonRequest(organisationPath(`/boards/${encodeURIComponent(boardId)}`), {
+    method: "DELETE",
+    token: ownerToken,
+  });
+}
+
 async function main() {
   const initialTemplate = createInitialTemplate("Notice and wonder");
   const common = {
@@ -254,8 +261,9 @@ async function main() {
   const listed = await listOrganisationTemplates(apiToken);
   console.log("Organisation template count:", listed.templates.length);
 
-  // Delete is available when needed:
+  // Destructive operations are available when needed, but are not run by this sample:
   // await deleteOrganisationTemplate(apiToken, created.id);
+  // await deleteBoard(apiToken, boardId);
 }
 
 await main();
