@@ -59,6 +59,7 @@ import {
   type FragmentClaim,
   type ManagedInvitation,
   type OrganisationTemplate,
+  type OrganisationWebhookSettings,
   type RecoverySnapshot,
 } from "../transport/api";
 import { BoardSocket } from "../transport/socket";
@@ -670,6 +671,10 @@ export class BoardApp {
   private organisationTemplateSavePending = false;
   private organisationTemplateItemsToSave: BoardItem[] = [];
   private readonly organisationTemplateDeletesPending = new Set<string>();
+  private organisationWebhookSettings: OrganisationWebhookSettings | null = null;
+  private organisationWebhookSavePending = false;
+  private organisationWebhookSendPending = false;
+  private organisationWebhookIdempotencyKey: string | null = null;
   private readonly titleInput: HTMLInputElement;
   private readonly saveStatus: HTMLElement;
   private readonly saveStatusText: HTMLElement;
@@ -3720,7 +3725,7 @@ export class BoardApp {
     inviteSection.innerHTML = `
       <h3>Invite people</h3>
       <form class="invite-form" data-invite-form>
-        <label><span>Role</span><select name="role"><option value="editor">Editor</option><option value="viewer">Viewer</option></select></label>
+        <label><span>Role</span><select name="role"><option value="editor">Editor</option><option value="viewer">Viewer</option><option value="owner">Co-owner</option></select></label>
         <label><span>Link uses</span><select name="maxUses"><option value="1">One person</option><option value="20">Session link · 20</option><option value="50">Session link · 50</option></select></label>
         <label class="full-field"><span>Label <i>optional</i></span><input name="label" maxlength="80" placeholder="e.g. Design team" /></label>
         <button class="primary-button full-field" type="submit">Create invite link</button>
@@ -3766,19 +3771,39 @@ export class BoardApp {
     if (this.bootstrap.actor.role !== "owner") return;
     this.settingsBody.replaceChildren(loadingBlock("Loading settings…"));
     try {
-      [this.recoverySnapshots, this.accessMembers] = await Promise.all([
+      const [recoverySnapshots, accessMembers, organisationWebhookSettings] = await Promise.all([
         this.api.snapshots(this.bootstrap.board.id),
         this.api.members(this.bootstrap.board.id),
+        this.api.organisationWebhookSettings(this.bootstrap.board.id),
       ]);
+      if (this.bootstrap.actor.role !== "owner") {
+        this.clearOwnerSettings();
+        return;
+      }
+      this.recoverySnapshots = recoverySnapshots;
+      this.accessMembers = accessMembers;
+      this.organisationWebhookSettings = organisationWebhookSettings;
       this.renderSettingsPanel();
     } catch (error) {
+      if (this.bootstrap.actor.role !== "owner") {
+        this.clearOwnerSettings();
+        return;
+      }
       this.settingsBody.replaceChildren(errorBlock("Space settings could not be loaded."));
       this.apiError(error);
     }
   }
 
   private renderSettingsPanel(): void {
+    if (this.bootstrap.actor.role !== "owner") {
+      this.clearOwnerSettings();
+      return;
+    }
     this.settingsBody.replaceChildren();
+    this.settingsBody.setAttribute(
+      "aria-busy",
+      String(this.organisationWebhookSavePending || this.organisationWebhookSendPending),
+    );
 
     const boardSection = document.createElement("section");
     boardSection.className = "access-section";
@@ -3840,6 +3865,69 @@ export class BoardApp {
       featureGrid.append(row);
     }
     this.settingsBody.append(featureSection);
+
+    const webhookSettings = this.organisationWebhookSettings;
+    if (webhookSettings !== null && webhookSettings.organisationId !== null) {
+      const webhookSection = document.createElement("section");
+      webhookSection.className = "access-section organisation-webhook-section";
+      webhookSection.dataset.testid = "organisation-webhook-settings";
+      webhookSection.innerHTML = `
+        <h3>Organisation webhook</h3>
+        <p class="section-note">Send the current attributed JSON export to your approved partner endpoint. Participant identifiers and board content are included.</p>
+        <form class="organisation-webhook-form" data-organisation-webhook-form>
+          <label><span>Webhook URL</span><input name="webhookUrl" type="url" inputmode="url" autocomplete="url" maxlength="2048" placeholder="https://hooks.partner.example/spacescale" /></label>
+          <div class="organisation-webhook-actions">
+            <button class="primary-button" type="submit">Save URL</button>
+            <button type="button" data-remove-organisation-webhook>Remove</button>
+          </div>
+        </form>
+        <p class="organisation-webhook-status" data-organisation-webhook-status role="status" aria-live="polite"></p>
+        <button type="button" data-send-organisation-webhook>Send this Space now</button>
+      `;
+      const webhookForm = query(
+        webhookSection,
+        "[data-organisation-webhook-form]",
+        HTMLFormElement,
+      );
+      const webhookInput = query(webhookForm, "input[name='webhookUrl']", HTMLInputElement);
+      webhookInput.value = webhookSettings.webhookUrl ?? "";
+      webhookForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        void this.updateOrganisationWebhook(webhookInput.value.trim() || null);
+      });
+      const removeButton = query(
+        webhookSection,
+        "[data-remove-organisation-webhook]",
+        HTMLButtonElement,
+      );
+      removeButton.disabled =
+        webhookSettings.webhookUrl === null ||
+        this.organisationWebhookSavePending ||
+        this.organisationWebhookSendPending;
+      removeButton.addEventListener("click", () => void this.updateOrganisationWebhook(null));
+      const saveButton = query(webhookForm, "button[type='submit']", HTMLButtonElement);
+      saveButton.disabled =
+        this.organisationWebhookSavePending || this.organisationWebhookSendPending;
+      saveButton.textContent = this.organisationWebhookSavePending ? "Saving…" : "Save URL";
+      const status = query(webhookSection, "[data-organisation-webhook-status]", HTMLElement);
+      status.textContent = webhookSettings.webhookUrl
+        ? `Configured${webhookSettings.updatedAt === null ? "" : ` · updated ${formatDateTime(webhookSettings.updatedAt)}`}`
+        : "No webhook configured.";
+      const sendButton = query(
+        webhookSection,
+        "[data-send-organisation-webhook]",
+        HTMLButtonElement,
+      );
+      sendButton.disabled =
+        webhookSettings.webhookUrl === null ||
+        this.organisationWebhookSavePending ||
+        this.organisationWebhookSendPending;
+      sendButton.textContent = this.organisationWebhookSendPending
+        ? "Sending export…"
+        : "Send this Space now";
+      sendButton.addEventListener("click", () => void this.sendOrganisationWebhook());
+      this.settingsBody.append(webhookSection);
+    }
 
     const snapshotSection = document.createElement("section");
     snapshotSection.className = "access-section";
@@ -4063,6 +4151,80 @@ export class BoardApp {
     }
   }
 
+  private async updateOrganisationWebhook(webhookUrl: string | null): Promise<void> {
+    if (
+      this.bootstrap.actor.role !== "owner" ||
+      this.organisationWebhookSavePending ||
+      this.organisationWebhookSendPending ||
+      this.organisationWebhookSettings === null
+    ) {
+      return;
+    }
+    this.organisationWebhookSavePending = true;
+    this.renderSettingsPanel();
+    try {
+      this.organisationWebhookSettings = await this.api.updateOrganisationWebhookSettings(
+        this.bootstrap.board.id,
+        webhookUrl,
+      );
+      this.organisationWebhookIdempotencyKey = null;
+      this.notify(
+        webhookUrl === null ? "Organisation webhook removed." : "Organisation webhook saved.",
+        "info",
+      );
+    } catch (error) {
+      this.apiError(error);
+    } finally {
+      this.organisationWebhookSavePending = false;
+      this.renderSettingsPanel();
+      this.settingsBody.querySelector<HTMLInputElement>("input[name='webhookUrl']")?.focus();
+    }
+  }
+
+  private async sendOrganisationWebhook(): Promise<void> {
+    const settings = this.organisationWebhookSettings;
+    if (
+      this.bootstrap.actor.role !== "owner" ||
+      this.organisationWebhookSendPending ||
+      this.organisationWebhookSavePending ||
+      settings === null ||
+      settings.webhookUrl === null
+    ) {
+      return;
+    }
+    const destination = new URL(settings.webhookUrl).origin;
+    if (
+      !window.confirm(
+        `Send the current attributed Space export, including participant identifiers, to ${destination}?`,
+      )
+    ) {
+      return;
+    }
+    const idempotencyKey = this.organisationWebhookIdempotencyKey ?? crypto.randomUUID();
+    this.organisationWebhookIdempotencyKey = idempotencyKey;
+    this.organisationWebhookSendPending = true;
+    this.renderSettingsPanel();
+    try {
+      const result = await this.api.sendBoardToOrganisationWebhook(
+        this.bootstrap.board.id,
+        idempotencyKey,
+      );
+      this.organisationWebhookIdempotencyKey = null;
+      this.notify(
+        `Space sent to the organisation webhook (HTTP ${result.delivery.responseStatus}).`,
+        "info",
+      );
+    } catch (error) {
+      this.apiError(error);
+    } finally {
+      this.organisationWebhookSendPending = false;
+      this.renderSettingsPanel();
+      this.settingsBody
+        .querySelector<HTMLButtonElement>("[data-send-organisation-webhook]")
+        ?.focus();
+    }
+  }
+
   private async createInvitation(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     const form = event.currentTarget as HTMLFormElement;
@@ -4071,7 +4233,12 @@ export class BoardApp {
     if (submit) submit.disabled = true;
     try {
       const result = await this.api.createInvitation(this.bootstrap.board.id, {
-        role: data.get("role") === "viewer" ? "viewer" : "editor",
+        role:
+          data.get("role") === "viewer"
+            ? "viewer"
+            : data.get("role") === "owner"
+              ? "owner"
+              : "editor",
         maxUses: Math.max(1, Math.min(50, Number(data.get("maxUses")) || 1)),
         label: String(data.get("label") ?? "").trim() || undefined,
         expiresAt: Date.now() + 24 * 60 * 60 * 1_000,
@@ -4607,6 +4774,7 @@ export class BoardApp {
     this.accessButton.disabled = archived || this.archivePending;
     this.settingsButton.hidden = this.bootstrap.actor.role !== "owner" || archived;
     this.settingsButton.disabled = archived || this.archivePending;
+    if (this.bootstrap.actor.role !== "owner") this.clearOwnerSettings();
     query(this.root, "[data-export-attributed-json]", HTMLButtonElement).hidden =
       !attributedDataDownloadAllowed(this.bootstrap.actor.role);
     this.titleInput.readOnly = this.bootstrap.actor.role !== "owner" || archived;
@@ -5155,6 +5323,16 @@ export class BoardApp {
     this.accessButton.setAttribute("aria-expanded", "false");
     this.settingsButton.setAttribute("aria-expanded", "false");
   }
+  private clearOwnerSettings(): void {
+    this.accessDrawer.hidden = true;
+    this.settingsDrawer.hidden = true;
+    this.accessButton.setAttribute("aria-expanded", "false");
+    this.settingsButton.setAttribute("aria-expanded", "false");
+    this.organisationWebhookSettings = null;
+    this.organisationWebhookIdempotencyKey = null;
+    this.settingsBody.removeAttribute("aria-busy");
+    this.settingsBody.replaceChildren();
+  }
 
   private downloadLocalJson(): void {
     const data = {
@@ -5282,46 +5460,53 @@ export async function confirmRecoveryClaim(
 
 export async function requestClaimVerification(
   root: HTMLElement,
-  turnstile: { enabled: boolean; siteKey: string | null },
+  turnstile: { enabled: boolean; required: boolean; siteKey: string | null },
   claimType: FragmentClaim["type"],
 ): Promise<string | undefined> {
-  if (!turnstile.enabled) return undefined;
+  if (!turnstile.enabled || !turnstile.required) return undefined;
   if (!turnstile.siteKey) {
     throw new ApiError(
       "TEMPORARILY_UNAVAILABLE",
-      "Human verification is temporarily unavailable.",
+      "Browser verification is temporarily unavailable.",
       503,
     );
   }
-  return new Promise((resolve) => {
-    const form = document.createElement("form");
-    form.className = "claim-dialog claim-verification";
-    form.dataset.testid = "claim-verification";
-    form.innerHTML = `
-      <span class="dialog-mark" aria-hidden="true">✓</span>
-      <h1>Verify before continuing</h1>
-      <p>This brief check protects shared boards and invitation links from automated abuse.</p>
-      <div data-turnstile></div>
-      <button class="primary-button" type="submit">Continue to board</button>
-    `;
-    mountTurnstile(
-      query(form, "[data-turnstile]", HTMLElement),
-      turnstile.siteKey,
-      claimType === "invite" ? "invitation_claim" : "recovery_claim",
-    );
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      const token = form.querySelector<HTMLInputElement>(
-        "input[name='cf-turnstile-response']",
-      )?.value;
-      if (!token) {
-        showInlineError(form, "Complete the human verification before continuing.");
-        return;
+  return requestTurnstileToken(
+    root,
+    turnstile.siteKey,
+    claimType === "invite" ? "invitation_claim" : "recovery_claim",
+  );
+}
+
+export async function withAdaptiveTurnstile<T>(
+  root: HTMLElement,
+  turnstile: { enabled: boolean; required: boolean; siteKey: string | null },
+  action: TurnstileAction,
+  operation: (token: string | undefined) => Promise<T>,
+): Promise<T> {
+  let required = turnstile.enabled && turnstile.required;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const token = required
+      ? await requestTurnstileTokenForAction(root, turnstile.siteKey, action)
+      : undefined;
+    try {
+      return await operation(token);
+    } catch (error) {
+      if (
+        attempt === 0 &&
+        !required &&
+        turnstile.enabled &&
+        error instanceof ApiError &&
+        error.code === "TURNSTILE_REQUIRED"
+      ) {
+        required = true;
+        turnstile.required = true;
+        continue;
       }
-      resolve(token);
-    });
-    root.replaceChildren(form);
-  });
+      throw error;
+    }
+  }
+  throw new ApiError("TURNSTILE_FAILED", "Browser verification failed.", 403);
 }
 
 export async function acknowledgeRecoveredOwnership(
@@ -5375,7 +5560,6 @@ export function renderLanding(root: HTMLElement, api: ApiClient): void {
       <form class="create-card" data-create-form>
         <div><span class="card-step">Start a board</span><h2>What are you working on?</h2></div>
         <label><span class="sr-only">Board title</span><input name="title" maxlength="100" value="Untitled board" required autocomplete="off" /></label>
-        <div data-turnstile></div>
         <button class="primary-button" type="submit">Open a fresh canvas <span aria-hidden="true">→</span></button>
         <small>Private owner controls · automatic saving · SVG export</small>
       </form>
@@ -5383,7 +5567,6 @@ export function renderLanding(root: HTMLElement, api: ApiClient): void {
     </main>
   `;
   const form = query(root, "[data-create-form]", HTMLFormElement);
-  mountTurnstile(query(root, "[data-turnstile]", HTMLElement), api.turnstile.siteKey);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = query(form, "button[type='submit']", HTMLButtonElement);
@@ -5391,9 +5574,10 @@ export function renderLanding(root: HTMLElement, api: ApiClient): void {
     button.textContent = "Creating your board…";
     const formData = new FormData(form);
     const title = String(formData.get("title") ?? "").trim();
-    const tokenInput = form.querySelector<HTMLInputElement>("input[name='cf-turnstile-response']");
     try {
-      const result = await api.createBoard(title, tokenInput?.value || undefined);
+      const result = await withAdaptiveTurnstile(root, api.turnstile, "board_create", (token) =>
+        api.createBoard(title, token),
+      );
       showCreatedBoard(root, result.board.url, result.ownerRecoveryUrl);
     } catch (error) {
       button.disabled = false;
@@ -5448,27 +5632,200 @@ function showCreatedBoard(root: HTMLElement, boardUrl: string, recoveryUrl: stri
   dialog.showModal();
 }
 
-function mountTurnstile(
-  container: HTMLElement,
+type TurnstileAction = "board_create" | "invitation_claim" | "recovery_claim";
+
+type TurnstileClient = {
+  ready(callback: () => void): void;
+  render(
+    container: HTMLElement,
+    options: {
+      sitekey: string;
+      action: TurnstileAction;
+      execution: "render";
+      appearance: "interaction-only";
+      callback(token: string): void;
+      "error-callback"(code?: string): void;
+      "expired-callback"(): void;
+    },
+  ): string;
+  remove(widgetId: string): void;
+};
+
+let turnstileClientPromise: Promise<TurnstileClient> | null = null;
+
+async function requestTurnstileTokenForAction(
+  root: HTMLElement,
   sessionSiteKey: string | null,
-  action = "board_create",
-): void {
+  action: TurnstileAction,
+): Promise<string> {
   const key =
     sessionSiteKey ??
     import.meta.env.VITE_TURNSTILE_SITE_KEY ??
     document.querySelector<HTMLMetaElement>('meta[name="turnstile-site-key"]')?.content;
-  if (!key) return;
-  container.className = "cf-turnstile";
-  container.dataset.sitekey = key;
-  container.dataset.action = action;
-  if (!document.querySelector("script[data-turnstile-script]")) {
-    const script = document.createElement("script");
-    script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js";
-    script.async = true;
-    script.defer = true;
-    script.dataset.turnstileScript = "true";
-    document.head.append(script);
+  if (!key) {
+    throw new ApiError(
+      "TEMPORARILY_UNAVAILABLE",
+      "Browser verification is temporarily unavailable.",
+      503,
+    );
   }
+  return requestTurnstileToken(root, key, action);
+}
+
+async function requestTurnstileToken(
+  root: HTMLElement,
+  siteKey: string,
+  action: TurnstileAction,
+): Promise<string> {
+  const container = document.createElement("div");
+  container.className = "turnstile-challenge";
+  container.dataset.testid = "turnstile-challenge";
+  container.setAttribute("role", "status");
+  container.setAttribute("aria-live", "polite");
+  container.setAttribute("aria-label", "Checking browser security");
+  root.append(container);
+
+  let client: TurnstileClient;
+  try {
+    client = await loadTurnstileClient();
+  } catch (error) {
+    container.remove();
+    throw error;
+  }
+  let widgetId: string | undefined;
+  try {
+    return await new Promise<string>((resolve, reject) => {
+      let settled = false;
+      const finish = (result: { token: string } | { error: ApiError }): void => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        if ("token" in result) resolve(result.token);
+        else reject(result.error);
+      };
+      const timeout = window.setTimeout(
+        () =>
+          finish({
+            error: new ApiError(
+              "TEMPORARILY_UNAVAILABLE",
+              "Browser verification timed out. Try again.",
+              503,
+            ),
+          }),
+        20_000,
+      );
+      try {
+        widgetId = client.render(container, {
+          sitekey: siteKey,
+          action,
+          execution: "render",
+          appearance: "interaction-only",
+          callback: (token) => {
+            if (token.length > 0) finish({ token });
+            else
+              finish({
+                error: new ApiError("TURNSTILE_FAILED", "Browser verification failed.", 403),
+              });
+          },
+          "error-callback": () =>
+            finish({
+              error: new ApiError("TURNSTILE_FAILED", "Browser verification failed.", 403),
+            }),
+          "expired-callback": () =>
+            finish({
+              error: new ApiError("TURNSTILE_FAILED", "Browser verification expired.", 403),
+            }),
+        });
+      } catch {
+        finish({
+          error: new ApiError(
+            "TEMPORARILY_UNAVAILABLE",
+            "Browser verification is temporarily unavailable.",
+            503,
+          ),
+        });
+      }
+    });
+  } finally {
+    if (widgetId !== undefined) client.remove(widgetId);
+    container.remove();
+  }
+}
+
+function loadTurnstileClient(): Promise<TurnstileClient> {
+  const current = (window as Window & { turnstile?: TurnstileClient }).turnstile;
+  if (current !== undefined) return turnstileWhenReady(current);
+  if (turnstileClientPromise !== null) return turnstileClientPromise;
+
+  const loading = new Promise<TurnstileClient>((resolve, reject) => {
+    let settled = false;
+    const finish = (client?: TurnstileClient): void => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      if (client === undefined) {
+        reject(
+          new ApiError(
+            "TEMPORARILY_UNAVAILABLE",
+            "Browser verification is temporarily unavailable.",
+            503,
+          ),
+        );
+        return;
+      }
+      void turnstileWhenReady(client).then(resolve, reject);
+    };
+    const timeout = window.setTimeout(() => finish(), 15_000);
+    const existing = document.querySelector<HTMLScriptElement>("script[data-turnstile-script]");
+    const script = existing ?? document.createElement("script");
+    script.addEventListener(
+      "load",
+      () => finish((window as Window & { turnstile?: TurnstileClient }).turnstile),
+      { once: true },
+    );
+    script.addEventListener("error", () => finish(), { once: true });
+    if (existing === null) {
+      script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+      script.async = true;
+      script.defer = true;
+      script.dataset.turnstileScript = "true";
+      document.head.append(script);
+    }
+  });
+  turnstileClientPromise = loading;
+  void loading.catch(() => {
+    if (turnstileClientPromise === loading) turnstileClientPromise = null;
+  });
+  return loading;
+}
+
+function turnstileWhenReady(client: TurnstileClient): Promise<TurnstileClient> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timeout: number | undefined;
+    const finish = (ready: boolean): void => {
+      if (settled) return;
+      settled = true;
+      if (timeout !== undefined) window.clearTimeout(timeout);
+      if (ready) {
+        resolve(client);
+        return;
+      }
+      reject(
+        new ApiError(
+          "TEMPORARILY_UNAVAILABLE",
+          "Browser verification is temporarily unavailable.",
+          503,
+        ),
+      );
+    };
+    timeout = window.setTimeout(() => finish(false), 15_000);
+    try {
+      client.ready(() => finish(true));
+    } catch {
+      finish(false);
+    }
+  });
 }
 
 export function localSvg(snapshot: BoardSnapshot, title: string): string {
@@ -5723,7 +6080,7 @@ function parseManagedInvitation(value: unknown): ManagedInvitation[] {
   if (
     typeof value.id !== "string" ||
     !/^i_[A-Za-z0-9_-]{16,78}$/u.test(value.id) ||
-    (value.role !== "viewer" && value.role !== "editor") ||
+    (value.role !== "viewer" && value.role !== "editor" && value.role !== "owner") ||
     (value.label !== null && typeof value.label !== "string") ||
     !Number.isSafeInteger(value.maxUses) ||
     (value.maxUses as number) < 1 ||

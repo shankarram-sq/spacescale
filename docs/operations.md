@@ -56,6 +56,12 @@ configuration, not a secret. Missing, blank, path-bearing, wildcard-pattern, or
 malformed values deny framing. A literal `*` allows every iframe parent.
 Normal board pages remain non-embeddable.
 
+Set `WEBHOOK_ALLOWED_ORIGINS` separately to the comma-separated exact public
+HTTPS origins that may receive attributed Space exports. Missing or blank
+configuration denies webhook setup and delivery. Paths and wildcards are not
+accepted: approve the receiver origin here, then store its full per-Organisation
+webhook URL through the signed API or Space Settings.
+
 Both release targets are Worker Custom Domains with their `workers.dev`
 fallback disabled. Confirm the custom domains and certificates are active after
 the first authorized deployment. Ongoing staging CI uses Worker version
@@ -68,8 +74,9 @@ Staging fixes `TURNSTILE_ENABLED=false` so Playwright and AI-driven browser
 tests can exercise board creation and capability claims without interactive
 challenges. Treat it as a public, lower-trust automation
 surface and use disposable test data only. Production fixes
-`TURNSTILE_ENABLED=true` and fails closed without its real site key and
-Siteverify secret.
+`TURNSTILE_ENABLED=true`; normal browser sessions continue directly, while
+requests classified as suspicious fail closed without a valid token from its
+Invisible-mode site key and Siteverify secret.
 
 The default Workers/R2 management token cannot inspect Turnstile widgets. For
 production, if `cf:check` reports

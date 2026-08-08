@@ -7,6 +7,7 @@ import gateway from "./gateway";
 import { configuredFrameAncestors } from "./http/security";
 import { HmacIdentityService } from "./identity";
 import {
+  OrganisationAuthService,
   type OrganisationSigningKeyRegistry,
   signOrganisationLaunchToken,
 } from "./organisation-auth";
@@ -76,6 +77,25 @@ function makeEnv(options: { allowedOrigins?: string } = {}): {
             launchApplied: true,
           },
           { status: 201 },
+        );
+      }
+      if (pathname === "/__internal/organisation-export") {
+        return Response.json(
+          {
+            format: "cf-whiteboard-json",
+            version: 1,
+            boardId,
+            seq: 7,
+            createdAt: 1_700_000_000_000,
+            settings: { title: "Read-only geometry" },
+            items: [],
+          },
+          {
+            headers: {
+              "Content-Disposition": `attachment; filename="whiteboard-${boardId}.json"`,
+              "X-Whiteboard-Seq": "7",
+            },
+          },
         );
       }
       if (pathname.endsWith("/socket")) {
@@ -198,8 +218,10 @@ describe("organisation embed gateway", () => {
       title: "Algebra Space",
       role: "owner",
       displayName: "Coach Mira",
+      participantId: "coach-mira",
       launchIssuedAtMs: expect.any(Number),
       placeholderOwnerActorId: expect.stringMatching(/^a_[A-Za-z0-9_-]{22}$/u),
+      spaceId: "Algebra Space",
       ownerRecoveryHash: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
       features: expect.objectContaining({ images: false, line: false, protractor: false }),
       importSnapshot: "eyJmb3JtYXQiOiJjZi13aGl0ZWJvYXJkLWpzb24ifQ",
@@ -305,6 +327,101 @@ describe("organisation embed gateway", () => {
     expect(legacyCreate.status).toBe(403);
   });
 
+  it("exports only the token-derived board for an owner organisation assertion", async () => {
+    const { env, captured } = makeEnv();
+    const token = await launchToken("service-export", {
+      role: "owner",
+      participant_id: "coach-service",
+    });
+    const launch = await new OrganisationAuthService(env).verifyLaunchToken(token);
+    const organisationPath = encodeURIComponent(ORGANISATION_KEY);
+
+    const response = await gateway.fetch(
+      new Request(
+        `http://localhost/api/v1/organisations/${organisationPath}/boards/${launch.boardId}/export.attributed.json`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      ),
+      env,
+    );
+    expect(response.status).toBe(200);
+    expect(captured.at(-1)).toMatchObject({
+      boardId: launch.boardId,
+      url: "http://localhost/__internal/organisation-export",
+      body: { organisationId: launch.organisationId, format: "attributed" },
+    });
+
+    const wrongBoard = await gateway.fetch(
+      new Request(
+        `http://localhost/api/v1/organisations/${organisationPath}/boards/b_ZZZZZZZZZZZZZZZZZZZZZZ/export.json`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      ),
+      env,
+    );
+    expect(wrongBoard.status).toBe(404);
+
+    const viewerToken = await launchToken("service-export", { role: "viewer" });
+    const viewer = await gateway.fetch(
+      new Request(
+        `http://localhost/api/v1/organisations/${organisationPath}/boards/${launch.boardId}/export.json`,
+        { headers: { Authorization: `Bearer ${viewerToken}` } },
+      ),
+      env,
+    );
+    expect(viewer.status).toBe(403);
+  });
+
+  it("lets an owner assertion configure only its own organisation webhook", async () => {
+    const { env } = makeEnv();
+    const organisationFetch = vi.fn(async (request: Request) => {
+      if (request.method === "PATCH") {
+        const body = (await request.clone().json()) as { updatedBy: string };
+        return Response.json({
+          webhookUrl: "https://partner.example/hooks/spacescale",
+          updatedBy: body.updatedBy,
+          updatedAt: Date.now(),
+        });
+      }
+      return Response.json({ webhookUrl: null, updatedBy: null, updatedAt: null });
+    });
+    (env as Env).ORGANISATION_ROOMS = {
+      getByName: vi.fn(() => ({ fetch: organisationFetch })),
+    } as unknown as DurableObjectNamespace;
+    const token = await launchToken("service-settings", { role: "owner" });
+    const launch = await new OrganisationAuthService(env).verifyLaunchToken(token);
+    const route = `/api/v1/organisations/${encodeURIComponent(ORGANISATION_KEY)}/webhook`;
+
+    const configured = await gateway.fetch(
+      new Request(`http://localhost${route}`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ webhookUrl: "https://partner.example/hooks/spacescale" }),
+      }),
+      env,
+    );
+    expect(configured.status, await configured.clone().text()).toBe(200);
+    expect(await configured.json()).toMatchObject({
+      organisationId: launch.organisationId,
+      webhookUrl: "https://partner.example/hooks/spacescale",
+    });
+    const forwarded = organisationFetch.mock.calls[0]?.[0];
+    expect(forwarded?.method).toBe("PATCH");
+    expect(await forwarded?.json()).toEqual({
+      webhookUrl: "https://partner.example/hooks/spacescale",
+      updatedBy: launch.actorId,
+    });
+
+    const crossOrganisation = await gateway.fetch(
+      new Request("http://localhost/api/v1/organisations/other-school/webhook", {
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      env,
+    );
+    expect(crossOrganisation.status).toBe(404);
+  });
+
   it("extracts WebSocket bearer auth, strips it before forwarding, and negotiates only v1", async () => {
     const { env, captured } = makeEnv();
     const launch = await exchange(env, await launchToken("socket"));
@@ -402,5 +519,164 @@ describe("embed response framing policy", () => {
     const allowAllResponse = await gateway.fetch(new Request("http://localhost/embed"), allowAll);
     expect(allowAllResponse.headers.get("content-security-policy")).toContain("frame-ancestors *");
     expect(allowAllResponse.headers.get("x-frame-options")).toBeNull();
+  });
+
+  it("opens canonical exports through signed read-only viewer sessions", async () => {
+    const { env, captured } = makeEnv();
+    const token = await launchToken("viewer", {
+      role: "viewer",
+      display_name: "Read-only guest",
+      participant_id: "viewer-guest",
+    });
+    const verified = await new OrganisationAuthService(env).verifyLaunchToken(token);
+
+    const response = await gateway.fetch(
+      new Request("http://localhost/api/v1/viewer/session", {
+        method: "POST",
+        headers: { Origin: "http://localhost", "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      }),
+      env,
+    );
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({
+      format: "cf-whiteboard-json",
+      version: 1,
+      boardId: verified.boardId,
+      seq: 7,
+      createdAt: 1_700_000_000_000,
+      settings: { title: "Read-only geometry" },
+      items: [],
+    });
+    expect(captured.at(-1)).toMatchObject({
+      boardId: verified.boardId,
+      url: "http://localhost/__internal/organisation-export",
+      body: { organisationId: verified.organisationId, format: "canonical" },
+    });
+  });
+
+  it("loads Organisation administration, signs per-Space viewers, and updates settings", async () => {
+    const { env } = makeEnv();
+    const token = await launchToken("admin", {
+      space_id: "Admin Space",
+      role: "owner",
+      display_name: "Coach Owner",
+      participant_id: "coach-owner",
+    });
+    const authentication = new OrganisationAuthService(env);
+    const verified = await authentication.verifyLaunchToken(token);
+    const participantHash = `a_${"P".repeat(22)}`;
+    let webhookUrl: string | null = null;
+    const organisationFetch = vi.fn(async (request: Request): Promise<Response> => {
+      const pathname = new URL(request.url).pathname;
+      if (pathname.endsWith("/settings") && request.method === "PATCH") {
+        const body = (await request.json()) as { webhookUrl: string | null };
+        webhookUrl = body.webhookUrl;
+        return Response.json({
+          webhookUrl,
+          updatedBy: verified.actorId,
+          updatedAt: Date.now(),
+        });
+      }
+      if (pathname.endsWith("/admin") && request.method === "GET") {
+        return Response.json({
+          settings: { webhookUrl, updatedBy: null, updatedAt: null },
+          templateCount: 3,
+          boards: [
+            {
+              boardId: verified.boardId,
+              spaceId: verified.spaceId,
+              title: "Admin Space",
+              archived: false,
+              owners: [
+                {
+                  id: verified.actorId,
+                  displayName: "Coach Owner",
+                  role: "owner",
+                  identifierHash: verified.actorId,
+                },
+              ],
+              participants: [
+                {
+                  id: participantHash,
+                  displayName: "Student One",
+                  role: "editor",
+                  identifierHash: participantHash,
+                },
+              ],
+              settings: {},
+              updatedAt: Date.now(),
+            },
+          ],
+        });
+      }
+      return Response.json({ error: "unexpected" }, { status: 404 });
+    });
+    env.ORGANISATION_ROOMS = {
+      getByName: vi.fn(() => ({ fetch: organisationFetch })),
+    } as unknown as Env["ORGANISATION_ROOMS"];
+
+    const session = await gateway.fetch(
+      new Request("http://localhost/api/v1/organisation-admin/session", {
+        method: "POST",
+        headers: { Origin: "http://localhost", "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      }),
+      env,
+    );
+    expect(session.status, await session.clone().text()).toBe(200);
+    const snapshot = (await session.json()) as {
+      organisation: { id: string; name: string };
+      settings: { webhookUrl: string | null; details: Array<{ key: string; value: unknown }> };
+      boards: Array<{
+        id: string;
+        owners: Array<{ identifierHash: string }>;
+        participants: Array<{ identifierHash: string }>;
+        viewerUrl: string;
+      }>;
+    };
+    expect(snapshot.organisation).toEqual({
+      id: verified.organisationId,
+      name: ORGANISATION_KEY,
+    });
+    expect(snapshot.settings.details).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: "spaceCount", value: 1 }),
+        expect.objectContaining({ key: "templateCount", value: 3 }),
+      ]),
+    );
+    expect(snapshot.boards[0]).toMatchObject({
+      id: verified.boardId,
+      owners: [{ identifierHash: verified.actorId }],
+      participants: [{ identifierHash: participantHash }],
+    });
+
+    const viewerUrl = new URL(snapshot.boards[0]?.viewerUrl ?? "");
+    expect(viewerUrl.pathname).toBe("/viewer");
+    const viewerToken = new URLSearchParams(viewerUrl.hash.slice(1)).get("launch");
+    const signedViewer = await authentication.verifyLaunchToken(viewerToken);
+    expect(signedViewer).toMatchObject({
+      organisationId: verified.organisationId,
+      boardId: verified.boardId,
+      spaceId: verified.spaceId,
+      role: "viewer",
+    });
+
+    const updated = await gateway.fetch(
+      new Request("http://localhost/api/v1/organisation-admin/webhook", {
+        method: "POST",
+        headers: { Origin: "http://localhost", "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token,
+          webhookUrl: "https://partner.example/hooks/spacescale",
+        }),
+      }),
+      env,
+    );
+    expect(updated.status, await updated.clone().text()).toBe(200);
+    expect(await updated.json()).toMatchObject({
+      webhookUrl: "https://partner.example/hooks/spacescale",
+    });
   });
 });

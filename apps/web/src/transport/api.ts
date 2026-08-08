@@ -36,7 +36,7 @@ export type EmbedSession = {
 
 export type ManagedInvitation = {
   id: string;
-  role: "viewer" | "editor";
+  role: Role;
   label: string | null;
   maxUses: number;
   expiresAt: number;
@@ -80,22 +80,44 @@ export type AttributedDataExport = {
   participants: Array<{
     id: string;
     displayName: string;
+    participantHash: string;
+    participantId?: string | null;
     role: Role | null;
     status: "active" | "revoked" | "referenced";
   }>;
   objects: Array<{
     item: BoardItem;
     attribution: {
-      createdBy: { id: string; displayName: string };
-      lastModifiedBy: { id: string; displayName: string };
+      createdBy: {
+        id: string;
+        displayName: string;
+        participantHash: string;
+        participantId?: string | null;
+      };
+      lastModifiedBy: {
+        id: string;
+        displayName: string;
+        participantHash: string;
+        participantId?: string | null;
+      };
       updatedSeq: number;
       updatedAt: number;
     };
     content: Array<{
       kind: "text" | "sticky_text" | "zone_title" | "image_alt" | "table_cell";
       text: string;
-      responsibleUser: { id: string; displayName: string } | null;
-      lastChangedBy: { id: string; displayName: string } | null;
+      responsibleUser: {
+        id: string;
+        displayName: string;
+        participantHash: string;
+        participantId?: string | null;
+      } | null;
+      lastChangedBy: {
+        id: string;
+        displayName: string;
+        participantHash: string;
+        participantId?: string | null;
+      } | null;
       updatedSeq: number | null;
       updatedAt: number | null;
       row?: number;
@@ -120,6 +142,23 @@ export type OrganisationTemplates = {
   templates: OrganisationTemplate[];
 };
 
+export type OrganisationWebhookSettings = {
+  organisationId: string | null;
+  webhookUrl: string | null;
+  updatedBy: string | null;
+  updatedAt: number | null;
+};
+
+export type OrganisationWebhookDeliveryResult = {
+  delivery: {
+    id: string;
+    event: "board.exported";
+    createdAt: number;
+    responseStatus: number;
+  };
+  idempotentReplay: boolean;
+};
+
 export class ApiError extends Error {
   constructor(
     readonly code: string,
@@ -135,7 +174,11 @@ export class ApiError extends Error {
 export class ApiClient {
   private csrfToken = "";
   private embedBearer: string | null;
-  turnstile: { enabled: boolean; siteKey: string | null } = { enabled: false, siteKey: null };
+  turnstile: { enabled: boolean; required: boolean; siteKey: string | null } = {
+    enabled: false,
+    required: false,
+    siteKey: null,
+  };
 
   constructor(
     useStoredEmbedSession = typeof location !== "undefined" &&
@@ -192,6 +235,7 @@ export class ApiClient {
     if (isRecord(result.turnstile)) {
       this.turnstile = {
         enabled: result.turnstile.enabled === true,
+        required: result.turnstile.required === true,
         siteKey: typeof result.turnstile.siteKey === "string" ? result.turnstile.siteKey : null,
       };
     }
@@ -352,7 +396,7 @@ export class ApiClient {
 
   async createInvitation(
     boardId: string,
-    input: { role: "viewer" | "editor"; label?: string; maxUses: number; expiresAt: number },
+    input: { role: Role; label?: string; maxUses: number; expiresAt: number },
   ): Promise<CreatedInvitation> {
     return this.request<CreatedInvitation>(
       `/api/v1/boards/${encodeURIComponent(boardId)}/invitations`,
@@ -451,6 +495,41 @@ export class ApiClient {
       `/api/v1/boards/${encodeURIComponent(boardId)}/organisation/templates/${encodeURIComponent(templateId)}`,
       { method: "DELETE" },
     );
+  }
+
+  async organisationWebhookSettings(boardId: string): Promise<OrganisationWebhookSettings> {
+    const result = await this.request<unknown>(
+      `/api/v1/boards/${encodeURIComponent(boardId)}/organisation/settings`,
+    );
+    return parseOrganisationWebhookSettings(result);
+  }
+
+  async updateOrganisationWebhookSettings(
+    boardId: string,
+    webhookUrl: string | null,
+  ): Promise<OrganisationWebhookSettings> {
+    const result = await this.request<unknown>(
+      `/api/v1/boards/${encodeURIComponent(boardId)}/organisation/settings`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ webhookUrl }),
+      },
+    );
+    return parseOrganisationWebhookSettings(result);
+  }
+
+  async sendBoardToOrganisationWebhook(
+    boardId: string,
+    idempotencyKey: string = crypto.randomUUID(),
+  ): Promise<OrganisationWebhookDeliveryResult> {
+    const result = await this.request<unknown>(
+      `/api/v1/boards/${encodeURIComponent(boardId)}/organisation/webhook`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
+      },
+    );
+    return parseOrganisationWebhookDelivery(result);
   }
 
   async snapshots(boardId: string): Promise<RecoverySnapshot[]> {
@@ -714,10 +793,80 @@ function parseOrganisationTemplate(value: unknown): OrganisationTemplate {
   };
 }
 
+function parseOrganisationWebhookSettings(value: unknown): OrganisationWebhookSettings {
+  if (
+    !isRecord(value) ||
+    (value.organisationId !== null &&
+      (typeof value.organisationId !== "string" ||
+        !/^o_[A-Za-z0-9_-]{22}$/u.test(value.organisationId))) ||
+    (value.webhookUrl !== null && typeof value.webhookUrl !== "string") ||
+    (value.updatedBy !== null &&
+      (typeof value.updatedBy !== "string" || !/^a_[A-Za-z0-9_-]{22}$/u.test(value.updatedBy))) ||
+    (value.updatedAt !== null &&
+      (!Number.isSafeInteger(value.updatedAt) || (value.updatedAt as number) < 0))
+  ) {
+    throw invalidOrganisationWebhookResponse(value);
+  }
+  if (typeof value.webhookUrl === "string") {
+    try {
+      if (new URL(value.webhookUrl).protocol !== "https:") {
+        throw invalidOrganisationWebhookResponse(value);
+      }
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw invalidOrganisationWebhookResponse(value);
+    }
+  }
+  return {
+    organisationId: value.organisationId,
+    webhookUrl: value.webhookUrl,
+    updatedBy: value.updatedBy,
+    updatedAt: value.updatedAt as number | null,
+  };
+}
+
+function parseOrganisationWebhookDelivery(value: unknown): OrganisationWebhookDeliveryResult {
+  const object = isRecord(value) ? value : null;
+  const delivery = object !== null && isRecord(object.delivery) ? object.delivery : null;
+  if (
+    delivery === null ||
+    typeof delivery.id !== "string" ||
+    !/^whd_[A-Za-z0-9_-]{22}$/u.test(delivery.id) ||
+    delivery.event !== "board.exported" ||
+    !Number.isSafeInteger(delivery.createdAt) ||
+    (delivery.createdAt as number) < 0 ||
+    !Number.isSafeInteger(delivery.responseStatus) ||
+    (delivery.responseStatus as number) < 200 ||
+    (delivery.responseStatus as number) > 299 ||
+    object === null ||
+    typeof object.idempotentReplay !== "boolean"
+  ) {
+    throw invalidOrganisationWebhookResponse(value);
+  }
+  return {
+    delivery: {
+      id: delivery.id,
+      event: "board.exported",
+      createdAt: delivery.createdAt as number,
+      responseStatus: delivery.responseStatus as number,
+    },
+    idempotentReplay: object.idempotentReplay,
+  };
+}
+
 function invalidOrganisationTemplateResponse(details: unknown): ApiError {
   return new ApiError(
     "INVALID_RESPONSE",
     "The server returned invalid organisation template data.",
+    500,
+    details,
+  );
+}
+
+function invalidOrganisationWebhookResponse(details: unknown): ApiError {
+  return new ApiError(
+    "INVALID_RESPONSE",
+    "The server returned invalid organisation webhook data.",
     500,
     details,
   );

@@ -156,6 +156,7 @@ encrypted secrets or the Cloudflare deployment API.
 | `ORGANISATION_SIGNING_KEYS` | Secret JSON registry of Organisation-specific HMAC keys. Each entry has a stable `derivation_key`, a `current` launch key with `kid`, and optional `previous` keys for rotation. Generate every key independently with `openssl rand -base64 32`. |
 | `APP_HOSTNAME` | Public hostname only—no scheme, path, query, or trailing slash. Example: `whiteboard.example.com` or a `workers.dev` hostname. |
 | `ALLOWED_ORIGINS` | Comma-separated exact HTTPS origins allowed to embed `/embed`. Missing, blank, or invalid configuration denies all framing; a literal `*` explicitly allows every parent. |
+| `WEBHOOK_ALLOWED_ORIGINS` | Comma-separated exact public HTTPS origins approved to receive attributed board webhooks. Missing or blank denies all webhook configuration/delivery; wildcards are not supported. |
 | `BOARD_CREATION_ENABLED` | Public fail-closed operational switch. `true` permits new boards; `false` preserves existing-board read/reconnect/export routes while rejecting creation. |
 | `CLOUDFLARE_ACCOUNT_ID` | Account ID from **Dashboard → account → Account home/Overview**. It is an identifier, not a cryptographic secret. |
 | `CLOUDFLARE_API_TOKEN` | Secret Cloudflare management API token used by bootstrap/CI; it is not an R2 S3 credential. Creation and scope are below. |
@@ -203,7 +204,7 @@ The committed public deployment contract is:
 | --- | --- | --- | --- | --- |
 | Development | `localhost` | `cloudflare-collab-canvas-dev-snapshots` | `cloudflare-collab-canvas-dev-assets` | Disabled |
 | Staging | `staging-cloud-collab.spacescale.net` | `staging-cloud-collab` | `staging-cloud-collab-assets` | Disabled for browser automation |
-| Production | `spacescale.net` | `collab-canvas-snapshots` | `collab-canvas-assets` | Required; dedicated production widget |
+| Production | `spacescale.net` | `collab-canvas-snapshots` | `collab-canvas-assets` | Adaptive, invisible; dedicated production widget |
 
 Production and staging are separate Worker Custom Domains with `workers_dev`
 disabled, so neither deployment can silently fall back to an unintended
@@ -213,10 +214,13 @@ and signing keys. It has no Turnstile site key or secret: the deployment fixes
 exercise capability flows without interactive challenges. Never put production
 data or credentials in this automation-only environment.
 
-For production, copy `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` from the
-same dedicated widget, and allow exactly `spacescale.net` in that widget. Do
-not pair a site key from one widget with a secret from another. Confirm both
-custom domains are active before validation.
+For production, configure the dedicated widget in **Invisible** mode, copy
+`TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` from that same widget, and allow
+exactly `spacescale.net`. The Worker asks for a token only when Cloudflare bot
+signals or narrow browser-automation fallbacks classify the request as
+suspicious. Normal sessions never load the widget. Do not pair a site key from
+one widget with a secret from another. Confirm both custom domains are active
+before validation.
 
 ### Provision and deploy
 
@@ -329,5 +333,6 @@ the lightweight release flow are in
 
 Trusted-backend signing, Organisation and Space isolation, initial JSON import,
 iframe setup, participant-owned editing, live owner controls, co-owners,
-Organisation templates, and the activity feed are documented in
-[docs/organisation-embedding.md](docs/organisation-embedding.md).
+all feature flags, Organisation templates, export APIs, every object format,
+and signed webhooks are documented in the single partner reference:
+[how_to_embed_me.md](how_to_embed_me.md).

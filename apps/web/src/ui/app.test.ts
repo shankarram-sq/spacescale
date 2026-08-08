@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { ApiError } from "../transport/api";
 import type { BoardItem, BoardSnapshot, DurableOperation } from "../types";
 import {
   actorFromAccessChanged,
@@ -21,6 +22,7 @@ import {
   savedAuthoritativeItems,
   serializeAttributedData,
   tableCellDraftFromOperation,
+  withAdaptiveTurnstile,
   zoneTitleDraftFromOperation,
 } from "./app";
 
@@ -29,6 +31,73 @@ const boardId = "b_1234567890123456789012";
 describe("SpaceScale browser storage", () => {
   it("uses the SpaceScale namespace for managed invitation metadata", () => {
     expect(managedInvitationStorageKey(boardId)).toBe(`spacescale:managed-invitations:${boardId}`);
+  });
+});
+
+describe("adaptive Turnstile retry", () => {
+  it("tries normal traffic without a token, then invisibly verifies and retries on demand", async () => {
+    const container = {
+      className: "",
+      dataset: {} as Record<string, string>,
+      setAttribute: vi.fn(),
+      remove: vi.fn(),
+    };
+    const root = { append: vi.fn() };
+    const removeWidget = vi.fn();
+    const renderWidget = vi.fn(
+      (
+        _container: unknown,
+        options: {
+          callback(token: string): void;
+        },
+      ) => {
+        options.callback("verified-token");
+        return "widget-id";
+      },
+    );
+    vi.stubGlobal("document", {
+      createElement: () => container,
+      querySelector: () => null,
+    });
+    vi.stubGlobal("window", {
+      turnstile: {
+        ready: (callback: () => void) => callback(),
+        render: renderWidget,
+        remove: removeWidget,
+      },
+      setTimeout: globalThis.setTimeout,
+      clearTimeout: globalThis.clearTimeout,
+    });
+
+    const turnstile = { enabled: true, required: false, siteKey: "public-site-key" };
+    const tokens: Array<string | undefined> = [];
+    try {
+      const result = await withAdaptiveTurnstile(
+        root as unknown as HTMLElement,
+        turnstile,
+        "board_create",
+        async (token) => {
+          tokens.push(token);
+          if (tokens.length === 1) {
+            throw new ApiError("TURNSTILE_REQUIRED", "Browser verification is required.", 428);
+          }
+          return "created";
+        },
+      );
+
+      expect(result).toBe("created");
+      expect(tokens).toEqual([undefined, "verified-token"]);
+      expect(turnstile.required).toBe(true);
+      expect(renderWidget).toHaveBeenCalledOnce();
+      expect(removeWidget).toHaveBeenCalledWith("widget-id");
+      expect(container.remove).toHaveBeenCalledOnce();
+      expect(container.setAttribute).toHaveBeenCalledWith(
+        "aria-label",
+        "Checking browser security",
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 
@@ -261,12 +330,14 @@ describe("attributed data download", () => {
         {
           id: "a_1234567890123456789012",
           displayName: "Asha Patel",
+          participantHash: "a_1234567890123456789012",
           role: "editor" as const,
           status: "active" as const,
         },
         {
           id: "a_2345678901234567890123",
           displayName: "Ben Shah",
+          participantHash: "a_2345678901234567890123",
           role: null,
           status: "referenced" as const,
         },
@@ -296,10 +367,15 @@ describe("attributed data download", () => {
             },
           },
           attribution: {
-            createdBy: { id: "a_2345678901234567890123", displayName: "Coach Mira" },
+            createdBy: {
+              id: "a_2345678901234567890123",
+              displayName: "Coach Mira",
+              participantHash: "a_2345678901234567890123",
+            },
             lastModifiedBy: {
               id: "a_1234567890123456789012",
               displayName: "Asha Patel",
+              participantHash: "a_1234567890123456789012",
             },
             updatedSeq: 12,
             updatedAt: 1_900_000_001_000,
@@ -311,10 +387,12 @@ describe("attributed data download", () => {
               responsibleUser: {
                 id: "a_1234567890123456789012",
                 displayName: "Asha Patel",
+                participantHash: "a_1234567890123456789012",
               },
               lastChangedBy: {
                 id: "a_1234567890123456789012",
                 displayName: "Asha Patel",
+                participantHash: "a_1234567890123456789012",
               },
               updatedSeq: 12,
               updatedAt: 1_900_000_001_000,
@@ -347,10 +425,15 @@ describe("attributed data download", () => {
             },
           },
           attribution: {
-            createdBy: { id: "a_2345678901234567890123", displayName: "Coach Mira" },
+            createdBy: {
+              id: "a_2345678901234567890123",
+              displayName: "Coach Mira",
+              participantHash: "a_2345678901234567890123",
+            },
             lastModifiedBy: {
               id: "a_2345678901234567890123",
               displayName: "Coach Mira",
+              participantHash: "a_2345678901234567890123",
             },
             updatedSeq: 11,
             updatedAt: 1_900_000_000_500,

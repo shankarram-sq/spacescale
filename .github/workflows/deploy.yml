@@ -28,6 +28,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       ORGANISATION_SIGNING_KEYS: ${{ secrets.ORGANISATION_SIGNING_KEYS }}
       ALLOWED_ORIGINS: ${{ vars.ALLOWED_ORIGINS }}
+      WEBHOOK_ALLOWED_ORIGINS: ${{ vars.WEBHOOK_ALLOWED_ORIGINS }}
       DEPLOY_URL: https://staging-cloud-collab.spacescale.net
     steps:
       - uses: actions/checkout@v4
@@ -74,6 +75,7 @@ jobs:
             --var "APP_HOSTNAME:staging-cloud-collab.spacescale.net" \
             --var "BOARD_CREATION_ENABLED:true" \
             --var "ALLOWED_ORIGINS:${ALLOWED_ORIGINS}" \
+            --var "WEBHOOK_ALLOWED_ORIGINS:${WEBHOOK_ALLOWED_ORIGINS}" \
             --var "TURNSTILE_ENABLED:false" \
             --var "ENVIRONMENT:staging"
           version="$(jq -r 'select(.type == "version-upload") | .version_id' "$output" | tail -n 1)"
@@ -121,6 +123,7 @@ jobs:
       ORGANISATION_SIGNING_KEYS: ${{ secrets.ORGANISATION_SIGNING_KEYS }}
       TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
       ALLOWED_ORIGINS: ${{ vars.ALLOWED_ORIGINS }}
+      WEBHOOK_ALLOWED_ORIGINS: ${{ vars.WEBHOOK_ALLOWED_ORIGINS }}
       DEPLOY_URL: https://spacescale.net
     steps:
       - uses: actions/checkout@v4
@@ -168,6 +171,7 @@ jobs:
             --var "APP_HOSTNAME:spacescale.net" \
             --var "BOARD_CREATION_ENABLED:true" \
             --var "ALLOWED_ORIGINS:${ALLOWED_ORIGINS}" \
+            --var "WEBHOOK_ALLOWED_ORIGINS:${WEBHOOK_ALLOWED_ORIGINS}" \
             --var "TURNSTILE_SITE_KEY:${TURNSTILE_SITE_KEY}" \
             --var "TURNSTILE_ENABLED:true" \
             --var "ENVIRONMENT:production"

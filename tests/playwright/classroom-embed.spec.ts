@@ -180,6 +180,156 @@ test("Organisation participants join one Space with live owner controls and attr
   }
 });
 
+test("canonical export is faithfully reproduced by the signed read-only viewer", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "The signed viewer flow runs once.");
+  test.skip(
+    Boolean(process.env.PLAYWRIGHT_BASE_URL),
+    "Remote viewer testing requires a configured Organisation signing registry.",
+  );
+  test.slow();
+
+  const demo = readOrganisationSigningEntry("demo");
+  const spaceId = `playwright-viewer-space-${randomUUID()}`;
+  const now = Math.floor(Date.now() / 1_000);
+  const owner = {
+    name: "viewer-export-owner",
+    role: "owner",
+    displayName: "Coach Viewer",
+    participantId: `coach-${randomUUID()}`,
+  } satisfies Participant;
+  const ownerSource = launchUrl(LOCAL_WORKER_ORIGIN, "demo", spaceId, demo, owner, now);
+  const frame = await mountParticipant(page, LOCAL_PARENT_URL, owner, ownerSource);
+
+  const rectangleId = await drawRectangle(frame);
+  const canvasBounds = await frame.locator("#board-canvas").boundingBox();
+  expect(canvasBounds).not.toBeNull();
+  if (canvasBounds === null) throw new Error("The board canvas has no layout bounds.");
+  await frame.getByRole("button", { name: /^Text/u }).click();
+  await frame
+    .page()
+    .mouse.click(
+      canvasBounds.x + canvasBounds.width * 0.58,
+      canvasBounds.y + canvasBounds.height * 0.3,
+    );
+  const editor = frame.getByTestId("canvas-text-editor");
+  await expect(editor).toBeVisible();
+  await editor.fill("Shared viewer words");
+  await editor.press("Control+Enter");
+  await expect(frame.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+  await expect(frame.locator("#drawing-area .board-item-text")).toContainText(
+    "Shared viewer words",
+  );
+
+  const ownerToken = new URLSearchParams(new URL(ownerSource).hash.slice(1)).get("launch");
+  if (ownerToken === null) throw new Error("The owner assertion is missing.");
+  const boardId = new URL(frame.url()).pathname.split("/").at(-1);
+  if (boardId === undefined) throw new Error("The derived board ID is missing.");
+  const exported = await frame.evaluate(
+    async ({ organisationKey, board, token }) => {
+      const response = await fetch(
+        `/api/v1/organisations/${encodeURIComponent(organisationKey)}/boards/${encodeURIComponent(board)}/export.json`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/json",
+          },
+          cache: "no-store",
+        },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    { organisationKey: "demo", board: boardId, token: ownerToken },
+  );
+  expect(exported.status).toBe(200);
+  expect(exported.body).toMatchObject({
+    format: "cf-whiteboard-json",
+    version: 1,
+    boardId,
+    settings: { title: spaceId },
+    items: expect.arrayContaining([
+      expect.objectContaining({ id: rectangleId, kind: "rectangle" }),
+      expect.objectContaining({
+        kind: "text",
+        geometry: expect.objectContaining({ text: "Shared viewer words" }),
+      }),
+    ]),
+  });
+
+  const viewerParticipant = {
+    name: "signed-viewer",
+    role: "viewer",
+    displayName: "Read-only reviewer",
+    participantId: `viewer-${randomUUID()}`,
+  } satisfies Participant;
+  const viewerSource = launchUrl(
+    LOCAL_WORKER_ORIGIN,
+    "demo",
+    spaceId,
+    demo,
+    viewerParticipant,
+    now,
+  ).replace("/embed#", "/viewer#");
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"], {
+    origin: LOCAL_WORKER_ORIGIN,
+  });
+  await page.goto(viewerSource);
+  await expect(page.getByTestId("read-only-space-viewer")).toBeVisible();
+  await expect(page).toHaveURL(/\/viewer$/u);
+  await expect(page.locator("#drawing-area .board-item")).toHaveCount(
+    (exported.body as { items: unknown[] }).items.length,
+  );
+  await expect(page.locator("#drawing-area .board-item-text")).toContainText("Shared viewer words");
+  await expect(page.getByRole("button", { name: /^Shapes/u })).toHaveCount(0);
+  await expect(page.getByTestId("settings-button")).toHaveCount(0);
+
+  const copyText = page.getByRole("button", { name: "Copy all Space text" });
+  await copyText.click();
+  await expect(copyText).toHaveText("Copied");
+  const copiedText = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copiedText).toContain("Shared viewer words");
+
+  const zoom = page.locator("[data-viewer-zoom]");
+  const zoomBefore = await zoom.textContent();
+  await page.locator("[data-viewer-zoom-in]").click();
+  await expect(zoom).not.toHaveText(zoomBefore ?? "");
+
+  const viewerCanvas = page.locator("#board-canvas");
+  const viewBoxBefore = await viewerCanvas.getAttribute("viewBox");
+  const viewerBounds = await viewerCanvas.boundingBox();
+  expect(viewerBounds).not.toBeNull();
+  if (viewerBounds === null) throw new Error("The viewer canvas has no layout bounds.");
+  await page.mouse.move(
+    viewerBounds.x + viewerBounds.width - 30,
+    viewerBounds.y + viewerBounds.height - 30,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    viewerBounds.x + viewerBounds.width - 110,
+    viewerBounds.y + viewerBounds.height - 80,
+    { steps: 4 },
+  );
+  await page.mouse.up();
+  await expect(viewerCanvas).not.toHaveAttribute("viewBox", viewBoxBefore ?? "");
+
+  await page.screenshot({
+    path: testInfo.outputPath("signed-read-only-viewer.png"),
+    fullPage: false,
+  });
+
+  const adminSource = ownerSource.replace("/embed#", "/organisation/admin#");
+  await page.goto(adminSource);
+  await expect(page).toHaveURL(/\/organisation\/admin$/u);
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Spaces" })).toBeVisible();
+  const spaceRow = page.getByRole("row").filter({ hasText: spaceId });
+  await expect(spaceRow).toBeVisible();
+  await expect(spaceRow).toContainText("Coach Viewer");
+  await expect(spaceRow.getByRole("link")).toHaveAttribute("href", /\/viewer#launch=/u);
+  await page.screenshot({ path: testInfo.outputPath("organisation-admin.png"), fullPage: false });
+});
+
 test("Organisation owners share reusable templates across Spaces", async ({
   browser,
   page,
@@ -322,6 +472,120 @@ test("an Organisation assertion cannot borrow another Organisation's signing key
   expect(location.pathname).toBe("/embed");
   expect(location.search).toBe("");
   expect(location.hash).toBe("");
+});
+
+test("Organisation owner configures and sends the Space webhook from Settings", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "The Organisation webhook flow runs once.");
+  test.skip(
+    Boolean(process.env.PLAYWRIGHT_BASE_URL),
+    "Remote Organisation testing must not mock a production webhook endpoint.",
+  );
+
+  const organisationId = `o_${"O".repeat(22)}`;
+  const actorId = `a_${"A".repeat(22)}`;
+  const destination = "https://hooks.partner.example/spacescale";
+  let webhookUrl: string | null = null;
+  const consoleErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  page.on("pageerror", (error) => consoleErrors.push(error.message));
+
+  await page.route(
+    /\/api\/v1\/boards\/b_[A-Za-z\d_-]{22}\/organisation\/settings$/u,
+    async (route) => {
+      const request = route.request();
+      if (request.method() === "PATCH") {
+        const body = request.postDataJSON() as { webhookUrl: string | null };
+        webhookUrl = body.webhookUrl;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          organisationId,
+          webhookUrl,
+          updatedBy: webhookUrl === null ? null : actorId,
+          updatedAt: webhookUrl === null ? null : 1_786_156_200_000,
+        }),
+      });
+    },
+  );
+  await page.route(
+    /\/api\/v1\/boards\/b_[A-Za-z\d_-]{22}\/organisation\/webhook$/u,
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          delivery: {
+            id: `whd_${"D".repeat(22)}`,
+            event: "board.exported",
+            createdAt: 1_786_156_200_100,
+            responseStatus: 204,
+          },
+          idempotentReplay: false,
+        }),
+      });
+    },
+  );
+
+  const demo = readOrganisationSigningEntry("demo");
+  const participant = {
+    name: "webhook-owner",
+    role: "owner",
+    displayName: "Coach Integrations",
+    participantId: `coach-${randomUUID()}`,
+  } satisfies Participant;
+  const frame = await mountParticipant(
+    page,
+    LOCAL_PARENT_URL,
+    participant,
+    launchUrl(
+      LOCAL_WORKER_ORIGIN,
+      "demo",
+      `playwright-webhook-space-${randomUUID()}`,
+      demo,
+      participant,
+      Math.floor(Date.now() / 1_000),
+    ),
+  );
+  expect(new URL(frame.url()).pathname).toMatch(/^\/embed\/b\/b_[A-Za-z\d_-]{22}$/u);
+
+  await frame.getByTestId("settings-button").click();
+  const settings = frame.getByTestId("settings-drawer");
+  await expect(settings).toBeVisible();
+  const webhook = settings.getByTestId("organisation-webhook-settings");
+  await expect(webhook).toBeVisible();
+  const input = webhook.getByRole("textbox", { name: "Webhook URL" });
+  const send = webhook.getByRole("button", { name: "Send this Space now" });
+  await expect(input).toHaveValue("");
+  await expect(send).toBeDisabled();
+
+  await input.fill(destination);
+  await webhook.getByRole("button", { name: "Save URL" }).click();
+  await expect(input).toHaveValue(destination);
+  await expect(webhook.getByText(/^Configured/u)).toBeVisible();
+  await expect(send).toBeEnabled();
+
+  page.once("dialog", (dialog) => void dialog.accept());
+  await send.click();
+  await expect(frame.getByTestId("toast-region")).toContainText(
+    "Space sent to the organisation webhook (HTTP 204).",
+  );
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(webhook).toBeVisible();
+  await expect(input).toHaveValue(destination);
+  await webhook.scrollIntoViewIfNeeded();
+  await expect(send).toBeInViewport();
+  await page.screenshot({
+    path: testInfo.outputPath("organisation-webhook-settings-mobile.png"),
+    fullPage: false,
+  });
+  expect(consoleErrors).toEqual([]);
 });
 
 function readDevVar(name: string): string {

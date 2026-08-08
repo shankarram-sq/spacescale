@@ -5,7 +5,7 @@ import { env } from "cloudflare:workers";
 import { canonicalSnapshotByteLengthFromParts } from "@collab/board-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_CLASSROOM_IMPORT_ENCODED_CHARS, MAX_CLASSROOM_IMPORT_ITEMS } from "./classroom-import";
-import { bytesToBase64Url, sha256, sha256Base64Url, utf8 } from "./crypto";
+import { bytesToBase64Url, hmacSha256, sha256, sha256Base64Url, utf8 } from "./crypto";
 import {
   backfillSnapshotAccounting,
   captureSnapshot,
@@ -23,7 +23,10 @@ const studentId = `a_${"D".repeat(22)}`;
 const placeholderOwnerId = `a_${"P".repeat(22)}`;
 const organisationId = `o_${"O".repeat(21)}A`;
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 function internalRequest(path: string, init: RequestInit = {}): Request {
   const headers = new Headers(init.headers);
@@ -81,7 +84,13 @@ async function launchClassroom(
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           publicId,
-          ...(organisation === undefined ? {} : { organisationId: organisation }),
+          ...(organisation === undefined
+            ? {}
+            : {
+                organisationId: organisation,
+                spaceId: "classroom-board",
+                participantId: `participant:${actor}`,
+              }),
           title: "Classroom board",
           role,
           displayName,
@@ -463,7 +472,7 @@ describe("BoardRoom initialization", () => {
         .one(),
     }));
     expect(state).toEqual({
-      migrations: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+      migrations: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
       boards: 1,
       owners: 1,
       classroomMode: 0,
@@ -1038,6 +1047,28 @@ describe("BoardRoom initialization", () => {
     expect(coOwnerLaunch.status).toBe(200);
     await coOwnerLaunch.arrayBuffer();
 
+    const organisationAdmin = await (env as unknown as Env).ORGANISATION_ROOMS.getByName(
+      organisationId,
+    ).fetch(
+      new Request(`https://board.test/__internal/organisations/${organisationId}/admin`, {
+        headers: { "x-whiteboard-internal-request-id": crypto.randomUUID() },
+      }),
+    );
+    expect(organisationAdmin.status, await organisationAdmin.clone().text()).toBe(200);
+    expect(await organisationAdmin.json()).toMatchObject({
+      boards: [
+        {
+          boardId,
+          spaceId: "classroom-board",
+          owners: [
+            { id: actorId, displayName: "Coach one", identifierHash: actorId },
+            { id: coOwnerId, displayName: "Coach two", identifierHash: coOwnerId },
+          ],
+          participants: [{ id: studentId, displayName: "Student", identifierHash: studentId }],
+        },
+      ],
+    });
+
     const route = `/api/v1/boards/${boardId}/organisation/templates`;
     const viewerList = await stub.fetch(internalActorRequest(studentId, route));
     expect(viewerList.status).toBe(200);
@@ -1169,6 +1200,244 @@ describe("BoardRoom initialization", () => {
       canManage: false,
       templates: [],
     });
+  });
+
+  it("maps responsible users to participant IDs only in same-organisation trusted exports", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    const issuedAt = Date.now() - 10_000;
+    expect(
+      (
+        await launchClassroom(
+          stub,
+          actorId,
+          "owner",
+          issuedAt,
+          "Coach",
+          undefined,
+          undefined,
+          boardId,
+          organisationId,
+        )
+      ).status,
+    ).toBe(201);
+    expect(
+      (
+        await launchClassroom(
+          stub,
+          editorId,
+          "editor",
+          issuedAt + 1,
+          "Asha",
+          undefined,
+          undefined,
+          boardId,
+          organisationId,
+        )
+      ).status,
+    ).toBe(200);
+
+    const editor = await connect(stub, editorId);
+    editor.socket.send(
+      JSON.stringify(
+        createStickyCommit(
+          "018f0000-0000-7000-8000-000000000b01",
+          "018f0000-0000-7000-8000-000000000b02",
+          "018f0000-0000-7000-8000-000000000b03",
+        ),
+      ),
+    );
+    await editor.next((frame) => frame.t === "server.action" && frame.seq === 1);
+
+    const browserResponse = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/export.attributed.json`),
+    );
+    expect(browserResponse.status).toBe(200);
+    const browserExport = (await browserResponse.json()) as {
+      participants: Array<Record<string, unknown>>;
+      objects: Array<{
+        attribution: { createdBy: Record<string, unknown> };
+        content: Array<{ responsibleUser: Record<string, unknown> }>;
+      }>;
+    };
+    expect(
+      browserExport.participants.every((participant) => !("participantId" in participant)),
+    ).toBe(true);
+    expect(browserExport.participants).toContainEqual(
+      expect.objectContaining({ id: editorId, participantHash: editorId }),
+    );
+    expect(browserExport.objects[0]?.attribution.createdBy).toMatchObject({
+      id: editorId,
+      participantHash: editorId,
+    });
+    expect(browserExport.objects[0]?.content[0]?.responsibleUser).toMatchObject({
+      id: editorId,
+      participantHash: editorId,
+    });
+    expect(browserExport.objects[0]?.attribution.createdBy).not.toHaveProperty("participantId");
+    expect(browserExport.objects[0]?.content[0]?.responsibleUser).not.toHaveProperty(
+      "participantId",
+    );
+
+    const trustedResponse = await stub.fetch(
+      internalRequest("/__internal/organisation-export", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ organisationId, format: "attributed" }),
+      }),
+    );
+    expect(trustedResponse.status).toBe(200);
+    const trustedExport = (await trustedResponse.json()) as {
+      participants: Array<{ id: string; participantId: string | null }>;
+      objects: Array<{
+        attribution: { createdBy: { id: string; participantId: string | null } };
+        content: Array<{
+          responsibleUser: { id: string; participantId: string | null };
+        }>;
+      }>;
+    };
+    expect(trustedExport.participants).toContainEqual(
+      expect.objectContaining({ id: editorId, participantId: `participant:${editorId}` }),
+    );
+    expect(trustedExport.objects[0]?.attribution.createdBy).toMatchObject({
+      id: editorId,
+      participantId: `participant:${editorId}`,
+    });
+    expect(trustedExport.objects[0]?.content[0]?.responsibleUser).toMatchObject({
+      id: editorId,
+      participantId: `participant:${editorId}`,
+    });
+
+    const crossOrganisation = await stub.fetch(
+      internalRequest("/__internal/organisation-export", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          organisationId: `o_${"Q".repeat(21)}A`,
+          format: "attributed",
+        }),
+      }),
+    );
+    expect(crossOrganisation.status).toBe(404);
+    expect(await crossOrganisation.json()).toMatchObject({
+      error: { message: "Board not found." },
+    });
+    await runInDurableObject(stub, (_instance, durableState) => {
+      durableState.storage.sql.exec(
+        "UPDATE board SET archived_at_ms = ? WHERE singleton = 1",
+        Date.now(),
+      );
+    });
+    const archivedTrusted = await stub.fetch(
+      internalRequest("/__internal/organisation-export", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ organisationId, format: "canonical" }),
+      }),
+    );
+    expect(archivedTrusted.status).toBe(200);
+    expect(await archivedTrusted.json()).toMatchObject({ boardId });
+    editor.socket.close(1000, "done");
+  });
+
+  it("sends one signed attributed webhook for each owner idempotency key", async () => {
+    const testEnv = env as unknown as Env;
+    const registry = JSON.parse(testEnv.ORGANISATION_SIGNING_KEYS ?? "{}") as Record<
+      string,
+      {
+        derivation_key: string;
+        current: { kid: string; key: string };
+      }
+    >;
+    const configured = Object.entries(registry)[0];
+    if (configured === undefined) throw new Error("The test Organisation registry is missing.");
+    const [organisationKey, keys] = configured;
+    const configuredOrganisationId = `o_${bytesToBase64Url(
+      (
+        await hmacSha256(
+          keys.derivation_key,
+          `organisation:v1\u0000${organisationKey.normalize("NFC").trim()}`,
+        )
+      ).slice(0, 16),
+    )}`;
+    testEnv.WEBHOOK_ALLOWED_ORIGINS = "https://hooks.partner.example";
+    const stub = testEnv.BOARD_ROOMS.getByName(boardId);
+    const launched = await launchClassroom(
+      stub,
+      actorId,
+      "owner",
+      Date.now() - 1_000,
+      "Coach",
+      undefined,
+      undefined,
+      boardId,
+      configuredOrganisationId,
+    );
+    expect(launched.status).toBe(201);
+    await launched.arrayBuffer();
+
+    const settings = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/organisation/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          webhookUrl: "https://hooks.partner.example/events/spacescale",
+        }),
+      }),
+    );
+    expect(settings.status, await settings.clone().text()).toBe(200);
+
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(new Response(null, { status: 204 })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const send = () =>
+      stub.fetch(
+        internalRequest(`/api/v1/boards/${boardId}/organisation/webhook`, {
+          method: "POST",
+          headers: { "idempotency-key": "board-webhook-integration-0001" },
+        }),
+      );
+    const delivered = await send();
+    expect(delivered.status, await delivered.clone().text()).toBe(200);
+    expect(await delivered.json()).toMatchObject({
+      delivery: {
+        id: expect.stringMatching(/^whd_[A-Za-z0-9_-]{22}$/u),
+        event: "board.exported",
+        responseStatus: 204,
+      },
+      idempotentReplay: false,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [webhookUrl, init] = fetchMock.mock.calls[0] ?? [];
+    expect(webhookUrl).toBe("https://hooks.partner.example/events/spacescale");
+    expect(init).toMatchObject({ method: "POST", redirect: "manual" });
+    const rawBody = String(init?.body);
+    const payload = JSON.parse(rawBody) as {
+      event: string;
+      organisation: { id: string };
+      export: { participants: Array<{ participantId: string | null }> };
+    };
+    expect(payload).toMatchObject({
+      event: "board.exported",
+      organisation: { id: configuredOrganisationId },
+    });
+    expect(payload.export.participants).toContainEqual(
+      expect.objectContaining({ participantId: `participant:${actorId}` }),
+    );
+    const timestamp = new Headers(init?.headers).get("x-spacescale-webhook-timestamp");
+    expect(timestamp).toMatch(/^\d+$/u);
+    const expectedSignature = bytesToBase64Url(
+      await hmacSha256(keys.current.key, `v1.${timestamp}.${rawBody}`),
+    );
+    expect(new Headers(init?.headers).get("x-spacescale-webhook-key-id")).toBe(keys.current.kid);
+    expect(new Headers(init?.headers).get("x-spacescale-webhook-signature")).toBe(
+      `v1=${expectedSignature}`,
+    );
+
+    const replay = await send();
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ idempotentReplay: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("does not let a newer classroom launch demote the primary owner", async () => {
@@ -3787,6 +4056,68 @@ describe("BoardRoom initialization", () => {
       activeOwners: 1,
       invitationUses: 0,
       aclVersion: 1,
+    });
+  });
+
+  it("creates a co-owner invitation without changing primary ownership", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+
+    const invitationResponse = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/invitations`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "co-owner-invitation-create-0001",
+        },
+        body: JSON.stringify({
+          role: "owner",
+          label: "Co-coach",
+          maxUses: 1,
+          expiresAtMs: Date.now() + 60_000,
+        }),
+      }),
+    );
+    expect(invitationResponse.status).toBe(201);
+    const invitation = (await invitationResponse.json()) as {
+      invitation: { role: string };
+      token: string;
+    };
+    expect(invitation.invitation.role).toBe("owner");
+
+    const claim = await stub.fetch(
+      internalActorRequest(coOwnerId, `/api/v1/boards/${boardId}/claims`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "invite",
+          token: invitation.token,
+          displayName: "Co-coach",
+        }),
+      }),
+    );
+    expect(claim.status).toBe(200);
+    expect(await claim.json()).toMatchObject({
+      actor: { id: coOwnerId, role: "owner", displayName: "Co-coach" },
+      aclVersion: 2,
+    });
+
+    const state = await runInDurableObject(stub, (_instance, durableState) => ({
+      primaryOwner: durableState.storage.sql
+        .exec<{ owner_actor_id: string }>("SELECT owner_actor_id FROM board")
+        .one().owner_actor_id,
+      roles: durableState.storage.sql
+        .exec<{ actor_id: string; role: string }>(
+          "SELECT actor_id, role FROM members ORDER BY actor_id",
+        )
+        .toArray(),
+    }));
+    expect(state).toEqual({
+      primaryOwner: actorId,
+      roles: [
+        { actor_id: actorId, role: "owner" },
+        { actor_id: coOwnerId, role: "owner" },
+      ],
     });
   });
 

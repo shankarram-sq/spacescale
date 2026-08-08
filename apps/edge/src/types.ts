@@ -14,6 +14,7 @@ export interface Env {
   APP_HOSTNAME: string;
   ORGANISATION_SIGNING_KEYS?: string;
   ALLOWED_ORIGINS?: string;
+  WEBHOOK_ALLOWED_ORIGINS?: string;
   ENVIRONMENT?: string;
   SESSION_SIGNING_KEY_CURRENT: string;
   SESSION_SIGNING_KEY_PREVIOUS?: string;
@@ -57,6 +58,7 @@ export interface BoardRow {
   access_mode: AccessMode;
   drawing_policy: DrawingPolicy;
   images_enabled: number;
+  organisation_space_id: string | null;
   features_json: string;
   owner_actor_id: string;
   classroom_mode: number;
@@ -82,6 +84,7 @@ export interface MemberRow {
   actor_id: string;
   role: BoardRole;
   display_name: string;
+  external_participant_id: string | null;
   revoked_at_ms: number | null;
 }
 

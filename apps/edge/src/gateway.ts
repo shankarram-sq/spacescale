@@ -20,9 +20,9 @@ import {
 import { HmacIdentityService } from "./identity";
 import { safeLog } from "./logging";
 import { OrganisationAuthService, type VerifiedOrganisationLaunch } from "./organisation-auth";
-import { OrganisationRoom } from "./organisation-room";
+import { normalizeOrganisationWebhookUrl, OrganisationRoom } from "./organisation-room";
 import { runtimeTelemetryContext } from "./telemetry";
-import { validateTurnstile } from "./turnstile";
+import { turnstileRequiredForRequest, validateTurnstile } from "./turnstile";
 import type { Env } from "./types";
 import { optionalTitle, requireBoardId, requireDisplayName } from "./validation";
 import { randomDisplayName } from "./validation-internal";
@@ -46,7 +46,12 @@ export default {
     let internalError = false;
     try {
       requireSecureTransport(request);
-      response = await routeRequest(stripInternalHeaders(request), env, requestId);
+      response = await routeRequest(
+        stripInternalHeaders(request),
+        env,
+        requestId,
+        turnstileRequiredForRequest(request, env),
+      );
     } catch (error) {
       const known = error instanceof HttpError;
       internalError = !known || error.code === "INTERNAL_ERROR";
@@ -77,7 +82,12 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
-async function routeRequest(request: Request, env: Env, requestId: string): Promise<Response> {
+async function routeRequest(
+  request: Request,
+  env: Env,
+  requestId: string,
+  turnstileRequired: boolean,
+): Promise<Response> {
   const url = new URL(request.url);
 
   if (url.pathname === "/healthz") {
@@ -103,11 +113,85 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
         sessionExpiresAt: result.session.expiresAt,
         turnstile: {
           enabled: env.TURNSTILE_ENABLED === "true",
+          required: turnstileRequired,
           siteKey: env.TURNSTILE_SITE_KEY ?? null,
         },
       },
       { headers },
     );
+  }
+
+  if (url.pathname === "/api/v1/viewer/session") {
+    if (request.method !== "POST") return methodNotAllowed("POST");
+    requireSameOrigin(request, env);
+    const body = await readJsonBody(request, 12 * 1_024);
+    assertExactKeys(body, ["token"], ["token"]);
+    const launch = await new OrganisationAuthService(env).verifyLaunchToken(body.token);
+    const clientAddress = request.headers.get("cf-connecting-ip") ?? "local";
+    enforceGatewayRateLimit(`viewer:ip:${clientAddress}`, 120, 2);
+    enforceGatewayRateLimit(`viewer:actor:${launch.actorId}`, 60, 1);
+    const internal = new Request(`${url.origin}/__internal/organisation-export`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        organisationId: launch.organisationId,
+        format: "canonical",
+      }),
+    });
+    return env.BOARD_ROOMS.getByName(launch.boardId).fetch(
+      makeInternalRequest(internal, launch.actorId, launch.expiresAtMs, requestId),
+    );
+  }
+
+  if (
+    url.pathname === "/api/v1/organisation-admin/session" ||
+    url.pathname === "/api/v1/organisation-admin/webhook"
+  ) {
+    if (request.method !== "POST") return methodNotAllowed("POST");
+    requireSameOrigin(request, env);
+    const body = await readJsonBody(request, 16 * 1_024);
+    const updatingWebhook = url.pathname.endsWith("/webhook");
+    assertExactKeys(
+      body,
+      updatingWebhook ? ["token", "webhookUrl"] : ["token"],
+      updatingWebhook ? ["token", "webhookUrl"] : ["token"],
+    );
+    const organisationAuth = new OrganisationAuthService(env);
+    const launch = await organisationAuth.verifyLaunchToken(body.token);
+    if (launch.role !== "owner") {
+      throw new HttpError(403, "FORBIDDEN", "An Organisation owner assertion is required.");
+    }
+    enforceGatewayRateLimit(`organisation-admin:${launch.organisationId}`, 120, 2);
+    const organisationRoom = env.ORGANISATION_ROOMS.getByName(launch.organisationId);
+    const baseInternalUrl = `${url.origin}/__internal/organisations/${launch.organisationId}`;
+    if (updatingWebhook) {
+      const webhookUrl = normalizeOrganisationWebhookUrl(body.webhookUrl);
+      const updated = await organisationRoom.fetch(
+        new Request(`${baseInternalUrl}/settings`, {
+          method: "PATCH",
+          headers: {
+            "content-type": "application/json",
+            "x-whiteboard-internal-request-id": requestId,
+          },
+          body: JSON.stringify({ webhookUrl, updatedBy: launch.actorId }),
+        }),
+      );
+      if (!updated.ok) return updated;
+    }
+    const adminResponse = await organisationRoom.fetch(
+      new Request(`${baseInternalUrl}/admin`, {
+        method: "GET",
+        headers: { "x-whiteboard-internal-request-id": requestId },
+      }),
+    );
+    if (!adminResponse.ok) return adminResponse;
+    const snapshot = await parseOrganisationAdminSnapshot(
+      await adminResponse.json(),
+      launch,
+      organisationAuth,
+      expectedOrigin(request, env),
+    );
+    return Response.json(updatingWebhook ? snapshot.settings : snapshot);
   }
 
   if (url.pathname === "/api/v1/embed/session") {
@@ -139,9 +223,11 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
       body: JSON.stringify({
         publicId: launch.boardId,
         organisationId: launch.organisationId,
+        spaceId: launch.spaceId,
         title: launch.spaceTitle,
         role: launch.role,
         displayName: launch.displayName,
+        participantId: launch.participantId,
         launchIssuedAtMs: launch.issuedAtMs,
         placeholderOwnerActorId: launch.placeholderOwnerActorId,
         ownerRecoveryHash: launch.ownerRecoveryHash,
@@ -177,6 +263,66 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
     );
   }
 
+  const organisationApi = matchOrganisationApiRoute(url.pathname);
+  if (organisationApi !== null) {
+    const launch = await authenticateOrganisationApiRequest(request, env);
+    if (launch.organisationKey !== organisationApi.organisationKey) throw boardNotFoundError();
+    enforceGatewayRateLimit(`organisation-api:${launch.organisationId}`, 120, 2);
+
+    if (organisationApi.kind === "export") {
+      if (request.method !== "GET") return methodNotAllowed("GET");
+      if (launch.boardId !== organisationApi.boardId) throw boardNotFoundError();
+      const internal = new Request(`${url.origin}/__internal/organisation-export`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          organisationId: launch.organisationId,
+          format: organisationApi.format,
+        }),
+      });
+      return env.BOARD_ROOMS.getByName(organisationApi.boardId).fetch(
+        makeInternalRequest(internal, launch.actorId, launch.expiresAtMs, requestId),
+      );
+    }
+
+    const organisationRoom = env.ORGANISATION_ROOMS.getByName(launch.organisationId);
+    const internalUrl = `${url.origin}/__internal/organisations/${launch.organisationId}/settings`;
+    if (request.method === "GET") {
+      const response = await organisationRoom.fetch(
+        new Request(internalUrl, {
+          method: "GET",
+          headers: { "x-whiteboard-internal-request-id": requestId },
+        }),
+      );
+      if (!response.ok) return response;
+      return Response.json({
+        organisationId: launch.organisationId,
+        ...parseOrganisationSettingsResponse(await response.json()),
+      });
+    }
+    if (request.method === "PUT") {
+      const body = await readJsonBody(request, 8 * 1_024);
+      assertExactKeys(body, ["webhookUrl"], ["webhookUrl"]);
+      const webhookUrl = normalizeOrganisationWebhookUrl(body.webhookUrl);
+      const response = await organisationRoom.fetch(
+        new Request(internalUrl, {
+          method: "PATCH",
+          headers: {
+            "content-type": "application/json",
+            "x-whiteboard-internal-request-id": requestId,
+          },
+          body: JSON.stringify({ webhookUrl, updatedBy: launch.actorId }),
+        }),
+      );
+      if (!response.ok) return response;
+      return Response.json({
+        organisationId: launch.organisationId,
+        ...parseOrganisationSettingsResponse(await response.json()),
+      });
+    }
+    return methodNotAllowed("GET, PUT");
+  }
+
   if (url.pathname === "/api/v1/boards") {
     if (request.method !== "POST") return methodNotAllowed("POST");
     requireSameOrigin(request, env);
@@ -208,7 +354,7 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
         ? randomDisplayName(session.actorId, true)
         : requireDisplayName(body.displayName);
     const features = initialBoardFeatures(body.features);
-    await validateTurnstile(body.turnstileToken, env);
+    await validateTurnstile(body.turnstileToken, env, "board_create", turnstileRequired);
 
     const boardId = randomBoardId();
     const boardTelemetry = await runtimeTelemetryContext(env, boardId);
@@ -306,6 +452,7 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
         body.turnstileToken,
         env,
         body.type === "invite" ? "invitation_claim" : "recovery_claim",
+        turnstileRequired,
       );
       const { turnstileToken: _turnstileToken, ...forwardedBody } = body;
       roomRequest = new Request(routedRequest.url, {
@@ -328,6 +475,121 @@ async function routeRequest(request: Request, env: Env, requestId: string): Prom
   }
 
   return env.ASSETS.fetch(request);
+}
+
+type OrganisationAdminSnapshot = {
+  organisation: { id: string; name: string };
+  settings: {
+    webhookUrl: string | null;
+    details: Array<{
+      key: string;
+      label: string;
+      value: string | number | boolean | null;
+      description?: string;
+    }>;
+  };
+  boards: Array<{
+    id: string;
+    name: string;
+    owners: Array<{ displayName: string; identifierHash: string }>;
+    participants: Array<{ displayName: string; identifierHash: string }>;
+    viewerUrl: string;
+  }>;
+};
+
+async function parseOrganisationAdminSnapshot(
+  value: unknown,
+  launch: VerifiedOrganisationLaunch,
+  organisationAuth: OrganisationAuthService,
+  origin: string,
+): Promise<OrganisationAdminSnapshot> {
+  if (
+    !isRecord(value) ||
+    !isRecord(value.settings) ||
+    (value.settings.webhookUrl !== null && typeof value.settings.webhookUrl !== "string") ||
+    !Number.isSafeInteger(value.templateCount) ||
+    (value.templateCount as number) < 0 ||
+    !Array.isArray(value.boards)
+  ) {
+    throw new HttpError(500, "INTERNAL_ERROR", "The Organisation admin response is invalid.");
+  }
+
+  const boards = await Promise.all(
+    value.boards.map(async (raw) => {
+      if (
+        !isRecord(raw) ||
+        typeof raw.boardId !== "string" ||
+        typeof raw.spaceId !== "string" ||
+        typeof raw.title !== "string" ||
+        typeof raw.archived !== "boolean"
+      ) {
+        throw new HttpError(500, "INTERNAL_ERROR", "The Organisation Space response is invalid.");
+      }
+      const boardId = requireBoardId(raw.boardId);
+      const owners = parseOrganisationAdminPeople(raw.owners);
+      const participants = parseOrganisationAdminPeople(raw.participants);
+      const viewer = await organisationAuth.issueViewerLaunchToken(
+        launch.organisationKey,
+        raw.spaceId,
+        boardId,
+      );
+      return {
+        id: boardId,
+        name: raw.archived ? `${raw.title} (archived)` : raw.title,
+        owners,
+        participants,
+        viewerUrl: `${origin}/viewer#launch=${encodeURIComponent(viewer.token)}`,
+      };
+    }),
+  );
+
+  return {
+    organisation: {
+      id: launch.organisationId,
+      name: launch.organisationKey,
+    },
+    settings: {
+      webhookUrl: value.settings.webhookUrl,
+      details: [
+        {
+          key: "organisationId",
+          label: "Organisation ID",
+          value: launch.organisationId,
+          description: "Stable SpaceScale identifier for this Organisation.",
+        },
+        { key: "spaceCount", label: "Spaces", value: boards.length },
+        { key: "templateCount", label: "Templates", value: value.templateCount as number },
+        {
+          key: "viewerValidity",
+          label: "View-only links",
+          value: "12 hours",
+          description: "Links are signed and do not grant editing access.",
+        },
+      ],
+    },
+    boards,
+  };
+}
+
+function parseOrganisationAdminPeople(
+  value: unknown,
+): Array<{ displayName: string; identifierHash: string }> {
+  if (!Array.isArray(value)) {
+    throw new HttpError(500, "INTERNAL_ERROR", "The Organisation member response is invalid.");
+  }
+  return value.map((person) => {
+    if (
+      !isRecord(person) ||
+      typeof person.displayName !== "string" ||
+      typeof person.identifierHash !== "string"
+    ) {
+      throw new HttpError(500, "INTERNAL_ERROR", "The Organisation member response is invalid.");
+    }
+    return {
+      displayName: person.displayName,
+      identifierHash: person.identifierHash,
+    };
+  });
 }
 
 type OrganisationLaunchResponse = {
@@ -459,6 +721,67 @@ function selectWebSocketProtocol(response: Response): Response {
   const socket = (response as Response & { webSocket?: WebSocket }).webSocket;
   if (socket !== undefined && socket !== null) init.webSocket = socket;
   return new Response(response.body, init);
+}
+
+type OrganisationApiRoute =
+  | {
+      kind: "export";
+      organisationKey: string;
+      boardId: string;
+      format: "canonical" | "attributed";
+    }
+  | { kind: "webhook-settings"; organisationKey: string };
+
+function matchOrganisationApiRoute(pathname: string): OrganisationApiRoute | null {
+  const match =
+    /^\/api\/v1\/organisations\/([^/]{1,720})(?:\/boards\/(b_[A-Za-z0-9_-]{22})\/(export(?:\.attributed)?\.json)|\/webhook)$/u.exec(
+      pathname,
+    );
+  if (match === null) return null;
+  let organisationKey: string;
+  try {
+    organisationKey = decodeURIComponent(match[1] ?? "");
+  } catch {
+    throw new HttpError(404, "NOT_FOUND", "The requested endpoint does not exist.");
+  }
+  const boardId = match[2];
+  const exportName = match[3];
+  if (boardId !== undefined && exportName !== undefined) {
+    return {
+      kind: "export",
+      organisationKey,
+      boardId: requireBoardId(boardId),
+      format: exportName === "export.attributed.json" ? "attributed" : "canonical",
+    };
+  }
+  return { kind: "webhook-settings", organisationKey };
+}
+
+async function authenticateOrganisationApiRequest(
+  request: Request,
+  env: Env,
+): Promise<VerifiedOrganisationLaunch> {
+  const authorization = request.headers.get("authorization");
+  const match = /^Bearer ([A-Za-z0-9._-]{10,8192})$/u.exec(authorization ?? "");
+  if (match === null) {
+    throw new HttpError(401, "AUTH_REQUIRED", "A signed organisation assertion is required.");
+  }
+  const launch = await new OrganisationAuthService(env).verifyLaunchToken(match[1]);
+  if (launch.role !== "owner") {
+    throw new HttpError(403, "FORBIDDEN", "An organisation owner assertion is required.");
+  }
+  return launch;
+}
+
+function boardNotFoundError(): HttpError {
+  return new HttpError(404, "NOT_FOUND", "Board not found.");
+}
+
+function parseOrganisationSettingsResponse(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new HttpError(500, "INTERNAL_ERROR", "The organisation settings response is invalid.");
+  }
+  return value;
 }
 
 function methodNotAllowed(allow: string): Response {

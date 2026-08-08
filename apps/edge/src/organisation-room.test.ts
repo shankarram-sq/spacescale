@@ -2,6 +2,7 @@
 
 import { evictDurableObject, reset, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { DEFAULT_BOARD_FEATURES } from "@collab/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { MAX_ORGANISATION_TEMPLATE_ITEMS } from "./organisation-room";
 import type { Env } from "./types";
@@ -80,7 +81,7 @@ describe("OrganisationRoom templates", () => {
     expect(await listed.json()).toEqual([created]);
     const state = await runInDurableObject(stub, (_instance, durableState) => ({
       migrations: durableState.storage.sql
-        .exec<{ version: number }>("SELECT version FROM _sql_schema_migrations")
+        .exec<{ version: number }>("SELECT version FROM _sql_schema_migrations ORDER BY version")
         .toArray()
         .map(({ version }) => version),
       organisationId: durableState.storage.sql
@@ -90,7 +91,7 @@ describe("OrganisationRoom templates", () => {
         .exec<{ count: number }>("SELECT COUNT(*) AS count FROM templates")
         .one().count,
     }));
-    expect(state).toEqual({ migrations: [1], organisationId, templates: 1 });
+    expect(state).toEqual({ migrations: [1, 2], organisationId, templates: 1 });
 
     const deleted = await stub.fetch(request(`${collectionPath}/${created.id}`, "DELETE"));
     expect(deleted.status).toBe(204);
@@ -179,5 +180,132 @@ describe("OrganisationRoom templates", () => {
     );
     expect(isolated.status).toBe(200);
     expect(await isolated.json()).toEqual([]);
+  });
+});
+
+describe("OrganisationRoom webhook settings", () => {
+  it("stores one canonical public HTTPS webhook per organisation and supports clearing it", async () => {
+    (env as unknown as Env).WEBHOOK_ALLOWED_ORIGINS = "https://partner.example";
+    const stub = (env as unknown as Env).ORGANISATION_ROOMS.getByName(organisationId);
+    const path = `/__internal/organisations/${organisationId}/settings`;
+
+    const initial = await stub.fetch(request(path));
+    expect(await initial.json()).toEqual({ webhookUrl: null, updatedBy: null, updatedAt: null });
+
+    const configured = await stub.fetch(
+      request(path, "PATCH", {
+        webhookUrl: "https://partner.example/hooks/space-scale?tenant=42",
+        updatedBy: actorId,
+      }),
+    );
+    expect(configured.status, await configured.clone().text()).toBe(200);
+    expect(await configured.json()).toEqual({
+      webhookUrl: "https://partner.example/hooks/space-scale?tenant=42",
+      updatedBy: actorId,
+      updatedAt: expect.any(Number),
+    });
+
+    await evictDurableObject(stub);
+    expect(await (await stub.fetch(request(path))).json()).toMatchObject({
+      webhookUrl: "https://partner.example/hooks/space-scale?tenant=42",
+      updatedBy: actorId,
+    });
+
+    const cleared = await stub.fetch(
+      request(path, "PATCH", { webhookUrl: null, updatedBy: actorId }),
+    );
+    expect(cleared.status).toBe(200);
+    expect(await cleared.json()).toMatchObject({ webhookUrl: null, updatedBy: actorId });
+  });
+
+  it("rejects local, IP-literal, insecure, credentialed, fragmented, and malformed URLs", async () => {
+    const stub = (env as unknown as Env).ORGANISATION_ROOMS.getByName(organisationId);
+    const path = `/__internal/organisations/${organisationId}/settings`;
+    const invalid = [
+      "http://partner.example/hook",
+      "https://localhost/hook",
+      "https://127.0.0.1/hook",
+      "https://[::1]/hook",
+      "https://service.internal/hook",
+      "https://localhost./hook",
+      "https://service.internal./hook",
+      "https://user:password@partner.example/hook",
+      "https://partner.example:8443/hook",
+      "https://partner.example/hook#fragment",
+      "not a URL",
+    ];
+    for (const webhookUrl of invalid) {
+      const response = await stub.fetch(request(path, "PATCH", { webhookUrl, updatedBy: actorId }));
+      expect(response.status, webhookUrl).toBe(400);
+    }
+  });
+});
+
+describe("OrganisationRoom Space registry", () => {
+  it("upserts owner/participant summaries and returns all Spaces to the admin view", async () => {
+    const stub = (env as unknown as Env).ORGANISATION_ROOMS.getByName(organisationId);
+    const boardId = `b_${"D".repeat(22)}`;
+    const coOwnerId = `a_${"E".repeat(22)}`;
+    const participantId = `a_${"F".repeat(22)}`;
+    const path = `/__internal/organisations/${organisationId}/spaces/${boardId}`;
+
+    const stored = await stub.fetch(
+      request(path, "PUT", {
+        spaceId: "geometry-period-2",
+        title: "Geometry period 2",
+        archived: false,
+        members: [
+          { id: actorId, displayName: "Coach Mira", role: "owner" },
+          { id: coOwnerId, displayName: "Coach Arun", role: "owner" },
+          { id: participantId, displayName: "Student A", role: "editor" },
+        ],
+        settings: {
+          accessMode: "private",
+          drawingPolicy: "editors_enabled",
+          features: DEFAULT_BOARD_FEATURES,
+          aclVersion: 4,
+        },
+      }),
+    );
+    expect(stored.status, await stored.clone().text()).toBe(200);
+    expect(await stored.json()).toMatchObject({
+      boardId,
+      spaceId: "geometry-period-2",
+      title: "Geometry period 2",
+      archived: false,
+      owners: [
+        { id: actorId, displayName: "Coach Mira", role: "owner", identifierHash: actorId },
+        { id: coOwnerId, displayName: "Coach Arun", role: "owner", identifierHash: coOwnerId },
+      ],
+      participants: [
+        {
+          id: participantId,
+          displayName: "Student A",
+          role: "editor",
+          identifierHash: participantId,
+        },
+      ],
+      settings: {
+        accessMode: "private",
+        drawingPolicy: "editors_enabled",
+        aclVersion: 4,
+      },
+      updatedAt: expect.any(Number),
+    });
+
+    await evictDurableObject(stub);
+    const admin = await stub.fetch(request(`/__internal/organisations/${organisationId}/admin`));
+    expect(admin.status).toBe(200);
+    expect(await admin.json()).toMatchObject({
+      settings: { webhookUrl: null },
+      templateCount: 0,
+      boards: [
+        {
+          boardId,
+          owners: [{ identifierHash: actorId }, { identifierHash: coOwnerId }],
+          participants: [{ identifierHash: participantId }],
+        },
+      ],
+    });
   });
 });

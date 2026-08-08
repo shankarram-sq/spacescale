@@ -110,7 +110,17 @@ export interface VerifiedOrganisationLaunch {
 
 interface ParsedOrganisationKeys {
   derivationKey: string;
+  currentSigningKey: OrganisationSigningKey;
   signingKeysById: ReadonlyMap<string, string>;
+}
+
+export interface OrganisationWebhookSignature {
+  keyId: string;
+  signature: string;
+}
+export interface OrganisationViewerLaunch {
+  token: string;
+  expiresAtMs: number;
 }
 
 export class OrganisationAuthService {
@@ -225,7 +235,75 @@ export class OrganisationAuthService {
       features: payload.features,
     };
   }
+  async issueViewerLaunchToken(
+    organisationKey: string,
+    spaceId: string,
+    boardId: string,
+    now = Date.now(),
+  ): Promise<OrganisationViewerLaunch> {
+    const keys = this.#organisations.get(organisationKey);
+    const normalizedSpaceId = normalizeStableIdentifier(
+      spaceId,
+      MAX_SPACE_ID_CODE_POINTS,
+      configurationError,
+    );
+    if (
+      keys === undefined ||
+      normalizedSpaceId !== spaceId ||
+      !BOARD_OPAQUE_ID_PATTERN.test(boardId)
+    ) {
+      throw configurationError();
+    }
+    const derivedBoardId = await deriveOpaqueId(
+      "b_",
+      keys.derivationKey,
+      `organisation-board:v1\u0000${organisationKey}\u0000${spaceId}`,
+    );
+    if (derivedBoardId !== boardId) throw configurationError();
+    const issuedAt = Math.floor(now / 1_000);
+    const expiresAt = issuedAt + 12 * 60 * 60;
+    const token = await signOrganisationLaunchToken(
+      {
+        v: 1,
+        aud: this.#audience,
+        organisation_id: organisationKey,
+        space_id: spaceId,
+        kid: keys.currentSigningKey.kid,
+        role: "viewer",
+        display_name: "Space viewer",
+        participant_id: `spacescale-viewer:${boardId}`,
+        iat: issuedAt,
+        exp: expiresAt,
+      },
+      keys.currentSigningKey.key,
+    );
+    return { token, expiresAtMs: expiresAt * 1_000 };
+  }
+
+  async signWebhookPayload(
+    organisationId: string,
+    timestampSeconds: number,
+    body: string,
+  ): Promise<OrganisationWebhookSignature> {
+    if (!ORGANISATION_OPAQUE_ID_PATTERN.test(organisationId)) throw configurationError();
+    if (!Number.isSafeInteger(timestampSeconds) || timestampSeconds < 0) throw configurationError();
+    for (const [organisationKey, keys] of this.#organisations) {
+      const candidateId = await deriveOpaqueId(
+        "o_",
+        keys.derivationKey,
+        `organisation:v1\u0000${organisationKey}`,
+      );
+      if (candidateId !== organisationId) continue;
+      const signed = `v1.${timestampSeconds}.${body}`;
+      return {
+        keyId: keys.currentSigningKey.kid,
+        signature: bytesToBase64Url(await hmacSha256(keys.currentSigningKey.key, signed)),
+      };
+    }
+    throw configurationError();
+  }
 }
+const BOARD_OPAQUE_ID_PATTERN = /^b_[A-Za-z0-9_-]{22}$/u;
 
 export async function signOrganisationLaunchToken(
   payload: OrganisationLaunchPayload,
@@ -282,10 +360,16 @@ function parseSigningKeyRegistry(
       signingKeysById.set(entry.kid, entry.key);
       recordUniqueSecret(keyOwners, entry.key, `${organisationKey}:${entry.kid}`);
     }
-    organisations.set(organisationKey, { derivationKey, signingKeysById });
+    organisations.set(organisationKey, {
+      derivationKey,
+      currentSigningKey: current,
+      signingKeysById,
+    });
   }
   return organisations;
 }
+
+const ORGANISATION_OPAQUE_ID_PATTERN = /^o_[A-Za-z0-9_-]{22}$/u;
 
 function parseSigningKey(value: unknown): OrganisationSigningKey {
   if (!hasExactKeys(value, SIGNING_KEY_KEYS)) throw configurationError();

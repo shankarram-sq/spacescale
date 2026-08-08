@@ -56,10 +56,13 @@ import {
 import { prepareOwnedItemOperation } from "./item-ownership";
 import { safeLog } from "./logging";
 import { applyMigrations } from "./migrations";
+import { OrganisationAuthService } from "./organisation-auth";
 import {
   MAX_ORGANISATION_TEMPLATE_BYTES,
+  normalizeOrganisationWebhookUrl,
   ORGANISATION_ID_PATTERN,
   type OrganisationRoom,
+  type OrganisationWebhookSettings,
 } from "./organisation-room";
 import { TokenBucket } from "./rate-limit";
 import {
@@ -113,6 +116,7 @@ import {
   requireOpaqueId,
   requireSafeInteger,
 } from "./validation";
+import { deliverOrganisationWebhook } from "./webhook-delivery";
 
 const LIMITS = {
   maxConnections: 50,
@@ -152,6 +156,8 @@ const MAX_RETENTION_DELETES_PER_ALARM = 20;
 const INTERNAL_INIT_PATH = "/__internal/initialize";
 const INTERNAL_CLASSROOM_LAUNCH_PATH = "/__internal/classroom-launch";
 const INTERNAL_ORGANISATION_LAUNCH_PATH = "/__internal/organisation-launch";
+const INTERNAL_ORGANISATION_EXPORT_PATH = "/__internal/organisation-export";
+const WEBHOOK_TIMEOUT_MS = 10_000;
 const TELEMETRY_AGGREGATE_INTERVAL_MS = 60_000;
 // Start graceful shedding before the hard 200 frame/s room ceiling so a
 // 20-drawer burst cannot monopolize the Durable Object input queue. The
@@ -231,7 +237,12 @@ type BoardAssetRow = {
   committed_at_ms: number | null;
 };
 
-type ExportActor = { id: string; displayName: string };
+type ExportActor = {
+  id: string;
+  displayName: string;
+  participantHash: string;
+  participantId?: string | null;
+};
 type SnapshotAttributionEntry = { itemId: string; attribution: ItemAttributionState };
 
 export class BoardRoom extends DurableObject<Env> {
@@ -248,6 +259,7 @@ export class BoardRoom extends DurableObject<Env> {
   readonly #pendingQuotaDays = new Set<string>();
   #quotaEmissionScheduled = false;
   #assetUploadTail = Promise.resolve();
+  #webhookDeliveryTail = Promise.resolve();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -277,6 +289,16 @@ export class BoardRoom extends DurableObject<Env> {
     let internalError = false;
     try {
       response = await this.route(request, requestId);
+      if (response.ok && request.method !== "GET" && request.method !== "HEAD") {
+        try {
+          await this.syncOrganisationAdminSummary(new URL(request.url).origin, requestId);
+        } catch (error) {
+          this.log("warn", "organisation.admin_summary_sync_failed", {
+            requestId,
+            code: error instanceof HttpError ? error.code : "INTERNAL_ERROR",
+          });
+        }
+      }
     } catch (error) {
       const mapped = mapRoomError(error);
       internalError = mapped.code === "INTERNAL_ERROR";
@@ -314,6 +336,11 @@ export class BoardRoom extends DurableObject<Env> {
     if (url.pathname === INTERNAL_ORGANISATION_LAUNCH_PATH) {
       requireMethod(request, "POST");
       return this.classroomLaunch(request, actor, true);
+    }
+
+    if (url.pathname === INTERNAL_ORGANISATION_EXPORT_PATH) {
+      requireMethod(request, "POST");
+      return this.exportForOrganisation(request);
     }
 
     const board = this.requireBoard();
@@ -358,6 +385,19 @@ export class BoardRoom extends DurableObject<Env> {
         return this.createOrganisationTemplate(request, actor, board, url.origin);
       }
       return methodNotAllowed("GET, POST");
+    }
+    if (suffix === "/organisation/settings") {
+      if (request.method === "GET") {
+        return this.getOrganisationSettings(actor, board, url.origin);
+      }
+      if (request.method === "PATCH") {
+        return this.patchOrganisationSettings(request, actor, board, url.origin);
+      }
+      return methodNotAllowed("GET, PATCH");
+    }
+    if (suffix === "/organisation/webhook") {
+      requireMethod(request, "POST");
+      return this.sendOrganisationWebhook(request, actor, board, url.origin);
     }
     const organisationTemplateMatch = /^\/organisation\/templates\/(tpl_[A-Za-z0-9_-]{22})$/u.exec(
       suffix,
@@ -544,6 +584,8 @@ export class BoardRoom extends DurableObject<Env> {
         "ownerRecoveryHash",
         "importSnapshot",
         "organisationId",
+        "spaceId",
+        "participantId",
         "features",
       ],
       [
@@ -583,6 +625,23 @@ export class BoardRoom extends DurableObject<Env> {
       throw new HttpError(400, "BAD_REQUEST", "The organisation ID is required.");
     }
     const organisationId = typeof body.organisationId === "string" ? body.organisationId : null;
+    const organisationSpaceId =
+      organisationId === null
+        ? null
+        : typeof body.spaceId === "string" &&
+            body.spaceId === body.spaceId.normalize("NFC").trim() &&
+            [...body.spaceId].length >= 1 &&
+            [...body.spaceId].length <= 120 &&
+            !/[\p{Cc}\p{Cs}]/u.test(body.spaceId)
+          ? body.spaceId
+          : null;
+    if (requireOrganisation && organisationSpaceId === null) {
+      throw new HttpError(400, "BAD_REQUEST", "The Organisation Space ID is required.");
+    }
+    const participantId = optionalExternalParticipantId(body.participantId);
+    if (requireOrganisation && participantId === null) {
+      throw new HttpError(400, "BAD_REQUEST", "The organisation participant ID is required.");
+    }
     const recoveryHash =
       typeof body.ownerRecoveryHash === "string" ? base64UrlToBytes(body.ownerRecoveryHash) : null;
     if (recoveryHash === null || recoveryHash.byteLength !== 32) {
@@ -616,8 +675,8 @@ export class BoardRoom extends DurableObject<Env> {
              snapshot_live_item_count,
              snapshot_live_item_bytes, images_enabled, features_json,
              classroom_mode, organisation_mode,
-             organisation_id, created_at_ms, updated_at_ms
-           ) VALUES (1, ?, ?, 'private', 'editors_enabled', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+             organisation_id, organisation_space_id, created_at_ms, updated_at_ms
+           ) VALUES (1, ?, ?, 'private', 'editors_enabled', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
           body.publicId,
           title,
           placeholderOwnerActorId,
@@ -631,6 +690,7 @@ export class BoardRoom extends DurableObject<Env> {
           JSON.stringify(launchFeatures),
           organisationId === null ? 0 : 1,
           organisationId,
+          organisationSpaceId,
           now,
           now,
         );
@@ -646,11 +706,22 @@ export class BoardRoom extends DurableObject<Env> {
         board.public_id !== body.publicId ||
         board.classroom_mode !== 1 ||
         board.organisation_mode !== (organisationId === null ? 0 : 1) ||
-        board.organisation_id !== organisationId
+        board.organisation_id !== organisationId ||
+        (board.organisation_space_id !== null &&
+          board.organisation_space_id !== organisationSpaceId)
       ) {
         throw new HttpError(409, "CONFLICT", "The board was already initialized.");
       }
       // Primary custody must move through the explicit ownership-transfer path.
+      if (organisationSpaceId !== null && board.organisation_space_id === null) {
+        this.#sql.exec(
+          "UPDATE board SET organisation_space_id = ?, updated_at_ms = ? WHERE singleton = 1",
+          organisationSpaceId,
+          now,
+        );
+        board = this.requireBoard();
+        launchApplied = true;
+      }
       // A signed launch may update this actor's name, but cannot strand custody.
       const effectiveRole: BoardRole = actor.actorId === board.owner_actor_id ? "owner" : role;
 
@@ -670,16 +741,19 @@ export class BoardRoom extends DurableObject<Env> {
         if (member === undefined) this.ensureMemberCapacity();
         this.#sql.exec(
           `INSERT INTO members(
-             actor_id, role, display_name, created_at_ms, updated_at_ms, revoked_at_ms
-           ) VALUES (?, ?, ?, ?, ?, NULL)
+             actor_id, role, display_name, external_participant_id,
+             created_at_ms, updated_at_ms, revoked_at_ms
+           ) VALUES (?, ?, ?, ?, ?, ?, NULL)
            ON CONFLICT(actor_id) DO UPDATE SET
              role = excluded.role,
              display_name = excluded.display_name,
+             external_participant_id = excluded.external_participant_id,
              updated_at_ms = excluded.updated_at_ms,
              revoked_at_ms = NULL`,
           actor.actorId,
           effectiveRole,
           displayName,
+          participantId,
           now,
           launchIssuedAtMs,
         );
@@ -844,6 +918,234 @@ export class BoardRoom extends DurableObject<Env> {
     );
   }
 
+  private async getOrganisationSettings(
+    actor: InternalActorContext,
+    board: BoardRow,
+    origin: string,
+  ): Promise<Response> {
+    this.requireOwner(board, actor.actorId);
+    const organisationId = this.organisationIdForBoard(board);
+    if (organisationId === null) {
+      return Response.json({
+        organisationId: null,
+        webhookUrl: null,
+        updatedBy: null,
+        updatedAt: null,
+      });
+    }
+    const settings = await this.readOrganisationWebhookSettings(
+      organisationId,
+      origin,
+      actor.requestId,
+    );
+    return Response.json({ organisationId, ...settings });
+  }
+
+  private async patchOrganisationSettings(
+    request: Request,
+    actor: InternalActorContext,
+    board: BoardRow,
+    origin: string,
+  ): Promise<Response> {
+    this.requireOwner(board, actor.actorId);
+    const organisationId = this.organisationIdForBoard(board);
+    if (organisationId === null) {
+      throw new HttpError(403, "FORBIDDEN", "This board is not attached to an organisation.");
+    }
+    const body = await readJsonBody(request, 8 * 1_024);
+    assertExactKeys(body, ["webhookUrl"], ["webhookUrl"]);
+    const webhookUrl = normalizeOrganisationWebhookUrl(body.webhookUrl);
+    const response = await this.organisationRoomFetch(
+      organisationId,
+      new Request(`${origin}/__internal/organisations/${organisationId}/settings`, {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          [INTERNAL_REQUEST_ID_HEADER]: actor.requestId,
+        },
+        body: JSON.stringify({ webhookUrl, updatedBy: actor.actorId }),
+      }),
+    );
+    if (!response.ok) return response;
+    return Response.json({
+      organisationId,
+      ...parseOrganisationWebhookSettings(await response.json()),
+    });
+  }
+
+  private async readOrganisationWebhookSettings(
+    organisationId: string,
+    origin: string,
+    requestId: string,
+  ): Promise<OrganisationWebhookSettings> {
+    const response = await this.organisationRoomFetch(
+      organisationId,
+      new Request(`${origin}/__internal/organisations/${organisationId}/settings`, {
+        method: "GET",
+        headers: { [INTERNAL_REQUEST_ID_HEADER]: requestId },
+      }),
+    );
+    if (!response.ok) {
+      throw new HttpError(
+        response.status >= 500 ? 503 : response.status,
+        response.status >= 500 ? "TEMPORARILY_UNAVAILABLE" : "BAD_REQUEST",
+        "Organisation webhook settings are temporarily unavailable.",
+      );
+    }
+    return parseOrganisationWebhookSettings(await response.json());
+  }
+
+  private async sendOrganisationWebhook(
+    request: Request,
+    actor: InternalActorContext,
+    board: BoardRow,
+    origin: string,
+  ): Promise<Response> {
+    this.requireOwner(board, actor.actorId);
+    const idempotencyKey = requireIdempotencyKey(request);
+    const organisationId = this.organisationIdForBoard(board);
+    if (organisationId === null) {
+      throw new HttpError(403, "FORBIDDEN", "This board is not attached to an organisation.");
+    }
+    return this.withWebhookDeliveryLock(async () => {
+      const requestHash = await sha256Base64Url(
+        `organisation-webhook:v1:${organisationId}:${board.public_id}`,
+      );
+      const existing = this.readHttpReceipt(
+        actor.actorId,
+        idempotencyKey,
+        "organisation.webhook.send",
+      );
+      if (existing !== null) {
+        this.checkReceiptHash(existing.request_hash, requestHash);
+        const delivery = parseWebhookDeliveryReceipt(JSON.parse(existing.response_json));
+        return Response.json({ delivery, idempotentReplay: true });
+      }
+
+      const settings = await this.readOrganisationWebhookSettings(
+        organisationId,
+        origin,
+        actor.requestId,
+      );
+      const webhookUrl = normalizeOrganisationWebhookUrl(settings.webhookUrl);
+      if (webhookUrl === null) {
+        throw new HttpError(
+          409,
+          "WEBHOOK_NOT_CONFIGURED",
+          "The organisation webhook URL is not configured.",
+        );
+      }
+      const currentBoard = readBoard(this.#sql) ?? board;
+      const snapshot = captureSnapshot(this.#sql, currentBoard);
+      const attributedExport = this.attributedExportObject(currentBoard, snapshot, true);
+      const deliveryId = `whd_${bytesToBase64Url(
+        (
+          await hmacSha256(
+            this.env.SESSION_SIGNING_KEY_CURRENT,
+            `organisation-webhook-delivery:v1:${organisationId}:${currentBoard.public_id}:${actor.actorId}:${idempotencyKey}`,
+          )
+        ).slice(0, 16),
+      )}`;
+      const createdAt = Date.now();
+      const event = "board.exported" as const;
+      const payload = JSON.stringify({
+        event,
+        version: 1,
+        deliveryId,
+        createdAt,
+        organisation: { id: organisationId },
+        board: { id: currentBoard.public_id, title: currentBoard.title, seq: snapshot.seq },
+        export: attributedExport,
+      });
+      const timestampSeconds = Math.floor(createdAt / 1_000);
+      const signature = await new OrganisationAuthService(this.env).signWebhookPayload(
+        organisationId,
+        timestampSeconds,
+        payload,
+      );
+      const responseStatus = await deliverOrganisationWebhook({
+        url: webhookUrl,
+        body: payload,
+        timeoutMs: WEBHOOK_TIMEOUT_MS,
+        allowedOrigins: this.env.WEBHOOK_ALLOWED_ORIGINS,
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "user-agent": "SpaceScale-Webhook/1.0",
+          "x-spacescale-webhook-id": deliveryId,
+          "x-spacescale-webhook-timestamp": String(timestampSeconds),
+          "x-spacescale-webhook-key-id": signature.keyId,
+          "x-spacescale-webhook-signature": `v1=${signature.signature}`,
+        },
+      });
+      const delivery = { id: deliveryId, event, createdAt, responseStatus };
+      this.writeHttpReceipt(
+        actor.actorId,
+        idempotencyKey,
+        "organisation.webhook.send",
+        requestHash,
+        delivery,
+        200,
+      );
+      return Response.json({ delivery, idempotentReplay: false });
+    });
+  }
+
+  private async syncOrganisationAdminSummary(origin: string, requestId: string): Promise<void> {
+    const board = readBoard(this.#sql);
+    if (board === null) return;
+    const organisationId = this.organisationIdForBoard(board);
+    if (organisationId === null || board.organisation_space_id === null) return;
+
+    const members = this.#sql
+      .exec<{
+        actor_id: string;
+        display_name: string;
+        role: BoardRole;
+      }>(
+        `SELECT actor_id, display_name, role FROM members
+         WHERE revoked_at_ms IS NULL ORDER BY role DESC, actor_id`,
+      )
+      .toArray()
+      .map((member) => ({
+        id: member.actor_id,
+        displayName: member.display_name,
+        role: member.role,
+      }));
+
+    const response = await this.organisationRoomFetch(
+      organisationId,
+      new Request(
+        `${origin}/__internal/organisations/${organisationId}/spaces/${board.public_id}`,
+        {
+          method: "PUT",
+          headers: {
+            "content-type": "application/json",
+            [INTERNAL_REQUEST_ID_HEADER]: requestId,
+          },
+          body: JSON.stringify({
+            spaceId: board.organisation_space_id,
+            title: board.title,
+            archived: board.archived_at_ms !== null,
+            members,
+            settings: {
+              accessMode: board.access_mode,
+              drawingPolicy: board.drawing_policy,
+              features: featuresForBoard(board),
+              aclVersion: board.acl_version,
+            },
+          }),
+        },
+      ),
+    );
+    if (!response.ok) {
+      throw new HttpError(
+        503,
+        "TEMPORARILY_UNAVAILABLE",
+        "The Organisation admin summary could not be synchronized.",
+      );
+    }
+  }
+
   private organisationIdForBoard(board: BoardRow): string | null {
     if (board.organisation_mode === 0 && board.organisation_id === null) return null;
     if (
@@ -866,7 +1168,7 @@ export class BoardRoom extends DurableObject<Env> {
       throw new HttpError(
         503,
         "TEMPORARILY_UNAVAILABLE",
-        "Organisation templates are temporarily unavailable.",
+        "Organisation services are temporarily unavailable.",
       );
     }
     return namespace.getByName(organisationId).fetch(request);
@@ -930,7 +1232,11 @@ export class BoardRoom extends DurableObject<Env> {
   private exportActorDirectory(actorIds: ReadonlySet<string>): Map<string, ExportActor> {
     const directory = new Map<string, ExportActor>();
     for (const actorId of actorIds) {
-      directory.set(actorId, { id: actorId, displayName: fallbackDisplayName(actorId) });
+      directory.set(actorId, {
+        id: actorId,
+        displayName: fallbackDisplayName(actorId),
+        participantHash: actorId,
+      });
     }
     for (const member of this.#sql
       .exec<{ actor_id: string; display_name: string }>(
@@ -941,6 +1247,7 @@ export class BoardRoom extends DurableObject<Env> {
         directory.set(member.actor_id, {
           id: member.actor_id,
           displayName: member.display_name,
+          participantHash: member.actor_id,
         });
       }
     }
@@ -1647,6 +1954,21 @@ export class BoardRoom extends DurableObject<Env> {
     }
   }
 
+  private async withWebhookDeliveryLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.#webhookDeliveryTail;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.#webhookDeliveryTail = previous.then(() => gate);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
   private async archiveBoard(request: Request, actor: InternalActorContext): Promise<Response> {
     const body = await readJsonBody(request, 4 * 1_024);
     assertExactKeys(body, ["expectedAclVersion"], ["expectedAclVersion"]);
@@ -1703,7 +2025,7 @@ export class BoardRoom extends DurableObject<Env> {
     const now = Date.now();
 
     if (body.type === "invite") {
-      let role!: "viewer" | "editor";
+      let role!: BoardRole;
       let aclVersion = 0;
       this.ctx.storage.transactionSync(() => {
         const board = this.requireBoard();
@@ -1726,7 +2048,7 @@ export class BoardRoom extends DurableObject<Env> {
         const invitation = this.#sql
           .exec<{
             invitation_id: string;
-            role: "viewer" | "editor";
+            role: BoardRole;
             max_uses: number;
             use_count: number;
             expires_at_ms: number;
@@ -1997,7 +2319,7 @@ export class BoardRoom extends DurableObject<Env> {
       ["role", "label", "maxUses", "expiresAtMs"],
       ["role", "maxUses", "expiresAtMs"],
     );
-    if (body.role !== "viewer" && body.role !== "editor") {
+    if (body.role !== "viewer" && body.role !== "editor" && body.role !== "owner") {
       throw new HttpError(400, "BAD_REQUEST", "The invitation role is invalid.");
     }
     const label = parseOptionalLabel(body.label);
@@ -2580,6 +2902,35 @@ export class BoardRoom extends DurableObject<Env> {
     const board = readBoard(this.#sql) ?? capturedBoard;
     this.requireView(board, actor.actorId);
     const snapshot = captureSnapshot(this.#sql, board);
+    return this.canonicalExportResponse(board, snapshot);
+  }
+
+  private async exportForOrganisation(request: Request): Promise<Response> {
+    const body = await readJsonBody(request, 4 * 1_024);
+    assertExactKeys(body, ["organisationId", "format"], ["organisationId", "format"]);
+    if (
+      typeof body.organisationId !== "string" ||
+      !ORGANISATION_ID_PATTERN.test(body.organisationId)
+    ) {
+      throw new HttpError(400, "BAD_REQUEST", "The organisation ID is invalid.");
+    }
+    if (body.format !== "canonical" && body.format !== "attributed") {
+      throw new HttpError(400, "BAD_REQUEST", "The export format is invalid.");
+    }
+    const board = this.requireBoard();
+    if (board.organisation_mode !== 1 || board.organisation_id !== body.organisationId) {
+      throw boardNotFoundError();
+    }
+    const snapshot = captureSnapshot(this.#sql, board);
+    return body.format === "canonical"
+      ? this.canonicalExportResponse(board, snapshot)
+      : this.attributedExportResponse(board, snapshot, true);
+  }
+
+  private async canonicalExportResponse(
+    board: BoardRow,
+    snapshot: CanonicalSnapshot,
+  ): Promise<Response> {
     const body = serializeSnapshot(snapshot);
     const etag = `"${await sha256Base64Url(body)}"`;
     return new Response(body, {
@@ -2600,45 +2951,96 @@ export class BoardRoom extends DurableObject<Env> {
     const board = readBoard(this.#sql) ?? capturedBoard;
     this.requireOwner(board, actor.actorId);
     const snapshot = captureSnapshot(this.#sql, board);
+    return this.attributedExportResponse(board, snapshot, false);
+  }
+
+  private async attributedExportResponse(
+    board: BoardRow,
+    snapshot: CanonicalSnapshot,
+    includeExternalParticipantIds: boolean,
+  ): Promise<Response> {
+    const exportObject = this.attributedExportObject(
+      board,
+      snapshot,
+      includeExternalParticipantIds,
+    );
+    const body = JSON.stringify(exportObject);
+    const etag = `"${await sha256Base64Url(body)}"`;
+    return new Response(body, {
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Disposition": `attachment; filename="whiteboard-${board.public_id}-attributed.json"`,
+        "Cache-Control": "no-store",
+        "X-Whiteboard-Seq": String(snapshot.seq),
+        ETag: etag,
+      },
+    });
+  }
+
+  private attributedExportObject(
+    board: BoardRow,
+    snapshot: CanonicalSnapshot,
+    includeExternalParticipantIds: boolean,
+  ) {
     const itemAttribution = this.readItemAttributionMap(snapshot.items);
     const referencedActorIds = new Set<string>();
     for (const item of snapshot.items) {
       referencedActorIds.add(item.createdBy);
       collectAttributionActorIds(itemAttribution.get(item.id), referencedActorIds);
     }
-    const directory = this.exportActorDirectory(referencedActorIds);
-    const actorRef = (actorId: string | null): ExportActor | null =>
-      actorId === null
-        ? null
-        : (directory.get(actorId) ?? { id: actorId, displayName: fallbackDisplayName(actorId) });
-    const participants: Array<{
-      id: string;
-      displayName: string;
-      role: BoardRole | null;
-      status: "active" | "revoked" | "referenced";
-    }> = this.#sql
+    const memberRows = this.#sql
       .exec<{
         actor_id: string;
         display_name: string;
+        external_participant_id: string | null;
         role: BoardRole;
         revoked_at_ms: number | null;
       }>(
-        `SELECT actor_id, display_name, role, revoked_at_ms
+        `SELECT actor_id, display_name, external_participant_id, role, revoked_at_ms
          FROM members ORDER BY created_at_ms, actor_id`,
       )
-      .toArray()
-      .map((member) => ({
-        id: member.actor_id,
-        displayName: member.display_name,
-        role: member.role,
-        status: member.revoked_at_ms === null ? "active" : "revoked",
-      }));
+      .toArray();
+    const participantIds = new Map(
+      memberRows.map((member) => [member.actor_id, member.external_participant_id]),
+    );
+    const directory = this.exportActorDirectory(referencedActorIds);
+    const actorRef = (actorId: string | null): ExportActor | null => {
+      if (actorId === null) return null;
+      const reference = directory.get(actorId) ?? {
+        id: actorId,
+        displayName: fallbackDisplayName(actorId),
+        participantHash: actorId,
+      };
+      return includeExternalParticipantIds
+        ? { ...reference, participantId: participantIds.get(actorId) ?? null }
+        : reference;
+    };
+    const participants: Array<{
+      id: string;
+      displayName: string;
+      participantHash: string;
+      participantId?: string | null;
+      role: BoardRole | null;
+      status: "active" | "revoked" | "referenced";
+    }> = memberRows.map((member) => ({
+      id: member.actor_id,
+      displayName: member.display_name,
+      participantHash: member.actor_id,
+      ...(includeExternalParticipantIds ? { participantId: member.external_participant_id } : {}),
+      role: member.role,
+      status: member.revoked_at_ms === null ? "active" : "revoked",
+    }));
     const memberIds = new Set(participants.map((participant) => participant.id));
     for (const actorId of [...referencedActorIds].sort()) {
       if (memberIds.has(actorId)) continue;
       const reference = actorRef(actorId);
       if (reference === null) continue;
-      participants.push({ ...reference, role: null, status: "referenced" });
+      participants.push({
+        ...reference,
+        ...(includeExternalParticipantIds ? { participantId: null } : {}),
+        role: null,
+        status: "referenced",
+      });
     }
     const objects = snapshot.items.map((item) => {
       const attribution = itemAttribution.get(item.id) ?? this.fallbackItemAttribution(item);
@@ -2653,7 +3055,7 @@ export class BoardRoom extends DurableObject<Env> {
         content: exportItemContent(item, attribution, actorRef),
       };
     });
-    const body = JSON.stringify({
+    return {
       format: "cf-whiteboard-attributed-json",
       version: 1,
       board: {
@@ -2664,17 +3066,7 @@ export class BoardRoom extends DurableObject<Env> {
       },
       participants,
       objects,
-    });
-    const etag = `"${await sha256Base64Url(body)}"`;
-    return new Response(body, {
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        "Content-Disposition": `attachment; filename="whiteboard-${board.public_id}-attributed.json"`,
-        "Cache-Control": "no-store",
-        "X-Whiteboard-Seq": String(snapshot.seq),
-        ETag: etag,
-      },
-    });
+    };
   }
 
   private async exportSvg(actor: InternalActorContext, capturedBoard: BoardRow): Promise<Response> {
@@ -5599,7 +5991,7 @@ function featureForKind(kind: string): keyof BoardFeatures | null {
 
 interface InvitationMetadata {
   id: string;
-  role: "viewer" | "editor";
+  role: BoardRole;
   label: string | null;
   maxUses: number;
   expiresAt: number;
@@ -5703,6 +6095,71 @@ function parseOptionalLabel(value: unknown): string | null {
     throw new HttpError(400, "BAD_REQUEST", "The label must be 1 to 80 visible characters.");
   }
   return label;
+}
+
+function optionalExternalParticipantId(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") {
+    throw new HttpError(400, "BAD_REQUEST", "The organisation participant ID is invalid.");
+  }
+  const normalized = value.normalize("NFC").trim();
+  if (
+    [...normalized].length < 1 ||
+    [...normalized].length > 320 ||
+    /[\p{Cc}\p{Cs}]/u.test(normalized)
+  ) {
+    throw new HttpError(400, "BAD_REQUEST", "The organisation participant ID is invalid.");
+  }
+  return normalized;
+}
+
+function parseOrganisationWebhookSettings(value: unknown): OrganisationWebhookSettings {
+  if (!isRecord(value)) {
+    throw new HttpError(500, "INTERNAL_ERROR", "The organisation settings response is invalid.");
+  }
+  const webhookUrl = normalizeOrganisationWebhookUrl(value.webhookUrl);
+  if (
+    (value.updatedBy !== null &&
+      (typeof value.updatedBy !== "string" || !ACTOR_ID_PATTERN.test(value.updatedBy))) ||
+    (value.updatedAt !== null &&
+      (!Number.isSafeInteger(value.updatedAt) || (value.updatedAt as number) < 0))
+  ) {
+    throw new HttpError(500, "INTERNAL_ERROR", "The organisation settings response is invalid.");
+  }
+  return {
+    webhookUrl,
+    updatedBy: value.updatedBy as string | null,
+    updatedAt: value.updatedAt as number | null,
+  };
+}
+
+type WebhookDeliveryReceipt = {
+  id: string;
+  event: "board.exported";
+  createdAt: number;
+  responseStatus: number;
+};
+
+function parseWebhookDeliveryReceipt(value: unknown): WebhookDeliveryReceipt {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    !/^whd_[A-Za-z0-9_-]{22}$/u.test(value.id) ||
+    value.event !== "board.exported" ||
+    !Number.isSafeInteger(value.createdAt) ||
+    (value.createdAt as number) < 0 ||
+    !Number.isSafeInteger(value.responseStatus) ||
+    (value.responseStatus as number) < 200 ||
+    (value.responseStatus as number) > 299
+  ) {
+    throw new HttpError(500, "INTERNAL_ERROR", "The webhook delivery receipt is invalid.");
+  }
+  return {
+    id: value.id,
+    event: "board.exported",
+    createdAt: value.createdAt as number,
+    responseStatus: value.responseStatus as number,
+  };
 }
 
 function parseRequiredLabel(value: unknown): string {

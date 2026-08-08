@@ -39,7 +39,7 @@ export function readMember(sql: SqlStorage, actorId: string): MemberRow | null {
   return (
     sql
       .exec<MemberRow>(
-        "SELECT actor_id, role, display_name, revoked_at_ms FROM members WHERE actor_id = ?",
+        "SELECT actor_id, role, display_name, external_participant_id, revoked_at_ms FROM members WHERE actor_id = ?",
         actorId,
       )
       .toArray()[0] ?? null

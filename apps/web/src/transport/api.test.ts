@@ -7,6 +7,33 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("adaptive Turnstile session state", () => {
+  it("keeps the server-derived challenge requirement separate from global enablement", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          csrfToken: "csrf-token",
+          turnstile: {
+            enabled: true,
+            required: false,
+            siteKey: "public-site-key",
+          },
+        }),
+      ),
+    );
+
+    const api = new ApiClient();
+    await api.ensureSession();
+
+    expect(api.turnstile).toEqual({
+      enabled: true,
+      required: false,
+      siteKey: "public-site-key",
+    });
+  });
+});
+
 describe("owner recovery APIs", () => {
   it("sends CSRF and idempotency headers for invitations, snapshots, and restore", async () => {
     const requests: CapturedRequest[] = [];
@@ -73,6 +100,47 @@ describe("owner recovery APIs", () => {
       "/api/v1/boards/b_1234567890123456789012/snapshots",
       "/api/v1/boards/b_1234567890123456789012/restore/7",
     ]);
+  });
+
+  it("creates invitations for co-owners", async () => {
+    const requests: CapturedRequest[] = [];
+    const responses: unknown[] = [
+      { csrfToken: "csrf-token" },
+      {
+        invitation: {
+          id: "i_1234567890123456789012",
+          role: "owner",
+          label: "Co-coach",
+          maxUses: 1,
+          expiresAt: 2_000_000_000_000,
+        },
+        token: "one-time-token",
+        url: "https://example.test/b/board#invite=one-time-token",
+        idempotentReplay: false,
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+        requests.push({ path: String(input), init });
+        return Response.json(responses.shift());
+      }),
+    );
+
+    const api = new ApiClient();
+    await api.ensureSession();
+    const result = await api.createInvitation("b_1234567890123456789012", {
+      role: "owner",
+      label: "Co-coach",
+      maxUses: 1,
+      expiresAt: 2_000_000_000_000,
+    });
+
+    expect(result.invitation.role).toBe("owner");
+    expect(JSON.parse(String(requests[1]?.init.body))).toMatchObject({
+      role: "owner",
+      label: "Co-coach",
+    });
   });
 
   it("keeps only fully validated snapshot metadata", async () => {
@@ -328,6 +396,7 @@ describe("attributed data export", () => {
             {
               id: "a_1234567890123456789012",
               displayName: "Asha Patel",
+              participantHash: "a_1234567890123456789012",
               role: "editor",
               status: "active",
             },
@@ -450,6 +519,97 @@ describe("organisation template APIs", () => {
 
     await expect(
       new ApiClient(false).organisationTemplates("b_1234567890123456789012"),
+    ).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+  });
+});
+
+describe("organisation webhook APIs", () => {
+  it("loads and updates settings, then sends the current board with idempotency", async () => {
+    const boardId = "b_1234567890123456789012";
+    const organisationId = `o_${"O".repeat(22)}`;
+    const actorId = `a_${"A".repeat(22)}`;
+    const requests: CapturedRequest[] = [];
+    const responses: unknown[] = [
+      {
+        organisationId,
+        webhookUrl: null,
+        updatedBy: null,
+        updatedAt: null,
+      },
+      {
+        organisationId,
+        webhookUrl: "https://hooks.partner.example/spacescale",
+        updatedBy: actorId,
+        updatedAt: 1_900_000_000_000,
+      },
+      {
+        delivery: {
+          id: `whd_${"D".repeat(22)}`,
+          event: "board.exported",
+          createdAt: 1_900_000_000_100,
+          responseStatus: 204,
+        },
+        idempotentReplay: false,
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+        requests.push({ path: String(input), init });
+        return Response.json(responses.shift());
+      }),
+    );
+    vi.stubGlobal("crypto", { ...crypto, randomUUID: () => "webhook-idempotency-key" });
+
+    const api = new ApiClient(false);
+    await expect(api.organisationWebhookSettings(boardId)).resolves.toMatchObject({
+      organisationId,
+      webhookUrl: null,
+    });
+    await expect(
+      api.updateOrganisationWebhookSettings(boardId, "https://hooks.partner.example/spacescale"),
+    ).resolves.toMatchObject({ webhookUrl: "https://hooks.partner.example/spacescale" });
+    await expect(
+      api.sendBoardToOrganisationWebhook(boardId, "stable-retry-key"),
+    ).resolves.toMatchObject({
+      delivery: { event: "board.exported", responseStatus: 204 },
+      idempotentReplay: false,
+    });
+
+    expect(requests.map((request) => [request.path, request.init.method])).toEqual([
+      [`/api/v1/boards/${boardId}/organisation/settings`, "GET"],
+      [`/api/v1/boards/${boardId}/organisation/settings`, "PATCH"],
+      [`/api/v1/boards/${boardId}/organisation/webhook`, "POST"],
+    ]);
+    expect(requests[1]?.init.body).toBe(
+      JSON.stringify({ webhookUrl: "https://hooks.partner.example/spacescale" }),
+    );
+    expect(new Headers(requests[2]?.init.headers).get("idempotency-key")).toBe("stable-retry-key");
+  });
+
+  it("rejects malformed webhook settings and delivery responses", async () => {
+    const responses = [
+      { organisationId: "school-42", webhookUrl: "http://unsafe.example" },
+      {
+        delivery: {
+          id: "delivery",
+          event: "board.exported",
+          createdAt: 1,
+          responseStatus: 302,
+        },
+        idempotentReplay: false,
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json(responses.shift())),
+    );
+    const api = new ApiClient(false);
+    await expect(api.organisationWebhookSettings("b_1234567890123456789012")).rejects.toMatchObject(
+      { code: "INVALID_RESPONSE" },
+    );
+    await expect(
+      api.sendBoardToOrganisationWebhook("b_1234567890123456789012"),
     ).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
   });
 });

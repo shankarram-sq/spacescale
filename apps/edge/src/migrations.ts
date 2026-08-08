@@ -50,7 +50,7 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
       CREATE TABLE invitations (
         invitation_id TEXT PRIMARY KEY,
         token_hash BLOB NOT NULL UNIQUE,
-        role TEXT NOT NULL CHECK (role IN ('viewer', 'editor')),
+        role TEXT NOT NULL CHECK (role IN ('viewer', 'editor', 'owner')),
         label TEXT,
         max_uses INTEGER NOT NULL,
         use_count INTEGER NOT NULL DEFAULT 0,
@@ -343,6 +343,8 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
           (organisation_mode = 0 AND organisation_id IS NULL) OR
           (organisation_mode = 1 AND organisation_id IS NOT NULL)
         );
+
+      ALTER TABLE board ADD COLUMN organisation_space_id TEXT;
     `,
   },
   {
@@ -359,6 +361,13 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
       UPDATE board
       SET features_json = replace(features_json, '"images":false', '"images":true')
       WHERE images_enabled = 1;
+    `,
+  },
+  {
+    version: 12,
+    name: "organisation_participant_identifiers",
+    sql: `
+      ALTER TABLE members ADD COLUMN external_participant_id TEXT;
     `,
   },
 ] as const;
@@ -394,6 +403,29 @@ export const ORGANISATION_SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
 
       CREATE INDEX templates_updated_at
         ON templates(updated_at_ms DESC, template_id);
+
+      CREATE TABLE spaces (
+        board_id TEXT PRIMARY KEY
+          CHECK (length(board_id) = 24 AND substr(board_id, 1, 2) = 'b_'),
+        space_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        archived INTEGER NOT NULL CHECK (archived IN (0, 1)),
+        members_json TEXT NOT NULL CHECK (json_valid(members_json)),
+        settings_json TEXT NOT NULL CHECK (json_valid(settings_json)),
+        updated_at_ms INTEGER NOT NULL
+      ) WITHOUT ROWID;
+
+      CREATE INDEX spaces_updated_at
+        ON spaces(updated_at_ms DESC, board_id);
+    `,
+  },
+  {
+    version: 2,
+    name: "organisation_webhook_settings",
+    sql: `
+      ALTER TABLE organisation ADD COLUMN webhook_url TEXT;
+      ALTER TABLE organisation ADD COLUMN webhook_updated_by TEXT;
+      ALTER TABLE organisation ADD COLUMN webhook_updated_at_ms INTEGER;
     `,
   },
 ] as const;

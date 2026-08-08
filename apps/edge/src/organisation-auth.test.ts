@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { bytesToBase64Url, hmacSha256 } from "./crypto";
 import {
   __organisationAuthTestUtils,
   OrganisationAuthService,
@@ -169,6 +170,24 @@ describe("OrganisationAuthService", () => {
       ownerRecoveryHash: current.ownerRecoveryHash,
       keyId: "2026-09",
     });
+  });
+
+  it("signs webhook payloads with the matching organisation current key and domain", async () => {
+    const launch = await service().verifyLaunchToken(
+      await signOrganisationLaunchToken(payload(), ORG_A_CURRENT_KEY),
+      NOW,
+    );
+    const timestamp = Math.floor(NOW / 1_000);
+    const body = JSON.stringify({ event: "board.exported", deliveryId: "whd_example" });
+    const signed = await service().signWebhookPayload(launch.organisationId, timestamp, body);
+
+    expect(signed).toEqual({
+      keyId: "2026-08",
+      signature: bytesToBase64Url(await hmacSha256(ORG_A_CURRENT_KEY, `v1.${timestamp}.${body}`)),
+    });
+    await expect(
+      service().signWebhookPayload(`o_${"Z".repeat(22)}`, timestamp, body),
+    ).rejects.toMatchObject({ status: 500, code: "INTERNAL_ERROR" });
   });
 
   it("rejects unknown organisations, unknown kids, wrong keys, and tampering", async () => {

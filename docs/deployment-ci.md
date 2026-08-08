@@ -48,11 +48,13 @@ different Cloudflare accounts and should use distinct credentials.
 | Staging | Secret | `CLOUDFLARE_API_TOKEN` | Staging account token. |
 | Staging | Secret | `ORGANISATION_SIGNING_KEYS` | JSON registry uploaded as an encrypted Worker-version secret. |
 | Staging | Variable | `ALLOWED_ORIGINS` | Comma-separated iframe origins; blank denies all and `*` allows all. |
+| Staging | Variable | `WEBHOOK_ALLOWED_ORIGINS` | Comma-separated exact HTTPS webhook receiver origins; blank denies all, with no wildcard support. |
 | Production | Secret | `CLOUDFLARE_ACCOUNT_ID` | Account containing the production Worker and buckets. |
 | Production | Secret | `CLOUDFLARE_API_TOKEN` | Production account token. |
 | Production | Secret | `ORGANISATION_SIGNING_KEYS` | JSON registry uploaded as an encrypted Worker-version secret. |
 | Production | Variable | `TURNSTILE_SITE_KEY` | Public key for the production Turnstile widget. |
 | Production | Variable | `ALLOWED_ORIGINS` | Comma-separated iframe origins; blank denies all and `*` allows all. |
+| Production | Variable | `WEBHOOK_ALLOWED_ORIGINS` | Comma-separated exact HTTPS webhook receiver origins; blank denies all, with no wildcard support. |
 
 Because every deployment verifies or provisions both R2 buckets, each API token
 needs these account permissions:
@@ -84,7 +86,7 @@ The committed deployment contract is:
 | --- | --- | --- | --- | --- |
 | Development | `localhost` | `cloudflare-collab-canvas-dev-snapshots` | `cloudflare-collab-canvas-dev-assets` | Disabled |
 | Staging | `staging-cloud-collab.spacescale.net` | `staging-cloud-collab` | `staging-cloud-collab-assets` | Disabled |
-| Production | `spacescale.net` | `collab-canvas-snapshots` | `collab-canvas-assets` | Enabled |
+| Production | `spacescale.net` | `collab-canvas-snapshots` | `collab-canvas-assets` | Adaptive, invisible |
 
 Staging is deliberately automation-friendly. It has no Turnstile challenge so
 Playwright and AI-driven testing can create disposable boards. Keep it isolated
@@ -92,7 +94,8 @@ from production data, signing keys, Durable Objects, and R2 buckets.
 
 Production requires both `TURNSTILE_SITE_KEY` at deployment and
 `TURNSTILE_SECRET_KEY` at runtime. Configure both from the same widget and allow
-`spacescale.net` on that widget.
+`spacescale.net` on that widget. Set the widget mode to **Invisible**. The web
+client loads it only after the Worker marks a request as suspicious.
 
 ## Normal release
 

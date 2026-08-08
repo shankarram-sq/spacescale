@@ -66,7 +66,7 @@ type BrowserIdentity = {
   page: Page;
   actorId: string;
   csrfToken: string;
-  turnstileEnabled: boolean;
+  turnstileRequired: boolean;
 };
 
 type Participant = BrowserIdentity & {
@@ -484,7 +484,7 @@ async function createIdentity(
     page,
     actorId,
     csrfToken,
-    turnstileEnabled: turnstile.enabled === true,
+    turnstileRequired: turnstile.enabled === true && turnstile.required === true,
   };
 }
 
@@ -493,9 +493,9 @@ async function createBoard(
   options: HarnessConfig,
   title: string,
 ): Promise<JsonRecord> {
-  if (owner.turnstileEnabled && options.turnstileToken === undefined) {
+  if (owner.turnstileRequired && options.turnstileToken === undefined) {
     throw new Error(
-      "This environment requires Turnstile. Supply a fresh --turnstile-token/LOAD_TURNSTILE_TOKEN or use the development environment where Turnstile is disabled.",
+      "This session requires Turnstile. Supply a fresh --turnstile-token/LOAD_TURNSTILE_TOKEN or use the development environment where Turnstile is disabled.",
     );
   }
   const response = await requestJson(owner.page, "/api/v1/boards", {
@@ -565,8 +565,8 @@ async function provisionParticipants(
   editorCount: number,
   options: HarnessConfig,
 ): Promise<Participant[]> {
-  const turnstileEnabled = identities.some((identity) => identity.turnstileEnabled);
-  if (turnstileEnabled && options.turnstileClaimTokens.length !== identities.length) {
+  const turnstileRequired = identities.some((identity) => identity.turnstileRequired);
+  if (turnstileRequired && options.turnstileClaimTokens.length !== identities.length) {
     throw new Error(
       `The target requires one fresh invitation_claim Turnstile token per participant. LOAD_TURNSTILE_CLAIM_TOKENS must contain exactly ${identities.length} tokens.`,
     );
@@ -590,7 +590,7 @@ async function provisionParticipants(
           type: "invite",
           token,
           displayName: `Load ${expectedRole} ${identity.index + 1}`,
-          ...(turnstileEnabled
+          ...(turnstileRequired
             ? { turnstileToken: options.turnstileClaimTokens[identity.index] }
             : {}),
         },
