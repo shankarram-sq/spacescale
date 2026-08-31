@@ -8,6 +8,7 @@ const otherEditorId = "a_CCCCCCCCCCCCCCCCCCCCCC";
 const ownItemId = "018f0000-0000-7000-8000-000000000001";
 const foreignItemId = "018f0000-0000-7000-8000-000000000002";
 const copyItemId = "018f0000-0000-7000-8000-000000000003";
+const sectionId = "018f0000-0000-7000-8000-000000000004";
 
 function itemRecord(id: string, createdBy: string, deleted = false): ItemRecord {
   return {
@@ -28,6 +29,30 @@ function itemRecord(id: string, createdBy: string, deleted = false): ItemRecord 
       },
       transform: [1, 0, 0, 1, 0, 0],
       geometry: { x: 10, y: 20, width: 180, height: 140, text: "Question" },
+    },
+  };
+}
+
+function sectionRecord(locked: boolean): ItemRecord {
+  return {
+    deleted: false,
+    stateToken: "state:section",
+    item: {
+      id: sectionId,
+      kind: "zone",
+      z: 2,
+      version: 4,
+      createdBy: ownerId,
+      style: {
+        kind: "zone",
+        borderColor: "#60a5fa",
+        fill: "#eff6ff",
+        textColor: "#1e3a8a",
+        fontSize: 20,
+        opacity: 0.8,
+      },
+      transform: [1, 0, 0, 1, 0, 0],
+      geometry: { x: 0, y: 0, width: 600, height: 400, title: "Review", locked },
     },
   };
 }
@@ -187,6 +212,52 @@ describe("classroom item ownership", () => {
     expect(records.get(ownItemId)).toEqual(before);
   });
 
+  it("rejects Section deletion before reduction when a surviving member is foreign", () => {
+    const section = sectionRecord(false);
+    section.item.createdBy = editorId;
+    const foreignMember = itemRecord(foreignItemId, otherEditorId);
+    foreignMember.item.sectionId = sectionId;
+    const sectionRecords = new Map([
+      [sectionId, section],
+      [foreignItemId, foreignMember],
+    ]);
+    const before = structuredClone(sectionRecords);
+    let tokenAllocations = 0;
+
+    expectForbidden(
+      () =>
+        prepareOwnedItemOperation(
+          {
+            kind: "items.batch",
+            operations: [
+              { kind: "item.delete", itemId: sectionId, expectedVersion: 4 },
+              {
+                kind: "item.update",
+                itemId: foreignItemId,
+                expectedVersion: 4,
+                patch: { sectionId: null },
+              },
+            ],
+          },
+          sectionRecords,
+          {
+            seq: 5,
+            actorId: editorId,
+            role: "editor",
+            nextZ: 3,
+            liveCount: 2,
+            tokenFactory: () => {
+              tokenAllocations += 1;
+              return `next:${tokenAllocations}`;
+            },
+          },
+        ),
+      foreignItemId,
+    );
+    expect(tokenAllocations).toBe(0);
+    expect(sectionRecords).toEqual(before);
+  });
+
   it("leaves missing or deleted item errors to the authoritative reducer", () => {
     const deleted = new Map([[foreignItemId, itemRecord(foreignItemId, otherEditorId, true)]]);
     expect(() =>
@@ -201,6 +272,107 @@ describe("classroom item ownership", () => {
         role: "editor",
       }),
     ).not.toThrow();
+  });
+
+  it("freezes owner and editor mutations inside a locked Section until an owner unlocks it", () => {
+    const member = itemRecord(foreignItemId, otherEditorId);
+    member.item.sectionId = sectionId;
+    const lockedRecords = new Map([
+      [sectionId, sectionRecord(true)],
+      [foreignItemId, member],
+    ]);
+
+    expectForbidden(() =>
+      assertItemMutationOwnership(update(foreignItemId, "text"), lockedRecords, {
+        actorId: ownerId,
+        role: "owner",
+      }),
+    );
+    expectForbidden(() =>
+      assertItemMutationOwnership(update(foreignItemId, "text"), lockedRecords, {
+        actorId: otherEditorId,
+        role: "editor",
+      }),
+    );
+    expectForbidden(() =>
+      assertItemMutationOwnership(
+        {
+          kind: "item.copy",
+          sourceItemId: foreignItemId,
+          expectedVersion: 4,
+          newItemId: copyItemId,
+          translate: { x: 24, y: 24 },
+        },
+        lockedRecords,
+        { actorId: ownerId, role: "owner" },
+      ),
+    );
+    expectForbidden(() =>
+      assertItemMutationOwnership(
+        {
+          kind: "item.create",
+          item: {
+            id: copyItemId,
+            sectionId,
+            kind: "sticky",
+            style: {
+              kind: "sticky",
+              fill: "#fff2a8",
+              textColor: "#2f2a1f",
+              fontSize: 20,
+              opacity: 1,
+            },
+            transform: [1, 0, 0, 1, 0, 0],
+            geometry: { x: 10, y: 20, width: 180, height: 140, text: "Blocked" },
+          },
+        },
+        lockedRecords,
+        { actorId: ownerId, role: "owner" },
+      ),
+    );
+
+    expect(() =>
+      assertItemMutationOwnership(
+        {
+          kind: "item.update",
+          itemId: sectionId,
+          expectedVersion: 4,
+          patch: {
+            geometry: {
+              x: 0,
+              y: 0,
+              width: 600,
+              height: 400,
+              title: "Review",
+              locked: false,
+            },
+          },
+        },
+        lockedRecords,
+        { actorId: ownerId, role: "owner" },
+      ),
+    ).not.toThrow();
+    expectForbidden(() =>
+      assertItemMutationOwnership(
+        {
+          kind: "item.update",
+          itemId: sectionId,
+          expectedVersion: 4,
+          patch: {
+            geometry: {
+              x: 0,
+              y: 0,
+              width: 600,
+              height: 400,
+              title: "Review",
+              locked: false,
+            },
+          },
+        },
+        lockedRecords,
+        { actorId: otherEditorId, role: "editor" },
+      ),
+    );
   });
 
   it("rejects viewer mutations at the same authorization boundary", () => {

@@ -20,6 +20,7 @@ import {
   type ItemPatch,
   type LogicalItemState,
   MAX_ACTION_PAYLOAD_BYTES,
+  MAX_BATCH_OPERATIONS,
   MAX_LIVE_ITEMS,
   MAX_PUBLIC_RESULT_BYTES,
   MAX_SNAPSHOT_BYTES,
@@ -71,6 +72,79 @@ export interface ApplyResult {
   readonly operation: AuthoritativeOperation;
   readonly effects: readonly ItemEffect[];
   readonly affectedItemIds: readonly string[];
+}
+
+export interface MoveCopyRelationshipItem {
+  readonly id: string;
+  readonly kind: BoardItem["kind"];
+  readonly groupId?: string;
+  readonly sectionId?: string;
+}
+
+export interface MoveCopyClosureLimitViolation {
+  readonly seedItemId: string;
+  readonly itemCount: number;
+}
+
+/**
+ * Finds a Section or explicit-group root whose fixed-point move/copy closure
+ * cannot fit in one atomic item batch. Explicit groups expand symmetrically;
+ * Sections expand down to their durable members.
+ */
+export function findMoveCopyClosureLimitViolation(
+  items: Iterable<MoveCopyRelationshipItem>,
+  limit = MAX_BATCH_OPERATIONS,
+): MoveCopyClosureLimitViolation | null {
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new RangeError("The move/copy closure limit must be a positive safe integer.");
+  }
+
+  const byId = new Map<string, MoveCopyRelationshipItem>();
+  const groupMembers = new Map<string, string[]>();
+  const sectionMembers = new Map<string, string[]>();
+  const groupSeeds = new Map<string, string>();
+  const seeds = new Set<string>();
+
+  for (const item of items) {
+    byId.set(item.id, item);
+    if (item.kind === "zone") seeds.add(item.id);
+    if (item.groupId !== undefined) {
+      const members = groupMembers.get(item.groupId) ?? [];
+      members.push(item.id);
+      groupMembers.set(item.groupId, members);
+      if (!groupSeeds.has(item.groupId)) groupSeeds.set(item.groupId, item.id);
+    }
+    if (item.sectionId !== undefined) {
+      const members = sectionMembers.get(item.sectionId) ?? [];
+      members.push(item.id);
+      sectionMembers.set(item.sectionId, members);
+    }
+  }
+  for (const seed of groupSeeds.values()) seeds.add(seed);
+
+  for (const seedItemId of [...seeds].sort()) {
+    const selected = new Set<string>([seedItemId]);
+    const pending = [seedItemId];
+    for (let index = 0; index < pending.length; index += 1) {
+      const itemId = pending[index];
+      if (itemId === undefined) continue;
+      const item = byId.get(itemId);
+      if (item === undefined) continue;
+      const related = [
+        ...(item.groupId === undefined ? [] : (groupMembers.get(item.groupId) ?? [])),
+        ...(item.kind === "zone" ? (sectionMembers.get(item.id) ?? []) : []),
+      ];
+      for (const relatedItemId of related) {
+        if (selected.has(relatedItemId)) continue;
+        selected.add(relatedItemId);
+        if (selected.size > limit) {
+          return { seedItemId, itemCount: selected.size };
+        }
+        pending.push(relatedItemId);
+      }
+    }
+  }
+  return null;
 }
 
 export interface ApplyHistoryContext {
@@ -439,13 +513,18 @@ function applyUpdate(
   requireExpectedVersion(record, operation.expectedVersion);
   validatePatchForItem(record.item, operation.patch);
   const beforeItem = cloneBoardItem(record.item);
-  const afterItem = normalizeBoardItem({
+  const candidate = {
     ...record.item,
     ...(operation.patch.style === undefined ? {} : { style: operation.patch.style }),
     ...(operation.patch.transform === undefined ? {} : { transform: operation.patch.transform }),
     ...(operation.patch.geometry === undefined ? {} : { geometry: operation.patch.geometry }),
     version: application.context.seq,
-  });
+  } as Record<string, unknown>;
+  if (operation.patch.groupId === null) delete candidate.groupId;
+  else if (operation.patch.groupId !== undefined) candidate.groupId = operation.patch.groupId;
+  if (operation.patch.sectionId === null) delete candidate.sectionId;
+  else if (operation.patch.sectionId !== undefined) candidate.sectionId = operation.patch.sectionId;
+  const afterItem = normalizeBoardItem(candidate);
   const afterToken = nextStateToken(application, operation.itemId, record.stateToken);
   application.records.set(operation.itemId, {
     exists: true,
@@ -519,14 +598,19 @@ function applyCopy(
     }
     throw error;
   }
-  const copiedItem = normalizeBoardItem({
+  const copyCandidate = {
     ...source.item,
     id: operation.newItemId,
     z: application.nextZ,
     version: application.context.seq,
     createdBy: application.context.actorId,
     transform: transformed,
-  });
+  } as Record<string, unknown>;
+  if (operation.newGroupId === null) delete copyCandidate.groupId;
+  else if (operation.newGroupId !== undefined) copyCandidate.groupId = operation.newGroupId;
+  if (operation.newSectionId === null) delete copyCandidate.sectionId;
+  else if (operation.newSectionId !== undefined) copyCandidate.sectionId = operation.newSectionId;
+  const copiedItem = normalizeBoardItem(copyCandidate);
   const beforeToken = initialAbsenceToken(operation.newItemId);
   const afterToken = nextStateToken(application, operation.newItemId, beforeToken);
   application.records.set(operation.newItemId, {
@@ -998,6 +1082,20 @@ export interface CanonicalSnapshotByteParts extends Omit<CanonicalSnapshotInput,
   itemBytes: number;
 }
 
+function canonicalTextFormat(
+  style: Pick<
+    Extract<BoardItem["style"], { kind: "text" | "sticky" | "table" | "zone" }>,
+    "fontFamily" | "fontWeight" | "fontStyle" | "textDecoration"
+  >,
+) {
+  return {
+    ...(style.fontFamily === undefined ? {} : { fontFamily: style.fontFamily }),
+    ...(style.fontWeight === undefined ? {} : { fontWeight: style.fontWeight }),
+    ...(style.fontStyle === undefined ? {} : { fontStyle: style.fontStyle }),
+    ...(style.textDecoration === undefined ? {} : { textDecoration: style.textDecoration }),
+  };
+}
+
 function canonicalItem(item: BoardItem): BoardItem {
   const normalized = normalizeBoardItem(item);
   const style =
@@ -1028,6 +1126,7 @@ function canonicalItem(item: BoardItem): BoardItem {
                 color: normalized.style.color,
                 fontSize: normalized.style.fontSize,
                 fontFamily: normalized.style.fontFamily,
+                ...canonicalTextFormat(normalized.style),
                 opacity: normalized.style.opacity,
               }
             : normalized.style.kind === "sticky"
@@ -1036,6 +1135,7 @@ function canonicalItem(item: BoardItem): BoardItem {
                   fill: normalized.style.fill,
                   textColor: normalized.style.textColor,
                   fontSize: normalized.style.fontSize,
+                  ...canonicalTextFormat(normalized.style),
                   opacity: normalized.style.opacity,
                 }
               : normalized.style.kind === "image"
@@ -1058,6 +1158,7 @@ function canonicalItem(item: BoardItem): BoardItem {
                         headerFill: normalized.style.headerFill,
                         textColor: normalized.style.textColor,
                         fontSize: normalized.style.fontSize,
+                        ...canonicalTextFormat(normalized.style),
                         opacity: normalized.style.opacity,
                       }
                     : {
@@ -1066,6 +1167,7 @@ function canonicalItem(item: BoardItem): BoardItem {
                         fill: normalized.style.fill,
                         textColor: normalized.style.textColor,
                         fontSize: normalized.style.fontSize,
+                        ...canonicalTextFormat(normalized.style),
                         opacity: normalized.style.opacity,
                       };
   const geometry =
@@ -1195,6 +1297,8 @@ function canonicalItem(item: BoardItem): BoardItem {
                             };
   return {
     id: normalized.id,
+    ...(normalized.groupId === undefined ? {} : { groupId: normalized.groupId }),
+    ...(normalized.sectionId === undefined ? {} : { sectionId: normalized.sectionId }),
     kind: normalized.kind,
     z: normalized.z,
     version: normalized.version,

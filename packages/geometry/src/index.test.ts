@@ -234,8 +234,42 @@ describe("geometry normalization", () => {
 
   it("canonicalizes positive, exact-key zone geometry while preserving its title", () => {
     expect(
-      normalizeZoneGeometry({ x: 10, y: 20, width: -400.125, height: -240.555, title: "Evidence" }),
-    ).toEqual({ x: -390.13, y: -220.56, width: 400.13, height: 240.56, title: "Evidence" });
+      normalizeZoneGeometry({
+        x: 10,
+        y: 20,
+        width: -400.125,
+        height: -240.555,
+        title: "Evidence",
+        locked: true,
+      }),
+    ).toEqual({
+      x: -390.13,
+      y: -220.56,
+      width: 400.13,
+      height: 240.56,
+      title: "Evidence",
+      locked: true,
+    });
+    expect(
+      normalizeZoneGeometry({
+        x: 10,
+        y: 20,
+        width: 40,
+        height: 30,
+        title: "Open",
+        locked: false,
+      }),
+    ).toEqual({ x: 10, y: 20, width: 40, height: 30, title: "Open" });
+    expect(() =>
+      normalizeZoneGeometry({
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        title: "Zone",
+        locked: "yes",
+      }),
+    ).toThrow(/boolean/);
     expect(() =>
       normalizeZoneGeometry({ x: 0, y: 0, width: 0, height: 10, title: "Zone" }),
     ).toThrow(/greater than 0/);

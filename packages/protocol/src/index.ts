@@ -88,8 +88,14 @@ export const MAX_TABLE_TEXT_CODE_POINTS = 8_000;
 export const MAX_ZONE_TITLE_CODE_POINTS = 120;
 export const LINE_ARROWHEADS = ["none", "arrow"] as const;
 export const TEXT_FONT_FAMILIES = ["sans", "serif", "handwritten", "mono"] as const;
+export const TEXT_FONT_WEIGHTS = ["normal", "bold"] as const;
+export const TEXT_FONT_STYLES = ["normal", "italic"] as const;
+export const TEXT_DECORATIONS = ["none", "underline"] as const;
 
 export type TextFontFamily = (typeof TEXT_FONT_FAMILIES)[number];
+export type TextFontWeight = (typeof TEXT_FONT_WEIGHTS)[number];
+export type TextFontStyle = (typeof TEXT_FONT_STYLES)[number];
+export type TextDecoration = (typeof TEXT_DECORATIONS)[number];
 
 export const TEXT_FONT_STACKS: Readonly<Record<TextFontFamily, string>> = {
   sans: 'Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
@@ -100,6 +106,15 @@ export const TEXT_FONT_STACKS: Readonly<Record<TextFontFamily, string>> = {
 
 export function textFontStack(fontFamily: TextFontFamily): string {
   return TEXT_FONT_STACKS[fontFamily];
+}
+
+export function resolveTextFontWeight(
+  fontWeight: TextFontWeight | undefined,
+  defaultWeight = "normal",
+): string {
+  if (fontWeight === "bold") return "700";
+  if (fontWeight === "normal") return "normal";
+  return defaultWeight;
 }
 
 export const BOARD_FEATURE_KEYS = [
@@ -122,6 +137,8 @@ export const BOARD_FEATURE_KEYS = [
   "protractor",
   "eraser",
   "partialEraser",
+  "objectTransforms",
+  "grouping",
   "templates",
   "organisationTemplates",
   "voting",
@@ -151,6 +168,8 @@ export const DEFAULT_BOARD_FEATURES: BoardFeatures = {
   protractor: true,
   eraser: true,
   partialEraser: true,
+  objectTransforms: true,
+  grouping: true,
   templates: true,
   organisationTemplates: true,
   voting: true,
@@ -224,6 +243,9 @@ export interface TextStyle {
   color: string;
   fontSize: number;
   fontFamily: TextFontFamily;
+  fontWeight?: TextFontWeight;
+  fontStyle?: TextFontStyle;
+  textDecoration?: TextDecoration;
   opacity: number;
 }
 
@@ -232,6 +254,10 @@ export interface StickyStyle {
   fill: string;
   textColor: string;
   fontSize: number;
+  fontFamily?: TextFontFamily;
+  fontWeight?: TextFontWeight;
+  fontStyle?: TextFontStyle;
+  textDecoration?: TextDecoration;
   opacity: number;
 }
 
@@ -254,6 +280,10 @@ export interface TableStyle {
   headerFill: string;
   textColor: string;
   fontSize: number;
+  fontFamily?: TextFontFamily;
+  fontWeight?: TextFontWeight;
+  fontStyle?: TextFontStyle;
+  textDecoration?: TextDecoration;
   opacity: number;
 }
 
@@ -263,6 +293,10 @@ export interface ZoneStyle {
   fill: string;
   textColor: string;
   fontSize: number;
+  fontFamily?: TextFontFamily;
+  fontWeight?: TextFontWeight;
+  fontStyle?: TextFontStyle;
+  textDecoration?: TextDecoration;
   opacity: number;
 }
 
@@ -279,6 +313,8 @@ export type ItemStyle =
 
 interface BoardItemBase {
   id: string;
+  groupId?: string;
+  sectionId?: string;
   z: number;
   version: number;
   createdBy: string;
@@ -379,6 +415,8 @@ export interface ItemPatch {
   style?: ItemStyle;
   transform?: Transform;
   geometry?: ItemGeometry;
+  groupId?: string | null;
+  sectionId?: string | null;
 }
 
 export interface ItemCreateOperation {
@@ -405,6 +443,8 @@ export interface ItemCopyOperation {
   expectedVersion: number;
   newItemId: string;
   translate: { x: number; y: number };
+  newGroupId?: string | null;
+  newSectionId?: string | null;
 }
 
 export type BatchItemOperation =
@@ -905,10 +945,41 @@ export function normalizeProtractorStyle(value: unknown, path = "$style"): Protr
   };
 }
 
+function normalizeOptionalTextFormat(
+  object: Record<string, unknown>,
+  path: string,
+): Partial<Pick<TextStyle, "fontFamily" | "fontWeight" | "fontStyle" | "textDecoration">> {
+  return {
+    ...(own.call(object, "fontFamily")
+      ? { fontFamily: expectLiteral(object.fontFamily, TEXT_FONT_FAMILIES, `${path}.fontFamily`) }
+      : {}),
+    ...(own.call(object, "fontWeight")
+      ? { fontWeight: expectLiteral(object.fontWeight, TEXT_FONT_WEIGHTS, `${path}.fontWeight`) }
+      : {}),
+    ...(own.call(object, "fontStyle")
+      ? { fontStyle: expectLiteral(object.fontStyle, TEXT_FONT_STYLES, `${path}.fontStyle`) }
+      : {}),
+    ...(own.call(object, "textDecoration")
+      ? {
+          textDecoration: expectLiteral(
+            object.textDecoration,
+            TEXT_DECORATIONS,
+            `${path}.textDecoration`,
+          ),
+        }
+      : {}),
+  };
+}
+
 export function normalizeTextStyle(value: unknown, path = "$style"): TextStyle {
   const object = expectRecord(value, path);
   if (object.kind !== "text") fail('Expected style kind "text"', `${path}.kind`);
-  expectExactKeys(object, ["kind", "color", "fontSize", "fontFamily", "opacity"], [], path);
+  expectExactKeys(
+    object,
+    ["kind", "color", "fontSize", "fontFamily", "opacity"],
+    ["fontWeight", "fontStyle", "textDecoration"],
+    path,
+  );
   if (typeof object.fontSize !== "number" || !Number.isFinite(object.fontSize)) {
     fail("Font size must be a finite number", `${path}.fontSize`);
   }
@@ -920,6 +991,7 @@ export function normalizeTextStyle(value: unknown, path = "$style"): TextStyle {
     color: normalizeColor(object.color, `${path}.color`),
     fontSize,
     fontFamily: expectLiteral(object.fontFamily, TEXT_FONT_FAMILIES, `${path}.fontFamily`),
+    ...normalizeOptionalTextFormat(object, path),
     opacity: normalizeOpacity(object.opacity, `${path}.opacity`),
   };
 }
@@ -927,7 +999,12 @@ export function normalizeTextStyle(value: unknown, path = "$style"): TextStyle {
 export function normalizeStickyStyle(value: unknown, path = "$style"): StickyStyle {
   const object = expectRecord(value, path);
   if (object.kind !== "sticky") fail('Expected style kind "sticky"', `${path}.kind`);
-  expectExactKeys(object, ["kind", "fill", "textColor", "fontSize", "opacity"], [], path);
+  expectExactKeys(
+    object,
+    ["kind", "fill", "textColor", "fontSize", "opacity"],
+    ["fontFamily", "fontWeight", "fontStyle", "textDecoration"],
+    path,
+  );
   if (typeof object.fontSize !== "number" || !Number.isFinite(object.fontSize)) {
     fail("Font size must be a finite number", `${path}.fontSize`);
   }
@@ -940,6 +1017,7 @@ export function normalizeStickyStyle(value: unknown, path = "$style"): StickySty
     fill: normalizeColor(object.fill, `${path}.fill`),
     textColor: normalizeColor(object.textColor, `${path}.textColor`),
     fontSize,
+    ...normalizeOptionalTextFormat(object, path),
     opacity: normalizeOpacity(object.opacity, `${path}.opacity`),
   };
 }
@@ -979,7 +1057,7 @@ export function normalizeTableStyle(value: unknown, path = "$style"): TableStyle
   expectExactKeys(
     object,
     ["kind", "borderColor", "fill", "headerFill", "textColor", "fontSize", "opacity"],
-    [],
+    ["fontFamily", "fontWeight", "fontStyle", "textDecoration"],
     path,
   );
   if (typeof object.fontSize !== "number" || !Number.isFinite(object.fontSize)) {
@@ -996,6 +1074,7 @@ export function normalizeTableStyle(value: unknown, path = "$style"): TableStyle
     headerFill: normalizeColor(object.headerFill, `${path}.headerFill`),
     textColor: normalizeColor(object.textColor, `${path}.textColor`),
     fontSize,
+    ...normalizeOptionalTextFormat(object, path),
     opacity: normalizeOpacity(object.opacity, `${path}.opacity`),
   };
 }
@@ -1006,7 +1085,7 @@ export function normalizeZoneStyle(value: unknown, path = "$style"): ZoneStyle {
   expectExactKeys(
     object,
     ["kind", "borderColor", "fill", "textColor", "fontSize", "opacity"],
-    [],
+    ["fontFamily", "fontWeight", "fontStyle", "textDecoration"],
     path,
   );
   if (typeof object.fontSize !== "number" || !Number.isFinite(object.fontSize)) {
@@ -1022,6 +1101,7 @@ export function normalizeZoneStyle(value: unknown, path = "$style"): ZoneStyle {
     fill: normalizeColor(object.fill, `${path}.fill`),
     textColor: normalizeColor(object.textColor, `${path}.textColor`),
     fontSize,
+    ...normalizeOptionalTextFormat(object, path),
     opacity: normalizeOpacity(object.opacity, `${path}.opacity`),
   };
 }
@@ -1179,10 +1259,21 @@ function normalizeStyleForKind(kind: ItemKind, value: unknown, path: string): It
 
 export function normalizeNewBoardItem(value: unknown, path = "$item"): NewBoardItem {
   const object = expectRecord(value, path);
-  expectExactKeys(object, ["id", "kind", "style", "transform", "geometry"], [], path);
+  expectExactKeys(
+    object,
+    ["id", "kind", "style", "transform", "geometry"],
+    ["groupId", "sectionId"],
+    path,
+  );
   const kind = expectLiteral(object.kind, ITEM_KINDS, `${path}.kind`);
   const common = {
     id: assertCanonicalId(object.id, `${path}.id`),
+    ...(own.call(object, "groupId")
+      ? { groupId: assertCanonicalId(object.groupId, `${path}.groupId`) }
+      : {}),
+    ...(own.call(object, "sectionId")
+      ? { sectionId: assertCanonicalId(object.sectionId, `${path}.sectionId`) }
+      : {}),
     transform: fromGeometry(() => normalizeTransform(object.transform, `${path}.transform`)),
   };
   const style = normalizeStyleForKind(kind, object.style, `${path}.style`);
@@ -1195,12 +1286,14 @@ export function normalizeBoardItem(value: unknown, path = "$item"): BoardItem {
   expectExactKeys(
     object,
     ["id", "kind", "z", "version", "createdBy", "style", "transform", "geometry"],
-    [],
+    ["groupId", "sectionId"],
     path,
   );
   const normalized = normalizeNewBoardItem(
     {
       id: object.id,
+      ...(own.call(object, "groupId") ? { groupId: object.groupId } : {}),
+      ...(own.call(object, "sectionId") ? { sectionId: object.sectionId } : {}),
       kind: object.kind,
       style: object.style,
       transform: object.transform,
@@ -1218,9 +1311,17 @@ export function normalizeBoardItem(value: unknown, path = "$item"): BoardItem {
 
 export function normalizeItemPatch(value: unknown, path = "$patch"): ItemPatch {
   const object = expectRecord(value, path);
-  expectExactKeys(object, [], ["style", "transform", "geometry"], path);
+  expectExactKeys(object, [], ["style", "transform", "geometry", "groupId", "sectionId"], path);
   if (Object.keys(object).length === 0) fail("An item patch must change at least one field", path);
   const patch: ItemPatch = {};
+  if (own.call(object, "groupId")) {
+    patch.groupId =
+      object.groupId === null ? null : assertCanonicalId(object.groupId, `${path}.groupId`);
+  }
+  if (own.call(object, "sectionId")) {
+    patch.sectionId =
+      object.sectionId === null ? null : assertCanonicalId(object.sectionId, `${path}.sectionId`);
+  }
   if (own.call(object, "style")) patch.style = normalizeItemStyle(object.style, `${path}.style`);
   if (own.call(object, "transform")) {
     patch.transform = fromGeometry(() => normalizeTransform(object.transform, `${path}.transform`));
@@ -1280,7 +1381,7 @@ function validateItemOperation(value: unknown, path: string): BatchItemOperation
       expectExactKeys(
         object,
         ["kind", "sourceItemId", "expectedVersion", "newItemId", "translate"],
-        [],
+        ["newGroupId", "newSectionId"],
         path,
       );
       const translate = expectRecord(object.translate, `${path}.translate`);
@@ -1290,6 +1391,22 @@ function validateItemOperation(value: unknown, path: string): BatchItemOperation
         sourceItemId: assertCanonicalId(object.sourceItemId, `${path}.sourceItemId`),
         expectedVersion: expectSafeInteger(object.expectedVersion, `${path}.expectedVersion`),
         newItemId: assertCanonicalId(object.newItemId, `${path}.newItemId`),
+        ...(own.call(object, "newGroupId")
+          ? {
+              newGroupId:
+                object.newGroupId === null
+                  ? null
+                  : assertCanonicalId(object.newGroupId, `${path}.newGroupId`),
+            }
+          : {}),
+        ...(own.call(object, "newSectionId")
+          ? {
+              newSectionId:
+                object.newSectionId === null
+                  ? null
+                  : assertCanonicalId(object.newSectionId, `${path}.newSectionId`),
+            }
+          : {}),
         translate: {
           x: fromGeometry(() => normalizeCoordinate(translate.x, `${path}.translate.x`)),
           y: fromGeometry(() => normalizeCoordinate(translate.y, `${path}.translate.y`)),

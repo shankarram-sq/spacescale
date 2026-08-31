@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createHmac, randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
 
 function required(name) {
   const value = process.env[name]?.trim();
@@ -69,7 +70,8 @@ export function createEmbedUrl({ origin, launchToken, initialTemplate }) {
   return `${origin.replace(/\/$/u, "")}/embed#${fragment}`;
 }
 
-function sampleItems(version) {
+function sampleItems(version, { lockSections = false } = {}) {
+  const responseSectionId = randomUUID();
   return [
     {
       id: randomUUID(),
@@ -92,11 +94,36 @@ function sampleItems(version) {
       },
     },
     {
-      id: randomUUID(),
-      kind: "sticky",
+      id: responseSectionId,
+      kind: "zone",
       z: 2,
       version,
       createdBy: SYNTHETIC_TEMPLATE_AUTHOR,
+      style: {
+        kind: "zone",
+        borderColor: "#60a5fa",
+        fill: "#eff6ff",
+        textColor: "#1e3a8a",
+        fontSize: 20,
+        opacity: 0.8,
+      },
+      transform: [1, 0, 0, 1, 0, 0],
+      geometry: {
+        x: 80,
+        y: 130,
+        width: 700,
+        height: 360,
+        title: "Participant responses",
+        locked: lockSections,
+      },
+    },
+    {
+      id: randomUUID(),
+      kind: "sticky",
+      z: 3,
+      version,
+      createdBy: SYNTHETIC_TEMPLATE_AUTHOR,
+      sectionId: responseSectionId,
       style: {
         kind: "sticky",
         fill: "#FFE7A8",
@@ -116,7 +143,7 @@ function sampleItems(version) {
   ];
 }
 
-export function createInitialTemplate(title) {
+export function createInitialTemplate(title, { lockSections = false } = {}) {
   return {
     format: "cf-whiteboard-json",
     version: 1,
@@ -124,7 +151,7 @@ export function createInitialTemplate(title) {
     seq: 0,
     createdAt: Date.now(),
     settings: { title },
-    items: sampleItems(0),
+    items: sampleItems(0, { lockSections }),
   };
 }
 
@@ -195,7 +222,7 @@ export function deleteBoard(ownerToken, boardId) {
 }
 
 async function main() {
-  const initialTemplate = createInitialTemplate("Notice and wonder");
+  const initialTemplate = createInitialTemplate("Notice and wonder", { lockSections: true });
   const common = {
     hostname: config.hostname,
     organisationId: config.organisationId,
@@ -278,4 +305,6 @@ async function main() {
   // await deleteBoard(apiToken, boardId);
 }
 
-await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main();
+}

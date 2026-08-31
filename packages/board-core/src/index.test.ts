@@ -12,7 +12,9 @@ import {
   canonicalSnapshotItemByteLength,
   cloneBoardItem,
   createBoardState,
+  findMoveCopyClosureLimitViolation,
   liveItemsInPaintOrder,
+  type MoveCopyRelationshipItem,
   serializeCanonicalSnapshot,
 } from "./index.js";
 
@@ -225,6 +227,51 @@ describe("normal board reductions", () => {
       items: item ? [item] : [],
     });
     expect(JSON.parse(serialized).items[0].geometry.shape).toBe("square");
+  });
+
+  it("persists, clears, and remaps group and Section relationships", () => {
+    const created = applyDurableOperation(
+      createBoardState(),
+      {
+        kind: "item.create",
+        item: { ...rectangle(), groupId: ACTION_1, sectionId: ACTION_2 },
+      },
+      { seq: 1, actorId: ALICE },
+    ).state;
+    const updated = applyDurableOperation(
+      created,
+      {
+        kind: "item.update",
+        itemId: RECTANGLE_ID,
+        expectedVersion: 1,
+        patch: { groupId: null, sectionId: ACTION_1 },
+      },
+      { seq: 2, actorId: ALICE },
+    ).state;
+    const copied = applyDurableOperation(
+      updated,
+      {
+        kind: "item.copy",
+        sourceItemId: RECTANGLE_ID,
+        expectedVersion: 2,
+        newItemId: COPY_ID,
+        translate: { x: 20, y: 20 },
+        newGroupId: ACTION_2,
+        newSectionId: null,
+      },
+      { seq: 3, actorId: ALICE },
+    ).state;
+
+    expect(liveItemsInPaintOrder(updated)[0]).toMatchObject({
+      sectionId: ACTION_1,
+    });
+    expect(liveItemsInPaintOrder(updated)[0]).not.toHaveProperty("groupId");
+    expect(liveItemsInPaintOrder(copied)[1]).toMatchObject({
+      id: COPY_ID,
+      groupId: ACTION_2,
+      createdBy: ALICE,
+    });
+    expect(liveItemsInPaintOrder(copied)[1]).not.toHaveProperty("sectionId");
   });
 
   it("assigns paint order/server fields and emits complete before/after effects", () => {
@@ -1358,6 +1405,65 @@ describe("lineage-aware undo and redo", () => {
     expect(collaboratorEdit.state.items.get(RECTANGLE_ID)?.item.transform).toEqual([
       1, 0, 0, 1, 7, 9,
     ]);
+  });
+});
+
+describe("move/copy closure limits", () => {
+  const sectionClosure = (memberCount: number): MoveCopyRelationshipItem[] => [
+    { id: "section", kind: "zone" as const },
+    ...Array.from({ length: memberCount }, (_, index) => ({
+      id: `member-${index}`,
+      kind: "rectangle" as const,
+      sectionId: "section",
+    })),
+  ];
+
+  it("allows a Section and 99 direct members in one atomic batch", () => {
+    expect(findMoveCopyClosureLimitViolation(sectionClosure(99))).toBeNull();
+  });
+
+  it("rejects a Section whose direct membership would require 101 operations", () => {
+    expect(findMoveCopyClosureLimitViolation(sectionClosure(100))).toEqual({
+      seedItemId: "section",
+      itemCount: 101,
+    });
+  });
+
+  it("includes outward explicit-group links in the fixed-point Section closure", () => {
+    const items = sectionClosure(98);
+    items[1] = {
+      id: "member-0",
+      kind: "rectangle",
+      sectionId: "section",
+      groupId: "group",
+    };
+    items.push(
+      {
+        id: "outside-a",
+        kind: "rectangle",
+        groupId: "group",
+      },
+      {
+        id: "outside-b",
+        kind: "rectangle",
+        groupId: "group",
+      },
+    );
+
+    expect(findMoveCopyClosureLimitViolation(items)).toEqual({
+      seedItemId: "section",
+      itemCount: 101,
+    });
+  });
+
+  it("allows a plain explicit group at the 100-item batch boundary", () => {
+    const group = Array.from({ length: 100 }, (_, index) => ({
+      id: `group-member-${index}`,
+      kind: "rectangle" as const,
+      groupId: "group",
+    }));
+
+    expect(findMoveCopyClosureLimitViolation(group)).toBeNull();
   });
 });
 

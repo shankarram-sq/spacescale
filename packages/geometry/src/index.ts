@@ -82,6 +82,7 @@ export interface StickyGeometry extends BoxGeometry {
 
 export interface ZoneGeometry extends BoxGeometry {
   title: string;
+  locked?: boolean;
 }
 
 export type ImageMimeType = (typeof IMAGE_MIME_TYPES)[number];
@@ -545,9 +546,16 @@ export function normalizeStickyGeometry(value: unknown, path = "$geometry"): Sti
 
 export function normalizeZoneGeometry(value: unknown, path = "$geometry"): ZoneGeometry {
   const object = expectRecord(value, path);
-  expectOnlyKeys(object, ["x", "y", "width", "height", "title"], path);
+  expectOnlyKeys(
+    object,
+    ["x", "y", "width", "height", "title", ...(own.call(object, "locked") ? ["locked"] : [])],
+    path,
+  );
   if (typeof object.title !== "string") {
     throw new GeometryValidationError("Expected zone title to be a string", `${path}.title`);
+  }
+  if (object.locked !== undefined && typeof object.locked !== "boolean") {
+    throw new GeometryValidationError("Expected zone locked to be a boolean", `${path}.locked`);
   }
   const box = normalizeBoxGeometry(
     { x: object.x, y: object.y, width: object.width, height: object.height },
@@ -559,7 +567,7 @@ export function normalizeZoneGeometry(value: unknown, path = "$geometry"): ZoneG
   if (box.height === 0) {
     throw new GeometryValidationError("Zone height must be greater than 0", `${path}.height`);
   }
-  return { ...box, title: object.title };
+  return { ...box, title: object.title, ...(object.locked === true ? { locked: true } : {}) };
 }
 
 export function isCanonicalImageAssetId(value: unknown): value is string {

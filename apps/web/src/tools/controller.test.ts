@@ -1,19 +1,30 @@
+import { MAX_BATCH_OPERATIONS } from "@collab/protocol";
 import { describe, expect, it } from "vitest";
-import type { BoardItem, Matrix } from "../types";
+import type { BatchItemOperation, BoardItem, Matrix } from "../types";
 import {
   buildCapturedCardResizeOperation,
   buildCapturedDeleteOperations,
   buildCapturedMoveOperations,
   buildCapturedTextUpdate,
+  buildCardResizeMembershipOperation,
+  buildFullEraserOperation,
   buildImageCreateOperation,
+  buildObjectTransformMembershipOperation,
+  buildSectionCreateMembershipOperation,
+  buildSectionDeleteMembershipOperation,
+  buildSectionResizeMembershipOperation,
   buildShapeCreateOperation,
   buildStampCreateOperation,
   buildStickyCreateOperation,
   buildTableCreateOperation,
+  buildTranslationMembershipOperations,
+  buildUngroupedCopyOperation,
   buildZoneCreateOperation,
   type CapturedMoveItem,
   cardResizeGrabOffset,
   defaultImageCardSize,
+  effectiveMoveItemsWithinBatchLimit,
+  expandPartialEraserSectionOperations,
   lineCreationReleaseAction,
   resizedCardGeometry,
   resolveConnectorEndpoint,
@@ -26,8 +37,56 @@ import {
   tapAdjustedMovePoint,
   toolFromShortcut,
 } from "./controller";
+import { GroupingError } from "./grouping";
 
 const ITEM_ID = "018f47a1-7a2b-7c3d-8e4f-123456789abd";
+const SECTION_ID = "018f47a1-7a2b-7c3d-8e4f-123456789abe";
+
+function sectionItem(width = 200, height = 200): Extract<BoardItem, { kind: "zone" }> {
+  return {
+    id: SECTION_ID,
+    kind: "zone",
+    z: 1,
+    version: 7,
+    createdBy: "teacher-a",
+    transform: [1, 0, 0, 1, 0, 0],
+    style: {
+      kind: "zone",
+      borderColor: "#d4d4d4",
+      fill: "#a8daff",
+      textColor: "#1e1e1e",
+      fontSize: 18,
+      opacity: 0.18,
+    },
+    geometry: { x: 0, y: 0, width, height, title: "Section" },
+  };
+}
+
+function stickyItem(
+  id: string,
+  x: number,
+  y: number,
+  createdBy: string,
+  sectionId?: string,
+): Extract<BoardItem, { kind: "sticky" }> {
+  return {
+    id,
+    kind: "sticky",
+    z: 2,
+    version: 4,
+    createdBy,
+    ...(sectionId === undefined ? {} : { sectionId }),
+    transform: [1, 0, 0, 1, 0, 0],
+    style: {
+      kind: "sticky",
+      fill: "#fde68a",
+      textColor: "#292524",
+      fontSize: 20,
+      opacity: 1,
+    },
+    geometry: { x, y, width: 40, height: 40, text: "Idea" },
+  };
+}
 
 describe("captured gesture operations", () => {
   it("uses a finger-friendly CSS-pixel tolerance for sticky double taps", () => {
@@ -93,12 +152,227 @@ describe("captured gesture operations", () => {
     ]);
   });
 
+  it("allows a Section move at the atomic batch boundary", () => {
+    const section = sectionItem();
+    const members = Array.from({ length: MAX_BATCH_OPERATIONS - 1 }, (_, index) =>
+      stickyItem(`member-${index}`, 20, 20, "teacher-a", SECTION_ID),
+    );
+
+    expect(
+      effectiveMoveItemsWithinBatchLimit([section, ...members], [SECTION_ID], true),
+    ).toHaveLength(MAX_BATCH_OPERATIONS);
+  });
+
+  it("rejects a move whose Section closure exceeds the atomic batch limit", () => {
+    const section = sectionItem();
+    const members = Array.from({ length: MAX_BATCH_OPERATIONS }, (_, index) =>
+      stickyItem(`member-${index}`, 20, 20, "teacher-a", SECTION_ID),
+    );
+
+    expect(() =>
+      effectiveMoveItemsWithinBatchLimit([section, ...members], [SECTION_ID], true),
+    ).toThrow(`Move ${MAX_BATCH_OPERATIONS} related items or fewer at once.`);
+  });
+
+  it("rejects an oversized ungrouped move selection", () => {
+    const selected = Array.from({ length: MAX_BATCH_OPERATIONS + 1 }, (_, index) =>
+      stickyItem(`selected-${index}`, index * 50, 20, "teacher-a"),
+    );
+
+    expect(() =>
+      effectiveMoveItemsWithinBatchLimit(
+        selected,
+        selected.map((item) => item.id),
+        false,
+      ),
+    ).toThrow(GroupingError);
+  });
+
   it("uses the first version captured by the eraser", () => {
     const captured = new Map([[ITEM_ID, 8]]);
 
     expect(buildCapturedDeleteOperations(captured)).toEqual([
       { kind: "item.delete", itemId: ITEM_ID, expectedVersion: 8 },
     ]);
+  });
+
+  it("moves Section members with Arrange and recomputes individual membership", () => {
+    const section = sectionItem();
+    const member = stickyItem("member-a", 20, 20, "teacher-a", SECTION_ID);
+    const independent = stickyItem("member-b", 20, 80, "teacher-a", SECTION_ID);
+    const operations = buildTranslationMembershipOperations(
+      [
+        {
+          kind: "item.update",
+          itemId: SECTION_ID,
+          expectedVersion: section.version,
+          patch: { transform: [1, 0, 0, 1, 100, 0] },
+        },
+      ],
+      [section, member, independent],
+      true,
+      () => true,
+    );
+
+    expect(operations).toEqual([
+      {
+        kind: "item.update",
+        itemId: SECTION_ID,
+        expectedVersion: section.version,
+        patch: { transform: [1, 0, 0, 1, 100, 0] },
+      },
+      {
+        kind: "item.update",
+        itemId: member.id,
+        expectedVersion: member.version,
+        patch: { transform: [1, 0, 0, 1, 100, 0] },
+      },
+      {
+        kind: "item.update",
+        itemId: independent.id,
+        expectedVersion: independent.version,
+        patch: { transform: [1, 0, 0, 1, 100, 0] },
+      },
+    ]);
+
+    expect(
+      buildTranslationMembershipOperations(
+        [
+          {
+            kind: "item.update",
+            itemId: member.id,
+            expectedVersion: member.version,
+            patch: { transform: [1, 0, 0, 1, 300, 0] },
+          },
+        ],
+        [section, member],
+        true,
+        () => true,
+      ),
+    ).toEqual([
+      {
+        kind: "item.update",
+        itemId: member.id,
+        expectedVersion: member.version,
+        patch: { transform: [1, 0, 0, 1, 300, 0], sectionId: null },
+      },
+    ]);
+  });
+
+  it("clears stale membership without assigning new membership when grouping is disabled", () => {
+    const section = sectionItem();
+    const member = stickyItem("member-a", 20, 20, "teacher-a", SECTION_ID);
+    const unassigned = stickyItem("member-b", 260, 20, "teacher-a");
+
+    expect(
+      buildTranslationMembershipOperations(
+        [
+          {
+            kind: "item.update",
+            itemId: member.id,
+            expectedVersion: member.version,
+            patch: { transform: [1, 0, 0, 1, 300, 0] },
+          },
+          {
+            kind: "item.update",
+            itemId: unassigned.id,
+            expectedVersion: unassigned.version,
+            patch: { transform: [1, 0, 0, 1, -260, 0] },
+          },
+        ],
+        [section, member, unassigned],
+        false,
+        () => true,
+      ),
+    ).toEqual([
+      {
+        kind: "item.update",
+        itemId: member.id,
+        expectedVersion: member.version,
+        patch: { transform: [1, 0, 0, 1, 300, 0], sectionId: null },
+      },
+      {
+        kind: "item.update",
+        itemId: unassigned.id,
+        expectedVersion: unassigned.version,
+        patch: { transform: [1, 0, 0, 1, -260, 0] },
+      },
+    ]);
+  });
+
+  it("expands a full-eraser Section delete to surviving memberships", () => {
+    const section = sectionItem();
+    const member = stickyItem("member-a", 20, 20, "teacher-a", SECTION_ID);
+
+    expect(buildFullEraserOperation([section], [section, member], () => true)).toEqual({
+      kind: "items.batch",
+      operations: [
+        {
+          kind: "item.delete",
+          itemId: SECTION_ID,
+          expectedVersion: section.version,
+        },
+        {
+          kind: "item.update",
+          itemId: member.id,
+          expectedVersion: member.version,
+          patch: { sectionId: null },
+        },
+      ],
+    });
+  });
+
+  it("expands a partial-eraser Section delete to surviving memberships", () => {
+    const section = sectionItem();
+    const member = stickyItem("member-a", 20, 20, "teacher-a", SECTION_ID);
+    const sectionDelete: BatchItemOperation = {
+      kind: "item.delete",
+      itemId: section.id,
+      expectedVersion: section.version,
+    };
+
+    expect(
+      expandPartialEraserSectionOperations(
+        [sectionDelete],
+        new Map([[section.id, section]]),
+        [section, member],
+        () => true,
+      ),
+    ).toEqual([
+      sectionDelete,
+      {
+        kind: "item.update",
+        itemId: member.id,
+        expectedVersion: member.version,
+        patch: { sectionId: null },
+      },
+    ]);
+  });
+
+  it("clears inherited relationships in the grouping-disabled copy fallback", () => {
+    const related = {
+      ...stickyItem(ITEM_ID, 20, 20, "teacher-a", SECTION_ID),
+      groupId: "018f47a1-7a2b-7c3d-8e4f-123456789ac0",
+    };
+
+    expect(buildUngroupedCopyOperation(related, "018f47a1-7a2b-7c3d-8e4f-123456789ac1")).toEqual({
+      kind: "item.copy",
+      sourceItemId: ITEM_ID,
+      expectedVersion: related.version,
+      newItemId: "018f47a1-7a2b-7c3d-8e4f-123456789ac1",
+      translate: { x: 20, y: 20 },
+      newGroupId: null,
+      newSectionId: null,
+    });
+
+    const plain = stickyItem(ITEM_ID, 20, 20, "teacher-a");
+    expect(buildUngroupedCopyOperation(plain, "018f47a1-7a2b-7c3d-8e4f-123456789ac2")).toEqual({
+      kind: "item.copy",
+      sourceItemId: ITEM_ID,
+      expectedVersion: plain.version,
+      newItemId: "018f47a1-7a2b-7c3d-8e4f-123456789ac2",
+      translate: { x: 20, y: 20 },
+    });
   });
 
   it("resolves connector snapping in CSS pixels at the current zoom", () => {
@@ -287,6 +561,40 @@ describe("captured gesture operations", () => {
       itemId: ITEM_ID,
       expectedVersion: 13,
       patch: { geometry: { x: 20, y: 30, text: "after" } },
+    });
+  });
+
+  it("clears Section membership when edited text grows outside its Section", () => {
+    const section = sectionItem(100, 100);
+    const item: Extract<BoardItem, { kind: "text" }> = {
+      id: ITEM_ID,
+      kind: "text",
+      sectionId: SECTION_ID,
+      z: 2,
+      version: 13,
+      createdBy: "teacher-a",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: { kind: "text", color: "#20201e", fontSize: 20, fontFamily: "sans", opacity: 1 },
+      geometry: { x: 10, y: 30, text: "a" },
+    };
+
+    expect(
+      buildCapturedTextUpdate(
+        {
+          itemId: item.id,
+          expectedVersion: item.version,
+          geometry: item.geometry,
+          item,
+        },
+        "1234567890",
+        [section, item],
+        false,
+      ),
+    ).toEqual({
+      kind: "item.update",
+      itemId: item.id,
+      expectedVersion: item.version,
+      patch: { geometry: { ...item.geometry, text: "1234567890" }, sectionId: null },
     });
   });
 
@@ -542,6 +850,399 @@ describe("captured gesture operations", () => {
         transform: [1, 0, 0, 1, 0, 0],
         geometry: { x: 140, y: 140, width: 520, height: 320, title: "Section" },
       },
+    });
+  });
+
+  it("rejects creating a Section around a foreign saved item", () => {
+    const operation = buildZoneCreateOperation(SECTION_ID, [260, 160]);
+    const ownedItem = stickyItem("018f47a1-7a2b-7c3d-8e4f-123456789abf", 20, 20, "teacher-a");
+    const foreignItem = stickyItem("018f47a1-7a2b-7c3d-8e4f-123456789ac0", 100, 20, "student-b");
+
+    expect(() =>
+      buildSectionCreateMembershipOperation(
+        operation,
+        [ownedItem, foreignItem],
+        (item) => item.createdBy === "teacher-a",
+      ),
+    ).toThrow(GroupingError);
+  });
+
+  it("waits for contained pending items before creating a Section", () => {
+    const operation = buildZoneCreateOperation(SECTION_ID, [260, 160]);
+    const pendingItem = {
+      ...stickyItem("018f47a1-7a2b-7c3d-8e4f-123456789ac5", 20, 20, "teacher-a"),
+      version: 0,
+    };
+
+    expect(() =>
+      buildSectionCreateMembershipOperation(operation, [pendingItem], () => true),
+    ).toThrow("Wait for every contained item to finish saving before creating a Section.");
+  });
+
+  it("batches Section creation with every contained owned item", () => {
+    const operation = buildZoneCreateOperation(SECTION_ID, [260, 160]);
+    const firstItem = stickyItem("018f47a1-7a2b-7c3d-8e4f-123456789ac1", 20, 20, "teacher-a");
+    const secondItem = stickyItem("018f47a1-7a2b-7c3d-8e4f-123456789ac2", 100, 20, "teacher-a");
+
+    expect(
+      buildSectionCreateMembershipOperation(
+        operation,
+        [firstItem, secondItem],
+        (item) => item.createdBy === "teacher-a",
+      ),
+    ).toEqual({
+      kind: "items.batch",
+      operations: [
+        operation,
+        {
+          kind: "item.update",
+          itemId: firstItem.id,
+          expectedVersion: firstItem.version,
+          patch: { sectionId: SECTION_ID },
+        },
+        {
+          kind: "item.update",
+          itemId: secondItem.id,
+          expectedVersion: secondItem.version,
+          patch: { sectionId: SECTION_ID },
+        },
+      ],
+    });
+  });
+
+  it("atomically clears surviving members when deleting a Section", () => {
+    const section = sectionItem();
+    const survivingMember = stickyItem(
+      "018f47a1-7a2b-7c3d-8e4f-123456789ac3",
+      20,
+      20,
+      "teacher-a",
+      SECTION_ID,
+    );
+    const deletedMember = stickyItem(
+      "018f47a1-7a2b-7c3d-8e4f-123456789ac4",
+      80,
+      20,
+      "teacher-a",
+      SECTION_ID,
+    );
+
+    expect(
+      buildSectionDeleteMembershipOperation(
+        [section, deletedMember],
+        [section, survivingMember, deletedMember],
+        () => true,
+      ),
+    ).toEqual({
+      kind: "items.batch",
+      operations: [
+        {
+          kind: "item.delete",
+          itemId: SECTION_ID,
+          expectedVersion: section.version,
+        },
+        {
+          kind: "item.delete",
+          itemId: deletedMember.id,
+          expectedVersion: deletedMember.version,
+        },
+        {
+          kind: "item.update",
+          itemId: survivingMember.id,
+          expectedVersion: survivingMember.version,
+          patch: { sectionId: null },
+        },
+      ],
+    });
+  });
+
+  it("rejects deleting a Section whose surviving member cannot be modified", () => {
+    const section = sectionItem();
+    const foreignMember = stickyItem(
+      "018f47a1-7a2b-7c3d-8e4f-123456789ac3",
+      20,
+      20,
+      "student-b",
+      SECTION_ID,
+    );
+
+    expect(() =>
+      buildSectionDeleteMembershipOperation(
+        [section],
+        [section, foreignMember],
+        (item) => item.createdBy === "teacher-a",
+      ),
+    ).toThrow(GroupingError);
+  });
+
+  it("clears Section membership atomically when scaling a shape outside", () => {
+    const section = sectionItem();
+    const item: Extract<BoardItem, { kind: "rectangle" }> = {
+      id: "018f47a1-7a2b-7c3d-8e4f-123456789ac5",
+      kind: "rectangle",
+      sectionId: SECTION_ID,
+      z: 2,
+      version: 4,
+      createdBy: "teacher-a",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: { kind: "stroke", color: "#20201e", width: 2, opacity: 1 },
+      geometry: { x: 10, y: 20, width: 40, height: 40, shape: "rectangle" },
+    };
+    const transform: Matrix = [6, 0, 0, 6, 0, 0];
+
+    expect(
+      buildObjectTransformMembershipOperation({ item, expectedVersion: item.version }, transform, [
+        section,
+        item,
+      ]),
+    ).toEqual({
+      kind: "item.update",
+      itemId: item.id,
+      expectedVersion: item.version,
+      patch: { transform, sectionId: null },
+    });
+  });
+
+  it("clears Section membership atomically when rotating an image outside", () => {
+    const section = sectionItem();
+    const item: Extract<BoardItem, { kind: "image" }> = {
+      id: "018f47a1-7a2b-7c3d-8e4f-123456789ac6",
+      kind: "image",
+      sectionId: SECTION_ID,
+      z: 2,
+      version: 5,
+      createdBy: "teacher-a",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: { kind: "image", opacity: 1, radius: 12 },
+      geometry: {
+        x: 50,
+        y: 10,
+        width: 100,
+        height: 20,
+        assetId: `asset_${"a".repeat(43)}`,
+        mimeType: "image/png",
+        intrinsicWidth: 100,
+        intrinsicHeight: 20,
+      },
+    };
+    const transform: Matrix = [0, 1, -1, 0, 120, -80];
+
+    expect(
+      buildObjectTransformMembershipOperation({ item, expectedVersion: item.version }, transform, [
+        section,
+        item,
+      ]),
+    ).toEqual({
+      kind: "item.update",
+      itemId: item.id,
+      expectedVersion: item.version,
+      patch: { transform, sectionId: null },
+    });
+  });
+
+  it("clears Section membership atomically when resizing a sticky outside", () => {
+    const section = sectionItem();
+    const item = stickyItem(
+      "018f47a1-7a2b-7c3d-8e4f-123456789ac7",
+      140,
+      20,
+      "teacher-a",
+      SECTION_ID,
+    );
+    const geometry = { ...item.geometry, width: 80 };
+
+    expect(
+      buildCardResizeMembershipOperation({ item, expectedVersion: item.version }, geometry, [
+        section,
+        item,
+      ]),
+    ).toEqual({
+      kind: "item.update",
+      itemId: item.id,
+      expectedVersion: item.version,
+      patch: { geometry, sectionId: null },
+    });
+  });
+
+  it("clears Section membership atomically when resizing a table outside", () => {
+    const section = sectionItem();
+    const item: Extract<BoardItem, { kind: "table" }> = {
+      id: "018f47a1-7a2b-7c3d-8e4f-123456789ac8",
+      kind: "table",
+      sectionId: SECTION_ID,
+      z: 2,
+      version: 4,
+      createdBy: "teacher-a",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "table",
+        borderColor: "#d4d4d4",
+        fill: "#ffffff",
+        headerFill: "#d3bdff",
+        textColor: "#1e1e1e",
+        fontSize: 16,
+        opacity: 1,
+      },
+      geometry: {
+        x: 140,
+        y: 20,
+        columnWidths: [40],
+        rowHeights: [40],
+        cells: [[""]],
+      },
+    };
+    const geometry = { ...item.geometry, columnWidths: [80] };
+
+    expect(
+      buildSectionResizeMembershipOperation(
+        { item, expectedVersion: item.version, handle: { kind: "southeast" } },
+        geometry,
+        [section, item],
+        () => true,
+      ),
+    ).toEqual({
+      kind: "item.update",
+      itemId: item.id,
+      expectedVersion: item.version,
+      patch: { geometry, sectionId: null },
+    });
+  });
+
+  it.each([
+    {
+      name: "leaving",
+      section: sectionItem(),
+      item: {
+        ...stickyItem("018f47a1-7a2b-7c3d-8e4f-123456789ac9", 140, 20, "teacher-a", SECTION_ID),
+        version: 0,
+      },
+      geometry: { ...sectionItem().geometry, width: 100 },
+    },
+    {
+      name: "entering",
+      section: sectionItem(100, 100),
+      item: {
+        ...stickyItem("018f47a1-7a2b-7c3d-8e4f-123456789aca", 140, 20, "teacher-a"),
+        version: 0,
+      },
+      geometry: { ...sectionItem(100, 100).geometry, width: 200 },
+    },
+  ])("waits for a pending $name item before resizing a Section", ({ section, item, geometry }) => {
+    expect(() =>
+      buildSectionResizeMembershipOperation(
+        { item: section, expectedVersion: section.version, handle: { kind: "southeast" } },
+        geometry,
+        [section, item],
+        () => true,
+      ),
+    ).toThrow("Wait for every affected item to finish saving before resizing this Section.");
+  });
+
+  it("allows a Section resize when pending member relationships stay unchanged", () => {
+    const section = sectionItem();
+    const pendingMember = {
+      ...stickyItem("018f47a1-7a2b-7c3d-8e4f-123456789acb", 20, 20, "teacher-a", SECTION_ID),
+      version: 0,
+    };
+    const geometry = { ...section.geometry, width: 180 };
+
+    expect(
+      buildSectionResizeMembershipOperation(
+        { item: section, expectedVersion: section.version, handle: { kind: "southeast" } },
+        geometry,
+        [section, pendingMember],
+        () => true,
+      ),
+    ).toEqual({
+      kind: "item.update",
+      itemId: SECTION_ID,
+      expectedVersion: section.version,
+      patch: { geometry },
+    });
+  });
+
+  it("rejects shrinking a Section around a foreign member", () => {
+    const section = sectionItem();
+    const foreignMember = stickyItem(
+      "018f47a1-7a2b-7c3d-8e4f-123456789abf",
+      140,
+      20,
+      "student-b",
+      SECTION_ID,
+    );
+
+    expect(() =>
+      buildSectionResizeMembershipOperation(
+        { item: section, expectedVersion: section.version, handle: { kind: "southeast" } },
+        { ...section.geometry, width: 100 },
+        [section, foreignMember],
+        (item) => item.createdBy === "teacher-a",
+      ),
+    ).toThrow(GroupingError);
+  });
+
+  it("rejects expanding a Section around a foreign item", () => {
+    const section = sectionItem(100, 100);
+    const foreignItem = stickyItem("018f47a1-7a2b-7c3d-8e4f-123456789ac0", 140, 20, "student-b");
+
+    expect(() =>
+      buildSectionResizeMembershipOperation(
+        { item: section, expectedVersion: section.version, handle: { kind: "southeast" } },
+        { ...section.geometry, width: 200 },
+        [section, foreignItem],
+        (item) => item.createdBy === "teacher-a",
+      ),
+    ).toThrow(GroupingError);
+  });
+
+  it("batches owned resize membership changes without repairing unrelated foreign items", () => {
+    const section = sectionItem();
+    const enteringItem = stickyItem("018f47a1-7a2b-7c3d-8e4f-123456789ac1", 220, 20, "teacher-a");
+    const leavingItem = stickyItem(
+      "018f47a1-7a2b-7c3d-8e4f-123456789ac2",
+      20,
+      140,
+      "teacher-a",
+      SECTION_ID,
+    );
+    const unrelatedForeignItem = stickyItem(
+      "018f47a1-7a2b-7c3d-8e4f-123456789ac3",
+      400,
+      400,
+      "student-b",
+      "018f47a1-7a2b-7c3d-8e4f-123456789ac4",
+    );
+    const geometry = { ...section.geometry, width: 300, height: 100 };
+
+    expect(
+      buildSectionResizeMembershipOperation(
+        { item: section, expectedVersion: section.version, handle: { kind: "southeast" } },
+        geometry,
+        [section, enteringItem, leavingItem, unrelatedForeignItem],
+        (item) => item.createdBy === "teacher-a",
+      ),
+    ).toEqual({
+      kind: "items.batch",
+      operations: [
+        {
+          kind: "item.update",
+          itemId: SECTION_ID,
+          expectedVersion: 7,
+          patch: { geometry },
+        },
+        {
+          kind: "item.update",
+          itemId: enteringItem.id,
+          expectedVersion: 4,
+          patch: { sectionId: SECTION_ID },
+        },
+        {
+          kind: "item.update",
+          itemId: leavingItem.id,
+          expectedVersion: 4,
+          patch: { sectionId: null },
+        },
+      ],
     });
   });
 });

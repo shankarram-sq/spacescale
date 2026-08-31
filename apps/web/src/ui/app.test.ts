@@ -1,3 +1,4 @@
+import { DEFAULT_BOARD_FEATURES } from "@collab/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "../transport/api";
 import type { BoardItem, BoardSnapshot, DurableOperation } from "../types";
@@ -11,6 +12,7 @@ import {
   buildTextStyleOperations,
   clampImageAlt,
   clampStickyText,
+  effectiveTextFontWeight,
   imageUploadIssue,
   localSvg,
   MAX_IMAGE_UPLOAD_BYTES,
@@ -22,6 +24,7 @@ import {
   savedAuthoritativeItems,
   serializeAttributedData,
   tableCellDraftFromOperation,
+  templateFeatureIssue,
   withAdaptiveTurnstile,
   zoneTitleDraftFromOperation,
 } from "./app";
@@ -31,6 +34,16 @@ const boardId = "b_1234567890123456789012";
 describe("SpaceScale browser storage", () => {
   it("uses the SpaceScale namespace for managed invitation metadata", () => {
     expect(managedInvitationStorageKey(boardId)).toBe(`spacescale:managed-invitations:${boardId}`);
+  });
+});
+
+describe("effective selection font weight", () => {
+  it("treats an omitted Section weight as bold and other omitted weights as normal", () => {
+    expect(effectiveTextFontWeight({ kind: "zone", style: {} })).toBe("bold");
+    expect(effectiveTextFontWeight({ kind: "zone", style: { fontWeight: "normal" } })).toBe(
+      "normal",
+    );
+    expect(effectiveTextFontWeight({ kind: "sticky", style: {} })).toBe("normal");
   });
 });
 
@@ -172,6 +185,18 @@ describe("live Organisation-template management", () => {
   });
 });
 
+describe("template feature preflight", () => {
+  it("requires object transforms only for non-identity linear components", () => {
+    const features = { ...DEFAULT_BOARD_FEATURES, objectTransforms: false };
+    expect(
+      templateFeatureIssue([{ kind: "rectangle", transform: [1, 0, 0, 1, 200, 100] }], features),
+    ).toBeNull();
+    expect(
+      templateFeatureIssue([{ kind: "rectangle", transform: [0, 1, -1, 0, 200, 100] }], features),
+    ).toMatch(/Scale and rotate/u);
+  });
+});
+
 describe("student item ownership preflight", () => {
   const studentId = "student-a";
   const otherStudentId = "student-b";
@@ -263,6 +288,56 @@ describe("student item ownership preflight", () => {
         items,
       ),
     ).toBe(false);
+  });
+
+  it("blocks everyone from mutating locked Section contents while allowing an owner unlock", () => {
+    const section: BoardItem = {
+      id: "locked-section",
+      kind: "zone",
+      z: 1,
+      version: 5,
+      createdBy: "coach",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "zone",
+        borderColor: "#60a5fa",
+        fill: "#eff6ff",
+        textColor: "#1e3a8a",
+        fontSize: 20,
+        opacity: 0.8,
+      },
+      geometry: { x: 0, y: 0, width: 600, height: 400, title: "Review", locked: true },
+    };
+    const member: BoardItem = { ...ownItem, sectionId: section.id };
+    const lockedItems = new Map<string, BoardItem>([
+      [section.id, section],
+      [member.id, member],
+    ]);
+    const updateMember: DurableOperation = {
+      kind: "item.update",
+      itemId: member.id,
+      expectedVersion: member.version,
+      patch: { geometry: { ...member.geometry, text: "Blocked" } },
+    };
+    const copyMember: DurableOperation = {
+      kind: "item.copy",
+      sourceItemId: member.id,
+      expectedVersion: member.version,
+      newItemId: "locked-copy",
+      translate: { x: 20, y: 20 },
+    };
+    const unlock: DurableOperation = {
+      kind: "item.update",
+      itemId: section.id,
+      expectedVersion: section.version,
+      patch: { geometry: { ...section.geometry, locked: false } },
+    };
+
+    expect(operationAllowedForActor(updateMember, "owner", "coach", lockedItems)).toBe(false);
+    expect(operationAllowedForActor(updateMember, "editor", studentId, lockedItems)).toBe(false);
+    expect(operationAllowedForActor(copyMember, "owner", "coach", lockedItems)).toBe(false);
+    expect(operationAllowedForActor(unlock, "owner", "coach", lockedItems)).toBe(true);
+    expect(operationAllowedForActor(unlock, "editor", studentId, lockedItems)).toBe(false);
   });
 
   it("keeps editor history available while viewers cannot commit", () => {
@@ -572,6 +647,86 @@ describe("sticky note UI configuration", () => {
         patch: {
           style: { ...text.style, fontFamily: "handwritten", fontSize: 52 },
         },
+      },
+    ]);
+
+    const sticky: Extract<BoardItem, { kind: "sticky" }> = {
+      id: "sticky-a",
+      kind: "sticky",
+      z: 2,
+      version: 5,
+      createdBy: "student-a",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "sticky",
+        fill: "#ffdf8a",
+        textColor: "#20201e",
+        fontSize: 20,
+        opacity: 1,
+      },
+      geometry: { x: 20, y: 30, width: 180, height: 140, text: "Evidence" },
+    };
+    expect(
+      buildTextStyleOperations([sticky], {
+        fontFamily: "serif",
+        fontWeight: "bold",
+        fontStyle: "italic",
+        textDecoration: "underline",
+      }),
+    ).toEqual([
+      {
+        kind: "item.update",
+        itemId: "sticky-a",
+        expectedVersion: 5,
+        patch: {
+          style: {
+            ...sticky.style,
+            fontFamily: "serif",
+            fontWeight: "bold",
+            fontStyle: "italic",
+            textDecoration: "underline",
+          },
+        },
+      },
+    ]);
+  });
+
+  it("clears Section membership when font size expands text outside its Section", () => {
+    const section: Extract<BoardItem, { kind: "zone" }> = {
+      id: "section-a",
+      kind: "zone",
+      z: 1,
+      version: 2,
+      createdBy: "student-a",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "zone",
+        borderColor: "#60a5fa",
+        fill: "#eff6ff",
+        textColor: "#1e3a8a",
+        fontSize: 20,
+        opacity: 0.8,
+      },
+      geometry: { x: 0, y: 0, width: 100, height: 100, title: "Text" },
+    };
+    const text: Extract<BoardItem, { kind: "text" }> = {
+      id: "text-section-member",
+      kind: "text",
+      sectionId: section.id,
+      z: 2,
+      version: 3,
+      createdBy: "student-a",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: { kind: "text", color: "#1e1e1e", fontSize: 10, fontFamily: "sans", opacity: 1 },
+      geometry: { x: 10, y: 30, text: "Question" },
+    };
+
+    expect(buildTextStyleOperations([text], { fontSize: 30 }, [section, text], false)).toEqual([
+      {
+        kind: "item.update",
+        itemId: text.id,
+        expectedVersion: text.version,
+        patch: { style: { ...text.style, fontSize: 30 }, sectionId: null },
       },
     ]);
   });

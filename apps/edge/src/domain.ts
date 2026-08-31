@@ -37,6 +37,8 @@ export type ItemPatch = {
   style?: ItemStyle;
   transform?: Matrix;
   geometry?: ItemGeometry;
+  groupId?: string | null;
+  sectionId?: string | null;
 };
 
 export type ParsedItemOperation =
@@ -49,6 +51,8 @@ export type ParsedItemOperation =
       expectedVersion: number;
       newItemId: string;
       translate: { x: number; y: number };
+      newGroupId?: string | null;
+      newSectionId?: string | null;
     };
 
 export type ParsedOperation =
@@ -88,6 +92,8 @@ export interface PreparedOperation {
 
 export interface NewItem {
   id: string;
+  groupId?: string;
+  sectionId?: string;
   kind: BoardItemKind;
   style: unknown;
   transform: unknown;
@@ -98,6 +104,8 @@ interface RawPatch {
   style?: unknown;
   transform?: unknown;
   geometry?: unknown;
+  groupId?: string | null;
+  sectionId?: string | null;
 }
 
 export class BoardDomainError extends Error {
@@ -139,7 +147,14 @@ export function parseOperation(value: unknown): ParsedOperation {
     case "item.update": {
       exact(operation, ["kind", "itemId", "expectedVersion", "patch"], "op");
       const patch = record(operation.patch, "op.patch");
-      optionalOnly(patch, ["style", "transform", "geometry"], "op.patch");
+      optionalOnly(patch, ["style", "transform", "geometry", "groupId", "sectionId"], "op.patch");
+      if (Object.hasOwn(patch, "groupId")) {
+        patch.groupId = patch.groupId === null ? null : opaqueId(patch.groupId, "patch.groupId");
+      }
+      if (Object.hasOwn(patch, "sectionId")) {
+        patch.sectionId =
+          patch.sectionId === null ? null : opaqueId(patch.sectionId, "patch.sectionId");
+      }
       if (Object.keys(patch).length === 0)
         throw new BoardDomainError("INVALID_FRAME", "An update patch is empty.");
       return {
@@ -168,7 +183,24 @@ export function parseOperation(value: unknown): ParsedOperation {
       };
     }
     case "item.copy": {
-      exact(operation, ["kind", "sourceItemId", "expectedVersion", "newItemId", "translate"], "op");
+      optionalOnly(
+        operation,
+        [
+          "kind",
+          "sourceItemId",
+          "expectedVersion",
+          "newItemId",
+          "translate",
+          "newGroupId",
+          "newSectionId",
+        ],
+        "op",
+      );
+      for (const field of ["kind", "sourceItemId", "expectedVersion", "newItemId", "translate"]) {
+        if (!Object.hasOwn(operation, field)) {
+          throw new BoardDomainError("INVALID_FRAME", `op.${field} is required.`);
+        }
+      }
       const translate = record(operation.translate, "op.translate");
       exact(translate, ["x", "y"], "op.translate");
       return {
@@ -181,6 +213,20 @@ export function parseOperation(value: unknown): ParsedOperation {
           Number.MAX_SAFE_INTEGER,
         ),
         newItemId: opaqueId(operation.newItemId, "newItemId"),
+        ...(Object.hasOwn(operation, "newGroupId")
+          ? {
+              newGroupId:
+                operation.newGroupId === null ? null : opaqueId(operation.newGroupId, "newGroupId"),
+            }
+          : {}),
+        ...(Object.hasOwn(operation, "newSectionId")
+          ? {
+              newSectionId:
+                operation.newSectionId === null
+                  ? null
+                  : opaqueId(operation.newSectionId, "newSectionId"),
+            }
+          : {}),
         translate: {
           x: finiteCoordinate(translate.x, "translate.x"),
           y: finiteCoordinate(translate.y, "translate.y"),
@@ -364,9 +410,22 @@ export function itemWriteFromState(
 
 function parseNewItem(value: unknown): NewItem {
   const item = record(value, "op.item");
-  exact(item, ["id", "kind", "style", "transform", "geometry"], "op.item");
+  optionalOnly(
+    item,
+    ["id", "kind", "style", "transform", "geometry", "groupId", "sectionId"],
+    "op.item",
+  );
+  for (const field of ["id", "kind", "style", "transform", "geometry"]) {
+    if (!Object.hasOwn(item, field)) {
+      throw new BoardDomainError("INVALID_FRAME", `op.item.${field} is required.`);
+    }
+  }
   return {
     id: opaqueId(item.id, "item.id"),
+    ...(Object.hasOwn(item, "groupId") ? { groupId: opaqueId(item.groupId, "item.groupId") } : {}),
+    ...(Object.hasOwn(item, "sectionId")
+      ? { sectionId: opaqueId(item.sectionId, "item.sectionId") }
+      : {}),
     kind: itemKind(item.kind),
     style: item.style,
     transform: item.transform,

@@ -1,5 +1,7 @@
+import { findMoveCopyClosureLimitViolation } from "@collab/board-core";
+import { MAX_BATCH_OPERATIONS } from "@collab/protocol";
 import type { BoardModel, Bounds, ConnectorAnchor } from "../board/model";
-import { translateMatrix } from "../board/model";
+import { itemBounds, translateMatrix } from "../board/model";
 import type { BoardRenderer } from "../board/renderer";
 import { STICKY_COLOR_VALUES, UI_COLORS } from "../palette";
 import type {
@@ -30,6 +32,14 @@ import type {
 } from "../types";
 import { createId, roundBoard } from "../types";
 import {
+  buildGroupBatch,
+  buildGroupedSectionCopyBatch,
+  buildUngroupBatch,
+  effectiveMoveCopyClosure,
+  explicitGroupClosure,
+  GroupingError,
+} from "./grouping";
+import {
   buildCapturedStructuredResizeOperation,
   type CapturedStructuredResize,
   resizedStructuredGeometry,
@@ -37,6 +47,19 @@ import {
   structuredResizeGrabOffset,
 } from "./resize";
 import { eraseStrokeItem, isPartiallyErasableItem } from "./stroke-erase";
+import {
+  buildCapturedObjectTransformOperation,
+  type CapturedObjectTransform,
+  isRotatableObjectItem,
+  isScalableObjectItem,
+  objectLocalCenter,
+  objectScaleGrabOffset,
+  type RotatableObjectItem,
+  rotatedMatrixAroundLocalPoint,
+  type ScalableObjectItem,
+  scaledObjectMatrix,
+  transformedPoint,
+} from "./transform";
 
 export type StyleState = {
   color: string;
@@ -167,6 +190,7 @@ export type CapturedTextEdit = {
   itemId: string;
   expectedVersion: number;
   geometry: TextGeometry | StickyGeometry;
+  item?: Extract<BoardItem, { kind: "text" | "sticky" }>;
 };
 
 export type ResizableCardItem = Extract<BoardItem, { kind: "sticky" | "image" }>;
@@ -216,7 +240,7 @@ export function resizedCardGeometry(
 export function buildCapturedCardResizeOperation(
   capture: CapturedCardResize,
   geometry: StickyGeometry | ImageGeometry,
-): BatchItemOperation {
+): Extract<BatchItemOperation, { kind: "item.update" }> {
   return {
     kind: "item.update",
     itemId: capture.item.id,
@@ -225,16 +249,152 @@ export function buildCapturedCardResizeOperation(
   };
 }
 
+export function buildCardResizeMembershipOperation(
+  capture: CapturedCardResize,
+  geometry: StickyGeometry | ImageGeometry,
+  items: Iterable<BoardItem>,
+  assignNewMembership = true,
+): BatchItemOperation {
+  const resize = buildCapturedCardResizeOperation(capture, geometry);
+  const resizedItem = { ...capture.item, geometry } as BoardItem;
+  const sectionId = sectionIdAfterBoundsChange(items, resizedItem, assignNewMembership);
+  if (sectionId === capture.item.sectionId) return resize;
+  return {
+    ...resize,
+    patch: { ...resize.patch, sectionId: sectionId ?? null },
+  };
+}
+
 export function buildCapturedMoveOperations(
   items: ReadonlyMap<string, CapturedMoveItem>,
   delta: { x: number; y: number },
-): BatchItemOperation[] {
+): Array<Extract<BatchItemOperation, { kind: "item.update" }>> {
   return [...items].map(([itemId, item]) => ({
     kind: "item.update",
     itemId,
     expectedVersion: item.expectedVersion,
     patch: { transform: translateMatrix(item.transform, delta.x, delta.y) },
   }));
+}
+
+export function buildTranslationMembershipOperations(
+  directUpdates: readonly Extract<BatchItemOperation, { kind: "item.update" }>[],
+  items: Iterable<BoardItem>,
+  groupingEnabled: boolean,
+  canModifyItem: (item: BoardItem) => boolean,
+  maxItems = MAX_BATCH_OPERATIONS,
+): BatchItemOperation[] {
+  const savedItems = [...items];
+  const itemIndex = new Map(savedItems.map((item) => [item.id, item]));
+  const operations = new Map(directUpdates.map((operation) => [operation.itemId, operation]));
+  const movedSectionIds = new Set<string>();
+
+  for (const operation of directUpdates) {
+    const section = itemIndex.get(operation.itemId);
+    const transform = operation.patch.transform;
+    if (section?.kind !== "zone" || transform === undefined) continue;
+    const delta = {
+      x: transform[4] - section.transform[4],
+      y: transform[5] - section.transform[5],
+    };
+    if (delta.x === 0 && delta.y === 0) continue;
+    if (!groupingEnabled) continue;
+    movedSectionIds.add(section.id);
+    for (const member of savedItems) {
+      if (member.sectionId !== section.id) continue;
+      operations.set(member.id, {
+        kind: "item.update",
+        itemId: member.id,
+        expectedVersion: member.version,
+        patch: { transform: translateMatrix(member.transform, delta.x, delta.y) },
+      });
+    }
+  }
+
+  const sectionOverrides = new Map<string, Extract<BoardItem, { kind: "zone" }>>();
+  for (const operation of operations.values()) {
+    const item = itemIndex.get(operation.itemId);
+    if (item?.kind === "zone" && operation.patch.transform !== undefined) {
+      sectionOverrides.set(item.id, { ...item, transform: operation.patch.transform });
+    }
+  }
+  if (!groupingEnabled && sectionOverrides.size > 0) {
+    for (const item of savedItems) {
+      if (
+        item.kind === "zone" ||
+        !item.sectionId ||
+        !sectionOverrides.has(item.sectionId) ||
+        operations.has(item.id)
+      ) {
+        continue;
+      }
+      const sectionId = sectionIdAfterBoundsChange(savedItems, item, false, sectionOverrides);
+      if (sectionId === item.sectionId) continue;
+      operations.set(item.id, {
+        kind: "item.update",
+        itemId: item.id,
+        expectedVersion: item.version,
+        patch: { sectionId: null },
+      });
+    }
+  }
+
+  const affectedItems = [...operations.keys()].flatMap((itemId) => {
+    const item = itemIndex.get(itemId);
+    return item ? [item] : [];
+  });
+  const limit = Math.max(1, Math.min(MAX_BATCH_OPERATIONS, Math.floor(maxItems)));
+  if (operations.size > limit) {
+    throw new GroupingError(`Arrange ${limit} related items or fewer at a time.`);
+  }
+  if (affectedItems.some((item) => item.version < 1)) {
+    throw new GroupingError(
+      "Wait for every affected Section item to finish saving before arranging.",
+    );
+  }
+  if (affectedItems.some((item) => !canModifyItem(item))) {
+    throw new GroupingError("This arrangement includes a Section item you cannot modify.");
+  }
+
+  return [...operations.values()].map((operation) => {
+    const item = itemIndex.get(operation.itemId);
+    if (!item || item.kind === "zone" || operation.patch.transform === undefined) return operation;
+    if (item.sectionId && movedSectionIds.has(item.sectionId)) return operation;
+    const movedItem = { ...item, transform: operation.patch.transform } as BoardItem;
+    const sectionId = sectionIdAfterBoundsChange(
+      savedItems,
+      movedItem,
+      groupingEnabled,
+      sectionOverrides,
+    );
+    if (sectionId === item.sectionId) return operation;
+    return { ...operation, patch: { ...operation.patch, sectionId: sectionId ?? null } };
+  });
+}
+
+export function effectiveMoveItemsWithinBatchLimit(
+  items: Iterable<BoardItem>,
+  selectedIds: Iterable<string>,
+  groupingEnabled: boolean,
+): BoardItem[] {
+  const savedItems = [...items];
+  const selected = new Set(selectedIds);
+  const effectiveItems = groupingEnabled
+    ? effectiveMoveCopyClosure(savedItems, selected)
+    : [...selected].flatMap((id) => {
+        const item = savedItems.find((candidate) => candidate.id === id);
+        return item ? [item] : [];
+      });
+  const violation = groupingEnabled ? findMoveCopyClosureLimitViolation(savedItems) : null;
+  if (
+    effectiveItems.length > MAX_BATCH_OPERATIONS ||
+    (violation !== null && effectiveItems.some((item) => item.id === violation.seedItemId))
+  ) {
+    throw new GroupingError(
+      `Move ${MAX_BATCH_OPERATIONS} related items or fewer at once. Split large Sections or groups first.`,
+    );
+  }
+  return effectiveItems;
 }
 
 export function buildCapturedDeleteOperations(
@@ -247,13 +407,126 @@ export function buildCapturedDeleteOperations(
   }));
 }
 
-export function buildCapturedTextUpdate(edit: CapturedTextEdit, text: string): BatchItemOperation {
-  return {
+export function buildSectionDeleteMembershipOperation(
+  selectedItems: readonly BoardItem[],
+  items: Iterable<BoardItem>,
+  canModifyItem: (item: BoardItem) => boolean,
+): DurableOperation {
+  const selectedIds = new Set(selectedItems.map((item) => item.id));
+  const deletedSectionIds = new Set(
+    selectedItems.flatMap((item) => (item.kind === "zone" ? [item.id] : [])),
+  );
+  const survivingMembers = [...items].filter(
+    (item) =>
+      !selectedIds.has(item.id) &&
+      item.sectionId !== undefined &&
+      deletedSectionIds.has(item.sectionId),
+  );
+
+  if (survivingMembers.some((item) => item.version <= 0)) {
+    throw new GroupingError(
+      "Wait for every Section member to finish saving before deleting the Section.",
+    );
+  }
+  if (survivingMembers.some((item) => !canModifyItem(item))) {
+    throw new GroupingError("This Section contains an item you cannot remove from the Section.");
+  }
+
+  const operations: BatchItemOperation[] = [
+    ...selectedItems.map((item) => ({
+      kind: "item.delete" as const,
+      itemId: item.id,
+      expectedVersion: item.version,
+    })),
+    ...survivingMembers.map((item) => ({
+      kind: "item.update" as const,
+      itemId: item.id,
+      expectedVersion: item.version,
+      patch: { sectionId: null },
+    })),
+  ];
+  if (operations.length > MAX_BATCH_OPERATIONS) {
+    throw new GroupingError(
+      `Delete ${MAX_BATCH_OPERATIONS} items and Section relationships or fewer at once.`,
+    );
+  }
+  return { kind: "items.batch", operations };
+}
+
+export function buildFullEraserOperation(
+  erasedItems: readonly BoardItem[],
+  items: Iterable<BoardItem>,
+  canModifyItem: (item: BoardItem) => boolean,
+): DurableOperation {
+  return buildSectionDeleteMembershipOperation(erasedItems, items, canModifyItem);
+}
+
+export function expandPartialEraserSectionOperations(
+  operations: readonly BatchItemOperation[],
+  capturedItems: ReadonlyMap<string, BoardItem>,
+  items: Iterable<BoardItem>,
+  canModifyItem: (item: BoardItem) => boolean,
+): BatchItemOperation[] {
+  const deletedItems = operations.flatMap((operation) => {
+    if (operation.kind !== "item.delete") return [];
+    const item = capturedItems.get(operation.itemId);
+    return item ? [item] : [];
+  });
+  if (!deletedItems.some((item) => item.kind === "zone")) return [...operations];
+
+  const expanded = buildSectionDeleteMembershipOperation(deletedItems, items, canModifyItem);
+  if (expanded.kind !== "items.batch") {
+    throw new GroupingError("Could not expand partial eraser Section relationships.");
+  }
+  const result = [...operations];
+  const operationIndexes = new Map<string, number>();
+  for (const [index, operation] of result.entries()) {
+    if (operation.kind === "item.update" || operation.kind === "item.delete") {
+      operationIndexes.set(operation.itemId, index);
+    }
+  }
+  for (const operation of expanded.operations) {
+    if (operation.kind !== "item.update" && operation.kind !== "item.delete") continue;
+    const index = operationIndexes.get(operation.itemId);
+    if (index === undefined) {
+      operationIndexes.set(operation.itemId, result.length);
+      result.push(operation);
+      continue;
+    }
+    const existing = result[index];
+    if (operation.kind === "item.update" && existing?.kind === "item.update") {
+      result[index] = {
+        ...existing,
+        patch: { ...existing.patch, ...operation.patch },
+      } as BatchItemOperation;
+    }
+  }
+  if (result.length > MAX_BATCH_OPERATIONS) {
+    throw new GroupingError(
+      `Erase ${MAX_BATCH_OPERATIONS} items and Section relationships or fewer at once.`,
+    );
+  }
+  return result;
+}
+
+export function buildCapturedTextUpdate(
+  edit: CapturedTextEdit,
+  text: string,
+  items?: Iterable<BoardItem>,
+  assignNewMembership = true,
+): BatchItemOperation {
+  const geometry = { ...edit.geometry, text };
+  const update: BatchItemOperation = {
     kind: "item.update",
     itemId: edit.itemId,
     expectedVersion: edit.expectedVersion,
-    patch: { geometry: { ...edit.geometry, text } },
+    patch: { geometry },
   };
+  if (edit.item?.kind !== "text" || items === undefined) return update;
+  const prospectiveItem = { ...edit.item, geometry } as Extract<BoardItem, { kind: "text" }>;
+  const sectionId = sectionIdAfterBoundsChange(items, prospectiveItem, assignNewMembership);
+  if (sectionId === edit.item.sectionId) return update;
+  return { ...update, patch: { ...update.patch, sectionId: sectionId ?? null } };
 }
 
 export function buildStickyCreateOperation(
@@ -438,6 +711,111 @@ export function buildZoneCreateOperation(
   };
 }
 
+export function buildSectionCreateMembershipOperation(
+  operation: ZoneCreateOperation,
+  items: Iterable<BoardItem>,
+  canModifyItem: (item: BoardItem) => boolean,
+): DurableOperation {
+  const savedItems = [...items];
+  const provisionalSection = {
+    ...operation.item,
+    z: Math.max(0, ...savedItems.map((item) => item.z)) + 1,
+    version: 0,
+    createdBy: operation.item.id,
+  } as Extract<BoardItem, { kind: "zone" }>;
+  const sectionBounds = itemBounds(provisionalSection);
+  const containedItems = savedItems.filter(
+    (item) =>
+      item.kind !== "zone" &&
+      item.sectionId !== operation.item.id &&
+      boundsContain(sectionBounds, itemBounds(item)),
+  );
+
+  if (containedItems.some((item) => item.version < 1)) {
+    throw new GroupingError(
+      "Wait for every contained item to finish saving before creating a Section.",
+    );
+  }
+
+  if (containedItems.some((item) => !canModifyItem(item))) {
+    throw new GroupingError("This Section would contain an item you cannot add to the Section.");
+  }
+
+  const operations: BatchItemOperation[] = [
+    operation,
+    ...containedItems.map((item) => ({
+      kind: "item.update" as const,
+      itemId: item.id,
+      expectedVersion: item.version,
+      patch: { sectionId: operation.item.id },
+    })),
+  ];
+  if (operations.length > MAX_BATCH_OPERATIONS) {
+    throw new GroupingError(
+      `Create a Section containing ${MAX_BATCH_OPERATIONS - 1} items or fewer.`,
+    );
+  }
+  return operations.length === 1 ? operation : { kind: "items.batch", operations };
+}
+
+export function buildSectionResizeMembershipOperation(
+  capture: CapturedStructuredResize,
+  geometry: TableGeometry | ZoneGeometry,
+  items: Iterable<BoardItem>,
+  canModifyItem: (item: BoardItem) => boolean,
+  assignNewMembership = true,
+): DurableOperation {
+  const resize = buildCapturedStructuredResizeOperation(capture, geometry);
+  const savedItems = [...items];
+  if (capture.item.kind !== "zone") {
+    const resizedItem = { ...capture.item, geometry } as BoardItem;
+    const sectionId = sectionIdAfterBoundsChange(savedItems, resizedItem, assignNewMembership);
+    if (sectionId === capture.item.sectionId) return resize;
+    return {
+      ...resize,
+      patch: { ...resize.patch, sectionId: sectionId ?? null },
+    };
+  }
+
+  const resizedSection = { ...capture.item, geometry } as Extract<BoardItem, { kind: "zone" }>;
+  const overrides = new Map([[capture.item.id, resizedSection]]);
+  const membershipChanges: Array<{ item: BoardItem; sectionId?: string }> = [];
+  for (const item of savedItems) {
+    if (item.kind === "zone") continue;
+    const sectionId = sectionIdAfterBoundsChange(savedItems, item, assignNewMembership, overrides);
+    if (item.sectionId !== capture.item.id && sectionId !== capture.item.id) continue;
+    if (sectionId === item.sectionId) continue;
+    if (item.version < 1) {
+      throw new GroupingError(
+        "Wait for every affected item to finish saving before resizing this Section.",
+      );
+    }
+    membershipChanges.push({ item, sectionId });
+  }
+
+  if (membershipChanges.some(({ item }) => !canModifyItem(item))) {
+    throw new GroupingError(
+      "This resize would change Section membership for an item you cannot modify.",
+    );
+  }
+
+  const operations: BatchItemOperation[] = [
+    resize,
+    ...membershipChanges.map(({ item, sectionId }) => ({
+      kind: "item.update" as const,
+      itemId: item.id,
+      expectedVersion: item.version,
+      patch: { sectionId: sectionId ?? null },
+    })),
+  ];
+  if (operations.length > MAX_BATCH_OPERATIONS) {
+    throw new GroupingError(
+      `Resize a Section containing ${MAX_BATCH_OPERATIONS - 1} items or fewer.`,
+    );
+  }
+  return operations.length === 1 ? resize : { kind: "items.batch", operations };
+}
+
 export type ToolControllerOptions = {
   model: BoardModel;
   renderer: BoardRenderer;
@@ -446,6 +824,8 @@ export type ToolControllerOptions = {
   canUseImages: () => boolean;
   canUseTool: (tool: ToolName) => boolean;
   canSnapLines: () => boolean;
+  canTransformObjects: () => boolean;
+  canGroup: () => boolean;
   usePartialEraser: () => boolean;
   getStyle: () => StyleState;
   commit: (operation: DurableOperation, actionId?: string) => Promise<boolean>;
@@ -547,9 +927,21 @@ type Gesture =
       partial: boolean;
     }
   | {
-      kind: "rotate-protractor";
+      kind: "scale-object";
       pointerId: number;
-      item: Extract<BoardItem, { kind: "protractor" }>;
+      item: ScalableObjectItem;
+      expectedVersion: number;
+      grabOffset: Point;
+      transform: Matrix;
+      currentTransform: Matrix;
+    }
+  | {
+      kind: "rotate-object";
+      pointerId: number;
+      item: RotatableObjectItem;
+      expectedVersion: number;
+      localPivot: Point;
+      pivot: Point;
       startAngle: number;
       transform: Matrix;
       currentTransform: Matrix;
@@ -593,6 +985,21 @@ type PinchState = {
   center: Point;
   zoom: number;
 };
+
+export function buildUngroupedCopyOperation(
+  item: BoardItem,
+  newItemId: string,
+): Extract<BatchItemOperation, { kind: "item.copy" }> {
+  return {
+    kind: "item.copy",
+    sourceItemId: item.id,
+    expectedVersion: item.version,
+    newItemId,
+    translate: { x: 20, y: 20 },
+    ...(typeof item.groupId === "string" ? { newGroupId: null } : {}),
+    ...(typeof item.sectionId === "string" ? { newSectionId: null } : {}),
+  };
+}
 
 export class ToolController {
   private toolValue: ToolName = "pencil";
@@ -688,21 +1095,47 @@ export class ToolController {
       this.options.notify("Wait for the selected items to finish saving.", "info");
       return;
     }
-    const operations = items.flatMap((item) =>
-      item
-        ? [{ kind: "item.delete" as const, itemId: item.id, expectedVersion: item.version }]
-        : [],
-    );
-    if (operations.length > 100) {
-      this.options.notify("Select 100 items or fewer for one delete.", "warning");
-      return;
+    const selectedItems = items.filter((item): item is BoardItem => item !== undefined);
+    let operation: DurableOperation;
+    try {
+      operation = buildSectionDeleteMembershipOperation(
+        selectedItems,
+        this.options.model.items.values(),
+        this.options.canModifyItem,
+      );
+    } catch (error) {
+      if (error instanceof GroupingError) {
+        this.options.notify(error.message, "warning");
+        return;
+      }
+      throw error;
     }
-    const accepted = await this.options.commit({ kind: "items.batch", operations });
+    const accepted = await this.commitOperation(operation);
     if (accepted) this.selectOnly([]);
   }
 
   async copySelection(): Promise<void> {
     if (!this.options.canDraw() || this.selected.size === 0) return;
+    try {
+      const result = this.options.canGroup()
+        ? buildGroupedSectionCopyBatch(this.options.model.items.values(), this.selected, {
+            createItemId: createId,
+            createGroupId: createId,
+          })
+        : null;
+      if (result) {
+        const accepted = await this.commitOperation(result.operation);
+        if (accepted) this.selectOnly(result.itemIds);
+        return;
+      }
+    } catch (error) {
+      if (error instanceof GroupingError) {
+        this.options.notify(error.message, "warning");
+        return;
+      }
+      throw error;
+    }
+
     const items = [...this.selected].map((id) => this.options.model.getItem(id));
     if (items.some((item) => !item)) {
       this.reconcileSelection();
@@ -714,24 +1147,65 @@ export class ToolController {
       return;
     }
     const operations = items.flatMap((item) =>
-      item
-        ? [
-            {
-              kind: "item.copy" as const,
-              sourceItemId: item.id,
-              expectedVersion: item.version,
-              newItemId: createId(),
-              translate: { x: 20, y: 20 },
-            },
-          ]
-        : [],
+      item ? [buildUngroupedCopyOperation(item, createId())] : [],
     );
     if (operations.length > 100) {
       this.options.notify("Select 100 items or fewer for one copy.", "warning");
       return;
     }
-    const accepted = await this.options.commit({ kind: "items.batch", operations });
+    const accepted = await this.commitOperation({ kind: "items.batch", operations });
     if (accepted) this.selectOnly(operations.map((operation) => operation.newItemId));
+  }
+
+  async groupSelection(): Promise<void> {
+    if (!this.options.canDraw() || !this.options.canGroup()) return;
+    const items = [...this.selected].flatMap((id) => {
+      const item = this.options.model.getItem(id);
+      return item ? [item] : [];
+    });
+    if (
+      items.length !== this.selected.size ||
+      items.some((item) => !this.options.canModifyItem(item))
+    ) {
+      this.options.notify("You can group only saved work that you can edit.", "warning");
+      return;
+    }
+    try {
+      const operation = buildGroupBatch(items, createId());
+      if (!operation) return;
+      if (await this.commitOperation(operation)) this.selectOnly(items.map((item) => item.id));
+    } catch (error) {
+      if (error instanceof GroupingError) {
+        this.options.notify(error.message, "warning");
+        return;
+      }
+      throw error;
+    }
+  }
+
+  async ungroupSelection(): Promise<void> {
+    if (!this.options.canDraw() || !this.options.canGroup()) return;
+    const items = [...this.selected].flatMap((id) => {
+      const item = this.options.model.getItem(id);
+      return item ? [item] : [];
+    });
+    if (
+      items.length !== this.selected.size ||
+      items.some((item) => !this.options.canModifyItem(item))
+    ) {
+      this.options.notify("You can ungroup only saved work that you can edit.", "warning");
+      return;
+    }
+    try {
+      const operation = buildUngroupBatch(items);
+      if (operation) await this.commitOperation(operation);
+    } catch (error) {
+      if (error instanceof GroupingError) {
+        this.options.notify(error.message, "warning");
+        return;
+      }
+      throw error;
+    }
   }
 
   destroy(): void {
@@ -750,6 +1224,10 @@ export class ToolController {
 
   private readonly onPointerDown = (event: PointerEvent): void => {
     if (event.button !== 0 && event.button !== 1) return;
+    if (event.target instanceof Element && event.target.closest("[data-board-link]")) {
+      event.stopPropagation();
+      return;
+    }
     this.options.renderer.svg.focus({ preventScroll: true });
     this.pointers.set(event.pointerId, [event.clientX, event.clientY]);
     this.options.renderer.svg.setPointerCapture(event.pointerId);
@@ -911,7 +1389,7 @@ export class ToolController {
         : point;
       const itemId = createId();
       const operation = buildProtractorCreateOperation(itemId, placement, style);
-      void this.options.commit(operation).then((accepted) => {
+      void this.commitOperation(operation).then((accepted) => {
         if (!accepted) return;
         this.setTool("select");
         this.selectOnly([itemId]);
@@ -976,7 +1454,7 @@ export class ToolController {
           operation,
         };
       } else {
-        void this.options.commit(operation);
+        void this.commitOperation(operation);
       }
       event.preventDefault();
       return;
@@ -1126,7 +1604,7 @@ export class ToolController {
       this.applyMovePointerState(gesture, boardPoint(event, this.options.renderer));
       const delta = gestureDelta(gesture);
       this.options.renderer.showMovePreview(
-        this.selected,
+        [...gesture.items.keys()],
         delta.x,
         delta.y,
         gesture.protractorCenter?.anchor?.point,
@@ -1135,7 +1613,7 @@ export class ToolController {
         gesture.previewSeq += 1;
         gesture.lastPreviewAt = now;
         this.options.preview(gesture.gestureId, gesture.previewSeq, "selection.transform", {
-          itemIds: [...this.selected],
+          itemIds: [...gesture.items.keys()],
           translate: delta,
         });
       }
@@ -1166,14 +1644,24 @@ export class ToolController {
         );
         this.options.renderer.showStructuredResizePreview(gesture.capture.item, gesture.geometry);
       }
-    } else if (gesture.kind === "rotate-protractor") {
-      const pivot: Point = [gesture.transform[4], gesture.transform[5]];
+    } else if (gesture.kind === "scale-object") {
+      gesture.currentTransform = scaledObjectMatrix(
+        gesture.item,
+        boardPoint(event, this.options.renderer),
+        gesture.grabOffset,
+      );
+      this.options.renderer.showObjectScalePreview(gesture.item, gesture.currentTransform);
+    } else if (gesture.kind === "rotate-object") {
       const delta = rotationDelta(
         gesture.startAngle,
-        pointerAngle(pivot, boardPoint(event, this.options.renderer)),
+        pointerAngle(gesture.pivot, boardPoint(event, this.options.renderer)),
         event.shiftKey,
       );
-      gesture.currentTransform = rotatedMatrix(gesture.transform, delta);
+      gesture.currentTransform = rotatedMatrixAroundLocalPoint(
+        gesture.transform,
+        delta,
+        gesture.localPivot,
+      );
       this.options.renderer.showRotationPreview(gesture.item, gesture.currentTransform);
     } else if (gesture.kind === "marquee") {
       gesture.current = boardPoint(event, this.options.renderer);
@@ -1242,11 +1730,13 @@ export class ToolController {
           gesture.grabOffset,
         );
       }
-    } else if (gesture.kind === "rotate-protractor") {
-      const pivot: Point = [gesture.transform[4], gesture.transform[5]];
-      gesture.currentTransform = rotatedMatrix(
+    } else if (gesture.kind === "scale-object") {
+      gesture.currentTransform = scaledObjectMatrix(gesture.item, tapPoint, gesture.grabOffset);
+    } else if (gesture.kind === "rotate-object") {
+      gesture.currentTransform = rotatedMatrixAroundLocalPoint(
         gesture.transform,
-        rotationDelta(gesture.startAngle, pointerAngle(pivot, tapPoint), event.shiftKey),
+        rotationDelta(gesture.startAngle, pointerAngle(gesture.pivot, tapPoint), event.shiftKey),
+        gesture.localPivot,
       );
     } else if (gesture.kind === "eraser") {
       this.collectEraser(tapPoint, gesture);
@@ -1347,6 +1837,12 @@ export class ToolController {
       void this.copySelection();
       return;
     }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "g") {
+      event.preventDefault();
+      if (event.shiftKey) void this.ungroupSelection();
+      else void this.groupSelection();
+      return;
+    }
     if ((event.key === "Enter" || event.key === "F2") && this.selected.size === 1) {
       const [selectedId] = this.selected;
       const item = selectedId === undefined ? undefined : this.options.model.getItem(selectedId);
@@ -1400,28 +1896,67 @@ export class ToolController {
       const item = itemId ? this.options.model.getItem(itemId) : undefined;
       if (!this.options.canDraw()) {
         this.options.notify("Drawing is currently read only.", "warning");
+      } else if (!this.options.canTransformObjects()) {
+        this.options.notify("Object transforms are disabled in Space settings.", "warning");
       } else if (item && !this.options.canModifyItem(item)) {
         this.options.notify("You can rotate only items that you created.", "warning");
       } else if (
-        item?.kind === "protractor" &&
+        item &&
+        isRotatableObjectItem(item) &&
         item.version > 0 &&
         this.selected.size === 1 &&
         this.selected.has(item.id)
       ) {
-        const pivot: Point = [item.transform[4], item.transform[5]];
+        const captured = structuredClone(item);
+        const localPivot = objectLocalCenter(captured);
+        const pivot = transformedPoint(captured.transform, localPivot);
         this.gesture = {
-          kind: "rotate-protractor",
+          kind: "rotate-object",
           pointerId: event.pointerId,
-          item: structuredClone(item),
+          item: captured,
+          expectedVersion: item.version,
+          localPivot,
+          pivot,
           startAngle: pointerAngle(pivot, point),
           transform: [...item.transform] as Matrix,
           currentTransform: [...item.transform] as Matrix,
         };
       } else {
-        this.options.notify(
-          "Wait for this protractor to finish saving before rotating it.",
-          "info",
-        );
+        this.options.notify("Wait for this item to finish saving before rotating it.", "info");
+      }
+      event.preventDefault();
+      return;
+    }
+    const scaleHandle = eventTarget?.closest<SVGGElement>("[data-scale-handle]");
+    if (scaleHandle) {
+      const itemId = scaleHandle.dataset.itemId;
+      const item = itemId ? this.options.model.getItem(itemId) : undefined;
+      if (!this.options.canDraw()) {
+        this.options.notify("Drawing is currently read only.", "warning");
+      } else if (!this.options.canTransformObjects()) {
+        this.options.notify("Object transforms are disabled in Space settings.", "warning");
+      } else if (item && !this.options.canModifyItem(item)) {
+        this.options.notify("You can scale only items that you created.", "warning");
+      } else if (
+        item &&
+        isScalableObjectItem(item) &&
+        item.version > 0 &&
+        this.selected.size === 1 &&
+        this.selected.has(item.id)
+      ) {
+        const captured = structuredClone(item);
+        this.gesture = {
+          kind: "scale-object",
+          pointerId: event.pointerId,
+          item: captured,
+          expectedVersion: item.version,
+          grabOffset: objectScaleGrabOffset(captured, point),
+          transform: [...item.transform] as Matrix,
+          currentTransform: [...item.transform] as Matrix,
+        };
+        this.options.renderer.showObjectScalePreview(captured, this.gesture.currentTransform);
+      } else {
+        this.options.notify("Wait for this item to finish saving before scaling it.", "info");
       }
       event.preventDefault();
       return;
@@ -1498,14 +2033,36 @@ export class ToolController {
     if (hit?.kind !== "table") this.lastTableTap = null;
     if (hit?.kind !== "zone") this.lastZoneTap = null;
     if (hit) {
-      if (!this.selected.has(hit.id))
-        this.selectOnly(event.shiftKey ? [...this.selected, hit.id] : [hit.id]);
+      if (!this.selected.has(hit.id)) {
+        const seeds = event.shiftKey ? [...this.selected, hit.id] : [hit.id];
+        const selectedItems = this.options.canGroup()
+          ? explicitGroupClosure(this.options.model.items.values(), seeds)
+          : seeds.flatMap((id) => {
+              const item = this.options.model.getItem(id);
+              return item ? [item] : [];
+            });
+        this.selectOnly(selectedItems.map((item) => item.id));
+      }
       if (this.options.canDraw()) {
         const items = new Map<string, CapturedMoveItem>();
+        let effectiveItems: BoardItem[];
+        try {
+          effectiveItems = effectiveMoveItemsWithinBatchLimit(
+            this.options.model.items.values(),
+            this.selected,
+            this.options.canGroup(),
+          );
+        } catch (error) {
+          if (error instanceof GroupingError) {
+            this.options.notify(error.message, "warning");
+            event.preventDefault();
+            return;
+          }
+          throw error;
+        }
         let includesForeignWork = false;
-        for (const id of this.selected) {
-          const item = this.options.model.getItem(id);
-          if (!item || item.version <= 0) {
+        for (const item of effectiveItems) {
+          if (item.version <= 0) {
             items.clear();
             break;
           }
@@ -1514,7 +2071,7 @@ export class ToolController {
             items.clear();
             break;
           }
-          items.set(id, {
+          items.set(item.id, {
             transform: [...item.transform] as Matrix,
             expectedVersion: item.version,
           });
@@ -1524,7 +2081,7 @@ export class ToolController {
             "You can move only work that you created. You can still copy this selection.",
             "warning",
           );
-        } else if (items.size === this.selected.size) {
+        } else if (items.size === effectiveItems.length) {
           const onlySelectedId =
             this.selected.size === 1 ? this.selected.values().next().value : undefined;
           const onlySelected =
@@ -1550,7 +2107,7 @@ export class ToolController {
             lastPreviewAt: 0,
           };
         } else {
-          this.options.notify("Wait for the selected items to finish saving.", "info");
+          this.options.notify("Wait for the grouped items to finish saving.", "info");
         }
       }
     } else {
@@ -1655,7 +2212,7 @@ export class ToolController {
         gesture.pointerType,
         this.options.renderer.viewport.zoom,
       );
-      if (point === gesture.start) await this.options.commit(gesture.operation);
+      if (point === gesture.start) await this.commitOperation(gesture.operation);
       return;
     }
     if (gesture.kind === "table") {
@@ -1691,7 +2248,7 @@ export class ToolController {
         this.options.preview(gesture.gestureId, gesture.previewSeq + 1, "gesture.cancel");
         return;
       }
-      await this.options.commit(
+      await this.commitOperation(
         {
           kind: "item.create",
           item: {
@@ -1727,7 +2284,7 @@ export class ToolController {
         this.options.preview(gesture.gestureId, gesture.previewSeq + 1, "gesture.cancel");
         return;
       }
-      await this.options.commit(
+      await this.commitOperation(
         buildShapeCreateOperation(
           gesture.itemId,
           gesture.shape,
@@ -1746,9 +2303,16 @@ export class ToolController {
         this.options.preview(gesture.gestureId, gesture.previewSeq + 1, "gesture.cancel");
         return;
       }
-      const operations = buildCapturedMoveOperations(gesture.items, delta);
+      let operations: BatchItemOperation[];
+      try {
+        operations = this.moveOperationsWithSectionMembership(gesture.items, delta);
+      } catch (error) {
+        if (!(error instanceof GroupingError)) throw error;
+        this.options.notify(error.message, "warning");
+        return;
+      }
       if (operations.length > 0)
-        await this.options.commit({ kind: "items.batch", operations }, gesture.gestureId);
+        await this.commitOperation({ kind: "items.batch", operations }, gesture.gestureId);
       return;
     }
     if (gesture.kind === "resize-card") {
@@ -1762,28 +2326,32 @@ export class ToolController {
       ) {
         return;
       }
-      await this.options.commit(
-        buildCapturedCardResizeOperation(gesture.capture, gesture.geometry),
-      );
+      await this.commitOperation(this.cardResizeOperation(gesture.capture, gesture.geometry));
       return;
     }
     if (gesture.kind === "resize-structured") {
       this.options.renderer.clearLocalPreview();
       if (!structuredResizeChanged(gesture.capture.item, gesture.geometry)) return;
-      await this.options.commit(
-        buildCapturedStructuredResizeOperation(gesture.capture, gesture.geometry),
-      );
+      try {
+        await this.commitOperation(this.sectionResizeOperation(gesture.capture, gesture.geometry));
+      } catch (error) {
+        if (error instanceof GroupingError) {
+          this.options.notify(error.message, "warning");
+          return;
+        }
+        throw error;
+      }
       return;
     }
-    if (gesture.kind === "rotate-protractor") {
+    if (gesture.kind === "scale-object" || gesture.kind === "rotate-object") {
       this.options.renderer.clearLocalPreview();
       if (matricesEqual(gesture.transform, gesture.currentTransform)) return;
-      await this.options.commit({
-        kind: "item.update",
-        itemId: gesture.item.id,
-        expectedVersion: gesture.item.version,
-        patch: { transform: gesture.currentTransform },
-      });
+      await this.commitOperation(
+        this.objectTransformOperation(
+          { item: gesture.item, expectedVersion: gesture.expectedVersion },
+          gesture.currentTransform,
+        ),
+      );
       return;
     }
     if (gesture.kind === "marquee") {
@@ -1794,6 +2362,24 @@ export class ToolController {
     }
     if (gesture.kind === "eraser") {
       this.options.renderer.clearLocalPreview();
+      if (!gesture.partial) {
+        const erasedItems = [...gesture.items.values()];
+        if (erasedItems.length === 0) return;
+        try {
+          await this.commitOperation(
+            buildFullEraserOperation(
+              erasedItems,
+              this.options.model.items.values(),
+              this.options.canModifyItem,
+            ),
+            gesture.gestureId,
+          );
+        } catch (error) {
+          if (!(error instanceof GroupingError)) throw error;
+          this.options.notify(error.message, "warning");
+        }
+        return;
+      }
       const operations: BatchItemOperation[] = [];
       for (const [itemId, expectedVersion] of gesture.versions) {
         const item = gesture.items.get(itemId);
@@ -1816,8 +2402,23 @@ export class ToolController {
         }
         if (operations.length >= 100) break;
       }
-      if (operations.length > 0)
-        await this.options.commit({ kind: "items.batch", operations }, gesture.gestureId);
+      if (operations.length > 0) {
+        try {
+          const expanded = expandPartialEraserSectionOperations(
+            operations,
+            gesture.items,
+            this.options.model.items.values(),
+            this.options.canModifyItem,
+          );
+          await this.commitOperation(
+            { kind: "items.batch", operations: expanded },
+            gesture.gestureId,
+          );
+        } catch (error) {
+          if (!(error instanceof GroupingError)) throw error;
+          this.options.notify(error.message, "warning");
+        }
+      }
     }
   }
 
@@ -1835,7 +2436,8 @@ export class ToolController {
       gesture.kind === "zone" ||
       gesture.kind === "resize-card" ||
       gesture.kind === "resize-structured" ||
-      gesture.kind === "rotate-protractor"
+      gesture.kind === "scale-object" ||
+      gesture.kind === "rotate-object"
     ) {
       this.options.renderer.clearLocalPreview();
       return;
@@ -1850,8 +2452,105 @@ export class ToolController {
     this.options.renderer.clearLocalPreview();
   }
 
+  private async commitOperation(operation: DurableOperation, actionId?: string): Promise<boolean> {
+    const decorated = this.options.canGroup()
+      ? this.assignCreatedItemsToSections(operation)
+      : operation;
+    return this.options.commit(decorated, actionId);
+  }
+
+  private assignCreatedItemsToSections(operation: DurableOperation): DurableOperation {
+    const decorate = (child: BatchItemOperation): BatchItemOperation => {
+      if (
+        child.kind !== "item.create" ||
+        child.item.kind === "zone" ||
+        child.item.sectionId !== undefined
+      ) {
+        return child;
+      }
+      const provisional = {
+        ...child.item,
+        z: Math.max(0, ...[...this.options.model.items.values()].map((item) => item.z)) + 1,
+        version: 0,
+        createdBy: child.item.id,
+      } as BoardItem;
+      const sectionId = this.containingSectionId(provisional);
+      return sectionId
+        ? ({ ...child, item: { ...child.item, sectionId } } as BatchItemOperation)
+        : child;
+    };
+    if (operation.kind === "items.batch") {
+      return { ...operation, operations: operation.operations.map(decorate) };
+    }
+    if (
+      operation.kind === "item.create" ||
+      operation.kind === "item.update" ||
+      operation.kind === "item.delete" ||
+      operation.kind === "item.copy"
+    ) {
+      return decorate(operation);
+    }
+    return operation;
+  }
+
+  private containingSectionId(
+    item: BoardItem,
+    sectionOverrides: ReadonlyMap<string, Extract<BoardItem, { kind: "zone" }>> = new Map(),
+  ): string | undefined {
+    return containingSectionIdFromItems(this.options.model.items.values(), item, sectionOverrides);
+  }
+
+  private moveOperationsWithSectionMembership(
+    items: ReadonlyMap<string, CapturedMoveItem>,
+    delta: { x: number; y: number },
+  ): BatchItemOperation[] {
+    return buildTranslationMembershipOperations(
+      buildCapturedMoveOperations(items, delta),
+      this.options.model.items.values(),
+      this.options.canGroup(),
+      this.options.canModifyItem,
+    );
+  }
+
+  private objectTransformOperation(
+    capture: CapturedObjectTransform,
+    transform: Matrix,
+  ): BatchItemOperation {
+    return buildObjectTransformMembershipOperation(
+      capture,
+      transform,
+      this.options.model.items.values(),
+      this.options.canGroup(),
+    );
+  }
+
+  private cardResizeOperation(
+    capture: CapturedCardResize,
+    geometry: StickyGeometry | ImageGeometry,
+  ): BatchItemOperation {
+    return buildCardResizeMembershipOperation(
+      capture,
+      geometry,
+      this.options.model.items.values(),
+      this.options.canGroup(),
+    );
+  }
+
+  private sectionResizeOperation(
+    capture: CapturedStructuredResize,
+    geometry: TableGeometry | ZoneGeometry,
+  ): DurableOperation {
+    return buildSectionResizeMembershipOperation(
+      capture,
+      geometry,
+      this.options.model.items.values(),
+      this.options.canModifyItem,
+      this.options.canGroup(),
+    );
+  }
+
   private async commitTable(operation: BatchItemOperation): Promise<void> {
-    if (await this.options.commit(operation)) this.setTool("select");
+    if (await this.commitOperation(operation)) this.setTool("select");
   }
 
   private renderSelection(): void {
@@ -1913,7 +2612,23 @@ export class ToolController {
   }
 
   private async commitZone(operation: ZoneCreateOperation): Promise<void> {
-    if (await this.options.commit(operation)) this.options.onZoneCreated(operation.item.id);
+    let durable: DurableOperation = operation;
+    if (this.options.canGroup()) {
+      try {
+        durable = buildSectionCreateMembershipOperation(
+          operation,
+          this.options.model.items.values(),
+          this.options.canModifyItem,
+        );
+      } catch (error) {
+        if (error instanceof GroupingError) {
+          this.options.notify(error.message, "warning");
+          return;
+        }
+        throw error;
+      }
+    }
+    if (await this.commitOperation(durable)) this.options.onZoneCreated(operation.item.id);
   }
 }
 
@@ -2141,17 +2856,7 @@ export function rotationDelta(
 }
 
 export function rotatedMatrix(matrix: Matrix, radians: number): Matrix {
-  const [a, b, c, d, e, f] = matrix;
-  const cosine = Math.cos(radians);
-  const sine = Math.sin(radians);
-  return [
-    roundBoard(cosine * a - sine * b),
-    roundBoard(sine * a + cosine * b),
-    roundBoard(cosine * c - sine * d),
-    roundBoard(sine * c + cosine * d),
-    e,
-    f,
-  ];
+  return rotatedMatrixAroundLocalPoint(matrix, radians, [0, 0]);
 }
 
 function matricesEqual(left: Matrix, right: Matrix): boolean {
@@ -2315,4 +3020,62 @@ function isOpenDialogTarget(target: EventTarget | null): boolean {
 
 function safeReleaseCapture(element: Element, pointerId: number): void {
   if (element.hasPointerCapture(pointerId)) element.releasePointerCapture(pointerId);
+}
+
+function boundsContain(container: Bounds, candidate: Bounds): boolean {
+  return (
+    candidate.minX >= container.minX - 1e-6 &&
+    candidate.minY >= container.minY - 1e-6 &&
+    candidate.maxX <= container.maxX + 1e-6 &&
+    candidate.maxY <= container.maxY + 1e-6
+  );
+}
+
+function containingSectionIdFromItems(
+  items: Iterable<BoardItem>,
+  item: BoardItem,
+  sectionOverrides: ReadonlyMap<string, Extract<BoardItem, { kind: "zone" }>> = new Map(),
+): string | undefined {
+  const candidateBounds = itemBounds(item);
+  return [...items]
+    .filter(
+      (candidate): candidate is Extract<BoardItem, { kind: "zone" }> => candidate.kind === "zone",
+    )
+    .map((section) => sectionOverrides.get(section.id) ?? section)
+    .filter((section) => boundsContain(itemBounds(section), candidateBounds))
+    .sort((left, right) => right.z - left.z || left.id.localeCompare(right.id))[0]?.id;
+}
+
+export function sectionIdAfterBoundsChange(
+  items: Iterable<BoardItem>,
+  item: BoardItem,
+  assignNewMembership: boolean,
+  sectionOverrides: ReadonlyMap<string, Extract<BoardItem, { kind: "zone" }>> = new Map(),
+): string | undefined {
+  if (assignNewMembership) return containingSectionIdFromItems(items, item, sectionOverrides);
+  if (!item.sectionId) return undefined;
+  const section = [...items].find(
+    (candidate): candidate is Extract<BoardItem, { kind: "zone" }> =>
+      candidate.kind === "zone" && candidate.id === item.sectionId,
+  );
+  const prospectiveSection = section ? (sectionOverrides.get(section.id) ?? section) : undefined;
+  return prospectiveSection && boundsContain(itemBounds(prospectiveSection), itemBounds(item))
+    ? item.sectionId
+    : undefined;
+}
+
+export function buildObjectTransformMembershipOperation(
+  capture: CapturedObjectTransform,
+  transform: Matrix,
+  items: Iterable<BoardItem>,
+  assignNewMembership = true,
+): BatchItemOperation {
+  const update = buildCapturedObjectTransformOperation(capture, transform);
+  const transformedItem = { ...capture.item, transform } as BoardItem;
+  const sectionId = sectionIdAfterBoundsChange(items, transformedItem, assignNewMembership);
+  if (sectionId === capture.item.sectionId) return update;
+  return {
+    ...update,
+    patch: { ...update.patch, sectionId: sectionId ?? null },
+  };
 }
