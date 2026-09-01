@@ -1380,6 +1380,87 @@ describe("BoardRoom initialization", () => {
     replayed.socket.close(1000, "done");
   }, 45_000);
 
+  it("rejects restoring a foreign item after its deleting owner is demoted", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    await runInDurableObject(stub, (_instance, durableState) => {
+      durableState.storage.sql.exec(
+        "UPDATE members SET role = 'owner', updated_at_ms = ? WHERE actor_id = ?",
+        Date.now(),
+        editorId,
+      );
+    });
+    const primaryOwner = await connect(stub, actorId);
+    const formerOwner = await connect(stub, editorId);
+    const itemId = "018f0000-0000-7000-8000-000000000a10";
+    const create = createCommit(
+      "018f0000-0000-7000-8000-000000000a11",
+      "018f0000-0000-7000-8000-000000000a12",
+      itemId,
+    );
+    primaryOwner.socket.send(JSON.stringify(create));
+    await Promise.all([
+      primaryOwner.next((frame) => frame.t === "server.action" && frame.seq === 1),
+      formerOwner.next((frame) => frame.t === "server.action" && frame.seq === 1),
+    ]);
+
+    const deleteActionId = "018f0000-0000-7000-8000-000000000a14";
+    formerOwner.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000a13",
+        actionId: deleteActionId,
+        baseSeq: 1,
+        op: { kind: "item.delete", itemId, expectedVersion: 1 },
+      }),
+    );
+    await Promise.all([
+      primaryOwner.next((frame) => frame.t === "server.action" && frame.seq === 2),
+      formerOwner.next((frame) => frame.t === "server.action" && frame.seq === 2),
+    ]);
+    await runInDurableObject(stub, (_instance, durableState) => {
+      durableState.storage.sql.exec(
+        "UPDATE members SET role = 'editor', updated_at_ms = ? WHERE actor_id = ?",
+        Date.now(),
+        editorId,
+      );
+    });
+
+    const undoCommandId = "018f0000-0000-7000-8000-000000000a15";
+    formerOwner.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: undoCommandId,
+        actionId: "018f0000-0000-7000-8000-000000000a16",
+        baseSeq: 2,
+        op: {
+          kind: "history.undo",
+          expectedHistoryVersion: 1,
+          targetActionId: deleteActionId,
+        },
+      }),
+    );
+    expect(
+      await formerOwner.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === undoCommandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 2 });
+    const state = await runInDurableObject(stub, (_instance, durableState) => ({
+      deleted: durableState.storage.sql
+        .exec<{ deleted: number }>("SELECT deleted FROM items WHERE item_id = ?", itemId)
+        .one().deleted,
+      latestSeq: durableState.storage.sql
+        .exec<{ latest_seq: number }>("SELECT latest_seq FROM board")
+        .one().latest_seq,
+    }));
+    expect(state).toEqual({ deleted: 1, latestSeq: 2 });
+    primaryOwner.socket.close(1000, "done");
+    formerOwner.socket.close(1000, "done");
+  });
+
   it("migrates existing boards to multiple active owners", async () => {
     const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
     await initializeBoard(stub);
@@ -6407,7 +6488,7 @@ describe("BoardRoom Section locks", () => {
     ).toMatchObject({ code: "FORBIDDEN", latestSeq: 3 });
 
     const exportedResponse = await stub.fetch(
-      internalRequest("/api/v1/boards/" + boardId + "/export.json"),
+      internalRequest(`/api/v1/boards/${boardId}/export.json`),
     );
     expect(exportedResponse.status).toBe(200);
     const exported = (await exportedResponse.json()) as {
@@ -6458,6 +6539,95 @@ describe("BoardRoom Section locks", () => {
     owner.socket.close(1000, "done");
     editor.socket.close(1000, "done");
   });
+
+  it("rejects Section lock history after an owner is demoted", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    await runInDurableObject(stub, (_instance, durableState) => {
+      durableState.storage.sql.exec(
+        "UPDATE members SET role = 'owner', updated_at_ms = ? WHERE actor_id = ?",
+        Date.now(),
+        editorId,
+      );
+    });
+    const formerOwner = await connect(stub, editorId);
+    const sectionId = "018f0000-0000-7000-8000-000000000a20";
+    const sectionGeometry = { x: 20, y: 30, width: 600, height: 400, title: "Locked history" };
+    const createSection = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-000000000a21",
+      actionId: "018f0000-0000-7000-8000-000000000a22",
+      baseSeq: 0,
+      op: {
+        kind: "item.create",
+        item: {
+          id: sectionId,
+          kind: "zone",
+          style: {
+            kind: "zone",
+            borderColor: "#60a5fa",
+            fill: "#eff6ff",
+            textColor: "#1e3a8a",
+            fontSize: 20,
+            opacity: 0.8,
+          },
+          transform: [1, 0, 0, 1, 0, 0],
+          geometry: sectionGeometry,
+        },
+      },
+    };
+    formerOwner.socket.send(JSON.stringify(createSection));
+    await formerOwner.next((frame) => frame.t === "server.action" && frame.seq === 1);
+    const lockActionId = "018f0000-0000-7000-8000-000000000a24";
+    formerOwner.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000a23",
+        actionId: lockActionId,
+        baseSeq: 1,
+        op: {
+          kind: "item.update",
+          itemId: sectionId,
+          expectedVersion: 1,
+          patch: { geometry: { ...sectionGeometry, locked: true } },
+        },
+      }),
+    );
+    await formerOwner.next((frame) => frame.t === "server.action" && frame.seq === 2);
+    await runInDurableObject(stub, (_instance, durableState) => {
+      durableState.storage.sql.exec(
+        "UPDATE members SET role = 'editor', updated_at_ms = ? WHERE actor_id = ?",
+        Date.now(),
+        editorId,
+      );
+    });
+
+    const undoCommandId = "018f0000-0000-7000-8000-000000000a25";
+    formerOwner.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: undoCommandId,
+        actionId: "018f0000-0000-7000-8000-000000000a26",
+        baseSeq: 2,
+        op: {
+          kind: "history.undo",
+          expectedHistoryVersion: 2,
+          targetActionId: lockActionId,
+        },
+      }),
+    );
+    expect(
+      await formerOwner.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === undoCommandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 2 });
+    formerOwner.socket.close(1000, "done");
+  });
+
   it("keeps Section lock history undoable and redoable", async () => {
     const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
     await initializeBoard(stub);

@@ -3964,15 +3964,18 @@ export class BoardRoom extends DurableObject<Env> {
         const current = currentRecords.get(effect.itemId);
         return current === undefined || current.deleted ? [] : [current.item];
       });
-      assertItemsOwnedByActor(currentItems, {
-        actorId: attachment.actorId,
-        role: access.role,
-      });
       const targetItems = effects.flatMap((effect) => {
         const target = undo ? effect.before : effect.after;
         return target.exists ? [target.item] : [];
       });
       const historyItems = [...currentItems, ...targetItems];
+      assertItemsOwnedByActor(historyItems, {
+        actorId: attachment.actorId,
+        role: access.role,
+      });
+      if (access.role !== "owner" && effects.some(isPureHistorySectionLockChange)) {
+        throw new BoardDomainError("FORBIDDEN", "Only an owner can lock or unlock a Section.");
+      }
       const sectionRecords = readItems(this.#sql, sectionRecordIdsForItems(historyItems));
       for (const [itemId, record] of sectionRecords) currentRecords.set(itemId, record);
       const lockCheckedCurrentItems = effects.flatMap((effect) => {

@@ -311,6 +311,39 @@ export function buildTranslationMembershipOperations(
     }
   }
 
+  if (groupingEnabled) {
+    const pending = [...operations.values()];
+    for (let index = 0; index < pending.length; index += 1) {
+      const operation = pending[index];
+      if (!operation) continue;
+      const item = itemIndex.get(operation.itemId);
+      const transform = operation.patch.transform;
+      if (!item || transform === undefined) continue;
+      const delta = {
+        x: transform[4] - item.transform[4],
+        y: transform[5] - item.transform[5],
+      };
+      if (delta.x === 0 && delta.y === 0) continue;
+      if (item.kind === "zone") movedSectionIds.add(item.id);
+      for (const related of savedItems) {
+        const sharesExplicitGroup =
+          item.groupId !== undefined && item.groupId !== null && related.groupId === item.groupId;
+        const belongsToMovedSection = item.kind === "zone" && related.sectionId === item.id;
+        if ((!sharesExplicitGroup && !belongsToMovedSection) || operations.has(related.id)) {
+          continue;
+        }
+        const relatedOperation: Extract<BatchItemOperation, { kind: "item.update" }> = {
+          kind: "item.update",
+          itemId: related.id,
+          expectedVersion: related.version,
+          patch: { transform: translateMatrix(related.transform, delta.x, delta.y) },
+        };
+        operations.set(related.id, relatedOperation);
+        pending.push(relatedOperation);
+      }
+    }
+  }
+
   const sectionOverrides = new Map<string, Extract<BoardItem, { kind: "zone" }>>();
   for (const operation of operations.values()) {
     const item = itemIndex.get(operation.itemId);
@@ -353,7 +386,7 @@ export function buildTranslationMembershipOperations(
     );
   }
   if (affectedItems.some((item) => !canModifyItem(item))) {
-    throw new GroupingError("This arrangement includes a Section item you cannot modify.");
+    throw new GroupingError("This arrangement includes a related item you cannot modify.");
   }
 
   return [...operations.values()].map((operation) => {

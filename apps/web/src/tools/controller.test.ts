@@ -259,6 +259,57 @@ describe("captured gesture operations", () => {
     ]);
   });
 
+  it("moves non-sticky explicit-group peers with Arrange and includes them in guards", () => {
+    const groupId = "018f47a1-7a2b-7c3d-8e4f-123456789ac0";
+    const selected = {
+      ...stickyItem(ITEM_ID, 20, 20, "teacher-a"),
+      groupId,
+    };
+    const peer: Extract<BoardItem, { kind: "rectangle" }> = {
+      id: "018f47a1-7a2b-7c3d-8e4f-123456789ac1",
+      kind: "rectangle",
+      groupId,
+      z: 3,
+      version: 6,
+      createdBy: "teacher-a",
+      transform: [1, 0, 0, 1, 10, 15],
+      style: { kind: "stroke", color: "#20201e", width: 2, opacity: 1 },
+      geometry: { x: 80, y: 20, width: 40, height: 40, shape: "rectangle" },
+    };
+    const directUpdates = [
+      {
+        kind: "item.update" as const,
+        itemId: selected.id,
+        expectedVersion: selected.version,
+        patch: { transform: [1, 0, 0, 1, 100, 30] as Matrix },
+      },
+    ];
+
+    expect(
+      buildTranslationMembershipOperations(directUpdates, [selected, peer], true, () => true),
+    ).toEqual([
+      directUpdates[0],
+      {
+        kind: "item.update",
+        itemId: peer.id,
+        expectedVersion: peer.version,
+        patch: { transform: [1, 0, 0, 1, 110, 45] },
+      },
+    ]);
+
+    expect(() =>
+      buildTranslationMembershipOperations(
+        directUpdates,
+        [selected, peer],
+        true,
+        (item) => item.id !== peer.id,
+      ),
+    ).toThrow("This arrangement includes a related item you cannot modify.");
+    expect(() =>
+      buildTranslationMembershipOperations(directUpdates, [selected, peer], true, () => true, 1),
+    ).toThrow("Arrange 1 related items or fewer at a time.");
+  });
+
   it("clears stale membership without assigning new membership when grouping is disabled", () => {
     const section = sectionItem();
     const member = stickyItem("member-a", 20, 20, "teacher-a", SECTION_ID);

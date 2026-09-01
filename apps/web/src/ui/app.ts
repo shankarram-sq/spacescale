@@ -55,7 +55,7 @@ import {
   sectionIdAfterBoundsChange,
   ToolController,
 } from "../tools/controller";
-import { GroupingError } from "../tools/grouping";
+import { explicitGroupClosure, GroupingError } from "../tools/grouping";
 import {
   type ApiClient,
   ApiError,
@@ -2021,12 +2021,15 @@ export class BoardApp {
   private async arrangeSelection(kind: ArrangeKind): Promise<void> {
     if (!this.canCommit()) return;
     const selectedIds = [...this.tools.selection];
-    const participantIds =
+    const seedIds =
       kind === "tidy-stickies"
         ? selectedIds.filter((id) => this.model.getItem(id)?.kind === "sticky")
         : selectedIds;
     const minimum = kind.startsWith("distribute-") ? 3 : 2;
-    if (participantIds.length < minimum) return;
+    if (seedIds.length < minimum) return;
+    const participantIds = this.bootstrap.board.features.grouping
+      ? explicitGroupClosure(this.model.items.values(), seedIds).map((item) => item.id)
+      : seedIds;
     const limit = Math.max(1, Math.min(100, Math.floor(this.bootstrap.limits.maxBatchItems)));
     if (participantIds.length > limit) {
       this.notify(`Arrange ${limit} items or fewer at a time.`, "warning");
