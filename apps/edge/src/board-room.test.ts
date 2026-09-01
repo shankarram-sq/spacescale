@@ -5489,6 +5489,139 @@ describe("BoardRoom move/copy closure admission", () => {
     expect(state).toEqual({ latestSeq: 0, liveItems: 0, actions: 0 });
     connected.socket.close(1000, "done");
   });
+  it("detaches later members when history removes their Section and restores them on redo", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    const owner = await connect(stub, actorId);
+    const editor = await connect(stub, editorId);
+    const sectionId = topologyId(910);
+    const memberId = topologyId(911);
+    const createSection = {
+      v: 1,
+      t: "client.commit",
+      commandId: topologyId(912),
+      actionId: topologyId(913),
+      baseSeq: 0,
+      op: {
+        kind: "item.create",
+        item: {
+          id: sectionId,
+          kind: "zone",
+          style: {
+            kind: "zone",
+            borderColor: "#60a5fa",
+            fill: "#eff6ff",
+            textColor: "#1e3a8a",
+            fontSize: 20,
+            opacity: 0.8,
+          },
+          transform: [1, 0, 0, 1, 0, 0],
+          geometry: { x: 20, y: 30, width: 600, height: 400, title: "History" },
+        },
+      },
+    };
+    owner.socket.send(JSON.stringify(createSection));
+    await owner.next(
+      (frame) => frame.t === "server.action" && frame.commandId === createSection.commandId,
+    );
+    await editor.next(
+      (frame) => frame.t === "server.action" && frame.commandId === createSection.commandId,
+    );
+
+    const createMember = {
+      v: 1,
+      t: "client.commit",
+      commandId: topologyId(914),
+      actionId: topologyId(915),
+      baseSeq: 1,
+      op: {
+        kind: "item.create",
+        item: {
+          id: memberId,
+          sectionId,
+          kind: "rectangle",
+          style: { kind: "stroke", color: "#112233", width: 2, opacity: 1 },
+          transform: [1, 0, 0, 1, 0, 0],
+          geometry: { x: 40, y: 50, width: 120, height: 80 },
+        },
+      },
+    };
+    editor.socket.send(JSON.stringify(createMember));
+    await editor.next(
+      (frame) => frame.t === "server.action" && frame.commandId === createMember.commandId,
+    );
+    await owner.next(
+      (frame) => frame.t === "server.action" && frame.commandId === createMember.commandId,
+    );
+
+    const undo = {
+      v: 1,
+      t: "client.commit",
+      commandId: topologyId(916),
+      actionId: topologyId(917),
+      baseSeq: 2,
+      op: {
+        kind: "history.undo",
+        expectedHistoryVersion: 1,
+        targetActionId: createSection.actionId,
+      },
+    };
+    owner.socket.send(JSON.stringify(undo));
+    expect(
+      await owner.next(
+        (frame) => frame.t === "server.action" && frame.commandId === undo.commandId,
+      ),
+    ).toMatchObject({
+      seq: 3,
+      op: {
+        changes: expect.arrayContaining([
+          { kind: "item.remove", itemId: sectionId, version: 3 },
+          { kind: "item.replace", item: expect.objectContaining({ id: memberId, version: 3 }) },
+        ]),
+      },
+    });
+
+    const detachedMember = await runInDurableObject(stub, (_instance, durableState) => {
+      const row = durableState.storage.sql
+        .exec<{ data_json: string }>("SELECT data_json FROM items WHERE item_id = ?", memberId)
+        .one();
+      return JSON.parse(row.data_json) as Record<string, unknown>;
+    });
+    expect(detachedMember).not.toHaveProperty("sectionId");
+
+    const redo = {
+      ...undo,
+      commandId: topologyId(918),
+      actionId: topologyId(919),
+      baseSeq: 3,
+      op: {
+        kind: "history.redo",
+        expectedHistoryVersion: 2,
+        targetActionId: createSection.actionId,
+      },
+    };
+    owner.socket.send(JSON.stringify(redo));
+    expect(
+      await owner.next(
+        (frame) => frame.t === "server.action" && frame.commandId === redo.commandId,
+      ),
+    ).toMatchObject({
+      seq: 4,
+      op: {
+        changes: expect.arrayContaining([
+          { kind: "item.replace", item: expect.objectContaining({ id: sectionId, version: 4 }) },
+          {
+            kind: "item.replace",
+            item: expect.objectContaining({ id: memberId, sectionId, version: 4 }),
+          },
+        ]),
+      },
+    });
+
+    owner.socket.close(1000, "done");
+    editor.socket.close(1000, "done");
+  });
 
   it.each(["missing", "non-Section"] as const)(
     "rejects a first-launch import with a %s Section target",

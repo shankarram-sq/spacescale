@@ -771,6 +771,10 @@ button:disabled {
   user-select: none;
 }
 
+.board-item-sticky .sticky-text.has-board-text-link {
+  pointer-events: visiblePainted;
+}
+
 .board-item-stamp .stamp-art {
   filter: drop-shadow(0 2px 1.5px rgb(32 32 30 / 18%));
 }

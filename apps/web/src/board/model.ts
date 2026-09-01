@@ -232,7 +232,7 @@ export class BoardModel {
       const hasVisibleFragments =
         isPartiallyErasableItem(item) && item.geometry.visiblePaths !== undefined;
       if (supportsConnectorAnchors(item) && !hasVisibleFragments) {
-        for (const anchorPoint of cardinalAnchorPoints(bounds)) {
+        for (const anchorPoint of transformedCardinalAnchorPoints(item)) {
           nearest = nearerAnchor(
             nearest,
             {
@@ -777,6 +777,17 @@ export function cardinalAnchorPoints(bounds: Bounds): readonly Point[] {
     [centerX, bounds.maxY],
     [bounds.minX, centerY],
   ];
+}
+
+function transformedCardinalAnchorPoints(
+  item: Extract<
+    BoardItem,
+    { kind: "rectangle" | "ellipse" | "sticky" | "table" | "image" | "zone" }
+  >,
+): readonly Point[] {
+  return cardinalAnchorPoints(geometryBounds(item)).map((point) =>
+    transformPoint(point, item.transform),
+  );
 }
 
 function nearerAnchor(

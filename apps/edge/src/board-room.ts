@@ -3905,7 +3905,7 @@ export class BoardRoom extends DurableObject<Env> {
         );
       }
       const originalPayload = parseStoredActionPayload(entry.payload_json);
-      const effects = originalPayload.effects;
+      let effects = originalPayload.effects;
       if (effects.length === 0)
         throw new BoardDomainError("INTERNAL_ERROR", "Stored undo effects are unavailable.");
       const currentRecords = new Map<string, ItemRecord>();
@@ -3921,6 +3921,43 @@ export class BoardRoom extends DurableObject<Env> {
           );
         }
         currentRecords.set(effect.itemId, current);
+      }
+
+      let topologyItems: readonly BoardItem[] | undefined;
+      if (undo) {
+        const deletedSectionIds = deletedSectionIdsForTarget(effects, "before");
+        if (deletedSectionIds.size > 0) {
+          topologyItems = readLiveItems(this.#sql);
+          const effectItemIds = new Set(effects.map((effect) => effect.itemId));
+          const dependentEffects: ItemEffect[] = [];
+          for (const item of topologyItems) {
+            if (
+              item.sectionId === undefined ||
+              !deletedSectionIds.has(item.sectionId) ||
+              effectItemIds.has(item.id)
+            ) {
+              continue;
+            }
+            const current = readItem(this.#sql, item.id);
+            if (current === undefined || current.deleted) {
+              throw new BoardDomainError(
+                "INTERNAL_ERROR",
+                "A live Section member record is unavailable.",
+              );
+            }
+            const detached = structuredClone(current.item);
+            delete detached.sectionId;
+            dependentEffects.push({
+              itemId: item.id,
+              before: { exists: true, item: detached },
+              after: { exists: true, item: structuredClone(current.item) },
+              beforeStateToken: current.stateToken,
+              afterStateToken: current.stateToken,
+            });
+            currentRecords.set(item.id, current);
+          }
+          if (dependentEffects.length > 0) effects = [...effects, ...dependentEffects];
+        }
       }
       const currentItems = effects.flatMap((effect) => {
         const current = currentRecords.get(effect.itemId);
@@ -3965,6 +4002,7 @@ export class BoardRoom extends DurableObject<Env> {
       const topologyRowsRead = this.assertProspectiveMoveCopyClosure(
         effects,
         undo ? "before" : "after",
+        topologyItems,
       );
       const snapshotAccounting = this.projectSnapshotAccounting(
         board,
@@ -4038,16 +4076,21 @@ export class BoardRoom extends DurableObject<Env> {
       };
       const payload: StoredActionPayload = { publicResult: action, effects: [] };
       const payloadJson = JSON.stringify(payload);
+      const historyEntryPayloadJson = JSON.stringify({ ...originalPayload, effects });
       if (
         utf8(JSON.stringify(action)).byteLength > MAX_PUBLIC_RESULT_BYTES ||
-        utf8(payloadJson).byteLength > MAX_ACTION_PAYLOAD_BYTES
+        utf8(payloadJson).byteLength > MAX_ACTION_PAYLOAD_BYTES ||
+        utf8(historyEntryPayloadJson).byteLength > MAX_ACTION_PAYLOAD_BYTES
       ) {
         throw new BoardDomainError("MESSAGE_TOO_LARGE", "The history action is too large.");
       }
       const historyRowsWritten = this.#sql.exec(
-        "UPDATE history_entries SET state = ?, last_transition_seq = ? WHERE normal_action_seq = ?",
+        `UPDATE history_entries
+         SET state = ?, last_transition_seq = ?, payload_json = ?
+         WHERE normal_action_seq = ?`,
         undo ? "undone" : "active",
         seq,
+        historyEntryPayloadJson,
         entry.normal_action_seq,
       ).rowsWritten;
       const historyVersion = this.incrementHistoryVersion(attachment.actorId, acceptedAt);
@@ -5220,17 +5263,13 @@ export class BoardRoom extends DurableObject<Env> {
   private assertProspectiveMoveCopyClosure(
     effects: readonly ItemEffect[],
     target: "before" | "after",
+    knownCurrentItems?: readonly BoardItem[],
   ): number {
     if (!effects.some(topologyChanged)) return 0;
 
-    const currentItems = readLiveItems(this.#sql);
+    const currentItems = knownCurrentItems ?? readLiveItems(this.#sql);
     const current = new Map(currentItems.map((item) => [item.id, item]));
-    const deletedSectionIds = new Set<string>();
-    for (const effect of effects) {
-      if (!effect[target].exists && current.get(effect.itemId)?.kind === "zone") {
-        deletedSectionIds.add(effect.itemId);
-      }
-    }
+    const deletedSectionIds = deletedSectionIdsForTarget(effects, target);
 
     const prospective = new Map(current);
     for (const effect of effects) {
@@ -6126,6 +6165,20 @@ export class BoardRoom extends DurableObject<Env> {
 
 function topologyItem(state: ItemEffect["before"]): BoardItem | undefined {
   return state.exists ? state.item : undefined;
+}
+
+function deletedSectionIdsForTarget(
+  effects: readonly ItemEffect[],
+  target: "before" | "after",
+): Set<string> {
+  const source = target === "after" ? "before" : "after";
+  const deletedSectionIds = new Set<string>();
+  for (const effect of effects) {
+    if (!effect[target].exists && topologyItem(effect[source])?.kind === "zone") {
+      deletedSectionIds.add(effect.itemId);
+    }
+  }
+  return deletedSectionIds;
 }
 
 function topologyChanged(effect: ItemEffect): boolean {

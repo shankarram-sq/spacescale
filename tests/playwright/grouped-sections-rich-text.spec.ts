@@ -46,6 +46,15 @@ test("named Sections, grouped movement, typography, links, and export relationsh
   const link = sticky.locator("a[data-board-link]");
   await expect(link).toHaveAttribute("href", "https://example.com/questions");
   await expect(link).toHaveAttribute("target", "_blank");
+  await page
+    .context()
+    .route("https://example.com/**", (route) =>
+      route.fulfill({ status: 200, contentType: "text/html", body: "Linked question" }),
+    );
+  const [linkedPage] = await Promise.all([page.waitForEvent("popup"), link.click()]);
+  await expect(linkedPage).toHaveURL("https://example.com/questions");
+  await linkedPage.close();
+  await page.context().unroute("https://example.com/**");
 
   await page.getByRole("button", { name: /^Select/u }).click();
   const stickyBounds = await sticky.boundingBox();
