@@ -59,6 +59,7 @@ import {
 } from "./image-assets";
 import {
   assertItemsOutsideLockedSections,
+  assertItemsOwnedByActor,
   prepareOwnedItemOperation,
   sectionRecordIdsForItems,
   sectionRecordIdsForMutation,
@@ -3963,6 +3964,10 @@ export class BoardRoom extends DurableObject<Env> {
         const current = currentRecords.get(effect.itemId);
         return current === undefined || current.deleted ? [] : [current.item];
       });
+      assertItemsOwnedByActor(currentItems, {
+        actorId: attachment.actorId,
+        role: access.role,
+      });
       const targetItems = effects.flatMap((effect) => {
         const target = undo ? effect.before : effect.after;
         return target.exists ? [target.item] : [];
@@ -6337,6 +6342,13 @@ function assertOperationFeaturesEnabled(
     if (child.kind !== "item.copy") continue;
     const source = records.get(child.sourceItemId);
     const sourceItem = source !== undefined && !source.deleted ? source.item : undefined;
+    if (
+      sourceItem !== undefined &&
+      !features.objectTransforms &&
+      transformLinearPartChanged([1, 0, 0, 1, 0, 0], sourceItem.transform)
+    ) {
+      throw new BoardDomainError("FORBIDDEN", "Object transforms are disabled for this board.");
+    }
     const effectiveGroupId =
       child.newGroupId === undefined ? sourceItem?.groupId : child.newGroupId;
     const effectiveSectionId =

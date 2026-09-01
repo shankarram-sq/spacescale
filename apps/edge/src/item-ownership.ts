@@ -199,6 +199,22 @@ export function assertSectionLockMutation(
   }
 }
 
+export function assertItemsOwnedByActor(
+  items: Iterable<BoardItem>,
+  context: ItemOwnershipContext,
+): void {
+  if (context.role === "owner") return;
+  if (context.role !== "editor") {
+    throw new BoardDomainError("FORBIDDEN", "Viewers cannot modify board items.");
+  }
+  for (const item of items) {
+    if (item.createdBy === context.actorId) continue;
+    throw new BoardDomainError("FORBIDDEN", "You can modify only work that you created.", {
+      itemId: item.id,
+    });
+  }
+}
+
 /**
  * Enforces item ownership and Section locks before the reducer performs writes.
  *
@@ -216,21 +232,12 @@ export function assertItemMutationOwnership(
   context: ItemOwnershipContext,
 ): void {
   assertSectionLockMutation(operation, records, context);
-  if (context.role === "owner") return;
-  if (context.role !== "editor") {
-    throw new BoardDomainError("FORBIDDEN", "Viewers cannot modify board items.");
-  }
-
-  for (const child of children(operation)) {
-    if (child.kind === "item.create" || child.kind === "item.copy") continue;
+  const existingItems = children(operation).flatMap((child) => {
+    if (child.kind === "item.create" || child.kind === "item.copy") return [];
     const record = records.get(child.itemId);
-    if (record === undefined || record.deleted || record.item.createdBy === context.actorId) {
-      continue;
-    }
-    throw new BoardDomainError("FORBIDDEN", "You can modify only work that you created.", {
-      itemId: child.itemId,
-    });
-  }
+    return record === undefined || record.deleted ? [] : [record.item];
+  });
+  assertItemsOwnedByActor(existingItems, context);
 }
 
 /**

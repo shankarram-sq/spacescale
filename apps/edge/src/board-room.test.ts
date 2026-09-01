@@ -1110,6 +1110,59 @@ describe("BoardRoom initialization", () => {
     connected.socket.close(1000, "done");
   });
 
+  it("rejects copies that preserve transformed sources after transforms are disabled", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const connected = await connect(stub, actorId);
+    const created = createCommit(
+      "018f0000-0000-7000-8000-00000000012a",
+      "018f0000-0000-7000-8000-00000000012b",
+      "018f0000-0000-7000-8000-00000000012c",
+    );
+    created.op.item.transform = [0, 1, -1, 0, 20, 30];
+    connected.socket.send(JSON.stringify(created));
+    await connected.next(
+      (frame) => frame.t === "server.action" && frame.commandId === created.commandId,
+    );
+
+    const disabled = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ features: { objectTransforms: false }, expectedAclVersion: 1 }),
+      }),
+    );
+    expect(disabled.status).toBe(200);
+    await disabled.arrayBuffer();
+    await connected.next(
+      (frame) =>
+        frame.t === "access.changed" &&
+        (frame.features as Record<string, unknown> | undefined)?.objectTransforms === false,
+    );
+
+    const copy = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-00000000012d",
+      actionId: "018f0000-0000-7000-8000-00000000012e",
+      baseSeq: 1,
+      op: {
+        kind: "item.copy",
+        sourceItemId: created.op.item.id,
+        expectedVersion: 1,
+        newItemId: "018f0000-0000-7000-8000-00000000012f",
+        translate: { x: 20, y: 20 },
+      },
+    };
+    connected.socket.send(JSON.stringify(copy));
+    expect(
+      await connected.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === copy.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 1 });
+    connected.socket.close(1000, "done");
+  });
+
   it("gates square and rectangle previews by their canonical subtype", async () => {
     const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
     await initializeBoard(stub);
@@ -5617,6 +5670,99 @@ describe("BoardRoom move/copy closure admission", () => {
           },
         ]),
       },
+    });
+
+    owner.socket.close(1000, "done");
+    editor.socket.close(1000, "done");
+  });
+
+  it("rejects history cleanup that would detach another participant's item", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    const owner = await connect(stub, actorId);
+    const editor = await connect(stub, editorId);
+    const sectionId = topologyId(920);
+    const memberId = topologyId(921);
+    const sectionTemplate = createSectionMemberCommit(
+      topologyId(922),
+      topologyId(923),
+      sectionId,
+      memberId,
+    );
+    const createSection = {
+      ...sectionTemplate,
+      op: sectionTemplate.op.operations[0],
+    };
+    editor.socket.send(JSON.stringify(createSection));
+    await editor.next(
+      (frame) => frame.t === "server.action" && frame.commandId === createSection.commandId,
+    );
+    await owner.next(
+      (frame) => frame.t === "server.action" && frame.commandId === createSection.commandId,
+    );
+
+    const memberTemplate = createSectionMemberCommit(
+      topologyId(924),
+      topologyId(925),
+      sectionId,
+      memberId,
+    );
+    const createMember = {
+      ...memberTemplate,
+      baseSeq: 1,
+      op: memberTemplate.op.operations[1],
+    };
+    owner.socket.send(JSON.stringify(createMember));
+    await owner.next(
+      (frame) => frame.t === "server.action" && frame.commandId === createMember.commandId,
+    );
+    await editor.next(
+      (frame) => frame.t === "server.action" && frame.commandId === createMember.commandId,
+    );
+
+    const undo = {
+      v: 1,
+      t: "client.commit",
+      commandId: topologyId(926),
+      actionId: topologyId(927),
+      baseSeq: 2,
+      op: {
+        kind: "history.undo",
+        expectedHistoryVersion: 1,
+        targetActionId: createSection.actionId,
+      },
+    };
+    editor.socket.send(JSON.stringify(undo));
+    expect(
+      await editor.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === undo.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 2, itemId: memberId });
+
+    const state = await runInDurableObject(stub, (_instance, durableState) => {
+      const section = durableState.storage.sql
+        .exec<{ deleted: number }>("SELECT deleted FROM items WHERE item_id = ?", sectionId)
+        .one();
+      const member = durableState.storage.sql
+        .exec<{ data_json: string }>("SELECT data_json FROM items WHERE item_id = ?", memberId)
+        .one();
+      return {
+        latestSeq: durableState.storage.sql
+          .exec<{ latest_seq: number }>("SELECT latest_seq FROM board")
+          .one().latest_seq,
+        actions: durableState.storage.sql
+          .exec<{ count: number }>("SELECT COUNT(*) AS count FROM actions")
+          .one().count,
+        sectionDeleted: section.deleted,
+        member: JSON.parse(member.data_json) as Record<string, unknown>,
+      };
+    });
+    expect(state).toMatchObject({
+      latestSeq: 2,
+      actions: 2,
+      sectionDeleted: 0,
+      member: { id: memberId, sectionId, createdBy: actorId },
     });
 
     owner.socket.close(1000, "done");
