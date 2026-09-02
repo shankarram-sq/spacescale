@@ -2,6 +2,7 @@ import {
   lineArrowheadPoints,
   type OutlineGeometry,
   polygonPoints,
+  transformPoint,
   visibleOutlinePaths,
   ZONE_TITLE_PADDING,
   zoneTitleBandHeight,
@@ -15,7 +16,6 @@ import {
   objectLocalBounds,
   objectLocalCenter,
   objectScaleCorner,
-  transformedPoint as objectTransformedPoint,
   type RotatableObjectItem,
   type ScalableObjectItem,
 } from "../tools/transform";
@@ -123,7 +123,7 @@ export function selectionObjectScaleHandle(
   zoom: number,
   translated: { x: number; y: number } = { x: 0, y: 0 },
 ): SVGGElement {
-  const point = objectTransformedPoint(item.transform, objectScaleCorner(item));
+  const point = transformPoint(objectScaleCorner(item), item.transform);
   return selectionTransformKnob(
     "scale",
     item.id,
@@ -139,11 +139,8 @@ export function selectionObjectRotateHandle(
 ): SVGGElement {
   const safeZoom = Math.max(0.1, zoom);
   const bounds = objectLocalBounds(item);
-  const center = objectTransformedPoint(item.transform, objectLocalCenter(item));
-  const top = objectTransformedPoint(item.transform, [
-    (bounds.minX + bounds.maxX) / 2,
-    bounds.minY,
-  ]);
+  const center = transformPoint(objectLocalCenter(item), item.transform);
+  const top = transformPoint([(bounds.minX + bounds.maxX) / 2, bounds.minY], item.transform);
   const distance = Math.hypot(top[0] - center[0], top[1] - center[1]);
   const direction: Point =
     distance > 1e-9 ? [(top[0] - center[0]) / distance, (top[1] - center[1]) / distance] : [0, -1];

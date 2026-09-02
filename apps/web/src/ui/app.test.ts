@@ -256,6 +256,73 @@ describe("student item ownership preflight", () => {
     ).toBe(false);
   });
 
+  it("lets a Section creator detach a foreign member without granting other edits", () => {
+    const section: BoardItem = {
+      id: "section-mine",
+      kind: "zone",
+      z: 0,
+      version: 1,
+      createdBy: studentId,
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "zone",
+        borderColor: "#60a5fa",
+        fill: "#eff6ff",
+        textColor: "#1e3a8a",
+        fontSize: 20,
+        opacity: 0.8,
+      },
+      geometry: { x: 0, y: 0, width: 600, height: 400, title: "Mine" },
+    };
+    const foreignMember: BoardItem = {
+      ...foreignItem,
+      id: "sticky-member",
+      sectionId: section.id,
+    };
+    const scoped = new Map<string, BoardItem>([
+      [section.id, section],
+      [foreignMember.id, foreignMember],
+      [ownItem.id, ownItem],
+    ]);
+    const detach: DurableOperation = {
+      kind: "item.update",
+      itemId: foreignMember.id,
+      expectedVersion: foreignMember.version,
+      patch: { sectionId: null },
+    };
+    const deleteSectionWithDetach: DurableOperation = {
+      kind: "items.batch",
+      operations: [
+        { kind: "item.delete", itemId: section.id, expectedVersion: section.version },
+        detach,
+      ],
+    };
+
+    expect(operationAllowedForActor(detach, "editor", studentId, scoped)).toBe(true);
+    expect(operationAllowedForActor(deleteSectionWithDetach, "editor", studentId, scoped)).toBe(
+      true,
+    );
+    // Not the Section's creator: no special right over the member.
+    expect(operationAllowedForActor(detach, "editor", "student-c", scoped)).toBe(false);
+    // Anything beyond a bare detach still needs ownership of the member.
+    expect(
+      operationAllowedForActor(
+        { ...detach, patch: { sectionId: null, transform: [1, 0, 0, 1, 5, 5] } },
+        "editor",
+        studentId,
+        scoped,
+      ),
+    ).toBe(false);
+    expect(
+      operationAllowedForActor(
+        { ...detach, patch: { sectionId: section.id } },
+        "editor",
+        studentId,
+        scoped,
+      ),
+    ).toBe(false);
+  });
+
   it("allows a foreign copy but rejects a batch containing any foreign mutation", () => {
     const copy: DurableOperation = {
       kind: "item.copy",

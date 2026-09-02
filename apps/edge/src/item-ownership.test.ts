@@ -212,7 +212,51 @@ describe("classroom item ownership", () => {
     expect(records.get(ownItemId)).toEqual(before);
   });
 
-  it("rejects Section deletion before reduction when a surviving member is foreign", () => {
+  it("lets a Section's creator detach a foreign surviving member while deleting it", () => {
+    const section = sectionRecord(false);
+    section.item.createdBy = editorId;
+    const foreignMember = itemRecord(foreignItemId, otherEditorId);
+    foreignMember.item.sectionId = sectionId;
+    const sectionRecords = new Map([
+      [sectionId, section],
+      [foreignItemId, foreignMember],
+    ]);
+    const deleteWithDetach = {
+      kind: "items.batch" as const,
+      operations: [
+        { kind: "item.delete" as const, itemId: sectionId, expectedVersion: 4 },
+        {
+          kind: "item.update" as const,
+          itemId: foreignItemId,
+          expectedVersion: 4,
+          patch: { sectionId: null },
+        },
+      ],
+    };
+
+    // Membership was assigned by geometry, so the Section's creator may
+    // reverse it even though they cannot otherwise edit the member.
+    expect(() =>
+      assertItemMutationOwnership(deleteWithDetach, sectionRecords, {
+        actorId: editorId,
+        role: "editor",
+      }),
+    ).not.toThrow();
+
+    // A different editor has no such right over the member.
+    const [, detachOnly] = deleteWithDetach.operations;
+    if (detachOnly === undefined) throw new Error("expected the detach operation");
+    expectForbidden(
+      () =>
+        assertItemMutationOwnership(detachOnly, sectionRecords, {
+          actorId: "editor-c",
+          role: "editor",
+        }),
+      foreignItemId,
+    );
+  });
+
+  it("rejects Section deletion before reduction when the member patch does more than detach", () => {
     const section = sectionRecord(false);
     section.item.createdBy = editorId;
     const foreignMember = itemRecord(foreignItemId, otherEditorId);
@@ -235,7 +279,7 @@ describe("classroom item ownership", () => {
                 kind: "item.update",
                 itemId: foreignItemId,
                 expectedVersion: 4,
-                patch: { sectionId: null },
+                patch: { sectionId: null, transform: [1, 0, 0, 1, 5, 5] },
               },
             ],
           },

@@ -3950,41 +3950,90 @@ export class BoardRoom extends DurableObject<Env> {
         currentRecords.set(effect.itemId, current);
       }
 
+      // Applying this entry may remove a Section (undoing its create, or
+      // redoing its delete). Members that joined after the entry was recorded
+      // are not in its effects, so synthesize a detach for each of them in the
+      // same direction as the entry. The detached side gets a fresh state token
+      // because it is a new logical state: any other participant's history
+      // entry that recorded the member must now conflict instead of replaying
+      // against a Section that no longer exists.
       let topologyItems: readonly BoardItem[] | undefined;
-      if (undo) {
-        const deletedSectionIds = deletedSectionIdsForTarget(effects, "before");
-        if (deletedSectionIds.size > 0) {
-          topologyItems = readLiveItems(this.#sql);
-          const effectItemIds = new Set(effects.map((effect) => effect.itemId));
-          const dependentEffects: ItemEffect[] = [];
-          for (const item of topologyItems) {
-            if (
-              item.sectionId === undefined ||
-              !deletedSectionIds.has(item.sectionId) ||
-              effectItemIds.has(item.id)
-            ) {
-              continue;
-            }
-            const current = readItem(this.#sql, item.id);
-            if (current === undefined || current.deleted) {
-              throw new BoardDomainError(
-                "INTERNAL_ERROR",
-                "A live Section member record is unavailable.",
-              );
-            }
-            const detached = structuredClone(current.item);
-            delete detached.sectionId;
-            dependentEffects.push({
-              itemId: item.id,
-              before: { exists: true, item: detached },
-              after: { exists: true, item: structuredClone(current.item) },
-              beforeStateToken: current.stateToken,
-              afterStateToken: current.stateToken,
-            });
-            currentRecords.set(item.id, current);
+      const dependentItemIds = new Set<string>();
+      const deletedSectionIds = deletedSectionIdsForTarget(effects, undo ? "before" : "after");
+      if (deletedSectionIds.size > 0) {
+        topologyItems = readLiveItems(this.#sql);
+        const effectItemIds = new Set(effects.map((effect) => effect.itemId));
+        const dependentEffects: ItemEffect[] = [];
+        for (const item of topologyItems) {
+          if (
+            item.sectionId === undefined ||
+            !deletedSectionIds.has(item.sectionId) ||
+            effectItemIds.has(item.id)
+          ) {
+            continue;
           }
-          if (dependentEffects.length > 0) effects = [...effects, ...dependentEffects];
+          const current = readItem(this.#sql, item.id);
+          if (current === undefined || current.deleted) {
+            throw new BoardDomainError(
+              "INTERNAL_ERROR",
+              "A live Section member record is unavailable.",
+            );
+          }
+          // Membership was assigned by geometry, so removing it is the
+          // Section creator's right even when the member belongs to someone
+          // else. Owners may detach anything.
+          const section = currentRecords.get(item.sectionId)?.item;
+          if (access.role !== "owner" && section?.createdBy !== attachment.actorId) {
+            throw new BoardDomainError("FORBIDDEN", "You can modify only work that you created.", {
+              itemId: item.id,
+            });
+          }
+          const attached = structuredClone(current.item);
+          const detached = structuredClone(current.item);
+          delete detached.sectionId;
+          const detachedToken = crypto.randomUUID();
+          dependentEffects.push(
+            undo
+              ? {
+                  itemId: item.id,
+                  before: { exists: true, item: detached },
+                  after: { exists: true, item: attached },
+                  beforeStateToken: detachedToken,
+                  afterStateToken: current.stateToken,
+                }
+              : {
+                  itemId: item.id,
+                  before: { exists: true, item: attached },
+                  after: { exists: true, item: detached },
+                  beforeStateToken: current.stateToken,
+                  afterStateToken: detachedToken,
+                },
+          );
+          currentRecords.set(item.id, current);
+          dependentItemIds.add(item.id);
         }
+        if (dependentEffects.length > 0) effects = [...effects, ...dependentEffects];
+      }
+      // Relationship-only changes to the membership of a Section this actor
+      // created are theirs to apply in either direction, whoever authored the
+      // member: membership was assigned by geometry, not by the member's
+      // author. This covers the synthesized detaches above and the recorded
+      // detaches/re-attaches of the actor's own Section delete or create.
+      const membershipExemptItemIds = new Set(dependentItemIds);
+      for (const effect of effects) {
+        if (membershipExemptItemIds.has(effect.itemId)) continue;
+        if (!isPureHistorySectionMembershipChange(effect)) continue;
+        const sectionIds = [effect.before, effect.after].flatMap((state) =>
+          state.exists && state.item.sectionId !== undefined ? [state.item.sectionId] : [],
+        );
+        const ownsEverySection =
+          sectionIds.length > 0 &&
+          sectionIds.every(
+            (sectionId) =>
+              (currentRecords.get(sectionId) ?? readItem(this.#sql, sectionId))?.item.createdBy ===
+              attachment.actorId,
+          );
+        if (access.role === "owner" || ownsEverySection) membershipExemptItemIds.add(effect.itemId);
       }
       const currentItems = effects.flatMap((effect) => {
         const current = currentRecords.get(effect.itemId);
@@ -3995,10 +4044,15 @@ export class BoardRoom extends DurableObject<Env> {
         return target.exists ? [target.item] : [];
       });
       const historyItems = [...currentItems, ...targetItems];
-      assertItemsOwnedByActor(historyItems, {
-        actorId: attachment.actorId,
-        role: access.role,
-      });
+      // Synthesized detaches were authorised above against the Section's
+      // creator, so the member's own author is not required here.
+      assertItemsOwnedByActor(
+        historyItems.filter((item) => !membershipExemptItemIds.has(item.id)),
+        {
+          actorId: attachment.actorId,
+          role: access.role,
+        },
+      );
       if (access.role !== "owner" && effects.some(isPureHistorySectionLockChange)) {
         throw new BoardDomainError("FORBIDDEN", "Only an owner can lock or unlock a Section.");
       }
@@ -6394,13 +6448,9 @@ function assertOperationFeaturesEnabled(
     if (child.kind !== "item.copy") continue;
     const source = records.get(child.sourceItemId);
     const sourceItem = source !== undefined && !source.deleted ? source.item : undefined;
-    if (
-      sourceItem !== undefined &&
-      !features.objectTransforms &&
-      transformLinearPartChanged([1, 0, 0, 1, 0, 0], sourceItem.transform)
-    ) {
-      throw new BoardDomainError("FORBIDDEN", "Object transforms are disabled for this board.");
-    }
+    // A copy reproduces the source's existing linear transform verbatim. It
+    // never introduces one, so a disabled objectTransforms feature does not
+    // block it; creates and updates that add a linear component are gated above.
     const effectiveGroupId =
       child.newGroupId === undefined ? sourceItem?.groupId : child.newGroupId;
     const effectiveSectionId =
@@ -6415,6 +6465,28 @@ function assertOperationFeaturesEnabled(
       assertItemFeatureEnabled(features, sourceItem as { kind: string; geometry?: unknown });
     }
   }
+}
+
+/**
+ * True when the effect changes nothing about the item except its Section
+ * membership (and the version bump every write carries).
+ */
+function isPureHistorySectionMembershipChange(effect: ItemEffect): boolean {
+  const before = effect.before;
+  const after = effect.after;
+  if (!before.exists || !after.exists) return false;
+  if (before.item.sectionId === after.item.sectionId) return false;
+  return (
+    stableStringify(historyItemWithoutMembership(before.item)) ===
+    stableStringify(historyItemWithoutMembership(after.item))
+  );
+}
+
+function historyItemWithoutMembership(item: BoardItem): Record<string, unknown> {
+  const comparable = structuredClone(item) as unknown as Record<string, unknown>;
+  delete comparable.version;
+  delete comparable.sectionId;
+  return comparable;
 }
 
 function isPureHistorySectionLockChange(effect: ItemEffect): boolean {

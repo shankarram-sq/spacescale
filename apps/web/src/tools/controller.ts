@@ -1,4 +1,5 @@
 import { findMoveCopyClosureLimitViolation } from "@collab/board-core";
+import { boundsContain, transformPoint } from "@collab/geometry";
 import { MAX_BATCH_OPERATIONS } from "@collab/protocol";
 import type { BoardModel, Bounds, ConnectorAnchor } from "../board/model";
 import { itemBounds, translateMatrix } from "../board/model";
@@ -63,7 +64,6 @@ import {
   rotatedMatrixAroundLocalPoint,
   type ScalableObjectItem,
   scaledObjectMatrix,
-  transformedPoint,
 } from "./transform";
 
 export type StyleState = {
@@ -466,7 +466,18 @@ export function buildSectionDeleteMembershipOperation(
       "Wait for every Section member to finish saving before deleting the Section.",
     );
   }
-  if (survivingMembers.some((item) => !canModifyItem(item))) {
+  // Membership is assigned by geometry, so whoever may edit the Section may
+  // detach its members even when they cannot edit the members themselves.
+  // The server applies the same rule to a bare `sectionId: null` update.
+  const deletedSections = new Map(
+    selectedItems.flatMap((item) => (item.kind === "zone" ? [[item.id, item] as const] : [])),
+  );
+  const canDetach = (item: BoardItem): boolean => {
+    if (canModifyItem(item)) return true;
+    const section = item.sectionId === undefined ? undefined : deletedSections.get(item.sectionId);
+    return section !== undefined && canModifyItem(section);
+  };
+  if (survivingMembers.some((item) => !canDetach(item))) {
     throw new GroupingError("This Section contains an item you cannot remove from the Section.");
   }
 
@@ -1251,19 +1262,20 @@ export class ToolController {
 
   async groupSelection(): Promise<void> {
     if (!this.options.canDraw() || !this.options.canGroup()) return;
-    const items = [...this.selected].flatMap((id) => {
-      const item = this.options.model.getItem(id);
-      return item ? [item] : [];
-    });
+    const allItems = [...this.options.model.items.values()];
+    const selectedCount = [...this.selected].filter((id) => this.options.model.getItem(id)).length;
+    // Group the whole closure: every member of any group the selection
+    // touches is included, so an existing group is never split.
+    const items = explicitGroupClosure(allItems, this.selected);
     if (
-      items.length !== this.selected.size ||
+      selectedCount !== this.selected.size ||
       items.some((item) => !this.options.canModifyItem(item))
     ) {
       this.options.notify("You can group only saved work that you can edit.", "warning");
       return;
     }
     try {
-      const operation = buildGroupBatch(items, createId());
+      const operation = buildGroupBatch(items, createId(), allItems);
       if (!operation) return;
       if (await this.commitOperation(operation)) this.selectOnly(items.map((item) => item.id));
     } catch (error) {
@@ -2001,7 +2013,7 @@ export class ToolController {
       ) {
         const captured = structuredClone(item);
         const localPivot = objectLocalCenter(captured);
-        const pivot = transformedPoint(captured.transform, localPivot);
+        const pivot = transformPoint(localPivot, captured.transform);
         this.gesture = {
           kind: "rotate-object",
           pointerId: event.pointerId,
@@ -2451,7 +2463,13 @@ export class ToolController {
     if (gesture.kind === "marquee") {
       const bounds = pointsBounds(gesture.start, gesture.current);
       const hits = this.options.model.intersecting(bounds).map((item) => item.id);
-      this.selectOnly(hits);
+      // Match click selection: touching part of an explicit group selects the
+      // whole group, so a marquee can never produce a partial group.
+      this.selectOnly(
+        this.options.canGroup()
+          ? explicitGroupClosure(this.options.model.items.values(), hits).map((item) => item.id)
+          : hits,
+      );
       return;
     }
     if (gesture.kind === "eraser") {
@@ -2579,51 +2597,9 @@ export class ToolController {
   }
 
   private async commitOperation(operation: DurableOperation, actionId?: string): Promise<boolean> {
-    const decorated = this.options.canGroup()
-      ? this.assignCreatedItemsToSections(operation)
-      : operation;
-    return this.options.commit(decorated, actionId);
-  }
-
-  private assignCreatedItemsToSections(operation: DurableOperation): DurableOperation {
-    const decorate = (child: BatchItemOperation): BatchItemOperation => {
-      if (
-        child.kind !== "item.create" ||
-        child.item.kind === "zone" ||
-        child.item.sectionId !== undefined
-      ) {
-        return child;
-      }
-      const provisional = {
-        ...child.item,
-        z: Math.max(0, ...[...this.options.model.items.values()].map((item) => item.z)) + 1,
-        version: 0,
-        createdBy: child.item.id,
-      } as BoardItem;
-      const sectionId = this.containingSectionId(provisional);
-      return sectionId
-        ? ({ ...child, item: { ...child.item, sectionId } } as BatchItemOperation)
-        : child;
-    };
-    if (operation.kind === "items.batch") {
-      return { ...operation, operations: operation.operations.map(decorate) };
-    }
-    if (
-      operation.kind === "item.create" ||
-      operation.kind === "item.update" ||
-      operation.kind === "item.delete" ||
-      operation.kind === "item.copy"
-    ) {
-      return decorate(operation);
-    }
-    return operation;
-  }
-
-  private containingSectionId(
-    item: BoardItem,
-    sectionOverrides: ReadonlyMap<string, Extract<BoardItem, { kind: "zone" }>> = new Map(),
-  ): string | undefined {
-    return containingSectionIdFromItems(this.options.model.items.values(), item, sectionOverrides);
+    // Section membership for created items is assigned exactly once, in
+    // BoardApp.commit, so every entry point gets identical decoration.
+    return this.options.commit(operation, actionId);
   }
 
   private moveOperationsWithSectionMembership(
@@ -3148,13 +3124,55 @@ function safeReleaseCapture(element: Element, pointerId: number): void {
   if (element.hasPointerCapture(pointerId)) element.releasePointerCapture(pointerId);
 }
 
-function boundsContain(container: Bounds, candidate: Bounds): boolean {
-  return (
-    candidate.minX >= container.minX - 1e-6 &&
-    candidate.minY >= container.minY - 1e-6 &&
-    candidate.maxX <= container.maxX + 1e-6 &&
-    candidate.maxY <= container.maxY + 1e-6
+/**
+ * Attaches each created non-Section item to the topmost Section that
+ * geometrically contains it, considering existing Sections and Sections
+ * created earlier in the same batch. Items that already carry a sectionId are
+ * left alone. This is the only implementation; BoardApp.commit calls it once
+ * per commit so controller and app entry points decorate identically.
+ */
+export function assignCreatedItemsToSections(
+  operation: DurableOperation,
+  items: Iterable<BoardItem>,
+): DurableOperation {
+  const children =
+    operation.kind === "items.batch"
+      ? operation.operations
+      : operation.kind === "item.create" ||
+          operation.kind === "item.update" ||
+          operation.kind === "item.delete" ||
+          operation.kind === "item.copy"
+        ? [operation]
+        : [];
+  if (children.length === 0) return operation;
+  const savedItems = [...items];
+  const baseZ = Math.max(0, ...savedItems.map((item) => item.z));
+  const provisional = (
+    child: Extract<BatchItemOperation, { kind: "item.create" }>,
+    index: number,
+  ): BoardItem =>
+    ({ ...child.item, z: baseZ + index + 1, version: 0, createdBy: child.item.id }) as BoardItem;
+  const createdSections = children.flatMap((child, index) =>
+    child.kind === "item.create" && child.item.kind === "zone" ? [provisional(child, index)] : [],
   );
+  const candidates = [...savedItems, ...createdSections];
+  const decorate = (child: BatchItemOperation, index: number): BatchItemOperation => {
+    if (
+      child.kind !== "item.create" ||
+      child.item.kind === "zone" ||
+      child.item.sectionId !== undefined
+    ) {
+      return child;
+    }
+    const sectionId = containingSectionIdFromItems(candidates, provisional(child, index));
+    return sectionId
+      ? ({ ...child, item: { ...child.item, sectionId } } as BatchItemOperation)
+      : child;
+  };
+  if (operation.kind === "items.batch") {
+    return { ...operation, operations: operation.operations.map(decorate) };
+  }
+  return decorate(operation as BatchItemOperation, 0);
 }
 
 function containingSectionIdFromItems(

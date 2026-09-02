@@ -1,3 +1,4 @@
+import { transformPoint } from "@collab/geometry";
 import type { BatchItemOperation, BoardItem, Matrix, Point } from "../types";
 import { roundBoard } from "../types";
 
@@ -73,15 +74,8 @@ export function objectScalePivot(item: ScalableObjectItem): Point {
   return [bounds.minX, bounds.minY];
 }
 
-export function transformedPoint(matrix: Matrix, point: Point): Point {
-  return [
-    matrix[0] * point[0] + matrix[2] * point[1] + matrix[4],
-    matrix[1] * point[0] + matrix[3] * point[1] + matrix[5],
-  ];
-}
-
 export function objectScaleGrabOffset(item: ScalableObjectItem, pointer: Point): Point {
-  const handle = transformedPoint(item.transform, objectScaleCorner(item));
+  const handle = transformPoint(objectScaleCorner(item), item.transform);
   return [pointer[0] - handle[0], pointer[1] - handle[1]];
 }
 
@@ -91,8 +85,8 @@ export function scaledObjectMatrix(
   grabOffset: Point = [0, 0],
 ): Matrix {
   const localPivot = objectScalePivot(item);
-  const pivot = transformedPoint(item.transform, localPivot);
-  const corner = transformedPoint(item.transform, objectScaleCorner(item));
+  const pivot = transformPoint(localPivot, item.transform);
+  const corner = transformPoint(objectScaleCorner(item), item.transform);
   const baseline: Point = [corner[0] - pivot[0], corner[1] - pivot[1]];
   const target: Point = [
     pointer[0] - grabOffset[0] - pivot[0],
@@ -128,7 +122,7 @@ export function scaledMatrixAroundLocalPoint(
   const nextB = b * scale;
   const nextC = c * scale;
   const nextD = d * scale;
-  const worldPivot = transformedPoint(matrix, localPivot);
+  const worldPivot = transformPoint(localPivot, matrix);
   return [
     roundTransformLinear(nextA),
     roundTransformLinear(nextB),
@@ -151,7 +145,7 @@ export function rotatedMatrixAroundLocalPoint(
   const nextB = sine * a + cosine * b;
   const nextC = cosine * c - sine * d;
   const nextD = sine * c + cosine * d;
-  const worldPivot = transformedPoint(matrix, localPivot);
+  const worldPivot = transformPoint(localPivot, matrix);
   return [
     roundTransformLinear(nextA),
     roundTransformLinear(nextB),

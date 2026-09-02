@@ -920,7 +920,7 @@ export function inferAndNormalizeGeometry(value: unknown, path = "$geometry"): I
   throw new GeometryValidationError("Unrecognized geometry shape", path);
 }
 
-export function transformPoint(point: Point, transform: Transform): Point {
+export function transformPoint(point: Point, transform: Readonly<Transform>): Point {
   const [x, y] = point;
   const [a, b, c, d, e, f] = transform;
   return [a * x + c * y + e, b * x + d * y + f];
@@ -1362,6 +1362,21 @@ export function unionBounds(left: Bounds, right: Bounds): Bounds {
     maxX: Math.max(left.maxX, right.maxX),
     maxY: Math.max(left.maxY, right.maxY),
   };
+}
+
+/**
+ * Reports whether `candidate` lies entirely inside `container`, tolerating
+ * floating-point drift at the shared edges. This is the single containment
+ * predicate used for Section membership, so every caller agrees on the
+ * epsilon.
+ */
+export function boundsContain(container: Bounds, candidate: Bounds, epsilon = 1e-6): boolean {
+  return (
+    candidate.minX >= container.minX - epsilon &&
+    candidate.minY >= container.minY - epsilon &&
+    candidate.maxX <= container.maxX + epsilon &&
+    candidate.maxY <= container.maxY + epsilon
+  );
 }
 
 export function boundsForItems(items: readonly BoundsItem[]): Bounds | null {

@@ -1110,7 +1110,7 @@ describe("BoardRoom initialization", () => {
     connected.socket.close(1000, "done");
   });
 
-  it("rejects copies that preserve transformed sources after transforms are disabled", async () => {
+  it("allows copies that preserve transformed sources after transforms are disabled", async () => {
     const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
     await initializeBoard(stub);
     const connected = await connect(stub, actorId);
@@ -1157,9 +1157,12 @@ describe("BoardRoom initialization", () => {
     connected.socket.send(JSON.stringify(copy));
     expect(
       await connected.next(
-        (frame) => frame.t === "server.rejected" && frame.commandId === copy.commandId,
+        (frame) => frame.t === "server.action" && frame.commandId === copy.commandId,
       ),
-    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 1 });
+    ).toMatchObject({
+      seq: 2,
+      op: { kind: "item.copy", item: { id: copy.op.newItemId, transform: [0, 1, -1, 0, 40, 50] } },
+    });
     connected.socket.close(1000, "done");
   });
 
@@ -5778,7 +5781,7 @@ describe("BoardRoom move/copy closure admission", () => {
     editor.socket.close(1000, "done");
   });
 
-  it("rejects history cleanup that would detach another participant's item", async () => {
+  it("lets a Section creator's history cleanup detach another participant's item", async () => {
     const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
     await initializeBoard(stub);
     await addEditor(stub);
@@ -5836,11 +5839,22 @@ describe("BoardRoom move/copy closure admission", () => {
       },
     };
     editor.socket.send(JSON.stringify(undo));
+    // Membership was assigned by geometry when the owner drew inside the
+    // editor's Section, so removing it is the editor's right; the member is
+    // otherwise untouched.
     expect(
       await editor.next(
-        (frame) => frame.t === "server.rejected" && frame.commandId === undo.commandId,
+        (frame) => frame.t === "server.action" && frame.commandId === undo.commandId,
       ),
-    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 2, itemId: memberId });
+    ).toMatchObject({
+      seq: 3,
+      op: {
+        changes: [
+          { kind: "item.remove", itemId: sectionId },
+          { kind: "item.replace", item: { id: memberId, createdBy: actorId } },
+        ],
+      },
+    });
 
     const state = await runInDurableObject(stub, (_instance, durableState) => {
       const section = durableState.storage.sql
@@ -5861,11 +5875,12 @@ describe("BoardRoom move/copy closure admission", () => {
       };
     });
     expect(state).toMatchObject({
-      latestSeq: 2,
-      actions: 2,
-      sectionDeleted: 0,
-      member: { id: memberId, sectionId, createdBy: actorId },
+      latestSeq: 3,
+      actions: 3,
+      sectionDeleted: 1,
+      member: { id: memberId, createdBy: actorId },
     });
+    expect(state.member.sectionId).toBeUndefined();
 
     owner.socket.close(1000, "done");
     editor.socket.close(1000, "done");
@@ -6780,6 +6795,374 @@ describe("BoardRoom Section locks", () => {
     });
 
     owner.socket.close(1000, "done");
+  });
+});
+
+describe("BoardRoom Section membership history", () => {
+  afterEach(async () => reset());
+
+  const zoneStyle = {
+    kind: "zone",
+    borderColor: "#60a5fa",
+    fill: "#eff6ff",
+    textColor: "#1e3a8a",
+    fontSize: 20,
+    opacity: 0.8,
+  };
+  const stickyStyle = {
+    kind: "sticky",
+    fill: "#fff2a8",
+    textColor: "#2f2a1f",
+    fontSize: 20,
+    opacity: 1,
+  };
+
+  function sectionCreate(commandId: string, actionId: string, sectionId: string, baseSeq: number) {
+    return {
+      v: 1,
+      t: "client.commit",
+      commandId,
+      actionId,
+      baseSeq,
+      op: {
+        kind: "item.create",
+        item: {
+          id: sectionId,
+          kind: "zone",
+          style: zoneStyle,
+          transform: [1, 0, 0, 1, 0, 0],
+          geometry: { x: 0, y: 0, width: 600, height: 400, title: "Members" },
+        },
+      },
+    };
+  }
+
+  function memberCreate(
+    commandId: string,
+    actionId: string,
+    memberId: string,
+    sectionId: string,
+    baseSeq: number,
+  ) {
+    return {
+      v: 1,
+      t: "client.commit",
+      commandId,
+      actionId,
+      baseSeq,
+      op: {
+        kind: "item.create",
+        item: {
+          id: memberId,
+          sectionId,
+          kind: "sticky",
+          style: stickyStyle,
+          transform: [1, 0, 0, 1, 0, 0],
+          geometry: { x: 10, y: 20, width: 180, height: 140, text: "Question" },
+        },
+      },
+    };
+  }
+
+  function historyCommit(
+    kind: "history.undo" | "history.redo",
+    commandId: string,
+    actionId: string,
+    baseSeq: number,
+    expectedHistoryVersion: number,
+    targetActionId: string,
+  ) {
+    return {
+      v: 1,
+      t: "client.commit",
+      commandId,
+      actionId,
+      baseSeq,
+      op: { kind, expectedHistoryVersion, targetActionId },
+    };
+  }
+
+  async function send(socket: TestSocket, frame: { commandId: string; [key: string]: unknown }) {
+    socket.socket.send(JSON.stringify(frame));
+    return socket.next(
+      (received) =>
+        (received.t === "server.action" || received.t === "server.rejected") &&
+        received.commandId === frame.commandId,
+    );
+  }
+
+  it("redoes a Section deletion after another participant attached a member", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    const owner = await connect(stub, actorId);
+    const editor = await connect(stub, editorId);
+    const sectionId = "018f0000-0000-7000-8000-00000000a010";
+    const memberId = "018f0000-0000-7000-8000-00000000a011";
+
+    const created = sectionCreate(
+      "018f0000-0000-7000-8000-00000000a012",
+      "018f0000-0000-7000-8000-00000000a013",
+      sectionId,
+      0,
+    );
+    expect(await send(owner, created)).toMatchObject({ t: "server.action", seq: 1 });
+    const deleted = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-00000000a014",
+      actionId: "018f0000-0000-7000-8000-00000000a015",
+      baseSeq: 1,
+      op: { kind: "item.delete", itemId: sectionId, expectedVersion: 1 },
+    };
+    expect(await send(owner, deleted)).toMatchObject({ t: "server.action", seq: 2 });
+    expect(
+      await send(
+        owner,
+        historyCommit(
+          "history.undo",
+          "018f0000-0000-7000-8000-00000000a016",
+          "018f0000-0000-7000-8000-00000000a017",
+          2,
+          2,
+          deleted.actionId,
+        ),
+      ),
+    ).toMatchObject({ t: "server.action", seq: 3 });
+
+    // A different participant attaches a member while the Section is restored;
+    // this does not invalidate the owner's redo stack.
+    expect(
+      await send(
+        editor,
+        memberCreate(
+          "018f0000-0000-7000-8000-00000000a018",
+          "018f0000-0000-7000-8000-00000000a019",
+          memberId,
+          sectionId,
+          3,
+        ),
+      ),
+    ).toMatchObject({ t: "server.action", seq: 4 });
+
+    const redone = await send(
+      owner,
+      historyCommit(
+        "history.redo",
+        "018f0000-0000-7000-8000-00000000a01a",
+        "018f0000-0000-7000-8000-00000000a01b",
+        4,
+        3,
+        deleted.actionId,
+      ),
+    );
+    expect(redone).toMatchObject({
+      t: "server.action",
+      seq: 5,
+      op: {
+        changes: [
+          { kind: "item.remove", itemId: sectionId },
+          { kind: "item.replace", item: { id: memberId } },
+        ],
+      },
+    });
+    const changes = (redone as { op: { changes: Array<{ item?: { sectionId?: string } }> } }).op
+      .changes;
+    expect(changes[1]?.item?.sectionId).toBeUndefined();
+
+    owner.socket.close(1000, "done");
+    editor.socket.close(1000, "done");
+  });
+
+  it("makes another participant's history conflict once a Section undo detached their member", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    const owner = await connect(stub, actorId);
+    const editor = await connect(stub, editorId);
+    const sectionId = "018f0000-0000-7000-8000-00000000a020";
+    const memberId = "018f0000-0000-7000-8000-00000000a021";
+
+    const created = sectionCreate(
+      "018f0000-0000-7000-8000-00000000a022",
+      "018f0000-0000-7000-8000-00000000a023",
+      sectionId,
+      0,
+    );
+    expect(await send(owner, created)).toMatchObject({ t: "server.action", seq: 1 });
+    const memberCreated = memberCreate(
+      "018f0000-0000-7000-8000-00000000a024",
+      "018f0000-0000-7000-8000-00000000a025",
+      memberId,
+      sectionId,
+      1,
+    );
+    expect(await send(editor, memberCreated)).toMatchObject({ t: "server.action", seq: 2 });
+
+    // Undoing the Section create detaches the editor's member under a fresh
+    // state token: the member's logical state changed.
+    expect(
+      await send(
+        owner,
+        historyCommit(
+          "history.undo",
+          "018f0000-0000-7000-8000-00000000a026",
+          "018f0000-0000-7000-8000-00000000a027",
+          2,
+          1,
+          created.actionId,
+        ),
+      ),
+    ).toMatchObject({
+      t: "server.action",
+      seq: 3,
+      op: {
+        changes: [
+          { kind: "item.remove", itemId: sectionId },
+          { kind: "item.replace", item: { id: memberId } },
+        ],
+      },
+    });
+
+    // The editor's own entry recorded the attached member, so it must now
+    // conflict rather than replay a Section relationship that no longer exists.
+    expect(
+      await send(
+        editor,
+        historyCommit(
+          "history.undo",
+          "018f0000-0000-7000-8000-00000000a028",
+          "018f0000-0000-7000-8000-00000000a029",
+          3,
+          1,
+          memberCreated.actionId,
+        ),
+      ),
+    ).toMatchObject({ t: "server.rejected", code: "UNDO_CONFLICT" });
+
+    owner.socket.close(1000, "done");
+    editor.socket.close(1000, "done");
+  });
+
+  it("lets a Section's creator delete or undo it after the owner attached an item", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    const owner = await connect(stub, actorId);
+    const editor = await connect(stub, editorId);
+    const sectionId = "018f0000-0000-7000-8000-00000000a030";
+    const memberId = "018f0000-0000-7000-8000-00000000a031";
+
+    const created = sectionCreate(
+      "018f0000-0000-7000-8000-00000000a032",
+      "018f0000-0000-7000-8000-00000000a033",
+      sectionId,
+      0,
+    );
+    expect(await send(editor, created)).toMatchObject({ t: "server.action", seq: 1 });
+    expect(
+      await send(
+        owner,
+        memberCreate(
+          "018f0000-0000-7000-8000-00000000a034",
+          "018f0000-0000-7000-8000-00000000a035",
+          memberId,
+          sectionId,
+          1,
+        ),
+      ),
+    ).toMatchObject({ t: "server.action", seq: 2 });
+
+    // The editor cannot edit the owner's sticky, but may detach it from the
+    // editor's own Section as part of deleting that Section.
+    const deleteWithDetach = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-00000000a036",
+      actionId: "018f0000-0000-7000-8000-00000000a037",
+      baseSeq: 2,
+      op: {
+        kind: "items.batch",
+        operations: [
+          { kind: "item.delete", itemId: sectionId, expectedVersion: 1 },
+          { kind: "item.update", itemId: memberId, expectedVersion: 2, patch: { sectionId: null } },
+        ],
+      },
+    };
+    expect(await send(editor, deleteWithDetach)).toMatchObject({ t: "server.action", seq: 3 });
+    const afterDelete = await runInDurableObject(stub, (_instance, durableState) => ({
+      sectionDeleted: durableState.storage.sql
+        .exec<{ deleted: number }>("SELECT deleted FROM items WHERE item_id = ?", sectionId)
+        .one().deleted,
+      member: JSON.parse(
+        durableState.storage.sql
+          .exec<{ data_json: string }>("SELECT data_json FROM items WHERE item_id = ?", memberId)
+          .one().data_json,
+      ) as Record<string, unknown>,
+    }));
+    expect(afterDelete.sectionDeleted).toBe(1);
+    expect(afterDelete.member).toMatchObject({ id: memberId, createdBy: actorId });
+    expect(afterDelete.member.sectionId).toBeUndefined();
+
+    // Moving the owner's sticky is still not the editor's to do.
+    expect(
+      await send(editor, {
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-00000000a038",
+        actionId: "018f0000-0000-7000-8000-00000000a039",
+        baseSeq: 3,
+        op: {
+          kind: "item.update",
+          itemId: memberId,
+          expectedVersion: 3,
+          patch: { transform: [1, 0, 0, 1, 5, 5] },
+        },
+      }),
+    ).toMatchObject({ t: "server.rejected", code: "FORBIDDEN" });
+
+    // Undoing the deletion re-creates the Section and re-attaches the member
+    // (its recorded before-state), which is the creator's right for a
+    // relationship-only change. Undoing the Section's creation afterwards
+    // detaches that foreign member again as a synthesized dependent change.
+    expect(
+      await send(
+        editor,
+        historyCommit(
+          "history.undo",
+          "018f0000-0000-7000-8000-00000000a03a",
+          "018f0000-0000-7000-8000-00000000a03b",
+          3,
+          2,
+          deleteWithDetach.actionId,
+        ),
+      ),
+    ).toMatchObject({ t: "server.action", seq: 4 });
+    expect(
+      await send(
+        editor,
+        historyCommit(
+          "history.undo",
+          "018f0000-0000-7000-8000-00000000a03c",
+          "018f0000-0000-7000-8000-00000000a03d",
+          4,
+          3,
+          created.actionId,
+        ),
+      ),
+    ).toMatchObject({
+      t: "server.action",
+      seq: 5,
+      op: {
+        changes: [
+          { kind: "item.remove", itemId: sectionId },
+          { kind: "item.replace", item: { id: memberId, createdBy: actorId } },
+        ],
+      },
+    });
+
+    owner.socket.close(1000, "done");
+    editor.socket.close(1000, "done");
   });
 });
 

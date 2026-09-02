@@ -1,6 +1,6 @@
+import { boundsContain } from "@collab/geometry";
 import { MAX_BATCH_OPERATIONS } from "@collab/protocol";
 
-import type { Bounds } from "../board/model";
 import { itemBounds, translateMatrix } from "../board/model";
 import type { BatchItemOperation, BoardItem, DurableOperation } from "../types";
 
@@ -94,12 +94,26 @@ export function effectiveMoveCopyClosure(
   return selectedItems(index, selected);
 }
 
+/**
+ * Builds the batch that places `items` in `groupId`. When the full board is
+ * supplied, every current member of any group the selection touches is folded
+ * in, so grouping a partial selection can never strand the rest of an existing
+ * group.
+ */
 export function buildGroupBatch(
   items: readonly GroupedBoardItem[],
   groupId: string,
+  allItems?: Iterable<GroupedBoardItem>,
 ): GroupingBatch | null {
   requireRelationshipId(groupId, "group ID");
-  const source = validMutationItems(items, 2);
+  const members =
+    allItems === undefined
+      ? items
+      : explicitGroupClosure(
+          allItems,
+          items.map((item) => item.id),
+        );
+  const source = validMutationItems(members, 2);
   const operations = source
     .filter((item) => item.groupId !== groupId)
     .map((item) => relationshipUpdate(item, { groupId }));
@@ -235,15 +249,6 @@ function translatedContainingSectionId(
         right.section.z - left.section.z ||
         left.id.localeCompare(right.id),
     )[0]?.id;
-}
-
-function boundsContain(container: Bounds, candidate: Bounds): boolean {
-  return (
-    candidate.minX >= container.minX - 1e-6 &&
-    candidate.minY >= container.minY - 1e-6 &&
-    candidate.maxX <= container.maxX + 1e-6 &&
-    candidate.maxY <= container.maxY + 1e-6
-  );
 }
 
 function indexItems(items: Iterable<GroupedBoardItem>): Map<string, GroupedBoardItem> {

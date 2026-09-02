@@ -1,3 +1,4 @@
+import { unionBounds } from "@collab/geometry";
 import { type Bounds, itemBounds } from "../board/model";
 import type { BatchItemOperation, BoardItem, Matrix } from "../types";
 import { roundBoard } from "../types";
@@ -117,15 +118,6 @@ function arrangementUnits(
     });
   }
   return units;
-}
-
-function unionBounds(left: Bounds, right: Bounds): Bounds {
-  return {
-    minX: Math.min(left.minX, right.minX),
-    minY: Math.min(left.minY, right.minY),
-    maxX: Math.max(left.maxX, right.maxX),
-    maxY: Math.max(left.maxY, right.maxY),
-  };
 }
 
 function alignLeft(participants: Participant[]): void {

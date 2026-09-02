@@ -331,3 +331,35 @@ describe("buildGroupedSectionCopyBatch", () => {
     ).toThrow(/finite/u);
   });
 });
+
+describe("buildGroupBatch against the full board", () => {
+  it("folds in every member of a group the selection only partly covers", () => {
+    const x = rectangle("x", 1, { groupId: "g" });
+    const y = rectangle("y", 2, { groupId: "g" });
+    const z = rectangle("z", 3, { groupId: "g" });
+    const w = rectangle("w", 4);
+
+    const batch = buildGroupBatch([x, y, w], "fresh", [x, y, z, w]);
+
+    expect(batch).not.toBeNull();
+    const updated = (batch?.operations ?? []).flatMap((operation) =>
+      operation.kind === "item.update"
+        ? [{ itemId: operation.itemId, groupId: (operation.patch as { groupId?: string }).groupId }]
+        : [],
+    );
+    expect(updated.map((entry) => entry.itemId).sort()).toEqual(["w", "x", "y", "z"]);
+    expect(updated.every((entry) => entry.groupId === "fresh")).toBe(true);
+  });
+
+  it("keeps the two-argument form unchanged for callers that pass a closed set", () => {
+    const x = rectangle("x", 1, { groupId: "g" });
+    const y = rectangle("y", 2, { groupId: "g" });
+    const w = rectangle("w", 4);
+    const batch = buildGroupBatch([x, y, w], "fresh");
+    expect(
+      (batch?.operations ?? [])
+        .flatMap((operation) => (operation.kind === "item.update" ? [operation.itemId] : []))
+        .sort(),
+    ).toEqual(["w", "x", "y"]);
+  });
+});

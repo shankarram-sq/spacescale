@@ -1130,7 +1130,34 @@ describe("captured gesture operations", () => {
     });
   });
 
-  it("rejects deleting a Section whose surviving member cannot be modified", () => {
+  it("detaches a foreign surviving member when the actor may edit the Section", () => {
+    const section = sectionItem();
+    const foreignMember = stickyItem(
+      "018f47a1-7a2b-7c3d-8e4f-123456789ac3",
+      20,
+      20,
+      "student-b",
+      SECTION_ID,
+    );
+
+    // Membership was assigned by geometry, so the Section's editor may undo it
+    // even though they cannot otherwise edit the member.
+    expect(
+      buildSectionDeleteMembershipOperation(
+        [section],
+        [section, foreignMember],
+        (item) => item.createdBy === "teacher-a",
+      ),
+    ).toMatchObject({
+      kind: "items.batch",
+      operations: [
+        { kind: "item.delete", itemId: SECTION_ID },
+        { kind: "item.update", itemId: foreignMember.id, patch: { sectionId: null } },
+      ],
+    });
+  });
+
+  it("rejects deleting a Section when neither the member nor the Section is editable", () => {
     const section = sectionItem();
     const foreignMember = stickyItem(
       "018f47a1-7a2b-7c3d-8e4f-123456789ac3",
@@ -1144,7 +1171,7 @@ describe("captured gesture operations", () => {
       buildSectionDeleteMembershipOperation(
         [section],
         [section, foreignMember],
-        (item) => item.createdBy === "teacher-a",
+        (item) => item.createdBy === "student-c",
       ),
     ).toThrow(GroupingError);
   });

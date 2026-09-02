@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  boundsContain,
   boundsForItems,
   defaultOutlinePaths,
   formatCanonicalNumber,
@@ -690,5 +691,25 @@ describe("canonical number formatting", () => {
     expect(formatCanonicalNumber(-0)).toBe("0");
     expect(formatCanonicalNumber(1e-7)).toBe("0.0000001");
     expect(formatCanonicalNumber(1.2e21)).toBe("1200000000000000000000");
+  });
+});
+
+describe("boundsContain", () => {
+  const container = { minX: 0, minY: 0, maxX: 100, maxY: 50 };
+
+  it("accepts candidates inside or exactly on the container edges", () => {
+    expect(boundsContain(container, { minX: 10, minY: 10, maxX: 90, maxY: 40 })).toBe(true);
+    expect(boundsContain(container, container)).toBe(true);
+  });
+
+  it("tolerates floating-point drift at the edges but not real overflow", () => {
+    expect(boundsContain(container, { minX: -1e-9, minY: 0, maxX: 100 + 1e-9, maxY: 50 })).toBe(
+      true,
+    );
+    expect(boundsContain(container, { minX: -0.001, minY: 0, maxX: 100, maxY: 50 })).toBe(false);
+    expect(boundsContain(container, { minX: 0, minY: 0, maxX: 100.001, maxY: 50 })).toBe(false);
+    expect(boundsContain(container, { minX: 0, minY: 0, maxX: 100.001, maxY: 50 }, 0.01)).toBe(
+      true,
+    );
   });
 });

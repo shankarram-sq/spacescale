@@ -1,3 +1,4 @@
+import { transformPoint } from "@collab/geometry";
 import { describe, expect, it } from "vitest";
 import type { BoardItem, Matrix } from "../types";
 import {
@@ -7,7 +8,6 @@ import {
   objectScaleGrabOffset,
   rotatedMatrixAroundLocalPoint,
   scaledObjectMatrix,
-  transformedPoint,
 } from "./transform";
 
 const SHAPE_ID = "019fd0b4-f8ae-7000-8000-000000000501";
@@ -53,8 +53,8 @@ function image(transform: Matrix = [1, 0, 0, 1, 0, 0]): Extract<BoardItem, { kin
 describe("object transforms", () => {
   it("uniformly scales a shape around its opposite corner", () => {
     const item = rectangle([0, 1, -1, 0, 240, 10]);
-    const pivot = transformedPoint(item.transform, [10, 20]);
-    const corner = transformedPoint(item.transform, [110, 80]);
+    const pivot = transformPoint([10, 20], item.transform);
+    const corner = transformPoint([110, 80], item.transform);
     const pointer = [
       pivot[0] + (corner[0] - pivot[0]) * 1.5,
       pivot[1] + (corner[1] - pivot[1]) * 1.5,
@@ -62,7 +62,7 @@ describe("object transforms", () => {
 
     const next = scaledObjectMatrix(item, pointer);
 
-    expect(transformedPoint(next, [10, 20])).toEqual(pivot);
+    expect(transformPoint([10, 20], next)).toEqual(pivot);
     expect(Math.hypot(next[0], next[1])).toBeCloseTo(1.5, 5);
     expect(Math.hypot(next[2], next[3])).toBeCloseTo(1.5, 5);
     expect(item.geometry).toEqual({ x: 10, y: 20, width: 100, height: 60, shape: "rectangle" });
@@ -81,9 +81,9 @@ describe("object transforms", () => {
   it("rotates translated shapes and images around their visual center", () => {
     for (const item of [rectangle([1, 0, 0, 1, 30, -10]), image([0.5, 0, 0, 0.5, 12, 18])]) {
       const localPivot = objectLocalCenter(item);
-      const before = transformedPoint(item.transform, localPivot);
+      const before = transformPoint(localPivot, item.transform);
       const next = rotatedMatrixAroundLocalPoint(item.transform, Math.PI / 2, localPivot);
-      expect(transformedPoint(next, localPivot)).toEqual(before);
+      expect(transformPoint(localPivot, next)).toEqual(before);
     }
   });
 

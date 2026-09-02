@@ -235,9 +235,33 @@ export function assertItemMutationOwnership(
   const existingItems = children(operation).flatMap((child) => {
     if (child.kind === "item.create" || child.kind === "item.copy") return [];
     const record = records.get(child.itemId);
-    return record === undefined || record.deleted ? [] : [record.item];
+    if (record === undefined || record.deleted) return [];
+    if (isOwnSectionDetach(child, record.item, records, context.actorId)) return [];
+    return [record.item];
   });
   assertItemsOwnedByActor(existingItems, context);
+}
+
+/**
+ * A Section's creator may detach members they do not own from that Section.
+ * Membership is assigned by geometry when another participant draws inside
+ * the Section, so the creator must be able to reverse it (and delete the
+ * Section) without that participant. Only a bare `{ sectionId: null }` patch
+ * qualifies; any other change to the member still requires ownership, and
+ * Section locks are enforced separately before this runs.
+ */
+export function isOwnSectionDetach(
+  operation: ParsedItemOperation,
+  member: BoardItem,
+  records: ReadonlyMap<string, ItemRecord>,
+  actorId: string,
+): boolean {
+  if (operation.kind !== "item.update") return false;
+  const patch = operation.patch as Record<string, unknown>;
+  if (Object.keys(patch).length !== 1 || patch.sectionId !== null) return false;
+  if (member.sectionId === undefined) return false;
+  const section = asSection(liveItem(records, member.sectionId));
+  return section !== undefined && section.createdBy === actorId;
 }
 
 /**

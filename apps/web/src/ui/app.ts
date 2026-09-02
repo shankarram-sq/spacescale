@@ -27,7 +27,7 @@ import {
   buildActivityBatch,
 } from "../activities/templates";
 import { buildClearVoteDeletes, isVoteTable, summarizeVotes } from "../activities/voting";
-import { BoardModel, type Bounds, itemBounds, SequenceError } from "../board/model";
+import { BoardModel, SequenceError } from "../board/model";
 import { BoardRenderer, STICKY_PADDING } from "../board/renderer";
 import {
   BRAND_MARK_HTML,
@@ -51,6 +51,7 @@ import {
   type CapturedTextEdit,
   DEFAULT_STICKY_HEIGHT,
   DEFAULT_STICKY_WIDTH,
+  assignCreatedItemsToSections as decorateCreatedItemsWithSections,
   type ShapeVariant,
   sectionIdAfterBoundsChange,
   ToolController,
@@ -686,17 +687,24 @@ export function operationBlockedBySectionLock(
   return false;
 }
 
-export function operationAllowedForActor(
+export type OperationDenial = "section-locked" | "ownership";
+
+/**
+ * Explains why the local actor may not commit `operation`, or returns null
+ * when it is allowed. The Section-lock scan runs exactly once here; callers
+ * that need to pick a message should use this rather than re-running it.
+ */
+export function operationDenialForActor(
   operation: DurableOperation,
   role: Role,
   actorId: string,
   authoritativeItems: ReadonlyMap<string, BoardItem>,
-): boolean {
-  if (operationBlockedBySectionLock(operation, role, authoritativeItems)) return false;
-  if (role === "owner") return true;
-  if (role !== "editor") return false;
-  if (operation.kind === "history.undo" || operation.kind === "history.redo") return true;
-  if (operation.kind === "board.clear") return false;
+): OperationDenial | null {
+  if (operationBlockedBySectionLock(operation, role, authoritativeItems)) return "section-locked";
+  if (role === "owner") return null;
+  if (role !== "editor") return "ownership";
+  if (operation.kind === "history.undo" || operation.kind === "history.redo") return null;
+  if (operation.kind === "board.clear") return "ownership";
 
   const ownedItemIds = new Set(
     [...authoritativeItems.values()]
@@ -710,12 +718,40 @@ export function operationAllowedForActor(
     } else if (child.kind === "item.copy") {
       ownedItemIds.add(child.newItemId);
     } else if (!ownedItemIds.has(child.itemId)) {
-      return false;
+      if (!isOwnSectionDetach(child, actorId, authoritativeItems)) return "ownership";
     } else if (child.kind === "item.delete") {
       ownedItemIds.delete(child.itemId);
     }
   }
-  return true;
+  return null;
+}
+
+export function operationAllowedForActor(
+  operation: DurableOperation,
+  role: Role,
+  actorId: string,
+  authoritativeItems: ReadonlyMap<string, BoardItem>,
+): boolean {
+  return operationDenialForActor(operation, role, actorId, authoritativeItems) === null;
+}
+
+/**
+ * A Section's creator may detach members they do not own from that Section.
+ * Membership is assigned by geometry, so the creator must be able to reverse
+ * it (and delete the Section) without the member's author. Only a bare
+ * `{ sectionId: null }` patch qualifies; the edge enforces the same rule.
+ */
+function isOwnSectionDetach(
+  child: BatchItemOperation,
+  actorId: string,
+  items: ReadonlyMap<string, BoardItem>,
+): boolean {
+  if (child.kind !== "item.update") return false;
+  const patch = child.patch as Record<string, unknown>;
+  if (Object.keys(patch).length !== 1 || patch.sectionId !== null) return false;
+  const member = items.get(child.itemId);
+  const section = member?.sectionId === undefined ? undefined : items.get(member.sectionId);
+  return section?.kind === "zone" && section.createdBy === actorId;
 }
 
 export function buildCreatorNameMap(creators: readonly Actor[], self: Actor): Map<string, string> {
@@ -3120,61 +3156,7 @@ export class BoardApp {
 
   private assignCreatedItemsToSections(operation: DurableOperation): DurableOperation {
     if (!this.bootstrap.board.features.grouping) return operation;
-    const children =
-      operation.kind === "items.batch"
-        ? operation.operations
-        : operation.kind === "item.create" ||
-            operation.kind === "item.update" ||
-            operation.kind === "item.delete" ||
-            operation.kind === "item.copy"
-          ? [operation]
-          : [];
-    if (children.length === 0) return operation;
-    const baseZ = Math.max(0, ...[...this.model.items.values()].map((item) => item.z));
-    const createdSections = children.flatMap((child, index) =>
-      child.kind === "item.create" && child.item.kind === "zone"
-        ? [
-            {
-              ...child.item,
-              z: baseZ + index + 1,
-              version: 0,
-              createdBy: child.item.id,
-            } as Extract<BoardItem, { kind: "zone" }>,
-          ]
-        : [],
-    );
-    const sections = [
-      ...[...this.model.items.values()].filter(
-        (item): item is Extract<BoardItem, { kind: "zone" }> => item.kind === "zone",
-      ),
-      ...createdSections,
-    ];
-    const decorate = (child: BatchItemOperation, index: number): BatchItemOperation => {
-      if (
-        child.kind !== "item.create" ||
-        child.item.kind === "zone" ||
-        child.item.sectionId !== undefined
-      ) {
-        return child;
-      }
-      const provisional = {
-        ...child.item,
-        z: baseZ + index + 1,
-        version: 0,
-        createdBy: child.item.id,
-      } as BoardItem;
-      const candidateBounds = itemBounds(provisional);
-      const sectionId = sections
-        .filter((section) => exportBoundsContain(itemBounds(section), candidateBounds))
-        .sort((left, right) => right.z - left.z || left.id.localeCompare(right.id))[0]?.id;
-      return sectionId
-        ? ({ ...child, item: { ...child.item, sectionId } } as BatchItemOperation)
-        : child;
-    };
-    if (operation.kind === "items.batch") {
-      return { ...operation, operations: operation.operations.map(decorate) };
-    }
-    return decorate(operation as BatchItemOperation, 0);
+    return decorateCreatedItemsWithSections(operation, this.model.items.values());
   }
 
   private async commit(
@@ -3202,22 +3184,15 @@ export class BoardApp {
       this.notify("That gesture could not be converted into a valid board edit.", "error");
       return false;
     }
-    const blockedBySectionLock = operationBlockedBySectionLock(
+    const denial = operationDenialForActor(
       normalizedOperation,
       this.bootstrap.actor.role,
+      this.bootstrap.actor.id,
       this.model.authoritativeItems,
     );
-    if (
-      blockedBySectionLock ||
-      !operationAllowedForActor(
-        normalizedOperation,
-        this.bootstrap.actor.role,
-        this.bootstrap.actor.id,
-        this.model.authoritativeItems,
-      )
-    ) {
+    if (denial !== null) {
       this.notify(
-        blockedBySectionLock
+        denial === "section-locked"
           ? "This Section is locked. An owner must unlock it before its contents can change."
           : "You can edit only work that you created. Make a copy to adapt it.",
         "warning",
@@ -6369,15 +6344,6 @@ export function localSvg(snapshot: BoardSnapshot, title: string): string {
     : "0 0 1200 800";
   const content = items.map(renderSvgItem).join("");
   return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" role="img" aria-label="${escapeXml(title)}"><metadata>{&quot;format&quot;:&quot;cf-whiteboard-json&quot;,&quot;seq&quot;:${snapshot.seq}}</metadata><rect x="-1000000" y="-1000000" width="2000000" height="2000000" fill="#ffffff"/>${content}</svg>`;
-}
-
-function exportBoundsContain(container: Bounds, candidate: Bounds): boolean {
-  return (
-    candidate.minX >= container.minX - 1e-6 &&
-    candidate.minY >= container.minY - 1e-6 &&
-    candidate.maxX <= container.maxX + 1e-6 &&
-    candidate.maxY <= container.maxY + 1e-6
-  );
 }
 
 export function attributedDataFilename(boardTitle: string): string {
