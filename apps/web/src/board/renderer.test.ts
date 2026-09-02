@@ -84,6 +84,30 @@ describe("creator attribution", () => {
       "private-stable-user-id",
     );
   });
+
+  it("uses a sparkle on the responsible author's badge for AI-assisted content", () => {
+    const item: Extract<BoardItem, { kind: "sticky" }> = {
+      id: "sticky-ai-assisted",
+      kind: "sticky",
+      z: 1,
+      version: 1,
+      createdBy: "responsible-teacher-id",
+      assistedBy: "ai",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "sticky",
+        fill: "#eee5ff",
+        textColor: "#38284f",
+        fontSize: 16,
+        opacity: 1,
+      },
+      geometry: { x: 10, y: 20, width: 180, height: 140, text: "Synthesis" },
+    };
+
+    const badge = creatorBadge(item, "Coach Mira") as unknown as FakeSvgNode;
+    expect(badge.classList.values.has("creator-badge-ai")).toBe(true);
+    expect(badge.children[1]?.textContent).toBe("✦");
+  });
 });
 
 describe("connector rendering", () => {
@@ -98,7 +122,13 @@ describe("connector rendering", () => {
   it("renders a plain connector as one shaft", () => {
     const node = lineNode(
       { x1: 0, y1: 0, x2: 100, y2: 0 },
-      { kind: "line", color: "#20201e", width: 4, opacity: 1, arrowhead: "none" },
+      {
+        kind: "line",
+        color: "#20201e",
+        width: 4,
+        opacity: 1,
+        arrowhead: "none",
+      },
     ) as unknown as FakeSvgNode;
 
     expect(node.children).toHaveLength(1);
@@ -109,7 +139,13 @@ describe("connector rendering", () => {
   it("renders a shared-math open arrowhead without closing or filling it", () => {
     const node = lineNode(
       { x1: 0, y1: 0, x2: 100, y2: 0 },
-      { kind: "line", color: "#20201e", width: 4, opacity: 0.8, arrowhead: "arrow" },
+      {
+        kind: "line",
+        color: "#20201e",
+        width: 4,
+        opacity: 0.8,
+        arrowhead: "arrow",
+      },
     ) as unknown as FakeSvgNode;
 
     expect(node.children).toHaveLength(2);
@@ -175,8 +211,14 @@ describe("selection resize handle", () => {
       geometry: { x: 10, y: 20, width: 180, height: 140, text: "Idea" },
     };
 
-    const handle = selectionResizeHandle(item, 2, { x: 4, y: 6 }) as unknown as FakeSvgNode;
-    expect(handle.dataset).toEqual({ resizeHandle: "southeast", itemId: "sticky-a" });
+    const handle = selectionResizeHandle(item, 2, {
+      x: 4,
+      y: 6,
+    }) as unknown as FakeSvgNode;
+    expect(handle.dataset).toEqual({
+      resizeHandle: "southeast",
+      itemId: "sticky-a",
+    });
     expect(handle.attributes.get("aria-hidden")).toBe("true");
     expect(handle.children).toHaveLength(2);
     expect(handle.children[0]?.attributes.get("cx")).toBe("206");
@@ -467,7 +509,12 @@ describe("canvas viewport view state", () => {
     const svg = {
       dataset: {} as DOMStringMap,
       style: { setProperty: vi.fn() },
-      getBoundingClientRect: () => ({ left: 10, top: 20, width: 800, height: 600 }),
+      getBoundingClientRect: () => ({
+        left: 10,
+        top: 20,
+        width: 800,
+        height: 600,
+      }),
       setAttribute: (name: string, value: string) => attributes.set(name, value),
     } as unknown as SVGSVGElement;
     const viewport = new CanvasViewport(svg);
@@ -482,19 +529,30 @@ describe("canvas viewport view state", () => {
     expect(viewport.viewState).toEqual({ center: { x: 120, y: -30 }, zoom: 2 });
     expect(attributes.get("viewBox")).toBe("-80 -180 400 300");
     expect(zoomListener).toHaveBeenLastCalledWith(2);
-    expect(viewListener).toHaveBeenLastCalledWith({ center: { x: 120, y: -30 }, zoom: 2 });
+    expect(viewListener).toHaveBeenLastCalledWith({
+      center: { x: 120, y: -30 },
+      zoom: 2,
+    });
 
     viewport.panByPixels(20, -10);
     expect(viewport.viewState).toEqual({ center: { x: 110, y: -25 }, zoom: 2 });
     expect(zoomListener).toHaveBeenCalledTimes(1);
-    expect(viewListener).toHaveBeenLastCalledWith({ center: { x: 110, y: -25 }, zoom: 2 });
+    expect(viewListener).toHaveBeenLastCalledWith({
+      center: { x: 110, y: -25 },
+      zoom: 2,
+    });
   });
 
   it("rejects non-finite view state and clamps zoom to the supported range", () => {
     const svg = {
       dataset: {} as DOMStringMap,
       style: { setProperty: vi.fn() },
-      getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 300 }),
+      getBoundingClientRect: () => ({
+        left: 0,
+        top: 0,
+        width: 400,
+        height: 300,
+      }),
       setAttribute: vi.fn(),
     } as unknown as SVGSVGElement;
     const viewport = new CanvasViewport(svg);

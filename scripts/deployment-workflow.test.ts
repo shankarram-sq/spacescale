@@ -27,21 +27,29 @@ describe("lightweight deployment workflows", () => {
   });
 
   it("provisions private buckets and deploys each uploaded version directly at 100%", () => {
-    expect(deploy).toContain("npm run cf:bootstrap -- --env staging");
-    expect(deploy).toContain("npm run cf:bootstrap -- --env production");
+    expect(deploy).toContain("npm run deployment:init -- --env staging");
+    expect(deploy).toContain("npm run deployment:init -- --env production");
+    expect(deploy).toContain("npm run deployment:init -- --env staging --finalize");
+    expect(deploy).toContain("npm run deployment:init -- --env production --finalize");
+    expect(deploy).not.toContain("npm run config:setup");
+    expect(deploy).not.toContain("npm run cf:bootstrap");
+    expect(deploy).toContain("--config .generated/wrangler.staging.jsonc");
+    expect(deploy).toContain("--config .generated/wrangler.production.jsonc");
     expect(occurrences(deploy, "wrangler versions upload")).toBe(2);
     expect(occurrences(deploy, "$" + "{{ steps.upload.outputs.version_id }}@100")).toBe(2);
     expect(deploy).not.toContain("--strict");
   });
 
-  it("keeps staging automation-friendly and production Turnstile-enabled", () => {
-    expect(deploy).toContain("--env staging");
-    expect(deploy).toContain("APP_HOSTNAME:staging-cloud-collab.spacescale.net");
-    expect(deploy).toContain("TURNSTILE_ENABLED:false");
+  it("keeps mappings environment-scoped and Turnstile explicit", () => {
+    expect(occurrences(deploy, "DEPLOYMENT_NAME: $" + "{{ vars.DEPLOYMENT_NAME }}")).toBe(2);
+    expect(occurrences(deploy, "APP_HOSTNAME: $" + "{{ vars.APP_HOSTNAME }}")).toBe(2);
+    expect(deploy).toContain('TURNSTILE_ENABLED: "false"');
     expect(deploy).toContain("TURNSTILE_SITE_KEY: $" + "{{ vars.TURNSTILE_SITE_KEY }}");
-    expect(deploy).toContain("APP_HOSTNAME:spacescale.net");
-    expect(deploy).toContain("TURNSTILE_ENABLED:true");
-    expect(deploy).toContain('--env=""');
+    expect(deploy).toContain('TURNSTILE_ENABLED: "true"');
+    expect(deploy).not.toContain("bucket_name:");
+    expect(deploy).not.toContain("R2_BUCKET_NAME:");
+    expect(deploy).not.toContain("CLOUDFLARE_WORKER_NAME:");
+    expect(deploy).not.toContain('--env=""');
   });
 
   it("uses only a small post-deploy health probe", () => {

@@ -16,8 +16,9 @@ function deterministicIds(): () => string {
 }
 
 describe("classroom templates", () => {
-  it("builds all five templates as small valid ordinary-item batches", () => {
+  it("builds all six templates as small valid ordinary-item batches", () => {
     const expectedCounts: Record<ActivityTemplateId, number> = {
+      "collective-inquiry-demo": 13,
       "exit-ticket": 7,
       kwl: 2,
       "sort-it": 12,

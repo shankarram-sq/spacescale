@@ -94,15 +94,34 @@ on shapes, sticky notes, tables, image cards, and sections. V1 stores the snappe
 coordinates as ordinary line geometry, so moving the target later does not move
 the connector automatically.
 
-AI assistance remains unimplemented and disabled. Any future classroom AI
-feature must pass the [classroom AI safety and implementation
-gate](docs/classroom-ai-safety.md) before code or rollout.
+AI assistance is exposed through twelve consent-aware WebMCP tools: a capability catalog,
+a teacher-approved text selection reader, a selected-board visual inspector for handwriting
+and sketches, five education collaboration writers spanning 27
+non-section modes, a source-linked class visual/meme writer, a collective-inquiry mapper,
+an aggregate vote reader, and a dissent-preserving class decision tool. The visual writer
+renders safe meme cards locally or accepts inline generated raster data, then reuses the
+private board-asset pipeline; it never embeds or fetches an external image URL. The visual
+inspector opens a teacher-approved, selected-only SVG review surface in the live page, masks
+the rest of the board, aliases item IDs, and leaves private board images as placeholders.
+Cross-Group
+Jigsaw is reserved for the tested
+section-context integration arriving separately; its writer adapter remains dormant
+unless an authoritative section snapshot provider is configured. The capability catalog publishes an
+exact contract for every live mode—including entry bounds, source-link cardinality,
+semantic roles, visible connections, and student-owned decision fields—and the write
+tools enforce the same registry at runtime. Writes require the teacher's WebMCP
+permission; the two headline demo flows add an extra visual preview. Every AI
+contribution is visibly attributed, source-linked, realtime, and undoable. The public
+deployment is a hackathon demo for synthetic or otherwise non-sensitive content; real
+classroom rollout remains subject to the [classroom AI safety and implementation
+gate](docs/classroom-ai-safety.md).
 
 ## Local development
 
 Requirements: Node.js 22.19 or newer. Local development uses Miniflare-backed
-Durable Objects and R2 plus committed, local-only signing values. It does not
-need a Cloudflare account, API token, account ID, `.env`, or `.dev.vars`.
+Durable Objects and R2. The first setup creates `.generated/.dev.vars` with fresh private
+signing values and later runs validate and reuse it. It does not need a
+Cloudflare account, API token, account ID, or production `.env` values.
 
 ```sh
 npm install
@@ -140,39 +159,44 @@ gates.
 
 Cloudflare credentials are needed only for provisioning, validating, or deploying
 a hosted environment. `.env.sample` is the source of truth for those configuration
-names. Real secrets must never be committed, printed in logs, placed in
-`wrangler.jsonc`, or exposed to browser code. Copy `.env.sample` to ignored `.env`
-only when working with Cloudflare. Production secrets are installed with Wrangler
-encrypted secrets or the Cloudflare deployment API.
+names. Real secrets and resolved resource names must never be committed, printed
+in logs, or exposed to browser code. Copy `.env.sample` to ignored `.env`,
+`.env.staging`, or `.env.production`, then replace every required placeholder.
+`deployment:init` loads the selected environment file before `.env`, validates
+all required details, and only then creates configuration or Cloudflare resources.
+Production secrets are installed with Wrangler encrypted secrets or the
+Cloudflare deployment API.
 
 ### Variables
 
-| Name | Purpose and acquisition |
-| --- | --- |
-| `R2_BUCKET_NAME` | Private checkpoint/export bucket. Use the committed environment-specific name. `npm run cf:bootstrap` creates it together with the separate private image bucket; no R2 S3 key is needed. |
-| `TURNSTILE_SITE_KEY` | Production public site key from **Cloudflare Dashboard → Turnstile → widget → Site Key**. It may be exposed to the browser. Staging deliberately omits it because Turnstile is disabled there for browser automation. |
-| `SESSION_SIGNING_KEY_CURRENT` | Secret HMAC key for device sessions. Generate independently per environment with `openssl rand -base64 32`. |
-| `SESSION_SIGNING_KEY_PREVIOUS` | Optional prior session key, accepted only during rotation. Leave empty on a new installation. |
-| `ORGANISATION_SIGNING_KEYS` | Secret JSON registry of Organisation-specific HMAC keys. Each entry has a stable `derivation_key`, a `current` launch key with `key_id`, and optional `previous` keys for rotation. Generate every key independently with `openssl rand -base64 32`. |
-| `APP_HOSTNAME` | Public hostname only—no scheme, path, query, or trailing slash. Example: `whiteboard.example.com` or a `workers.dev` hostname. |
-| `ALLOWED_ORIGINS` | Comma-separated exact HTTPS origins allowed to embed `/embed`. Missing, blank, or invalid configuration denies all framing; a literal `*` explicitly allows every parent. |
-| `WEBHOOK_ALLOWED_ORIGINS` | Comma-separated exact public HTTPS origins approved to receive attributed board webhooks. Missing or blank denies all webhook configuration/delivery; wildcards are not supported. |
-| `BOARD_CREATION_ENABLED` | Public fail-closed operational switch. `true` permits new boards; `false` preserves existing-board read/reconnect/export routes while rejecting creation. |
-| `CLOUDFLARE_ACCOUNT_ID` | Account ID from **Dashboard → account → Account home/Overview**. It is an identifier, not a cryptographic secret. |
-| `CLOUDFLARE_API_TOKEN` | Secret Cloudflare management API token used by bootstrap/CI; it is not an R2 S3 credential. Creation and scope are below. |
-| `TURNSTILE_SECRET_KEY` | Production secret Siteverify key from **Dashboard → Turnstile → widget → Settings/details → Secret Key**. It must exist only server-side and is not installed on staging. |
+| Name                           | Purpose and acquisition                                                                                                                                                                                                                              |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DEPLOYMENT_NAME`              | Required lowercase installation name, 3–42 characters using letters, numbers, and internal hyphens. Initialization combines it with the selected environment to derive every Worker and bucket name.                                                 |
+| `R2_BUCKET_JURISDICTION`       | Optional R2 jurisdiction: `default`, `eu`, or `fedramp`.                                                                                                                                                                                             |
+| `TURNSTILE_SITE_KEY`           | Production public site key from **Cloudflare Dashboard → Turnstile → widget → Site Key**. It may be exposed to the browser. Staging deliberately omits it because Turnstile is disabled there for browser automation.                                |
+| `SESSION_SIGNING_KEY_CURRENT`  | Secret HMAC key for device sessions. Generate independently per environment with `openssl rand -base64 32`.                                                                                                                                          |
+| `SESSION_SIGNING_KEY_PREVIOUS` | Optional prior session key, accepted only during rotation. Leave empty on a new installation.                                                                                                                                                        |
+| `ORGANISATION_SIGNING_KEYS`    | Secret JSON registry of Organisation-specific HMAC keys. Each entry has a stable `derivation_key`, a `current` launch key with `key_id`, and optional `previous` keys for rotation. Generate every key independently with `openssl rand -base64 32`. |
+| `APP_HOSTNAME`                 | Public hostname only—no scheme, path, query, or trailing slash. Example: `whiteboard.example.com` or a `workers.dev` hostname.                                                                                                                       |
+| `ALLOWED_ORIGINS`              | Comma-separated exact HTTPS origins allowed to embed `/embed`. Missing, blank, or invalid configuration denies all framing; a literal `*` explicitly allows every parent.                                                                            |
+| `WEBHOOK_ALLOWED_ORIGINS`      | Comma-separated exact public HTTPS origins approved to receive attributed board webhooks. Missing or blank denies all webhook configuration/delivery; wildcards are not supported.                                                                   |
+| `BOARD_CREATION_ENABLED`       | Public fail-closed operational switch. `true` permits new boards; `false` preserves existing-board read/reconnect/export routes while rejecting creation.                                                                                            |
+| `TURNSTILE_ENABLED`            | Public environment switch. Use `true` only when the matching site and secret keys are configured.                                                                                                                                                    |
+| `CLOUDFLARE_ACCOUNT_ID`        | Account ID from **Dashboard → account → Account home/Overview**. It is an identifier, not a cryptographic secret.                                                                                                                                    |
+| `CLOUDFLARE_API_TOKEN`         | Secret Cloudflare management API token used by bootstrap/CI; it is not an R2 S3 credential. Creation and scope are below.                                                                                                                            |
+| `TURNSTILE_SECRET_KEY`         | Production secret Siteverify key from **Dashboard → Turnstile → widget → Settings/details → Secret Key**. It must exist only server-side and is not installed on staging.                                                                            |
 
 ### Exact API-token permissions
 
 Create a custom token at **Cloudflare Dashboard → Manage Account → Account API
 Tokens → Create Token → Create Custom Token**. For first-time bootstrap, grant:
 
-| Resource scope | Dashboard permission | API permission name | Why |
-| --- | --- | --- | --- |
-| Include only the target account | Workers Scripts: Edit | `Workers Scripts Write` | Upload/deploy Worker modules and Static Assets, manage Worker secrets, and provision/bind the declared SQLite Durable Object class. |
-| Include only the target account | Workers R2 Storage: Edit | `Workers R2 Storage Write` | Look up and create both private R2 buckets during bootstrap. |
-| Include only the zone that owns `APP_HOSTNAME` | Zone: Read | `Zone Read` | Discover the exact active zone without committing its identifier. |
-| Include only the zone that owns `APP_HOSTNAME` | WAF: Edit | `Zone WAF Write` | Create, verify, or repair the narrow server-API Super Bot Fight Mode skip rule. |
+| Resource scope                                 | Dashboard permission     | API permission name        | Why                                                                                                                                 |
+| ---------------------------------------------- | ------------------------ | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Include only the target account                | Workers Scripts: Edit    | `Workers Scripts Write`    | Upload/deploy Worker modules and Static Assets, manage Worker secrets, and provision/bind the declared SQLite Durable Object class. |
+| Include only the target account                | Workers R2 Storage: Edit | `Workers R2 Storage Write` | Look up and create both private R2 buckets during bootstrap.                                                                        |
+| Include only the zone that owns `APP_HOSTNAME` | Zone: Read               | `Zone Read`                | Discover the exact active zone without committing its identifier.                                                                   |
+| Include only the zone that owns `APP_HOSTNAME` | WAF: Edit                | `Zone WAF Write`           | Create, verify, or repair the narrow server-API Super Bot Fight Mode skip rule.                                                     |
 
 Do not add DNS, SSL, Workers Routes, D1, KV, Pages, Workers Tail, or broad account
 permissions. Add a TTL and client-IP restriction when CI has stable egress.
@@ -203,25 +227,30 @@ for creation,
 recovery. The Worker verifies the returned hostname and exact action through
 Siteverify; tokens are single use and never reach a board Durable Object.
 
-The committed public deployment contract is:
+No deployed hostname, Worker name, or bucket name is committed. Initialization
+uses one deliberately simple mapping for every installation:
 
-| Environment | Hostname | Snapshot bucket | Image bucket | Turnstile |
-| --- | --- | --- | --- | --- |
-| Development | `localhost` | `cloudflare-collab-canvas-dev-snapshots` | `cloudflare-collab-canvas-dev-assets` | Disabled |
-| Staging | `staging-cloud-collab.spacescale.net` | `staging-cloud-collab` | `staging-cloud-collab-assets` | Disabled for browser automation |
-| Production | `spacescale.net` | `collab-canvas-snapshots` | `collab-canvas-assets` | Adaptive, invisible; dedicated production widget |
+```text
+Worker:           <deployment-name>-<environment>
+Snapshot bucket:  <deployment-name>-<environment>-snapshots
+Asset bucket:     <deployment-name>-<environment>-assets
+```
 
-Production and staging are separate Worker Custom Domains with `workers_dev`
-disabled, so neither deployment can silently fall back to an unintended
-hostname. Staging uses an isolated Worker, Durable Object namespace, R2 bucket,
-and signing keys. It has no Turnstile site key or secret: the deployment fixes
-`TURNSTILE_ENABLED=false` so Playwright and AI-driven browser checks can
-exercise capability flows without interactive challenges. Never put production
-data or credentials in this automation-only environment.
+Running `npm run deployment:init -- --env <development|staging|production>`
+validates the selected environment and writes
+`.generated/wrangler.<environment>.jsonc` with mode `0600`. The generated
+directory is ignored. Missing or invalid inputs fail before Cloudflare is
+contacted; the error lists environment-variable names but never their values or
+resolved resource identifiers.
+
+Keep staging and production on separate Worker names, custom domains, Durable
+Object namespaces, R2 buckets, and signing keys. Set `TURNSTILE_ENABLED=false`
+for an automation-only staging target and `true` only for a target with a
+dedicated configured widget.
 
 For production, configure the dedicated widget in **Invisible** mode, copy
 `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` from that same widget, and allow
-exactly `spacescale.net`. The Worker asks for a token only when Cloudflare bot
+exactly the configured `APP_HOSTNAME`. The Worker asks for a token only when Cloudflare bot
 signals or narrow browser-automation fallbacks classify the request as
 suspicious. Normal sessions never load the widget. Do not pair a site key from
 one widget with a secret from another. Confirm both custom domains are active
@@ -236,8 +265,8 @@ without printing credential values:
 npm run cf:check
 ```
 
-`cf:check` also verifies that `APP_HOSTNAME` and `R2_BUCKET_NAME` identify one
-committed environment. For production, a token that can read Turnstile Sites
+`cf:check` first generates the ignored configuration from the current process
+environment and then verifies that exact mapping. For production, a token that can read Turnstile Sites
 also checks the widget site key, hostname allowlist, and returned secret pairing
 without printing any of those values. The documented least-privilege
 Workers/R2 token cannot read widgets, so a production
@@ -245,15 +274,18 @@ Workers/R2 token cannot read widgets, so a production
 same-widget key/secret and hostname allowlist in the Turnstile dashboard before
 deployment. Staging has no widget pairing to confirm.
 
-Provision an environment idempotently:
+Initialize an environment idempotently:
 
 ```sh
-npm run cf:bootstrap -- --env production
+npm run deployment:init -- --env production
 ```
 
-The command reads `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` from the
-process environment (the npm script loads ignored `.env` when present), verifies
-the committed configuration, and creates both private buckets only when absent.
+The command loads `.env.production` and then `.env`, reads
+`CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`, derives the environment's
+Worker and bucket names, generates the Wrangler mapping, and creates both
+private buckets only when absent. Use `--env staging` for a fully isolated
+staging mapping. `--env development` generates local configuration without
+requiring credentials or creating remote buckets.
 For each non-local hostname it discovers the owning zone, then creates or repairs
 a first-position custom WAF rule matching only that exact host and
 `/api/v1/organisations/*`. The rule skips only the Super Bot Fight Mode phase;
@@ -272,7 +304,7 @@ server clients.
 To deploy only after successful provisioning:
 
 ```sh
-npm run cf:bootstrap -- --env production --deploy
+npm run deployment:init -- --env production --deploy
 ```
 
 Cloudflare can also pull this repository, run `npm run check`, and deploy it
@@ -298,23 +330,26 @@ below remain useful for manual or Cloudflare-native deployments.
 Install runtime secrets before the first production request:
 
 ```sh
-npx wrangler secret put SESSION_SIGNING_KEY_CURRENT
-npx wrangler secret put ORGANISATION_SIGNING_KEYS
-npx wrangler secret put TURNSTILE_SECRET_KEY
+npm run deployment:init -- --env production
+npx wrangler secret put SESSION_SIGNING_KEY_CURRENT --config .generated/wrangler.production.jsonc
+npx wrangler secret put ORGANISATION_SIGNING_KEYS --config .generated/wrangler.production.jsonc
+npx wrangler secret put TURNSTILE_SECRET_KEY --config .generated/wrangler.production.jsonc
 ```
 
 Install distinct staging secrets explicitly against the staging environment:
 
 ```sh
-npx wrangler secret put SESSION_SIGNING_KEY_CURRENT --env staging
-npx wrangler secret put ORGANISATION_SIGNING_KEYS --env staging
+npm run deployment:init -- --env staging
+npx wrangler secret put SESSION_SIGNING_KEY_CURRENT --config .generated/wrangler.staging.jsonc
+npx wrangler secret put ORGANISATION_SIGNING_KEYS --config .generated/wrangler.staging.jsonc
 ```
 
-Before running either bootstrap/deploy command, set `.env` to the selected
-environment's bucket and hostname. Staging uses `staging-cloud-collab` and
-`staging-cloud-collab.spacescale.net`; it needs no Turnstile credentials.
-Production uses `collab-canvas-snapshots`, `spacescale.net`, and its dedicated
-widget credentials.
+Before initialization, provide the selected environment's deployment name,
+hostname, switches, and credentials through ignored environment files or CI
+variables. Bucket and Worker names are not inputs; they are always derived from
+`DEPLOYMENT_NAME` and `--env`. Remove legacy `R2_BUCKET_NAME`,
+`R2_ASSET_BUCKET_NAME`, and `CLOUDFLARE_WORKER_NAME` variables; initialization
+rejects them so an existing manual mapping cannot be reused accidentally.
 
 During signing-key rotation, install `SESSION_SIGNING_KEY_PREVIOUS`, deploy code
 that accepts both keys, rotate the current key, wait past the session window,

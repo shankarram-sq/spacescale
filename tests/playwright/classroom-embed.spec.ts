@@ -359,7 +359,10 @@ test("canonical export is faithfully reproduced by the signed read-only viewer",
   await expect(spaceRow).toBeVisible();
   await expect(spaceRow).toContainText("Coach Viewer");
   await expect(spaceRow.getByRole("link")).toHaveAttribute("href", /\/viewer#launch=/u);
-  await page.screenshot({ path: testInfo.outputPath("organisation-admin.png"), fullPage: false });
+  await page.screenshot({
+    path: testInfo.outputPath("organisation-admin.png"),
+    fullPage: false,
+  });
 });
 
 test("Organisation owners share reusable templates across Spaces", async ({
@@ -621,7 +624,7 @@ test("Organisation owner configures and sends the Space webhook from Settings", 
 });
 
 function readDevVar(name: string): string {
-  const localVariablesFile = process.env.LOCAL_DEV_VARS_FILE ?? ".dev.vars.example";
+  const localVariablesFile = process.env.LOCAL_DEV_VARS_FILE ?? ".generated/.dev.vars";
   const contents = readFileSync(localVariablesFile, "utf8");
   const line = contents
     .split(/\r?\n/u)
@@ -778,9 +781,18 @@ async function drawRectangle(frame: Frame): Promise<string> {
     });
     const bounds = canvas.getBoundingClientRect();
     const points = [
-      { x: bounds.left + bounds.width * 0.3, y: bounds.top + bounds.height * 0.35 },
-      { x: bounds.left + bounds.width * 0.42, y: bounds.top + bounds.height * 0.47 },
-      { x: bounds.left + bounds.width * 0.5, y: bounds.top + bounds.height * 0.55 },
+      {
+        x: bounds.left + bounds.width * 0.3,
+        y: bounds.top + bounds.height * 0.35,
+      },
+      {
+        x: bounds.left + bounds.width * 0.42,
+        y: bounds.top + bounds.height * 0.47,
+      },
+      {
+        x: bounds.left + bounds.width * 0.5,
+        y: bounds.top + bounds.height * 0.55,
+      },
     ];
     points.forEach((point, index) => {
       const last = index === points.length - 1;

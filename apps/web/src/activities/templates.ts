@@ -17,6 +17,7 @@ export type ActivityTemplateId =
   | "kwl"
   | "sort-it"
   | "pair-share"
+  | "collective-inquiry-demo"
   | "vote-with-stamps";
 
 export type ActivityTemplateItem = {
@@ -109,6 +110,98 @@ function stamp(x: number, y: number): ActivityTemplateItem {
 }
 
 export const ACTIVITY_TEMPLATES: readonly ActivityTemplate[] = [
+  {
+    id: "collective-inquiry-demo",
+    label: "Collective inquiry demo",
+    description: "Seed the full WebMCP class collaboration story in one click.",
+    items: [
+      text(-650, -360, "How might our school reduce cafeteria waste?", 32),
+      text(
+        -650,
+        -315,
+        "Eight students have contributed. Select their ideas and invite the AI into the shared conversation.",
+        18,
+        MUTED,
+      ),
+      sticky(
+        -650,
+        -250,
+        180,
+        140,
+        "Offer smaller portions first, with free seconds.",
+        STICKY_COLOR_VALUES.yellow,
+      ),
+      sticky(
+        -450,
+        -250,
+        180,
+        140,
+        "Create a reusable container return station.",
+        STICKY_COLOR_VALUES.sky,
+      ),
+      sticky(
+        -250,
+        -250,
+        180,
+        140,
+        "Let students pre-order lunch so kitchens know demand.",
+        STICKY_COLOR_VALUES.mint,
+      ),
+      sticky(
+        -50,
+        -250,
+        180,
+        140,
+        "Show each day’s food waste on a public dashboard.",
+        STICKY_COLOR_VALUES.lavender,
+      ),
+      sticky(
+        -650,
+        -90,
+        180,
+        140,
+        "Compost scraps with the school garden.",
+        STICKY_COLOR_VALUES.coral,
+      ),
+      sticky(
+        -450,
+        -90,
+        180,
+        140,
+        "Ask why unopened food cannot be shared safely.",
+        STICKY_COLOR_VALUES.slate,
+      ),
+      sticky(
+        -250,
+        -90,
+        180,
+        140,
+        "Run a taste-test before adding unfamiliar meals.",
+        STICKY_COLOR_VALUES.yellow,
+      ),
+      sticky(
+        -50,
+        -90,
+        180,
+        140,
+        "Packaging matters, but long lunch queues matter too.",
+        STICKY_COLOR_VALUES.sky,
+      ),
+      text(-650, 105, "After the AI map: students respond, then vote with stamps.", 18, MUTED),
+      text(-650, 155, "Which idea should the class pilot first?", 22),
+      table(
+        -650,
+        185,
+        [200, 200, 200],
+        [52, 190],
+        [
+          ["Container return", "Smaller portions", "Waste dashboard"],
+          ["", "", ""],
+        ],
+        { ...VOTE_TABLE_STYLE },
+      ),
+    ],
+  },
   {
     id: "exit-ticket",
     label: "Exit ticket",

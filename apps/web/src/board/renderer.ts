@@ -561,7 +561,10 @@ export class BoardRenderer {
   showCardResizePreview(item: ResizableCardItem, geometry: StickyGeometry | ImageGeometry): void {
     this.localLayer.replaceChildren();
     const preview = { ...item, geometry } as ResizableCardItem;
-    const renderItem = { ...preview, id: `${item.id}-resize-preview` } as ResizableCardItem;
+    const renderItem = {
+      ...preview,
+      id: `${item.id}-resize-preview`,
+    } as ResizableCardItem;
     const node = itemNode(renderItem, (assetId) => this.imageAssets.load(assetId));
     node.classList.add("local-preview", "resize-preview");
     this.localLayer.append(node);
@@ -1148,12 +1151,14 @@ function appendCreatorAttribution(
   item: AttributedItem,
   displayName: string,
 ): void {
-  const label = `Created by ${displayName}`;
+  const isAiAssisted = item.assistedBy === "ai";
+  const label = `Created by ${displayName}${isAiAssisted ? " with AI assistance" : ""}`;
   const title = svgElement("title");
   title.textContent = label;
   node.prepend(title);
   node.setAttribute("aria-description", label);
   node.dataset.creatorInitials = creatorInitials(displayName);
+  if (isAiAssisted) node.dataset.creatorAssistance = "ai";
   node.classList.add("has-creator-badge");
   node.append(creatorBadge(item, displayName));
 }
@@ -1178,6 +1183,7 @@ export function creatorBadge(item: AttributedItem, displayName: string): SVGGEle
 
   const badge = svgElement("g");
   badge.classList.add("creator-badge");
+  if (item.assistedBy === "ai") badge.classList.add("creator-badge-ai");
   badge.setAttribute("aria-hidden", "true");
   badge.setAttribute("pointer-events", "none");
 
@@ -1198,7 +1204,7 @@ export function creatorBadge(item: AttributedItem, displayName: string): SVGGEle
   text.setAttribute("font-size", String(Math.max(7, radius * 0.92)));
   text.setAttribute("font-family", "Inter, ui-sans-serif, system-ui, sans-serif");
   text.setAttribute("font-weight", "800");
-  text.textContent = creatorInitials(displayName);
+  text.textContent = item.assistedBy === "ai" ? "✦" : creatorInitials(displayName);
   badge.append(background, text);
   return badge;
 }

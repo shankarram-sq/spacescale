@@ -174,12 +174,14 @@ export const ITEM_KINDS = [
 export const BOARD_ROLES = ["viewer", "editor", "owner"] as const;
 export const DRAWING_POLICIES = ["editors_enabled", "owner_only", "locked"] as const;
 export const ACCESS_MODES = ["private", "link_view"] as const;
+export const ITEM_ASSISTANCE = ["ai"] as const;
 
 export type ItemKind = (typeof ITEM_KINDS)[number];
 export type BoardItemKind = ItemKind;
 export type BoardRole = (typeof BOARD_ROLES)[number];
 export type DrawingPolicy = (typeof DRAWING_POLICIES)[number];
 export type AccessMode = (typeof ACCESS_MODES)[number];
+export type ItemAssistance = (typeof ITEM_ASSISTANCE)[number];
 
 export interface BoardAccessPolicy {
   accessMode: AccessMode;
@@ -282,6 +284,7 @@ interface BoardItemBase {
   z: number;
   version: number;
   createdBy: string;
+  assistedBy?: ItemAssistance;
   transform: Transform;
 }
 
@@ -1156,7 +1159,10 @@ function normalizeGeometryForItem(kind: ItemKind, value: unknown, path: string):
   }
   if (kind === "table") {
     const table = geometry as TableGeometry;
-    return { ...table, cells: validateTableCells(table.cells, `${path}.cells`) };
+    return {
+      ...table,
+      cells: validateTableCells(table.cells, `${path}.cells`),
+    };
   }
   if (kind === "zone") {
     const zone = geometry as ZoneGeometry;
@@ -1179,15 +1185,20 @@ function normalizeStyleForKind(kind: ItemKind, value: unknown, path: string): It
 
 export function normalizeNewBoardItem(value: unknown, path = "$item"): NewBoardItem {
   const object = expectRecord(value, path);
-  expectExactKeys(object, ["id", "kind", "style", "transform", "geometry"], [], path);
+  expectExactKeys(object, ["id", "kind", "style", "transform", "geometry"], ["assistedBy"], path);
   const kind = expectLiteral(object.kind, ITEM_KINDS, `${path}.kind`);
   const common = {
     id: assertCanonicalId(object.id, `${path}.id`),
     transform: fromGeometry(() => normalizeTransform(object.transform, `${path}.transform`)),
   };
+  const assistance = own.call(object, "assistedBy")
+    ? {
+        assistedBy: expectLiteral(object.assistedBy, ITEM_ASSISTANCE, `${path}.assistedBy`),
+      }
+    : {};
   const style = normalizeStyleForKind(kind, object.style, `${path}.style`);
   const geometry = normalizeGeometryForItem(kind, object.geometry, `${path}.geometry`);
-  return { ...common, kind, style, geometry } as NewBoardItem;
+  return { ...common, ...assistance, kind, style, geometry } as NewBoardItem;
 }
 
 export function normalizeBoardItem(value: unknown, path = "$item"): BoardItem {
@@ -1195,7 +1206,7 @@ export function normalizeBoardItem(value: unknown, path = "$item"): BoardItem {
   expectExactKeys(
     object,
     ["id", "kind", "z", "version", "createdBy", "style", "transform", "geometry"],
-    [],
+    ["assistedBy"],
     path,
   );
   const normalized = normalizeNewBoardItem(
@@ -1205,6 +1216,7 @@ export function normalizeBoardItem(value: unknown, path = "$item"): BoardItem {
       style: object.style,
       transform: object.transform,
       geometry: object.geometry,
+      ...(own.call(object, "assistedBy") ? { assistedBy: object.assistedBy } : {}),
     },
     path,
   );
@@ -1673,7 +1685,11 @@ function inspectJsonValue(value: unknown, maximumDepth: number): void {
     }
     if (!isRecord(entry)) fail("Value is not a plain JSON object", current.path);
     for (const [key, nested] of Object.entries(entry)) {
-      stack.push({ value: nested, depth: current.depth + 1, path: `${current.path}.${key}` });
+      stack.push({
+        value: nested,
+        depth: current.depth + 1,
+        path: `${current.path}.${key}`,
+      });
     }
   }
 }

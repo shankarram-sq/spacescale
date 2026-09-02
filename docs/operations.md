@@ -11,25 +11,24 @@ provision a Cloudflare dashboard or alert.
 
 ## Provisioning
 
-1. Provision the isolated staging Worker and the
-   `staging-cloud-collab.spacescale.net` Worker Custom Domain. Keep its Durable
-   Object namespace and signing keys separate from production.
-2. Create one dedicated production Turnstile widget. Allow only
-   `spacescale.net`, and copy its public site key and Siteverify secret from
+1. Configure a deployment name and hostname in each environment. Initialization
+   derives isolated Worker and bucket names by appending the selected
+   environment. Keep signing keys separate from production.
+2. Create one dedicated production Turnstile widget. Allow only the configured
+   production `APP_HOSTNAME`, and copy its public site key and Siteverify secret from
    the same widget. Staging deliberately has no Turnstile widget or credentials.
 3. Give each GitHub environment token **Workers Scripts: Edit** and **Workers
    R2 Storage: Edit**. Automatic deployment uses those permissions to create or
    verify both private buckets on every run. Add the environment-specific
    `ORGANISATION_SIGNING_KEYS` JSON as a GitHub environment secret; the workflow
    uploads it as an encrypted Worker-version secret.
-4. Install the other production runtime secrets with
-   `npx wrangler secret put SESSION_SIGNING_KEY_CURRENT`,
-   and `npx wrangler secret put TURNSTILE_SECRET_KEY`. Install the staging
-   session secret with
-   `npx wrangler secret put SESSION_SIGNING_KEY_CURRENT --env staging`.
-5. Optionally run `npm run cf:check` or
-   `npm run cf:bootstrap -- --env <development|staging|production>` for a manual
-   access check. Local development never needs Cloudflare credentials.
+4. Run `npm run deployment:init -- --env <staging|production>` to validate the
+   environment, generate its config, and create or verify both buckets. Then
+   install runtime secrets with `npx wrangler secret put <NAME> --config
+   .generated/wrangler.<environment>.jsonc`.
+5. Optionally run `npm run cf:check` for a separate access check. Local
+   development uses `npm run deployment:init -- --env development` and never
+   needs Cloudflare credentials.
 6. Run focused development checks for the feature being changed.
 7. Push the commit to `staging`. The workflow idempotently provisions both R2
    buckets, builds, deploys the exact SHA directly at 100%, and probes
@@ -40,15 +39,12 @@ provision a Cloudflare dashboard or alert.
 9. Push the same SHA to `main` when ready. This order is recommended but not an
    enforced gate.
 
-The public environment values are committed in `config/environments.json` and
-must agree with local configuration before bootstrap: staging uses bucket
-`staging-cloud-collab`, asset bucket `staging-cloud-collab-assets`, and hostname
-`staging-cloud-collab.spacescale.net`; production uses bucket
-`collab-canvas-snapshots`, asset bucket `collab-canvas-assets`, and hostname
-`spacescale.net`. Keep
-`BOARD_CREATION_ENABLED=true` normally; set the committed public switch to
-`false` for an intentional creation freeze before deploying. Bootstrap rejects
-hostname, bucket, and switch drift.
+Resolved public resource mappings are never committed. Supply only
+`DEPLOYMENT_NAME`, the hostname, and the remaining switches through ignored
+environment files or GitHub environment variables. `deployment:init` validates
+the complete environment before it writes the ignored Wrangler file or contacts
+Cloudflare. Keep `BOARD_CREATION_ENABLED=true` normally; set it to `false` in
+the deployment environment for an intentional creation freeze.
 
 Set `ALLOWED_ORIGINS` to a comma-separated list of exact parent application
 origins in local configuration and in each GitHub environment. It is public
@@ -82,7 +78,7 @@ The default Workers/R2 management token cannot inspect Turnstile widgets. For
 production, if `cf:check` reports
 `manualDashboardConfirmationRequired`, confirm in the Turnstile dashboard that
 the configured public site key and installed secret come from the same widget
-and that its hostname allowlist contains `spacescale.net`. A token with
+and that its hostname allowlist contains the configured `APP_HOSTNAME`. A token with
 Turnstile Sites Read lets `cf:check` perform this comparison without emitting
 keys or secrets. Staging has no widget pairing to inspect.
 
@@ -380,6 +376,13 @@ umask 077
 set -a
 . ./.env
 set +a
+: "${DEPLOYMENT_NAME:?Configure DEPLOYMENT_NAME first}"
+ops_environment="${DEPLOYMENT_ENVIRONMENT:-production}"
+case "${ops_environment}" in
+  development|staging|production) ;;
+  *) printf 'Unsupported DEPLOYMENT_ENVIRONMENT\n' >&2; exit 1 ;;
+esac
+ops_snapshot_bucket="${DEPLOYMENT_NAME}-${ops_environment}-snapshots"
 
 IFS= read -r -s -p "Board ID: " ops_board_id
 printf '\n'
@@ -392,7 +395,7 @@ ops_tmp_dir="$(mktemp -d)"
 trap 'rm -rf -- "$ops_tmp_dir"' EXIT
 
 npx wrangler r2 object get \
-  "${R2_BUCKET_NAME}/${ops_snapshot_key}" \
+  "${ops_snapshot_bucket}/${ops_snapshot_key}" \
   --remote \
   --file "${ops_tmp_dir}/snapshot.json"
 
@@ -409,7 +412,7 @@ test "${ops_actual_bytes}" = "${ops_expected_bytes}"
 curl --fail-with-body --silent --show-error --get \
   -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
   --data-urlencode "prefix=${ops_snapshot_key}" \
-  "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets/${R2_BUCKET_NAME}/objects" \
+  "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets/${ops_snapshot_bucket}/objects" \
   --output "${ops_tmp_dir}/object-list.json"
 
 ops_remote_count="$(

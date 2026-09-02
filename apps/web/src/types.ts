@@ -122,7 +122,12 @@ export type LineGeometry = {
   y2: number;
   visiblePaths?: VisiblePaths;
 };
-export type BoxGeometry = { x: number; y: number; width: number; height: number };
+export type BoxGeometry = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
 export type OutlineBoxGeometry = BoxGeometry & { visiblePaths?: VisiblePaths };
 export type RectangleKind = "rectangle" | "square";
 export type RectangleGeometry = OutlineBoxGeometry & { shape: RectangleKind };
@@ -137,7 +142,12 @@ export type StickyGeometry = {
   height: number;
   text: string;
 };
-export type StampGeometry = { x: number; y: number; size: number; stamp: StampKind };
+export type StampGeometry = {
+  x: number;
+  y: number;
+  size: number;
+  stamp: StampKind;
+};
 
 export type ImageGeometry = {
   x: number;
@@ -167,6 +177,7 @@ type ItemBase = {
   z: number;
   version: number;
   createdBy: string;
+  assistedBy?: "ai";
   transform: Matrix;
 };
 
@@ -267,7 +278,12 @@ export type ItemPatch = {
 
 export type BatchItemOperation =
   | { kind: "item.create"; item: NewBoardItem }
-  | { kind: "item.update"; itemId: string; expectedVersion: number; patch: ItemPatch }
+  | {
+      kind: "item.update";
+      itemId: string;
+      expectedVersion: number;
+      patch: ItemPatch;
+    }
   | { kind: "item.delete"; itemId: string; expectedVersion: number }
   | {
       kind: "item.copy";
@@ -280,8 +296,16 @@ export type BatchItemOperation =
 export type DurableOperation =
   | BatchItemOperation
   | { kind: "items.batch"; operations: BatchItemOperation[] }
-  | { kind: "history.undo"; expectedHistoryVersion: number; targetActionId?: string }
-  | { kind: "history.redo"; expectedHistoryVersion: number; targetActionId?: string }
+  | {
+      kind: "history.undo";
+      expectedHistoryVersion: number;
+      targetActionId?: string;
+    }
+  | {
+      kind: "history.redo";
+      expectedHistoryVersion: number;
+      targetActionId?: string;
+    }
   | { kind: "board.clear"; expectedBoardSeq: number };
 
 export type CommitFrame = {
@@ -355,7 +379,11 @@ export type Bootstrap = {
   snapshot: BoardSnapshot | { url: string; seq: number; format?: string; version?: number };
 };
 
-export type Member = Actor & { role: Role; connected?: boolean; primaryOwner?: boolean };
+export type Member = Actor & {
+  role: Role;
+  connected?: boolean;
+  primaryOwner?: boolean;
+};
 export type Presence = Actor & {
   connectionId?: string;
   role?: Role;

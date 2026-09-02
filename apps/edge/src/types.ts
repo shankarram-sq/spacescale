@@ -156,7 +156,12 @@ export type Matrix = [number, number, number, number, number, number];
 
 export type PencilGeometry = { points: Array<[number, number]> };
 export type LineGeometry = { x1: number; y1: number; x2: number; y2: number };
-export type BoxGeometry = { x: number; y: number; width: number; height: number };
+export type BoxGeometry = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
 export type TextGeometry = { x: number; y: number; text: string };
 export type StickyGeometry = BoxGeometry & { text: string };
 export type StampKind = "star" | "check" | "heart" | "question" | "smile" | "sparkle";
@@ -201,6 +206,7 @@ export interface BoardItem {
   z: number;
   version: number;
   createdBy: string;
+  assistedBy?: "ai";
   style: ItemStyle;
   transform: Matrix;
   geometry: ItemGeometry;
