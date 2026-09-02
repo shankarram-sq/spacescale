@@ -767,7 +767,6 @@ export class BoardApp {
   private expiredRecovery: OutboxEntry[] = [];
   private previewExpiryTimer: number;
   private textEditor: HTMLTextAreaElement | null = null;
-  private textEditorTimer: number | null = null;
   private textEditContext: CapturedTextEdit | null = null;
   private textEditorMode: "text" | "sticky" | null = null;
   private textEditorPreview: (() => void) | null = null;
@@ -1045,9 +1044,6 @@ export class BoardApp {
 
     this.webMcp = new CollectiveInquiryWebMcp({
       root: this.root,
-      status: query(this.root, "[data-webmcp-status]", HTMLElement),
-      selectionButton: query(this.root, "[data-selection-ai]", HTMLButtonElement),
-      getRole: () => this.bootstrap.actor.role,
       getSelectedItems: () =>
         savedAuthoritativeItems(
           [...this.tools.selection],
@@ -1059,7 +1055,7 @@ export class BoardApp {
     });
 
     this.educationPartnerWebMcp = new EducationPartnerWebMcp({
-      getRole: () => this.bootstrap.actor.role,
+      canWrite: () => this.canCommit(),
       getSnapshot: (token) => this.webMcp?.getSnapshot(token),
       getItemVersion: (itemId) => this.model.authoritativeItems.get(itemId)?.version,
       getItemBounds: (itemId) => this.model.getBounds(itemId),
@@ -1076,7 +1072,7 @@ export class BoardApp {
 
     this.inquiryMapWebMcp = new InquiryMapWebMcp({
       root: this.root,
-      getRole: () => this.bootstrap.actor.role,
+      canWrite: () => this.canCommit(),
       getSnapshot: (token) => this.webMcp?.getSnapshot(token),
       getItemVersion: (itemId) => this.model.authoritativeItems.get(itemId)?.version,
       getItemBounds: (itemId) => this.model.getBounds(itemId),
@@ -1090,7 +1086,7 @@ export class BoardApp {
 
     this.classDecisionWebMcp = new ClassDecisionWebMcp({
       root: this.root,
-      getRole: () => this.bootstrap.actor.role,
+      canWrite: () => this.canCommit(),
       getSelectedItems: () =>
         savedAuthoritativeItems(
           [...this.tools.selection],
@@ -1139,7 +1135,6 @@ export class BoardApp {
     this.clearFollowingSpotlight();
     this.unsubscribeViewport?.();
     this.unsubscribeViewport = null;
-    if (this.textEditorTimer !== null) window.clearTimeout(this.textEditorTimer);
     this.pendingStickyDrafts.clear();
     this.rejectedStickyDrafts.length = 0;
     this.pendingTableCellDrafts.clear();
@@ -1186,11 +1181,6 @@ export class BoardApp {
             <input class="board-title" data-testid="board-title" maxlength="100" autocomplete="off" />
           </label>
           <div class="topbar-actions">
-            <div class="webmcp-status" data-webmcp-status hidden>
-              <span class="webmcp-status-dot" aria-hidden="true"></span>
-              <span data-webmcp-label>AI partner</span>
-              <span class="webmcp-badge">WebMCP</span>
-            </div>
             <div class="history-controls" aria-label="Board history">
               <button class="icon-button" type="button" data-testid="undo-button" aria-label="Undo (Control or Command Z)" title="Undo · Ctrl/⌘ Z">↶</button>
               <button class="icon-button" type="button" data-testid="redo-button" aria-label="Redo (Control or Command Shift Z)" title="Redo · Ctrl/⌘ Shift Z">↷</button>
@@ -1279,7 +1269,6 @@ export class BoardApp {
               </form>
             </dialog>
             <div class="selection-actions" data-testid="selection-actions" hidden>
-              <button class="selection-ai-button" type="button" data-selection-ai aria-label="Use selected board content with the AI partner" hidden><span aria-hidden="true">✦</span> Ask AI</button>
               <button type="button" data-selection-alt aria-label="Edit image alt text" hidden>Edit alt text</button>
               <div class="selection-colour-wrap" hidden>
                 <button type="button" data-selection-colour aria-label="Change selected element colour" aria-haspopup="menu" aria-controls="selection-colour-menu" aria-expanded="false">Colour</button>
@@ -2641,7 +2630,7 @@ export class BoardApp {
       throw new Error("Image cards are disabled for this Space.");
     }
     if (!navigator.onLine || this.phase !== "ready") {
-      throw new Error("Reconnect before adding AI-assisted visuals.");
+      throw new Error("Reconnect before adding generated visuals.");
     }
     if (!this.canCommit()) throw new Error("This drawing is read only.");
     if (this.imageUploadInFlight) throw new Error("Another image is already uploading.");
@@ -2660,7 +2649,7 @@ export class BoardApp {
       return assets;
     } catch (error) {
       if (error instanceof ApiError || error instanceof ImagePreparationError) throw error;
-      throw new Error("The AI-assisted visual could not be prepared or stored.", {
+      throw new Error("The generated visual could not be prepared or stored.", {
         cause: error,
       });
     } finally {
@@ -3601,6 +3590,7 @@ export class BoardApp {
   }
 
   private readonly onGlobalKeyDown = (event: KeyboardEvent): void => {
+    if (isEditingTarget(event.target)) return;
     if (event.key === "Escape" && !this.toolsMenu.hidden) {
       event.preventDefault();
       this.setToolsMenuOpen(false);
@@ -3618,7 +3608,7 @@ export class BoardApp {
       this.stopFollowingSpotlight();
       return;
     }
-    if (isEditingTarget(event.target) || !(event.ctrlKey || event.metaKey)) return;
+    if (!(event.ctrlKey || event.metaKey)) return;
     const key = event.key.toLowerCase();
     if (key === "z") {
       event.preventDefault();
@@ -3759,8 +3749,6 @@ export class BoardApp {
         return;
       }
       preview();
-      if (this.textEditorTimer !== null) window.clearTimeout(this.textEditorTimer);
-      this.textEditorTimer = window.setTimeout(() => void this.closeTextEditor(true), 500);
     };
     editor.addEventListener("input", schedule);
     editor.addEventListener("blur", () => void this.closeTextEditor(true));
@@ -3796,8 +3784,6 @@ export class BoardApp {
       this.discardTextEditor(editor);
       return;
     }
-    if (this.textEditorTimer !== null) window.clearTimeout(this.textEditorTimer);
-    this.textEditorTimer = null;
     const value = mode === "sticky" ? clampStickyText(editor.value) : editor.value;
     if (mode === "text" && !value) {
       this.discardTextEditor(editor);
@@ -3883,8 +3869,6 @@ export class BoardApp {
     this.textEditContext = null;
     this.textEditorMode = null;
     this.textEditorPreview = null;
-    if (this.textEditorTimer !== null) window.clearTimeout(this.textEditorTimer);
-    this.textEditorTimer = null;
     editor.remove();
     this.renderer.clearLocalPreview();
     this.scheduleRejectedDraftRestore();
@@ -5456,7 +5440,6 @@ export class BoardApp {
     clearVotes.title = voteSummary
       ? voteSummary.options.map((option) => `${option.label}: ${option.count}`).join(" · ")
       : "";
-    this.webMcp?.refresh();
     this.updateOrganisationTemplateSaveButton();
   }
 
@@ -6503,10 +6486,9 @@ function dataTransferHasImage(transfer: DataTransfer | null): boolean {
 
 function isEditingTarget(target: EventTarget | null): boolean {
   return (
-    target instanceof HTMLInputElement ||
-    target instanceof HTMLTextAreaElement ||
-    target instanceof HTMLSelectElement ||
-    (target instanceof HTMLElement && target.isContentEditable)
+    target instanceof Element &&
+    target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])") !==
+      null
   );
 }
 

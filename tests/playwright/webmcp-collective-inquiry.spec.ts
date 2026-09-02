@@ -17,7 +17,7 @@ declare global {
   }
 }
 
-test("teacher can turn selected class ideas into one approved, undoable WebMCP map", async ({
+test("a board participant can use headless WebMCP tools with neutral board attribution", async ({
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "The WebMCP demo-path smoke runs in Chromium.");
@@ -64,7 +64,8 @@ test("teacher can turn selected class ideas into one approved, undoable WebMCP m
       "stage_class_decision",
       "stage_collective_inquiry",
     ]);
-  await expect(page.locator("[data-webmcp-status]")).toContainText("AI partner ready");
+  await expect(page.locator("[data-webmcp-status]")).toHaveCount(0);
+  await expect(page.locator("[data-selection-ai]")).toHaveCount(0);
   expect(
     await page.evaluate(
       () => window.__spaceScaleWebMcpTools.read_selected_class_ideas?.annotations,
@@ -143,16 +144,11 @@ test("teacher can turn selected class ideas into one approved, undoable WebMCP m
   const canvasItems = page.locator("#drawing-area [data-item-id]");
   await expect(canvasItems).toHaveCount(13);
 
-  const readResultPromise = page.evaluate(() => {
+  const readResult = await page.evaluate(() => {
     const tool = window.__spaceScaleWebMcpTools.read_selected_class_ideas;
     if (!tool) throw new Error("The selected-ideas tool was not registered.");
     return tool.execute({}, { signal: new AbortController().signal });
   });
-  const shareDialog = page.getByTestId("webmcp-share-dialog");
-  await expect(shareDialog).toBeVisible();
-  await expect(shareDialog).toContainText("Student names, board identifiers, positions, history");
-  await shareDialog.getByRole("button", { name: "Share 8 contributions" }).click();
-  const readResult = await readResultPromise;
   expect(readResult.contributions).toHaveLength(8);
   const contributions = readResult.contributions as Array<{
     action: { type: string; objectKind: string };
@@ -427,9 +423,10 @@ test("teacher can turn selected class ideas into one approved, undoable WebMCP m
     0,
   );
   await expect(canvasItems).toHaveCount(13 + educationItemCount);
-  await expect(
-    page.locator('#drawing-area [data-creator-assistance="ai"] .creator-badge-ai'),
-  ).toHaveCount(12);
+  await expect(page.locator('#drawing-area [data-creator-assistance="ai"]')).toHaveCount(0);
+  await expect(page.locator("#drawing-area .creator-badge-ai")).toHaveCount(0);
+  await expect(page.locator("#drawing-area .creator-badge").first()).toBeVisible();
+  await expect(page.locator("#drawing-area")).not.toContainText("AI-assisted");
   let remainingEducationItems = 13 + educationItemCount;
   for (let index = educationResults.length - 1; index >= 0; index -= 1) {
     remainingEducationItems -= educationResults[index]?.createdItemCount as number;
@@ -505,16 +502,13 @@ test("teacher can turn selected class ideas into one approved, undoable WebMCP m
   await preview.getByRole("button", { name: "Add map for the class" }).click();
 
   const stageResult = await stageResultPromise;
-  expect(stageResult.status).toBe("teacher_approved_and_added");
+  expect(stageResult.status).toBe("participant_approved_and_added");
   const createdItemCount = stageResult.createdItemCount as number;
   expect(createdItemCount).toBeGreaterThan(0);
   await expect(canvasItems).toHaveCount(13 + createdItemCount);
-  const aiBadges = page.locator('#drawing-area [data-creator-assistance="ai"] .creator-badge-ai');
-  await expect(aiBadges).toHaveCount(5);
-  await expect(aiBadges.first()).toContainText("✦");
-  await expect(
-    page.locator('#drawing-area [data-creator-assistance="ai"]').first(),
-  ).toHaveAttribute("aria-description", /with AI assistance$/);
+  await expect(page.locator('#drawing-area [data-creator-assistance="ai"]')).toHaveCount(0);
+  await expect(page.locator("#drawing-area .creator-badge-ai")).toHaveCount(0);
+  await expect(page.locator("#drawing-area")).not.toContainText("AI-assisted");
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
 
   await page.getByTestId("undo-button").click();

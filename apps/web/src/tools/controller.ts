@@ -601,6 +601,7 @@ export class ToolController {
   private readonly selected = new Set<string>();
   private spaceHeld = false;
   private readonly pointers = new Map<number, Point>();
+  private readonly expectedCaptureLosses = new Map<number, Set<object>>();
   private pinch: PinchState | null = null;
   private lastPresenceAt = 0;
   private lastStickyTap: { itemId: string; at: number } | null = null;
@@ -736,6 +737,7 @@ export class ToolController {
 
   destroy(): void {
     this.cancelGesture();
+    this.expectedCaptureLosses.clear();
     const { svg } = this.options.renderer;
     svg.removeEventListener("pointerdown", this.onPointerDown);
     svg.removeEventListener("pointermove", this.onPointerMove);
@@ -1027,7 +1029,9 @@ export class ToolController {
   };
 
   private readonly onPointerMove = (event: PointerEvent): void => {
-    this.pointers.set(event.pointerId, [event.clientX, event.clientY]);
+    if (this.pointers.has(event.pointerId)) {
+      this.pointers.set(event.pointerId, [event.clientX, event.clientY]);
+    }
     const now = performance.now();
     if (!document.hidden && now - this.lastPresenceAt >= 200) {
       const point = boardPoint(event, this.options.renderer);
@@ -1198,13 +1202,13 @@ export class ToolController {
     this.pointers.delete(event.pointerId);
     if (this.pinch) {
       if (this.pinch.pointerIds.includes(event.pointerId)) this.pinch = null;
-      safeReleaseCapture(this.options.renderer.svg, event.pointerId);
+      this.releasePointerCapture(event.pointerId);
       event.preventDefault();
       return;
     }
     const gesture = this.gesture;
     if (!gesture || gesture.pointerId !== event.pointerId) {
-      safeReleaseCapture(this.options.renderer.svg, event.pointerId);
+      this.releasePointerCapture(event.pointerId);
       return;
     }
     const tapPoint = boardPoint(event, this.options.renderer);
@@ -1267,13 +1271,13 @@ export class ToolController {
       delete gesture.endAnchor;
       this.gesture = null;
       this.pendingLine = gesture;
-      safeReleaseCapture(this.options.renderer.svg, event.pointerId);
+      this.releasePointerCapture(event.pointerId);
       this.renderShapeGesture(gesture, true);
       event.preventDefault();
       return;
     }
     this.gesture = null;
-    safeReleaseCapture(this.options.renderer.svg, event.pointerId);
+    this.releasePointerCapture(event.pointerId);
     const adjustedMovePoint =
       gesture.kind === "move"
         ? tapAdjustedMovePoint(
@@ -1302,13 +1306,51 @@ export class ToolController {
     this.pointers.delete(event.pointerId);
     if (this.pinch?.pointerIds.includes(event.pointerId)) this.pinch = null;
     if (this.gesture?.pointerId === event.pointerId) this.cancelGesture();
-    safeReleaseCapture(this.options.renderer.svg, event.pointerId);
+    this.releasePointerCapture(event.pointerId);
   };
 
   private readonly onLostPointerCapture = (event: PointerEvent): void => {
+    if (this.consumeExpectedCaptureLoss(event.pointerId)) return;
     this.pointers.delete(event.pointerId);
     if (this.gesture?.pointerId === event.pointerId) this.cancelGesture();
   };
+
+  private releasePointerCapture(pointerId: number): void {
+    const { svg } = this.options.renderer;
+    if (!svg.hasPointerCapture(pointerId)) return;
+
+    const token = {};
+    let expected = this.expectedCaptureLosses.get(pointerId);
+    if (!expected) {
+      expected = new Set();
+      this.expectedCaptureLosses.set(pointerId, expected);
+    }
+    expected.add(token);
+
+    window.setTimeout(() => {
+      expected?.delete(token);
+      if (this.expectedCaptureLosses.get(pointerId) === expected && expected?.size === 0) {
+        this.expectedCaptureLosses.delete(pointerId);
+      }
+    }, 1_000);
+
+    try {
+      svg.releasePointerCapture(pointerId);
+    } catch {
+      expected.delete(token);
+      if (expected.size === 0) this.expectedCaptureLosses.delete(pointerId);
+    }
+  }
+
+  private consumeExpectedCaptureLoss(pointerId: number): boolean {
+    const expected = this.expectedCaptureLosses.get(pointerId);
+    if (!expected || expected.size === 0) return false;
+    const token = expected.values().next().value;
+    if (!token) return false;
+    expected.delete(token);
+    if (expected.size === 0) this.expectedCaptureLosses.delete(pointerId);
+    return true;
+  }
 
   private readonly onWheel = (event: WheelEvent): void => {
     event.preventDefault();
@@ -2302,17 +2344,12 @@ function pointFromItem(item: Extract<BoardItem, { kind: "sticky" }>): Point {
 
 function isEditingTarget(target: EventTarget | null): boolean {
   return (
-    target instanceof HTMLInputElement ||
-    target instanceof HTMLTextAreaElement ||
-    target instanceof HTMLSelectElement ||
-    (target instanceof HTMLElement && target.isContentEditable)
+    target instanceof Element &&
+    target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])") !==
+      null
   );
 }
 
 function isOpenDialogTarget(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && target.closest("dialog[open]") !== null;
-}
-
-function safeReleaseCapture(element: Element, pointerId: number): void {
-  if (element.hasPointerCapture(pointerId)) element.releasePointerCapture(pointerId);
 }

@@ -2,11 +2,11 @@
 
 ## Outcome
 
-SpaceScale turns an AI agent into a visible participant in a live classroom conversation. The agent reads only teacher-selected, saved contributions—either exact typed sticky-note text or an isolated visual rendering for handwriting and sketches—then can expand, connect, challenge, structure decisions, turn thinking into action through 27 live non-section education modes, or turn the discussion into a playful source-linked image or meme. Cross-Group Jigsaw is reserved for the separately tested section-context integration, bringing the complete catalog to 28 after that push lands. The agent can also propose a shared inquiry map, observe aggregate class votes, and propose a decision that preserves dissent. Every canvas mutation requires a teacher-requested WebMCP write, is atomic, realtime, visibly attributed, source-linked, and undoable.
+SpaceScale turns an AI agent into a shared thinking partner in a live classroom conversation. Every browser that can open the board discovers the WebMCP tools, and the agent reads only that browser's saved selection—either exact typed sticky-note text or an isolated visual rendering for handwriting and sketches. It can expand, connect, challenge, structure decisions, turn thinking into action through 27 live non-section education modes, or turn the discussion into a playful source-linked image or meme. Cross-Group Jigsaw is reserved for the separately tested section-context integration, bringing the complete catalog to 28 after that push lands. Every canvas mutation still requires normal board edit permission and is atomic, realtime, source-linked, attributed to the responsible participant, and undoable. Internal origin metadata is retained without AI-specific board labels.
 
 One-line pitch:
 
-> SpaceScale uses WebMCP to make AI a visible participant in classroom collaboration—helping students connect, challenge, and build on one another’s ideas while the group stays in control.
+> SpaceScale uses WebMCP to make AI a shared classroom thinking partner—helping students connect, challenge, and build on one another’s ideas while the group stays in control.
 
 ## Why this is a strong WebMCP use case
 
@@ -30,10 +30,10 @@ Returns the live collaboration catalog before the agent reads or changes the boa
 
 ### `read_selected_class_ideas`
 
-Reads saved sticky-note text from the current teacher selection.
+Reads saved sticky-note text from the current browser selection.
 
-- Owner-only and read-only.
-- Opens the existing in-app sharing dialog for the selected text.
+- Publicly discoverable and read-only.
+- Returns selected text directly through the WebMCP host with no dedicated board UI.
 - Returns ephemeral aliases such as `idea_1` plus an explicit `createdBy`
   display name and stable participant ID for action attribution; board and item
   IDs remain private.
@@ -43,16 +43,15 @@ Reads saved sticky-note text from the current teacher selection.
 
 ### `inspect_selected_board_visual`
 
-Makes the teacher's saved visual selection inspectable in the same live page for handwriting, sketches, arrows, shapes, spatial groupings, and mixed visual notes.
+Makes the current browser's saved visual selection inspectable in the same live page for handwriting, sketches, arrows, shapes, spatial groupings, and mixed visual notes.
 
-- Owner-only and read-only; at most 40 selected saved items per inspection.
-- Opens a first consent dialog that reveals only item kinds and counts. No selected pixels appear until the teacher approves.
-- Re-checks the selected item IDs and versions after approval and fails if the content or selection changed while consent was open.
-- Renders the approved items through SpaceScale's canonical SVG exporter, preserving pencil paths, transforms, layout, typed context, and source ordering.
+- Publicly discoverable and read-only; at most 40 selected saved items per inspection.
+- Opens the isolated visual review directly from the authoritative saved selection.
+- Renders the selected items through SpaceScale's canonical SVG exporter, preserving pencil paths, transforms, layout, typed context, and source ordering.
 - Replaces stable item IDs with ephemeral aliases such as `visual_1`, returns each
   creator's display name and stable participant ID but no coordinates, and makes
   private board images non-pixel placeholders.
-- Opens the result in an opaque modal review surface that covers the unselected board. ChatGPT inspects this post-tool live-page state rather than receiving a large image string in JSON.
+- Opens the result in an opaque modal review surface that covers the unselected board. Codex inspects this post-tool live-page state rather than receiving a large image string in JSON.
 - Returns bounded metadata and explicit instructions to use identity only for attribution or clarification, mark uncertain handwriting as uncertain, avoid invention, and avoid grading, ranking, or profiling.
 - Closing the review removes the temporary visual surface. It never changes the shared canvas.
 
@@ -92,14 +91,15 @@ The writer-side adapter is already isolated behind the optional `sectionContext`
 
 ### `stage_collective_inquiry`
 
-Turns a selection token into two to four themes, source-to-theme connections, cross-theme bridges, one productive tension, and a next question.
+Turns a browser-selection token into two to four themes, source-to-theme connections, cross-theme bridges, one productive tension, and a next question.
 
-- Validates every alias against the approved selection.
+- Validates every alias against the browser selection.
 - Rejects duplicate alias assignments and stale/changed source items.
 - The agent supplies meaning; SpaceScale computes deterministic layout and safe board operations.
-- Opens a visual teacher preview marked “no changes yet.”
+- Opens a visual participant preview marked “no changes yet.”
 - On approval, commits one ordinary `items.batch`, waits for server acknowledgement, selects the created objects, and reports success.
-- All generated persistent text is visibly marked `AI-assisted`.
+- Generated items retain internal `assistedBy` origin metadata but render with the
+  responsible participant's ordinary initials and no AI-specific board label.
 
 ### `read_live_class_vote`
 

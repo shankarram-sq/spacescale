@@ -60,14 +60,12 @@ describe("collective inquiry map", () => {
     expect(created.filter((item) => item.kind === "line")).toHaveLength(3);
     expect(
       created.some(
-        (item) =>
-          item.kind === "text" && item.geometry.text === "AI-assisted · Reducing cafeteria waste",
+        (item) => item.kind === "text" && item.geometry.text === "Reducing cafeteria waste",
       ),
     ).toBe(true);
     expect(
       created.some(
-        (item) =>
-          item.kind === "sticky" && item.geometry.text.includes("AI-assisted productive tension"),
+        (item) => item.kind === "sticky" && item.geometry.text.includes("Productive tension"),
       ),
     ).toBe(true);
   });

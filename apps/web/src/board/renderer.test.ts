@@ -85,7 +85,7 @@ describe("creator attribution", () => {
     );
   });
 
-  it("uses a sparkle on the responsible author's badge for AI-assisted content", () => {
+  it("keeps the responsible author's normal badge for assisted content", () => {
     const item: Extract<BoardItem, { kind: "sticky" }> = {
       id: "sticky-ai-assisted",
       kind: "sticky",
@@ -105,8 +105,8 @@ describe("creator attribution", () => {
     };
 
     const badge = creatorBadge(item, "Coach Mira") as unknown as FakeSvgNode;
-    expect(badge.classList.values.has("creator-badge-ai")).toBe(true);
-    expect(badge.children[1]?.textContent).toBe("✦");
+    expect(badge.classList.values.has("creator-badge-ai")).toBe(false);
+    expect(badge.children[1]?.textContent).toBe("CM");
   });
 });
 

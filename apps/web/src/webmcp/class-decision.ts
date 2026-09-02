@@ -7,7 +7,7 @@ import {
 } from "../activities/class-decision";
 import { isVoteTable, summarizeVotes } from "../activities/voting";
 import type { Bounds } from "../board/model";
-import type { BoardItem, DurableOperation, Role } from "../types";
+import type { BoardItem, DurableOperation } from "../types";
 
 const READ_VOTE_TOOL = "read_live_class_vote";
 const STAGE_DECISION_TOOL = "stage_class_decision";
@@ -23,7 +23,7 @@ type VoteSnapshot = {
 
 export type ClassDecisionWebMcpOptions = {
   root: HTMLElement;
-  getRole: () => Role;
+  canWrite: () => boolean;
   getSelectedItems: () => BoardItem[] | null;
   getItem: (itemId: string) => BoardItem | undefined;
   getItems: () => Iterable<BoardItem>;
@@ -52,7 +52,6 @@ export class ClassDecisionWebMcp {
   }
 
   private async register(): Promise<void> {
-    if (this.options.getRole() !== "owner") return;
     const modelContext = document.modelContext;
     if (typeof modelContext?.registerTool !== "function") return;
     try {
@@ -60,7 +59,7 @@ export class ClassDecisionWebMcp {
         {
           name: READ_VOTE_TOOL,
           description:
-            "Read the aggregate live result from the one saved SpaceScale vote table the teacher has selected. Returns option labels and counts only—never voter identities, stamp IDs, student names, or inferred consensus. Use after the class has responded to an AI-assisted inquiry map.",
+            "Read the aggregate live result from the one saved SpaceScale vote table selected in this browser. Returns option labels and counts only—never voter identities, stamp IDs, student names, or inferred consensus. Use after the class has responded to an inquiry map.",
           inputSchema: { type: "object", properties: {}, additionalProperties: false },
           annotations: {
             readOnlyHint: true,
@@ -77,7 +76,7 @@ export class ClassDecisionWebMcp {
         {
           name: STAGE_DECISION_TOOL,
           description:
-            "Stage a class decision from a live SpaceScale vote result. Propose a chosen direction, rationale, small pilot, success measure, an explicit minority concern that must remain visible, and the next open question. SpaceScale shows a teacher preview and changes nothing until the teacher approves in the app.",
+            "Stage a class decision from a live SpaceScale vote result. Propose a chosen direction, rationale, small pilot, success measure, an explicit minority concern that must remain visible, and the next open question. SpaceScale shows a preview and changes nothing until the participant approves in the app.",
           inputSchema: {
             type: "object",
             additionalProperties: false,
@@ -111,14 +110,11 @@ export class ClassDecisionWebMcp {
       );
     } catch {
       if (this.registration.signal.aborted) return;
-      this.options.notify("The AI class-decision tools could not be registered.", "warning");
+      this.options.notify("The class-decision tools could not be registered.", "warning");
     }
   }
 
   private readVote(): Record<string, unknown> {
-    if (this.options.getRole() !== "owner") {
-      throw new Error("Only the Space owner can share the class vote with the AI partner.");
-    }
     const selected = this.options.getSelectedItems();
     if (selected === null) throw new Error("Wait for the selected vote table to finish saving.");
     if (selected.length !== 1 || !selected[0] || !isVoteTable(selected[0])) {
@@ -169,9 +165,8 @@ export class ClassDecisionWebMcp {
     signal: AbortSignal,
   ): Promise<Record<string, unknown>> {
     signal.throwIfAborted();
-    if (this.options.getRole() !== "owner") {
-      throw new Error("Only the Space owner can stage an AI-assisted class decision.");
-    }
+    if (!this.options.canWrite())
+      throw new Error("This browser needs board edit access to stage a class decision.");
     const parsed = parseDecision(input);
     const snapshot = this.snapshots.get(parsed.voteToken);
     if (!snapshot)
@@ -192,9 +187,9 @@ export class ClassDecisionWebMcp {
     const approved = await this.confirmPreview(parsed.proposal, snapshot, signal);
     if (!approved) {
       return {
-        status: "teacher_declined",
+        status: "participant_declined",
         changedCanvas: false,
-        message: "The teacher kept the shared class canvas unchanged.",
+        message: "The participant kept the shared class canvas unchanged.",
       };
     }
     signal.throwIfAborted();
@@ -206,14 +201,13 @@ export class ClassDecisionWebMcp {
       "info",
     );
     return {
-      status: "teacher_approved_and_added",
+      status: "participant_approved_and_added",
       changedCanvas: true,
       createdItemCount: batch.itemIds.length,
       totalVotes: snapshot.totalVotes,
       chosenOption: parsed.proposal.chosenOption,
       dissentPreserved: true,
-      message:
-        "The decision record was added as one normal SpaceScale batch and remains undoable by the teacher.",
+      message: "The decision record was added as one normal SpaceScale batch and remains undoable.",
     };
   }
 
@@ -224,9 +218,7 @@ export class ClassDecisionWebMcp {
   ): Promise<boolean> {
     signal.throwIfAborted();
     if (this.previewPending) {
-      return Promise.reject(
-        new Error("Another AI proposal is already waiting for teacher review."),
-      );
+      return Promise.reject(new Error("Another proposal is already waiting for review."));
     }
     this.previewPending = true;
     setText(this.previewDialog, "[data-decision-title]", proposal.decisionTitle);
@@ -285,8 +277,8 @@ export class ClassDecisionWebMcp {
     dialog.setAttribute("aria-labelledby", "decision-preview-heading");
     dialog.innerHTML = `
       <form method="dialog">
-        <div class="inquiry-preview-topline"><span class="webmcp-dialog-mark" aria-hidden="true">✦</span><span class="inquiry-preview-state">Proposal · no changes yet</span></div>
-        <span class="eyebrow">Second collaboration loop · teacher review</span>
+        <div class="inquiry-preview-topline"><span class="webmcp-dialog-mark" aria-hidden="true">↗</span><span class="inquiry-preview-state">Proposal · no changes yet</span></div>
+        <span class="eyebrow">Second collaboration loop · review</span>
         <h2 id="decision-preview-heading">Turn the class response into a decision?</h2>
         <div class="inquiry-preview-title" data-decision-title></div>
         <div class="decision-votes" data-decision-votes></div>

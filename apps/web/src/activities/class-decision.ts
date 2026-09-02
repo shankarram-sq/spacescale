@@ -74,7 +74,7 @@ export function buildClassDecision(
     geometry: {
       x: originX,
       y: originY + 34,
-      text: `AI-assisted · ${proposal.decisionTitle}`,
+      text: proposal.decisionTitle,
     },
   });
   add({

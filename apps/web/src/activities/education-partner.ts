@@ -273,7 +273,7 @@ export function buildEducationMove(
         geometry: {
           x: originX,
           y: originY + 34,
-          text: `AI-assisted · ${modeLabel(proposal.mode)} · ${proposal.title}`,
+          text: `${modeLabel(proposal.mode)} · ${proposal.title}`,
         },
       },
       itemIds,
@@ -369,7 +369,7 @@ export function buildGroupDecisionScaffold(
         geometry: {
           x: originX,
           y: originY + 34,
-          text: `AI-assisted · ${modeLabel(proposal.mode)} · ${proposal.title}`,
+          text: `${modeLabel(proposal.mode)} · ${proposal.title}`,
         },
       },
       itemIds,
@@ -460,7 +460,7 @@ export function buildEducationVisuals(
         geometry: {
           x: originX,
           y: originY + 34,
-          text: `AI-assisted · Class visual response · ${proposal.title}`,
+          text: `Class visual response · ${proposal.title}`,
         },
       },
       itemIds,
@@ -630,9 +630,9 @@ function decisionTable(proposal: GroupDecisionProposal): {
 function decisionGuidance(mode: GroupDecisionProposal["mode"]): string {
   const guidance: Record<GroupDecisionProposal["mode"], string> = {
     criteria_co_designer:
-      "STUDENTS ASSIGN THE PRIORITY\n\nAI drafted possible criteria from the selected discussion. The class edits the wording and fills the weights.",
+      "STUDENTS ASSIGN THE PRIORITY\n\nPossible criteria were drafted from the selected discussion. The class edits the wording and fills the weights.",
     tradeoff_visualizer:
-      "STUDENTS MAKE THE TRADE-OFFS\n\nAI structured options against class-selected criteria. The class fills every rating and evidence cell.",
+      "STUDENTS MAKE THE TRADE-OFFS\n\nOptions were structured against class-selected criteria. The class fills every rating and evidence cell.",
     assumption_auction:
       "VOTE ON WHAT TO INVESTIGATE\n\nThese are testable assumptions, not facts. Students place the votes and choose what to test first.",
     consensus_with_dissent:
@@ -640,7 +640,7 @@ function decisionGuidance(mode: GroupDecisionProposal["mode"]): string {
     minority_report:
       "PRESERVE EXPRESSED DISSENT\n\nKeep concerns in the class's words and record what evidence or change could address them.",
     decision_record:
-      "THE CLASS MAKES THE DECISION\n\nRecord the explicit choice, alternatives, reasons, and evidence that could reopen it. AI does not infer consensus.",
+      "THE CLASS MAKES THE DECISION\n\nRecord the explicit choice, alternatives, reasons, and evidence that could reopen it. Do not infer consensus from silence.",
   };
   return guidance[mode];
 }

@@ -75,7 +75,7 @@ describe("selected board visual serialization", () => {
     const preview = serializeVisualPreview([pencil(), sticky()]);
 
     expect(preview.viewBox.split(" ").map(Number).every(Number.isFinite)).toBe(true);
-    expect(preview.ariaLabel).toContain("2 selected items");
+    expect(preview.ariaLabel).toContain("2 browser-selected items");
     expect(preview.content).toContain("<path");
     expect(preview.content).toContain(">Selected<");
     expect(preview.content).toContain(">context<");

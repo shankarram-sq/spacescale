@@ -795,11 +795,6 @@ button:disabled {
   user-select: none;
 }
 
-.creator-badge-ai circle {
-  stroke: #6840a8;
-  stroke-width: 2.5;
-}
-
 .board-item-image .image-card-background {
   fill: #f2f0ea;
 }
