@@ -80,6 +80,26 @@ describe("buildArrangeUpdates", () => {
     expect(buildArrangeUpdates("align-left", [leftMember, rightMember])).toEqual([]);
   });
 
+  it("ignores legacy group IDs when grouping is disabled", () => {
+    const groupId = "018f47a1-7a2b-7c3d-8e4f-123456789ac0";
+    const left = {
+      ...rectangle("legacy-left", 20, 0, 20, 10),
+      groupId,
+    };
+    const right = {
+      ...rectangle("legacy-right", 100, 0, 20, 10),
+      groupId,
+    };
+
+    const updates = buildArrangeUpdates("align-left", [left, right], false);
+    expect(
+      Object.fromEntries(updates.map((update) => [update.itemId, translation(update)])),
+    ).toEqual({
+      "legacy-left": [0, 0],
+      "legacy-right": [-80, 0],
+    });
+  });
+
   it("includes non-sticky group members in the shared Tidy translation", () => {
     const groupId = "018f47a1-7a2b-7c3d-8e4f-123456789ac1";
     const groupedSticky = { ...sticky("grouped-sticky", 500, 0), groupId };

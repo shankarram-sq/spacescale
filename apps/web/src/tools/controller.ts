@@ -28,6 +28,7 @@ import type {
   TableGeometry,
   TextGeometry,
   ToolName,
+  VisiblePaths,
   ZoneGeometry,
 } from "../types";
 import { createId, roundBoard } from "../types";
@@ -46,7 +47,11 @@ import {
   type StructuredResizeHandle,
   structuredResizeGrabOffset,
 } from "./resize";
-import { eraseStrokeItem, isPartiallyErasableItem } from "./stroke-erase";
+import {
+  eraseStrokeItem,
+  isPartiallyErasableItem,
+  type PartiallyErasableItem,
+} from "./stroke-erase";
 import {
   buildCapturedObjectTransformOperation,
   type CapturedObjectTransform,
@@ -301,7 +306,7 @@ export function buildTranslationMembershipOperations(
     if (!groupingEnabled) continue;
     movedSectionIds.add(section.id);
     for (const member of savedItems) {
-      if (member.sectionId !== section.id) continue;
+      if (member.sectionId !== section.id || operations.has(member.id)) continue;
       operations.set(member.id, {
         kind: "item.update",
         itemId: member.id,
@@ -494,6 +499,39 @@ export function buildFullEraserOperation(
   return buildSectionDeleteMembershipOperation(erasedItems, items, canModifyItem);
 }
 
+export function fitEraserOperationsWithinBatchLimit(
+  operations: readonly BatchItemOperation[],
+  capturedItems: ReadonlyMap<string, BoardItem>,
+  items: Iterable<BoardItem>,
+  maxItems = MAX_BATCH_OPERATIONS,
+): BatchItemOperation[] {
+  const savedItems = [...items];
+  const limit = Math.max(1, Math.min(MAX_BATCH_OPERATIONS, Math.floor(maxItems)));
+  const accepted: BatchItemOperation[] = [];
+  for (const operation of operations) {
+    const candidate = [...accepted, operation];
+    const directItemIds = new Set(
+      candidate.flatMap((entry) =>
+        entry.kind === "item.update" || entry.kind === "item.delete" ? [entry.itemId] : [],
+      ),
+    );
+    const deletedSectionIds = new Set(
+      candidate.flatMap((entry) => {
+        if (entry.kind !== "item.delete") return [];
+        return capturedItems.get(entry.itemId)?.kind === "zone" ? [entry.itemId] : [];
+      }),
+    );
+    const relationshipUpdates = savedItems.filter(
+      (item) =>
+        item.sectionId !== undefined &&
+        deletedSectionIds.has(item.sectionId) &&
+        !directItemIds.has(item.id),
+    ).length;
+    if (candidate.length + relationshipUpdates <= limit) accepted.push(operation);
+  }
+  return accepted;
+}
+
 export function expandPartialEraserSectionOperations(
   operations: readonly BatchItemOperation[],
   capturedItems: ReadonlyMap<string, BoardItem>,
@@ -540,6 +578,27 @@ export function expandPartialEraserSectionOperations(
     );
   }
   return result;
+}
+
+export function buildPartialEraserUpdateOperation(
+  item: PartiallyErasableItem,
+  expectedVersion: number,
+  visiblePaths: VisiblePaths,
+  items: Iterable<BoardItem>,
+  assignNewMembership = true,
+): Extract<BatchItemOperation, { kind: "item.update" }> {
+  const geometry = { ...item.geometry, visiblePaths };
+  const prospectiveItem = { ...item, geometry } as PartiallyErasableItem;
+  const sectionId = sectionIdAfterBoundsChange(items, prospectiveItem, assignNewMembership);
+  return {
+    kind: "item.update",
+    itemId: item.id,
+    expectedVersion,
+    patch: {
+      geometry,
+      ...(sectionId === item.sectionId ? {} : { sectionId: sectionId ?? null }),
+    },
+  };
 }
 
 export function buildCapturedTextUpdate(
@@ -2209,6 +2268,7 @@ export class ToolController {
         gesture.radius,
         (candidate) => this.options.canModifyItem(candidate),
       )) {
+        if (gesture.versions.size >= MAX_BATCH_OPERATIONS) break;
         if (gesture.versions.has(item.id)) continue;
         gesture.versions.set(item.id, item.version);
         gesture.items.set(item.id, structuredClone(item));
@@ -2219,6 +2279,7 @@ export class ToolController {
       hit &&
       this.options.canModifyItem(hit) &&
       hit.version > 0 &&
+      gesture.versions.size < MAX_BATCH_OPERATIONS &&
       !gesture.versions.has(hit.id)
     ) {
       gesture.versions.set(hit.id, hit.version);
@@ -2396,7 +2457,24 @@ export class ToolController {
     if (gesture.kind === "eraser") {
       this.options.renderer.clearLocalPreview();
       if (!gesture.partial) {
-        const erasedItems = [...gesture.items.values()];
+        const directOperations = buildCapturedDeleteOperations(gesture.versions);
+        const fittedOperations = fitEraserOperationsWithinBatchLimit(
+          directOperations,
+          gesture.items,
+          this.options.model.items.values(),
+        );
+        if (fittedOperations.length < directOperations.length) {
+          this.options.notify(
+            `Some items were left unerased to keep this erase within ${MAX_BATCH_OPERATIONS} item and Section relationship changes.`,
+            "warning",
+          );
+        }
+        const fittedIds = new Set(
+          fittedOperations.flatMap((operation) =>
+            operation.kind === "item.delete" ? [operation.itemId] : [],
+          ),
+        );
+        const erasedItems = [...gesture.items.values()].filter((item) => fittedIds.has(item.id));
         if (erasedItems.length === 0) return;
         try {
           await this.commitOperation(
@@ -2423,12 +2501,15 @@ export class ToolController {
           if (result.erased) {
             operations.push({ kind: "item.delete", itemId, expectedVersion });
           } else {
-            operations.push({
-              kind: "item.update",
-              itemId,
-              expectedVersion,
-              patch: { geometry: { ...item.geometry, visiblePaths: result.visiblePaths } },
-            });
+            operations.push(
+              buildPartialEraserUpdateOperation(
+                item,
+                expectedVersion,
+                result.visiblePaths,
+                this.options.model.items.values(),
+                this.options.canGroup(),
+              ),
+            );
           }
         } else {
           operations.push({ kind: "item.delete", itemId, expectedVersion });
@@ -2437,8 +2518,20 @@ export class ToolController {
       }
       if (operations.length > 0) {
         try {
-          const expanded = expandPartialEraserSectionOperations(
+          const fittedOperations = fitEraserOperationsWithinBatchLimit(
             operations,
+            gesture.items,
+            this.options.model.items.values(),
+          );
+          if (fittedOperations.length < operations.length) {
+            this.options.notify(
+              `Some items were left unerased to keep this erase within ${MAX_BATCH_OPERATIONS} item and Section relationship changes.`,
+              "warning",
+            );
+          }
+          if (fittedOperations.length === 0) return;
+          const expanded = expandPartialEraserSectionOperations(
+            fittedOperations,
             gesture.items,
             this.options.model.items.values(),
             this.options.canModifyItem,

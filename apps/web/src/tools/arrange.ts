@@ -31,8 +31,9 @@ const TIDY_GAP = 24;
 export function buildArrangeUpdates(
   kind: ArrangeKind,
   selectedItems: readonly BoardItem[],
+  groupingEnabled = true,
 ): ArrangeUpdate[] {
-  const units = arrangementUnits(kind, selectedItems);
+  const units = arrangementUnits(kind, selectedItems, groupingEnabled);
   const source = units.flatMap((unit) => unit.items);
   const minimum = kind.startsWith("distribute-") ? 3 : 2;
   if (
@@ -90,11 +91,12 @@ export function buildArrangeUpdates(
 function arrangementUnits(
   kind: ArrangeKind,
   selectedItems: readonly BoardItem[],
+  groupingEnabled: boolean,
 ): ArrangementUnit[] {
   const units: ArrangementUnit[] = [];
   const explicitGroups = new Map<string, BoardItem[]>();
   for (const item of selectedItems) {
-    if (item.groupId) {
+    if (groupingEnabled && item.groupId) {
       const members = explicitGroups.get(item.groupId) ?? [];
       members.push(item);
       explicitGroups.set(item.groupId, members);

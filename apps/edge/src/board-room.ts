@@ -1451,6 +1451,32 @@ export class BoardRoom extends DurableObject<Env> {
     });
   }
 
+  private deriveHistoryAttributionEffect(
+    effect: ItemEffect,
+    current: ItemRecord | undefined,
+    targetSide: "before" | "after",
+    actorId: string,
+    seq: number,
+    acceptedAt: number,
+  ): ItemAttributionEffect {
+    const currentItem = current === undefined || current.deleted ? null : current.item;
+    const currentAttribution = currentItem === null ? null : this.readItemAttribution(currentItem);
+    const target = effect[targetSide];
+    const targetAttribution = target.exists
+      ? deriveItemAttribution(
+          currentItem,
+          target.item,
+          currentAttribution,
+          actorId,
+          seq,
+          acceptedAt,
+        )
+      : null;
+    return targetSide === "before"
+      ? { itemId: effect.itemId, before: targetAttribution, after: currentAttribution }
+      : { itemId: effect.itemId, before: currentAttribution, after: targetAttribution };
+  }
+
   private applyAttributionEffects(
     effects: readonly ItemAttributionEffect[],
     side: "before" | "after",
@@ -4049,23 +4075,46 @@ export class BoardRoom extends DurableObject<Env> {
             : { kind: "item.replace", item: write.item },
         );
       }
-      const targetAttributionEffects =
-        originalPayload.attributionEffects ??
-        effects.map((effect) => {
-          const state = undo ? effect.before : effect.after;
-          const attribution = state.exists
-            ? initialItemAttribution(
-                state.item,
-                state.item.createdBy,
-                state.item.version,
-                acceptedAt,
+      const storedAttributionEffects = originalPayload.attributionEffects;
+      const synthesizedAttributionEffects =
+        storedAttributionEffects === undefined
+          ? []
+          : effects
+              .filter(
+                (effect) =>
+                  !storedAttributionEffects.some(
+                    (attributionEffect) => attributionEffect.itemId === effect.itemId,
+                  ),
               )
-            : null;
-          return { itemId: effect.itemId, before: attribution, after: attribution };
-        });
+              .map((effect) =>
+                this.deriveHistoryAttributionEffect(
+                  effect,
+                  currentRecords.get(effect.itemId),
+                  undo ? "before" : "after",
+                  attachment.actorId,
+                  seq,
+                  acceptedAt,
+                ),
+              );
+
+      const targetAttributionEffects =
+        storedAttributionEffects === undefined
+          ? effects.map((effect) => {
+              const state = undo ? effect.before : effect.after;
+              const attribution = state.exists
+                ? initialItemAttribution(
+                    state.item,
+                    state.item.createdBy,
+                    state.item.version,
+                    acceptedAt,
+                  )
+                : null;
+              return { itemId: effect.itemId, before: attribution, after: attribution };
+            })
+          : [...storedAttributionEffects, ...synthesizedAttributionEffects];
       const attributionRowsWritten = this.applyAttributionEffects(
         targetAttributionEffects,
-        originalPayload.attributionEffects === undefined ? "after" : undo ? "before" : "after",
+        storedAttributionEffects === undefined ? "after" : undo ? "before" : "after",
       );
       const creators = this.restoredItemCreators(
         changes.flatMap((change) => (change.kind === "item.replace" ? [change.item] : [])),

@@ -5716,13 +5716,23 @@ describe("BoardRoom move/copy closure admission", () => {
       },
     });
 
-    const detachedMember = await runInDurableObject(stub, (_instance, durableState) => {
-      const row = durableState.storage.sql
+    const detachedState = await runInDurableObject(stub, (_instance, durableState) => {
+      const item = durableState.storage.sql
         .exec<{ data_json: string }>("SELECT data_json FROM items WHERE item_id = ?", memberId)
         .one();
-      return JSON.parse(row.data_json) as Record<string, unknown>;
+      const attribution = durableState.storage.sql
+        .exec<{ data_json: string }>(
+          "SELECT data_json FROM item_attribution WHERE item_id = ?",
+          memberId,
+        )
+        .one();
+      return {
+        item: JSON.parse(item.data_json) as Record<string, unknown>,
+        attribution: JSON.parse(attribution.data_json) as Record<string, unknown>,
+      };
     });
-    expect(detachedMember).not.toHaveProperty("sectionId");
+    expect(detachedState.item).not.toHaveProperty("sectionId");
+    expect(detachedState.attribution).toMatchObject({ lastModifiedBy: actorId, updatedSeq: 3 });
 
     const redo = {
       ...undo,
@@ -5752,6 +5762,17 @@ describe("BoardRoom move/copy closure admission", () => {
         ]),
       },
     });
+
+    const restoredAttribution = await runInDurableObject(stub, (_instance, durableState) => {
+      const row = durableState.storage.sql
+        .exec<{ data_json: string }>(
+          "SELECT data_json FROM item_attribution WHERE item_id = ?",
+          memberId,
+        )
+        .one();
+      return JSON.parse(row.data_json) as Record<string, unknown>;
+    });
+    expect(restoredAttribution).toMatchObject({ lastModifiedBy: actorId, updatedSeq: 4 });
 
     owner.socket.close(1000, "done");
     editor.socket.close(1000, "done");

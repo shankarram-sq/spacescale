@@ -10,6 +10,7 @@ import {
   buildFullEraserOperation,
   buildImageCreateOperation,
   buildObjectTransformMembershipOperation,
+  buildPartialEraserUpdateOperation,
   buildSectionCreateMembershipOperation,
   buildSectionDeleteMembershipOperation,
   buildSectionResizeMembershipOperation,
@@ -25,6 +26,7 @@ import {
   defaultImageCardSize,
   effectiveMoveItemsWithinBatchLimit,
   expandPartialEraserSectionOperations,
+  fitEraserOperationsWithinBatchLimit,
   lineCreationReleaseAction,
   resizedCardGeometry,
   resolveConnectorEndpoint,
@@ -259,6 +261,29 @@ describe("captured gesture operations", () => {
     ]);
   });
 
+  it("preserves a direct member update when its Section also moves", () => {
+    const section = sectionItem();
+    const member = stickyItem("member-a", 20, 20, "teacher-a", SECTION_ID);
+    const directUpdates: Array<Extract<BatchItemOperation, { kind: "item.update" }>> = [
+      {
+        kind: "item.update",
+        itemId: section.id,
+        expectedVersion: section.version,
+        patch: { transform: [1, 0, 0, 1, 100, 0] },
+      },
+      {
+        kind: "item.update",
+        itemId: member.id,
+        expectedVersion: member.version,
+        patch: { transform: [1, 0, 0, 1, 150, 0] },
+      },
+    ];
+
+    expect(
+      buildTranslationMembershipOperations(directUpdates, [section, member], true, () => true),
+    ).toEqual(directUpdates);
+  });
+
   it("moves non-sticky explicit-group peers with Arrange and includes them in guards", () => {
     const groupId = "018f47a1-7a2b-7c3d-8e4f-123456789ac0";
     const selected = {
@@ -398,6 +423,104 @@ describe("captured gesture operations", () => {
         patch: { sectionId: null },
       },
     ]);
+  });
+
+  it("recomputes Section membership from partial-erasure bounds", () => {
+    const lowerSection = sectionItem(300, 200);
+    const higherSection = {
+      ...sectionItem(100, 100),
+      id: "018f47a1-7a2b-7c3d-8e4f-123456789ac2",
+      z: 10,
+      transform: [1, 0, 0, 1, 100, 0] as Matrix,
+    };
+    const line: Extract<BoardItem, { kind: "line" }> = {
+      id: ITEM_ID,
+      kind: "line",
+      sectionId: lowerSection.id,
+      z: 2,
+      version: 8,
+      createdBy: "teacher-a",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: { kind: "line", color: "#20201e", width: 2, opacity: 1, arrowhead: "none" },
+      geometry: { x1: 20, y1: 20, x2: 250, y2: 20 },
+    };
+    const visiblePaths: Array<Array<[number, number]>> = [
+      [
+        [120, 20],
+        [150, 20],
+      ],
+    ];
+
+    expect(
+      buildPartialEraserUpdateOperation(line, line.version, visiblePaths, [
+        lowerSection,
+        higherSection,
+        line,
+      ]),
+    ).toEqual({
+      kind: "item.update",
+      itemId: line.id,
+      expectedVersion: line.version,
+      patch: { geometry: { ...line.geometry, visiblePaths }, sectionId: higherSection.id },
+    });
+  });
+
+  it("skips eraser captures whose Section cleanup would exceed the batch limit", () => {
+    const section = sectionItem();
+    const members = Array.from({ length: MAX_BATCH_OPERATIONS }, (_, index) =>
+      stickyItem(`member-${index}`, 20, 20, "teacher-a", SECTION_ID),
+    );
+    const independent = stickyItem(ITEM_ID, 400, 20, "teacher-a");
+    const captured = new Map<string, BoardItem>([
+      [section.id, section],
+      [independent.id, independent],
+    ]);
+    const operations = buildCapturedDeleteOperations(
+      new Map([
+        [section.id, section.version],
+        [independent.id, independent.version],
+      ]),
+    );
+
+    expect(
+      fitEraserOperationsWithinBatchLimit(operations, captured, [section, ...members, independent]),
+    ).toEqual([
+      {
+        kind: "item.delete",
+        itemId: independent.id,
+        expectedVersion: independent.version,
+      },
+    ]);
+  });
+
+  it("keeps partial erasure within the limit after Section cleanup expansion", () => {
+    const section = sectionItem();
+    const member = stickyItem("member-a", 20, 20, "teacher-a", SECTION_ID);
+    const independent = stickyItem(ITEM_ID, 400, 20, "teacher-a");
+    const partialUpdate: BatchItemOperation = {
+      kind: "item.update",
+      itemId: independent.id,
+      expectedVersion: independent.version,
+      patch: { transform: independent.transform },
+    };
+    const sectionDelete: BatchItemOperation = {
+      kind: "item.delete",
+      itemId: section.id,
+      expectedVersion: section.version,
+    };
+    const captured = new Map<string, BoardItem>([
+      [section.id, section],
+      [independent.id, independent],
+    ]);
+
+    expect(
+      fitEraserOperationsWithinBatchLimit(
+        [partialUpdate, sectionDelete],
+        captured,
+        [section, member, independent],
+        2,
+      ),
+    ).toEqual([partialUpdate]);
   });
 
   it("clears inherited relationships in the grouping-disabled copy fallback", () => {

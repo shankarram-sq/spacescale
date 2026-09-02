@@ -2044,7 +2044,7 @@ export class BoardApp {
       this.notify("Wait for every selected item to finish saving before arranging.", "info");
       return;
     }
-    const directUpdates = buildArrangeUpdates(kind, items);
+    const directUpdates = buildArrangeUpdates(kind, items, this.bootstrap.board.features.grouping);
     this.setArrangeMenuOpen(false);
     this.arrangeButton.focus();
     if (directUpdates.length === 0) {
