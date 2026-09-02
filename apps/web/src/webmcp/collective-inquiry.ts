@@ -17,6 +17,16 @@ export type SharedIdea = {
   alias: string;
   kind: "idea";
   text: string;
+  action: {
+    type: "created";
+    objectKind: "sticky";
+  };
+  createdBy: SharedParticipant;
+};
+
+export type SharedParticipant = {
+  participantId: string;
+  displayName: string;
 };
 
 export type CollectiveInquirySnapshot = {
@@ -48,6 +58,7 @@ export type CollectiveInquiryWebMcpOptions = {
   selectionButton: HTMLButtonElement;
   getRole: () => Role;
   getSelectedItems: () => BoardItem[] | null;
+  getParticipantDisplayName: (participantId: string) => string | null;
   notify: (message: string, kind: "info" | "warning" | "error") => void;
 };
 
@@ -128,7 +139,7 @@ export class CollectiveInquiryWebMcp {
         {
           name: READ_SELECTION_TOOL,
           description:
-            "Read only the saved sticky-note ideas the teacher has explicitly selected on the live SpaceScale canvas. Use this before expanding, connecting, challenging, clustering, deciding from, or acting on the class's ideas. The teacher previews and approves exactly what is shared; no names, board IDs, positions, sections, presence, history, or unselected content are returned.",
+            "Read only the saved sticky-note ideas the teacher has explicitly selected on the live SpaceScale canvas. Use this before expanding, connecting, challenging, clustering, deciding from, or acting on the class's ideas. Each contribution includes its creator's board-visible display name and stable participant ID so the action can be attributed correctly. Board IDs, item IDs, positions, sections, presence, history, authentication data, and unselected content are not returned.",
           inputSchema: {
             type: "object",
             properties: {},
@@ -146,7 +157,7 @@ export class CollectiveInquiryWebMcp {
         {
           name: INSPECT_VISUAL_TOOL,
           description:
-            "Make only the teacher-selected, saved board items available for visual inspection in an isolated live-page preview. Use this to analyze handwriting, sketches, spatial groupings, arrows, shapes, or mixed visual notes that cannot be understood from text alone. The teacher approves the item kinds before any pixels are shown. SpaceScale masks the unselected board, replaces stable item IDs with ephemeral aliases, returns no coordinates or authors, and renders private image cards as placeholders rather than exposing their pixels.",
+            "Make only the teacher-selected, saved board items available for visual inspection in an isolated live-page preview. Use this to analyze handwriting, sketches, spatial groupings, arrows, shapes, or mixed visual notes that cannot be understood from text alone. SpaceScale masks the unselected board, replaces stable item IDs with ephemeral aliases, returns each creator's board-visible display name and stable participant ID for action attribution, returns no coordinates, and renders private image cards as placeholders rather than exposing their pixels.",
           inputSchema: {
             type: "object",
             properties: {},
@@ -200,6 +211,12 @@ export class CollectiveInquiryWebMcp {
       version: item.version,
       kind: item.kind,
     }));
+    const sharedItems = selection.items.map((item, index) => ({
+      alias: visualAlias(index),
+      kind: item.kind,
+      action: { type: "created" as const, objectKind: item.kind },
+      createdBy: this.participant(item.createdBy),
+    }));
     this.visualSnapshots.set(token, { token, capturedAt, sources });
     trimSnapshots(this.visualSnapshots);
 
@@ -220,7 +237,7 @@ export class CollectiveInquiryWebMcp {
         itemKinds: kindCounts,
         containsHandwriting: (kindCounts.pencil ?? 0) > 0,
         privateImagesRenderedAsPlaceholders: kindCounts.image ?? 0,
-        aliases: sources.map(({ alias, kind }) => ({ alias, kind })),
+        aliases: sharedItems,
       },
       inspectionGuidance: {
         action:
@@ -228,10 +245,10 @@ export class CollectiveInquiryWebMcp {
         uncertainty:
           "Label uncertain handwriting explicitly and ask the teacher to clarify instead of inventing text.",
         collaboration:
-          "Treat the visual as shared class thinking: connect and question ideas without grading, profiling, ranking, or attributing them to individuals.",
+          "Use creator identity only to attribute a visible action or ask the right participant for clarification. Do not grade, profile, rank, or infer ability, intent, or participation quality from attribution.",
       },
       privacy:
-        "Only the teacher-approved selection is visible in the opaque review surface. Stable IDs, authors, coordinates, history, presence, unselected board content, and private image pixels are not exposed.",
+        "Only the teacher-approved selection, its board-visible creator names, and stable participant IDs are shared. Board and item IDs, coordinates, history, presence, authentication data, unselected board content, and private image pixels are not exposed.",
     };
   }
 
@@ -250,6 +267,8 @@ export class CollectiveInquiryWebMcp {
       alias: `idea_${index + 1}`,
       kind: "idea" as const,
       text: item.geometry.text.trim(),
+      action: { type: "created" as const, objectKind: "sticky" as const },
+      createdBy: this.participant(item.createdBy),
     }));
     const approved = await this.confirmShare(ideas, signal);
     if (!approved) throw new Error("The teacher chose not to share this selection.");
@@ -287,10 +306,18 @@ export class CollectiveInquiryWebMcp {
           "Help the class build on these contributions together. Surface bridges, tensions, assumptions, missing perspectives, and useful next questions.",
         preserveDissent: true,
         avoid:
-          "Do not rank students, infer participation or ability, claim consensus, or attribute ideas to individuals.",
+          "Use identity only for accurate action attribution or a relevant clarification. Do not rank students, infer participation quality or ability, profile individuals, or claim consensus.",
       },
       privacy:
-        "This result contains only teacher-approved sticky-note text with ephemeral aliases. Names, stable identifiers, coordinates, sections, unselected board content, presence, and history were not shared.",
+        "This result contains only teacher-approved sticky-note text, ephemeral idea aliases, board-visible creator names, and stable participant IDs. Board and item IDs, coordinates, sections, unselected board content, presence, history, authentication data, and contact details were not shared.",
+    };
+  }
+
+  private participant(participantId: string): SharedParticipant {
+    const displayName = this.options.getParticipantDisplayName(participantId)?.trim();
+    return {
+      participantId,
+      displayName: displayName || "Unknown participant",
     };
   }
 

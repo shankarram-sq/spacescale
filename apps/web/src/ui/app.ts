@@ -1054,6 +1054,7 @@ export class BoardApp {
           this.model.items,
           this.model.authoritativeItems,
         ),
+      getParticipantDisplayName: (participantId) => this.creatorNames.get(participantId) ?? null,
       notify: (message, kind) => this.notify(message, kind),
     });
 

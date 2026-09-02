@@ -100,9 +100,12 @@ and sketches, five education collaboration writers spanning 27
 non-section modes, a source-linked class visual/meme writer, a collective-inquiry mapper,
 an aggregate vote reader, and a dissent-preserving class decision tool. The visual writer
 renders safe meme cards locally or accepts inline generated raster data, then reuses the
-private board-asset pipeline; it never embeds or fetches an external image URL. The visual
-inspector opens a teacher-approved, selected-only SVG review surface in the live page, masks
-the rest of the board, aliases item IDs, and leaves private board images as placeholders.
+private board-asset pipeline. AI-generated PNG is preferred; inline JPEG, WebP, and GIF are
+also accepted, while raw SVG and external image URLs are rejected. Selected contribution and
+visual metadata includes the creator's board-visible display name and stable participant ID
+for action attribution. The visual inspector opens a teacher-approved, selected-only SVG
+review surface in the live page, masks the rest of the board, aliases item IDs, and leaves
+private board images as placeholders.
 Cross-Group
 Jigsaw is reserved for the tested
 section-context integration arriving separately; its writer adapter remains dormant

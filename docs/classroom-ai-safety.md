@@ -5,8 +5,9 @@
 SpaceScale now exposes a constrained WebMCP integration for the hackathon. The
 application still embeds no AI provider, model binding, AI request route, or
 provider credential: the visiting WebMCP host performs the reasoning. The
-integration reads only a teacher-approved anonymized selection and submits
-validated ordinary board operations after an explicit WebMCP write permission.
+integration reads only a teacher-selected contribution set, including each
+creator's board-visible display name and stable participant ID for attribution,
+and submits validated ordinary board operations after WebMCP write permission.
 
 The public hackathon deployment is an isolated demonstration for synthetic or
 otherwise non-sensitive test content. It is not approval for use with real
@@ -23,9 +24,10 @@ profile, rank, discipline, diagnose, or make consequential decisions about a
 student.
 
 - Only an owner acting as the teacher may read selected content or execute an AI
-  write. The selection dialog and WebMCP host permission are separate, explicit
-  decisions. A future classroom rollout must additionally add a server-enforced,
-  fail-closed kill switch and board-level owner opt-in.
+  write. Normal product participation covers sharing board-visible attribution;
+  the selection dialog controls which content enters a turn. A future classroom
+  rollout must additionally add a server-enforced, fail-closed kill switch and
+  board-level owner opt-in.
 - Everyone on the board must see when AI is active, what selected content will
   be shared, why it is being shared, and how to withdraw before submission.
   Confirmed output remains visibly marked with AI-assistance metadata.
@@ -41,11 +43,12 @@ An AI request may contain only the content the teacher explicitly selected and
 the minimum instruction needed for the approved task. The complete board must
 never be sent merely because a section or item is selected.
 
-Before a request leaves the Worker, remove or replace user identifiers, email
-addresses, participant names, actor IDs, board IDs, access tokens, session
-data, presence data, activity history, and unselected item content. Images and
-file metadata are excluded unless a separately reviewed image use case is
-approved and visibly selected.
+Selected contributions may include the creator's board-visible display name and
+stable opaque participant ID so the AI can associate an action with the correct
+person. This permission does not extend to email addresses, contact details,
+board or item IDs, access tokens, session data, presence data, activity history,
+or unselected item content. Images and file metadata are excluded unless a
+separately reviewed image use case is approved and visibly selected.
 
 ### Selected handwritten visual inspection
 
@@ -56,16 +59,17 @@ teacher approves item kinds and counts, the browser renders only the still-curre
 saved selection into an isolated SVG review surface for the visiting WebMCP host
 to inspect. An opaque backdrop covers the unselected board.
 
-The renderer replaces stable item IDs with ephemeral aliases and includes no
-author, actor, board, coordinate, presence, or history fields in the tool result.
-Private board image pixels and file metadata are not exposed; selected image cards
-render as labeled placeholders. The call fails if the selected item set or any
-version changes during approval. The tool instructs the model to preserve
-uncertainty rather than guess unclear handwriting and prohibits grading, ranking,
-profiling, and individual attribution. Closing the review removes the temporary
-surface and never mutates the board. This remains synthetic-demo functionality
-until the governance and provider requirements below are satisfied for real
-student content.
+The renderer replaces stable item IDs with ephemeral aliases. Result metadata
+includes the board-visible creator name and stable participant ID for each item,
+but no board ID, item ID, coordinate, presence, or history fields. Private board
+image pixels and file metadata are not exposed; selected image cards render as
+labeled placeholders. The call fails if the selected item set or any version
+changes during approval. The tool instructs the model to preserve uncertainty
+rather than guess unclear handwriting and prohibits grading, ranking, profiling,
+or inferences about a person from attribution. Closing the review removes the
+temporary surface and never mutates the board. This remains synthetic-demo
+functionality until the governance and provider requirements below are satisfied
+for real student content.
 
 ### Generated visual responses
 

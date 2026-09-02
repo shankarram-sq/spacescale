@@ -27,7 +27,7 @@ Ask the agent:
 
 Show both human-control moments:
 
-1. SpaceScale previews the exact anonymized selection before sharing it.
+1. SpaceScale previews the exact selected text; the result includes board-visible creator attribution.
 2. SpaceScale previews the proposed themes, bridges, tension, and operation count before changing the canvas.
 
 Approve the map. Point out that it appears as shared canvas objects, not private chat text, and is one undoable realtime update.
@@ -91,7 +91,7 @@ ChatGPT calls `inspect_selected_board_visual`. SpaceScale first shows item kinds
 ## Demo checks
 
 - Site tools menu lists all eleven tools; `list_class_collaboration_modes` reports 27 live modes, the separate bounded visual tool, an enforceable input contract for every mode, the reserved section boundary, and no student data.
-- Selection consent shows only aliases and selected text.
+- Selection results include selected text, action type, and the creator's board-visible name and stable participant ID.
 - Thinking expansion rejects more than three additions; every critique card ends in a question.
 - Decision scaffolds leave weights, ratings, votes, response counts, and final choice blank.
 - Every generated card has source connectors and the AI-assistance sparkle on its author badge.

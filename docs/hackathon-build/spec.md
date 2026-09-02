@@ -33,10 +33,12 @@ Returns the live collaboration catalog before the agent reads or changes the boa
 Reads saved sticky-note text from the current teacher selection.
 
 - Owner-only and read-only.
-- Opens an in-app consent dialog showing the exact anonymized text.
-- Returns ephemeral aliases such as `idea_1`, never board/item/actor IDs.
+- Opens the existing in-app sharing dialog for the selected text.
+- Returns ephemeral aliases such as `idea_1` plus an explicit `createdBy`
+  display name and stable participant ID for action attribution; board and item
+  IDs remain private.
 - Deliberately does not inspect sections or infer group membership; the incoming section push owns that context.
-- Does not return names, coordinates, attribution, sections, unselected content, presence, or history.
+- Does not return coordinates, sections, unselected content, presence, history, contact details, or authentication data.
 - Returns an opaque selection token used by the next tool.
 
 ### `inspect_selected_board_visual`
@@ -47,9 +49,11 @@ Makes the teacher's saved visual selection inspectable in the same live page for
 - Opens a first consent dialog that reveals only item kinds and counts. No selected pixels appear until the teacher approves.
 - Re-checks the selected item IDs and versions after approval and fails if the content or selection changed while consent was open.
 - Renders the approved items through SpaceScale's canonical SVG exporter, preserving pencil paths, transforms, layout, typed context, and source ordering.
-- Replaces stable item IDs with ephemeral aliases such as `visual_1`, returns no authors or coordinates, and makes private board images non-pixel placeholders.
+- Replaces stable item IDs with ephemeral aliases such as `visual_1`, returns each
+  creator's display name and stable participant ID but no coordinates, and makes
+  private board images non-pixel placeholders.
 - Opens the result in an opaque modal review surface that covers the unselected board. ChatGPT inspects this post-tool live-page state rather than receiving a large image string in JSON.
-- Returns bounded metadata and explicit instructions to mark uncertain handwriting as uncertain, avoid invention, and avoid grading, ranking, profiling, or individual attribution.
+- Returns bounded metadata and explicit instructions to use identity only for attribution or clarification, mark uncertain handwriting as uncertain, avoid invention, and avoid grading, ranking, or profiling.
 - Closing the review removes the temporary visual surface. It never changes the shared canvas.
 
 ### Five education collaboration tools

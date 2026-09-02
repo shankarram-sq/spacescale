@@ -97,6 +97,9 @@ describe("education partner WebMCP contract", () => {
         tool: "add_content_visuals",
         additions: { minimum: 1, maximum: 3 },
         formats: ["meme_card", "inline_image"],
+        acceptedInlineImageMimeTypes: ["image/png", "image/jpeg", "image/webp", "image/gif"],
+        preferredGeneratedImageMimeType: "image/png",
+        svgAccepted: false,
         externalImageUrlsAccepted: false,
       },
       guardrails: {

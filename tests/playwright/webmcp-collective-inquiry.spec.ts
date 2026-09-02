@@ -83,13 +83,17 @@ test("teacher can turn selected class ideas into one approved, undoable WebMCP m
       maximumItems: 40,
       result: "isolated_live_page_preview",
       unselectedBoardMasked: true,
-      stableIdentifiersReturned: false,
+      stableItemIdentifiersReturned: false,
+      participantIdentifiersReturned: true,
       privateImages: "placeholder_only",
     },
     visualTool: {
       tool: "add_content_visuals",
       additions: { minimum: 1, maximum: 3 },
       formats: ["meme_card", "inline_image"],
+      acceptedInlineImageMimeTypes: ["image/png", "image/jpeg", "image/webp", "image/gif"],
+      preferredGeneratedImageMimeType: "image/png",
+      svgAccepted: false,
       externalImageUrlsAccepted: false,
     },
     guardrails: {
@@ -150,6 +154,19 @@ test("teacher can turn selected class ideas into one approved, undoable WebMCP m
   await shareDialog.getByRole("button", { name: "Share 8 contributions" }).click();
   const readResult = await readResultPromise;
   expect(readResult.contributions).toHaveLength(8);
+  const contributions = readResult.contributions as Array<{
+    action: { type: string; objectKind: string };
+    createdBy: { participantId: string; displayName: string };
+  }>;
+  expect(
+    contributions.every(
+      (contribution) =>
+        contribution.action.type === "created" &&
+        contribution.action.objectKind === "sticky" &&
+        contribution.createdBy.participantId.length > 0 &&
+        contribution.createdBy.displayName !== "Unknown participant",
+    ),
+  ).toBe(true);
   expect(JSON.stringify(readResult)).not.toContain("itemId");
 
   const rejectedSafeguards = await page.evaluate(

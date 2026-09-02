@@ -95,9 +95,20 @@ test("teacher can expose only selected handwriting as an isolated WebMCP visual"
       itemKinds: { pencil: 1 },
       containsHandwriting: true,
       privateImagesRenderedAsPlaceholders: 0,
-      aliases: [{ alias: "visual_1", kind: "pencil" }],
+      aliases: [
+        {
+          alias: "visual_1",
+          kind: "pencil",
+          action: { type: "created", objectKind: "pencil" },
+          createdBy: {
+            participantId: expect.any(String),
+            displayName: expect.any(String),
+          },
+        },
+      ],
     },
   });
+  expect(JSON.stringify(result)).not.toContain("Unknown participant");
   expect(JSON.stringify(result)).not.toContain(handwritingId as string);
 
   const review = page.getByTestId("webmcp-visual-review-dialog");
