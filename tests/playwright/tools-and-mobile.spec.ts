@@ -138,7 +138,9 @@ test("pencil survives consecutive mouse and pen strokes with delayed capture los
     await page.mouse.up();
     await expect(pencil).toHaveAttribute("aria-pressed", "true");
   }
-  await expect(page.locator("#drawing-area .board-item-pencil")).toHaveCount(2);
+  const pencilStrokes = page.locator("#drawing-area .board-item-pencil");
+  await expect(pencilStrokes).toHaveCount(2);
+  await expect(pencilStrokes.first()).toHaveAttribute("stroke-width", "2");
 
   await page.locator("#board-canvas").evaluate((node, point) => {
     const canvas = node as SVGSVGElement;

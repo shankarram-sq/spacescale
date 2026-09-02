@@ -264,7 +264,7 @@ function featureForTemplateItem(item: {
 }
 
 const BRUSH_PRESETS = {
-  pen: { width: 4, opacity: 1 },
+  pen: { width: 2, opacity: 1 },
   marker: { width: 10, opacity: 1 },
   highlighter: { width: 20, opacity: 0.35 },
 } as const;
@@ -736,7 +736,7 @@ export class BoardApp {
   private history: HistoryState;
   private style: StyleState = {
     color: DRAWING_COLOR_VALUES.ink,
-    width: 4,
+    width: 2,
     opacity: 1,
     lineArrowhead: "none",
     shapeVariant: "rectangle",
@@ -1354,7 +1354,7 @@ export class BoardApp {
               <div class="color-grid sticky-color-grid" data-sticky-color-grid hidden></div>
               <label class="custom-color" title="Custom colour" data-custom-color><span class="sr-only">Custom colour</span><input type="color" value="${UI_COLORS.ink}" data-style-color /></label>
             </fieldset>
-            <label class="range-row" data-style-stroke-row><span>Stroke</span><output data-width-output>4</output><input type="range" min="1" max="32" value="4" step="1" data-style-stroke /></label>
+            <label class="range-row" data-style-stroke-row><span>Stroke</span><output data-width-output>2</output><input type="range" min="1" max="32" value="2" step="1" data-style-stroke /></label>
             <label class="style-checkbox-row" data-line-arrow-row hidden><input type="checkbox" data-line-arrow /> <span>End arrow</span><span class="line-arrow-preview" aria-hidden="true">→</span></label>
             <label class="range-row"><span>Opacity</span><output data-opacity-output>100%</output><input type="range" min="10" max="100" value="100" step="5" data-style-opacity /></label>
             <label class="style-select-row" data-style-font-family-row><span>Font</span><select data-style-font-family>
