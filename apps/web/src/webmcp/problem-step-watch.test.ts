@@ -815,6 +815,21 @@ describe("board-side assist requests", () => {
     ]);
     setCanWrite(true);
 
+    // "Explain with a video" is answered in a comment that can carry the clip itself.
+    feed.requestAssistance({ itemIds: [STICKY_ID], action: "explain_with_video" });
+    const videoReply = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(videoReply.requests).toMatchObject([
+      {
+        reply: {
+          via: "comment",
+          call: { tool: "insert_comment", input: { videoUrl: expect.any(String) } },
+        },
+      },
+    ]);
+
     setCanComment(false);
     feed.requestAssistance({ itemIds: [TEXT_ID], action: "explain" });
     const chatFallback = await feed.execute(

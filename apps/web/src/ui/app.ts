@@ -86,6 +86,7 @@ import type {
   BoardItem,
   BoardSnapshot,
   Bootstrap,
+  CommentMedia,
   CommitFrame,
   ConnectionPhase,
   DrawingPolicy,
@@ -1101,6 +1102,15 @@ export class BoardApp {
   private showHiddenComments = false;
   private commentSubmitting = false;
   private commentsLoading = true;
+  /** The picture or video the composer will send with the next comment, if any. */
+  private pendingCommentMedia: CommentMedia | null = null;
+  private commentImageUploading = false;
+  /** The comment whose video the participant is playing in the drawer, if any. */
+  private playingCommentVideoId: string | null = null;
+  /** Set when a render was withheld to keep a playing comment video alive. */
+  private commentsRenderPending = false;
+  /** Object URLs for the pictures comments carry, one per asset, revoked on teardown. */
+  private readonly commentImageUrls = new Map<string, Promise<string>>();
   private accessMembers: Member[] = [];
   private readonly participantRoleChangesPending = new Set<string>();
   private participantRenderPending = false;
@@ -1137,6 +1147,12 @@ export class BoardApp {
   private readonly commentComposer: HTMLElement;
   private readonly commentTargetLabel: HTMLElement;
   private readonly commentInput: HTMLTextAreaElement;
+  private readonly commentImageInput: HTMLInputElement;
+  private readonly commentAttachment: HTMLElement;
+  private readonly commentAttachmentLabel: HTMLElement;
+  private readonly commentImageAltInput: HTMLInputElement;
+  private readonly commentVideoField: HTMLElement;
+  private readonly commentVideoUrl: HTMLInputElement;
   private readonly showHiddenCommentsInput: HTMLInputElement;
   private readonly spotlightToggle: HTMLButtonElement;
   private readonly spotlightFollowBanner: HTMLElement;
@@ -1229,6 +1245,28 @@ export class BoardApp {
     this.commentComposer = query(this.commentsDrawer, "[data-comment-composer]", HTMLElement);
     this.commentTargetLabel = query(this.commentComposer, "[data-comment-target]", HTMLElement);
     this.commentInput = query(this.commentComposer, "[data-comment-input]", HTMLTextAreaElement);
+    this.commentImageInput = query(
+      this.commentComposer,
+      "[data-comment-image-input]",
+      HTMLInputElement,
+    );
+    this.commentAttachment = query(this.commentComposer, "[data-comment-attachment]", HTMLElement);
+    this.commentAttachmentLabel = query(
+      this.commentAttachment,
+      "[data-comment-attachment-label]",
+      HTMLElement,
+    );
+    this.commentImageAltInput = query(
+      this.commentAttachment,
+      "[data-comment-image-alt]",
+      HTMLInputElement,
+    );
+    this.commentVideoField = query(this.commentComposer, "[data-comment-video-field]", HTMLElement);
+    this.commentVideoUrl = query(
+      this.commentVideoField,
+      "[data-comment-video-url]",
+      HTMLInputElement,
+    );
     this.showHiddenCommentsInput = query(
       this.commentsDrawer,
       "[data-show-hidden-comments]",
@@ -1532,7 +1570,8 @@ export class BoardApp {
         return inquiry.watchedStepCommentTarget(watchToken, stepAlias, action);
       },
       commit: (operation) => this.commitAndWait(operation),
-      createComment: (itemId, body, assistance) => this.commentFromWebMcp(itemId, body, assistance),
+      createComment: (itemId, body, assistance, media) =>
+        this.commentFromWebMcp(itemId, body, assistance, media),
       storeImage: (imageDataUrl, signal) => this.storeWebMcpImage(imageDataUrl, signal),
       revealItems: (itemIds) => {
         this.tools.setTool("select");
@@ -1617,6 +1656,8 @@ export class BoardApp {
     this.rejectedZoneTitleDrafts.length = 0;
     this.pendingNewZoneTitles.clear();
     clearTypesetMath(this.commentsList);
+    this.playingCommentVideoId = null;
+    this.releaseCommentImages();
     document.removeEventListener("paste", this.onImagePaste);
     this.renderer.svg.removeEventListener("dragover", this.onImageDragOver);
     this.renderer.svg.removeEventListener("drop", this.onImageDrop);
@@ -1916,11 +1957,26 @@ export class BoardApp {
             <form data-comment-form>
               <label class="sr-only" for="object-comment-input">Comment</label>
               <textarea id="object-comment-input" data-comment-input rows="3" maxlength="2000" placeholder="Add a comment…" required></textarea>
+              <div class="comment-attachment" data-testid="comment-attachment" data-comment-attachment hidden>
+                <div class="comment-attachment-row">
+                  <span class="comment-attachment-label" data-comment-attachment-label></span>
+                  <button type="button" data-comment-attachment-remove>Remove</button>
+                </div>
+                <label class="comment-attachment-alt" data-comment-image-alt-field hidden><span class="sr-only">Describe the image</span><input type="text" maxlength="${MAX_IMAGE_ALT_CODE_POINTS}" placeholder="Describe the image (optional)" data-comment-image-alt /></label>
+              </div>
+              <div class="comment-video-field" data-comment-video-field hidden>
+                <label><span class="sr-only">Video link</span><input type="text" inputmode="url" autocomplete="url" placeholder="https://www.youtube.com/watch?v=…" data-comment-video-url /></label>
+                <button type="button" data-comment-video-attach>Attach video</button>
+                <p class="dialog-field-error" data-comment-video-error role="alert"></p>
+              </div>
               <div class="comment-composer-actions">
+                <button type="button" data-testid="comment-add-image" data-comment-add-image>Add image</button>
+                <button type="button" data-testid="comment-add-video" data-comment-add-video>Add video</button>
                 <button type="button" data-comment-cancel>Cancel</button>
                 <button class="primary-button" type="submit" data-comment-submit>Comment</button>
               </div>
             </form>
+            <input type="file" data-testid="comment-image-input" data-comment-image-input accept="image/png,image/jpeg,image/webp,image/gif" hidden />
           </section>
           <div class="comments-list" data-comments-list></div>
         </aside>
@@ -3247,9 +3303,42 @@ export class BoardApp {
       () => {
         this.activeCommentTargetId = null;
         this.commentInput.value = "";
+        this.clearPendingCommentMedia();
         this.renderComments();
       },
     );
+    query(this.commentComposer, "[data-comment-add-image]", HTMLButtonElement).addEventListener(
+      "click",
+      () => this.pickCommentImage(),
+    );
+    this.commentImageInput.addEventListener("change", () => {
+      const image = this.commentImageInput.files?.[0];
+      this.commentImageInput.value = "";
+      if (image) void this.attachCommentImage(image);
+    });
+    query(this.commentComposer, "[data-comment-add-video]", HTMLButtonElement).addEventListener(
+      "click",
+      () => this.openCommentVideoField(),
+    );
+    query(
+      this.commentVideoField,
+      "[data-comment-video-attach]",
+      HTMLButtonElement,
+    ).addEventListener("click", () => this.attachCommentVideo());
+    this.commentVideoUrl.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      // The field lives inside the comment form, so Enter would post the comment instead.
+      event.preventDefault();
+      this.attachCommentVideo();
+    });
+    query(
+      this.commentAttachment,
+      "[data-comment-attachment-remove]",
+      HTMLButtonElement,
+    ).addEventListener("click", () => {
+      this.clearPendingCommentMedia();
+      this.commentInput.focus();
+    });
     query(this.commentsDrawer, "[data-comment-form]", HTMLFormElement).addEventListener(
       "submit",
       (event) => {
@@ -6040,6 +6129,7 @@ export class BoardApp {
 
   private openCommentsForItem(itemId: string): void {
     if (!this.model.getItem(itemId)) return;
+    if (this.activeCommentTargetId !== itemId) this.clearPendingCommentMedia();
     this.activeCommentTargetId = itemId;
     this.closeDrawers();
     this.commentsDrawer.hidden = false;
@@ -6053,6 +6143,10 @@ export class BoardApp {
     const body = this.commentInput.value.trim();
     if (!itemId || !this.model.getItem(itemId) || this.commentSubmitting || !this.canComment())
       return;
+    if (this.commentImageUploading) {
+      this.notify("The image is still uploading.", "info");
+      return;
+    }
     if (body.length === 0) {
       this.commentInput.focus();
       return;
@@ -6061,20 +6155,294 @@ export class BoardApp {
       this.notify("Comments can contain at most 2,000 characters.", "error");
       return;
     }
+    const media = this.commentMediaToSend();
+    if (
+      media?.kind === "image" &&
+      media.alt !== undefined &&
+      [...media.alt].length > MAX_IMAGE_ALT_CODE_POINTS
+    ) {
+      this.notify(
+        `An image description can contain at most ${MAX_IMAGE_ALT_CODE_POINTS} characters.`,
+        "error",
+      );
+      return;
+    }
     this.commentSubmitting = true;
     this.renderComments();
     try {
-      const comment = await this.api.createComment(this.bootstrap.board.id, itemId, body);
+      const comment = await this.api.createComment(
+        this.bootstrap.board.id,
+        itemId,
+        body,
+        undefined,
+        media,
+      );
       this.comments.upsert(comment);
       this.commentInput.value = "";
+      this.clearPendingCommentMedia();
       this.applyCommentChange();
-      this.liveRegion.textContent = "Comment added.";
+      this.liveRegion.textContent = media ? "Comment with media added." : "Comment added.";
     } catch (error) {
       this.apiError(error);
     } finally {
       this.commentSubmitting = false;
       this.renderComments();
     }
+  }
+
+  /** Opens the file picker for a picture the next comment will carry. */
+  private pickCommentImage(): void {
+    if (this.pendingCommentMedia !== null || this.commentImageUploading) return;
+    if (!this.canUploadImages()) {
+      this.notify(
+        this.bootstrap.board.features.images && this.bootstrap.board.imagesEnabled
+          ? "Adding a picture to a comment needs board edit access."
+          : "Images are switched off for this Space.",
+        "warning",
+      );
+      return;
+    }
+    this.commentImageInput.click();
+  }
+
+  /**
+   * Uploads one picture through the board's own asset path and holds it for the next comment.
+   * The comment carries the stored asset, never the bytes, so it is the same private image a
+   * card on the canvas would show.
+   */
+  private async attachCommentImage(image: File): Promise<void> {
+    if (this.pendingCommentMedia !== null || this.commentImageUploading) return;
+    const issue = imageUploadIssue(image);
+    if (issue) {
+      this.notify(issue, "warning");
+      return;
+    }
+    if (!this.canUploadImages()) {
+      this.notify("Adding a picture to a comment needs board edit access.", "warning");
+      return;
+    }
+    if (!navigator.onLine || this.phase !== "ready") {
+      this.notify("Attach the image when reconnected.", "warning");
+      return;
+    }
+    this.commentImageUploading = true;
+    this.renderCommentComposerState();
+    try {
+      const prepared = await privacySafeImageUpload(image);
+      const asset = await this.api.uploadBoardImage(this.bootstrap.board.id, prepared);
+      this.pendingCommentMedia = {
+        kind: "image",
+        assetId: asset.assetId,
+        mimeType: asset.mimeType,
+        intrinsicWidth: asset.intrinsicWidth,
+        intrinsicHeight: asset.intrinsicHeight,
+      };
+      this.commentVideoField.hidden = true;
+      this.liveRegion.textContent = "Image attached to this comment.";
+    } catch (error) {
+      if (error instanceof ApiError) this.notify(error.message, "error");
+      else if (error instanceof ImagePreparationError) this.notify(error.message, "warning");
+      else this.notify("The image could not be uploaded.", "error");
+    } finally {
+      this.commentImageUploading = false;
+      this.renderCommentComposerState();
+      if (this.pendingCommentMedia?.kind === "image") this.commentImageAltInput.focus();
+    }
+  }
+
+  private openCommentVideoField(): void {
+    if (this.pendingCommentMedia !== null) return;
+    this.commentVideoField.hidden = false;
+    query(this.commentVideoField, "[data-comment-video-error]", HTMLElement).textContent = "";
+    this.commentVideoUrl.focus();
+  }
+
+  /** Holds a public YouTube or Vimeo link for the next comment, refusing anything else. */
+  private attachCommentVideo(): void {
+    const error = query(this.commentVideoField, "[data-comment-video-error]", HTMLElement);
+    const video = videoEmbedFromText(this.commentVideoUrl.value);
+    if (!video) {
+      error.textContent = "Use a complete HTTPS YouTube or Vimeo video link.";
+      this.commentVideoUrl.focus();
+      return;
+    }
+    error.textContent = "";
+    this.pendingCommentMedia = { kind: "video", provider: video.provider, url: video.sourceUrl };
+    this.commentVideoUrl.value = "";
+    this.commentVideoField.hidden = true;
+    this.renderCommentComposerState();
+    this.commentInput.focus();
+  }
+
+  private clearPendingCommentMedia(): void {
+    this.pendingCommentMedia = null;
+    this.commentImageAltInput.value = "";
+    this.commentVideoUrl.value = "";
+    this.commentVideoField.hidden = true;
+    query(this.commentVideoField, "[data-comment-video-error]", HTMLElement).textContent = "";
+    this.renderCommentComposerState();
+  }
+
+  /** What the composer will send with the next comment, with the description the author typed. */
+  private commentMediaToSend(): CommentMedia | undefined {
+    const media = this.pendingCommentMedia;
+    if (media === null) return undefined;
+    if (media.kind !== "image") return media;
+    const alt = this.commentImageAltInput.value.trim();
+    return alt.length === 0 ? media : { ...media, alt };
+  }
+
+  /** Reflects the pending attachment and what the composer can still accept. */
+  private renderCommentComposerState(): void {
+    const media = this.pendingCommentMedia;
+    const busy = this.commentSubmitting || this.commentImageUploading;
+    this.commentAttachment.hidden = media === null && !this.commentImageUploading;
+    query(this.commentAttachment, "[data-comment-image-alt-field]", HTMLElement).hidden =
+      media?.kind !== "image";
+    this.commentAttachmentLabel.textContent = this.commentImageUploading
+      ? "Uploading image…"
+      : media?.kind === "image"
+        ? "Image attached"
+        : media?.kind === "video"
+          ? `${videoProviderLabel(media.provider)} video attached`
+          : "";
+    const remove = query(
+      this.commentAttachment,
+      "[data-comment-attachment-remove]",
+      HTMLButtonElement,
+    );
+    remove.hidden = media === null;
+    remove.disabled = busy;
+    query(this.commentComposer, "[data-comment-add-image]", HTMLButtonElement).disabled =
+      busy || media !== null || !this.canUploadImages();
+    query(this.commentComposer, "[data-comment-add-video]", HTMLButtonElement).disabled =
+      busy || media !== null;
+    query(this.commentVideoField, "[data-comment-video-attach]", HTMLButtonElement).disabled = busy;
+    this.commentImageAltInput.disabled = busy;
+    this.commentVideoUrl.disabled = busy;
+  }
+
+  /**
+   * The picture or video under a comment's text. A picture loads from this board's private
+   * bucket; a video stays a link until a participant chooses to play it in the drawer.
+   */
+  private commentMediaNode(comment: BoardComment): HTMLElement | null {
+    const media = comment.media;
+    if (media === undefined) return null;
+    if (media.kind === "image") return this.commentImageNode(media);
+    return this.commentVideoNode(comment.id, media);
+  }
+
+  private commentImageNode(media: Extract<CommentMedia, { kind: "image" }>): HTMLElement {
+    const figure = document.createElement("figure");
+    figure.className = "comment-media comment-media-image";
+    figure.dataset.commentMedia = "image";
+    const image = document.createElement("img");
+    image.alt = media.alt ?? "Image attached to this comment";
+    image.loading = "lazy";
+    image.dataset.assetId = media.assetId;
+    figure.append(image);
+    if (media.alt !== undefined) {
+      const caption = document.createElement("figcaption");
+      caption.textContent = media.alt;
+      figure.append(caption);
+    }
+    void this.loadCommentImage(media.assetId).then(
+      (url) => {
+        image.src = url;
+      },
+      () => {
+        const failed = document.createElement("p");
+        failed.className = "comment-media-error";
+        failed.textContent = "This image could not be loaded.";
+        image.replaceWith(failed);
+      },
+    );
+    return figure;
+  }
+
+  private commentVideoNode(
+    commentId: string,
+    media: Extract<CommentMedia, { kind: "video" }>,
+  ): HTMLElement {
+    const card = document.createElement("div");
+    card.className = "comment-media comment-media-video";
+    card.dataset.commentMedia = "video";
+    const video = videoEmbedFromText(media.url);
+    const link = document.createElement("a");
+    link.className = "comment-media-video-link";
+    link.href = media.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.referrerPolicy = "no-referrer";
+    link.textContent = `${video?.title ?? videoProviderLabel(media.provider)} · open in new tab`;
+    card.append(link);
+    if (!video) return card;
+
+    const play = document.createElement("button");
+    play.type = "button";
+    play.className = "comment-media-play";
+    play.dataset.commentVideoPlay = "true";
+    play.textContent = "Play video here";
+    const player = document.createElement("div");
+    player.className = "comment-media-player";
+    const frame = document.createElement("iframe");
+    frame.className = "comment-media-frame";
+    frame.title = video.title;
+    frame.loading = "lazy";
+    frame.referrerPolicy = "strict-origin-when-cross-origin";
+    frame.allow =
+      "accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture; web-share";
+    frame.allowFullscreen = true;
+    const stop = document.createElement("button");
+    stop.type = "button";
+    stop.className = "comment-media-stop";
+    stop.dataset.commentVideoStop = "true";
+    stop.textContent = "Stop video";
+    player.append(frame, stop);
+    play.addEventListener("click", () => {
+      // Swapped in place: rebuilding the list would reload the player mid-sentence.
+      this.playingCommentVideoId = commentId;
+      frame.src = video.embedUrl;
+      play.replaceWith(player);
+    });
+    stop.addEventListener("click", () => {
+      this.playingCommentVideoId = null;
+      frame.removeAttribute("src");
+      player.replaceWith(play);
+      play.focus();
+      if (this.commentsRenderPending) this.renderComments();
+    });
+    card.append(play);
+    return card;
+  }
+
+  /**
+   * One object URL per comment picture, shared by every card that shows it and revoked when
+   * the board tears down. The asset itself is fetched with the participant's own session.
+   */
+  private loadCommentImage(assetId: string): Promise<string> {
+    const existing = this.commentImageUrls.get(assetId);
+    if (existing) return existing;
+    const pending = this.api
+      .boardImage(this.bootstrap.board.id, assetId)
+      .then((blob) => URL.createObjectURL(blob))
+      .catch((error: unknown) => {
+        if (this.commentImageUrls.get(assetId) === pending) this.commentImageUrls.delete(assetId);
+        throw error;
+      });
+    this.commentImageUrls.set(assetId, pending);
+    return pending;
+  }
+
+  private releaseCommentImages(): void {
+    for (const pending of this.commentImageUrls.values()) {
+      void pending.then(
+        (url) => URL.revokeObjectURL(url),
+        () => undefined,
+      );
+    }
+    this.commentImageUrls.clear();
   }
 
   private async resolveObjectComment(commentId: string): Promise<void> {
@@ -6106,6 +6474,13 @@ export class BoardApp {
     // The card list is rebuilt when the drawer opens, so a hidden drawer only
     // needs the badge.
     if (this.commentsDrawer.hidden) return;
+    if (this.playingCommentVideoId !== null) {
+      // Rebuilding the list would detach the iframe a participant is watching, reloading the
+      // video. Hold the render until they stop it, as the participant list does for its picker.
+      this.commentsRenderPending = true;
+      return;
+    }
+    this.commentsRenderPending = false;
     this.showHiddenCommentsInput.checked = this.showHiddenComments;
 
     const target = this.activeCommentTargetId
@@ -6117,8 +6492,9 @@ export class BoardApp {
       this.commentTargetLabel.textContent = `Comment on ${commentObjectLabel(target)}`;
       this.commentInput.disabled = this.commentSubmitting;
       query(this.commentComposer, "[data-comment-submit]", HTMLButtonElement).disabled =
-        this.commentSubmitting;
+        this.commentSubmitting || this.commentImageUploading;
     }
+    this.renderCommentComposerState();
 
     const visible = comments
       .filter((comment) => objectCommentVisible(comment.state, this.showHiddenComments))
@@ -6208,7 +6584,9 @@ export class BoardApp {
         resolve.addEventListener("click", () => void this.resolveObjectComment(comment.id));
         actions.append(resolve);
       }
-      card.append(heading, body, actions);
+      const media = this.commentMediaNode(comment);
+      if (media) card.append(heading, body, media, actions);
+      else card.append(heading, body, actions);
       this.commentsList.append(card);
     }
   }
@@ -7359,13 +7737,20 @@ export class BoardApp {
     itemId: string,
     body: string,
     assistance: Assistance,
+    media?: CommentMedia,
   ): Promise<void> {
     if (!this.model.getItem(itemId)) throw new Error("That step is no longer on the board.");
     if (!this.canComment()) throw new Error("This browser cannot comment on this Space.");
-    const comment = await this.api.createComment(this.bootstrap.board.id, itemId, body, assistance);
+    const comment = await this.api.createComment(
+      this.bootstrap.board.id,
+      itemId,
+      body,
+      assistance,
+      media,
+    );
     this.comments.upsert(comment);
     this.applyCommentChange();
-    this.liveRegion.textContent = "AI comment added.";
+    this.liveRegion.textContent = media ? "AI comment with media added." : "AI comment added.";
   }
 
   private setSelectionColourMenuOpen(open: boolean): void {
@@ -7412,6 +7797,13 @@ export class BoardApp {
   }
 
   private closeDrawers(): void {
+    if (this.playingCommentVideoId !== null) {
+      // A hidden drawer must not keep playing, and the player cannot survive the next rebuild.
+      this.playingCommentVideoId = null;
+      clearTypesetMath(this.commentsList);
+      this.commentsList.replaceChildren();
+      this.commentsRenderPending = true;
+    }
     this.commentsDrawer.hidden = true;
     this.participantDrawer.hidden = true;
     this.accessDrawer.hidden = true;
@@ -8308,6 +8700,11 @@ export function objectCommentVisible(
   showHiddenComments: boolean,
 ): boolean {
   return showHiddenComments || state === "open";
+}
+
+/** How a comment names the service a video it carries comes from. */
+function videoProviderLabel(provider: "youtube" | "vimeo"): string {
+  return provider === "vimeo" ? "Vimeo" : "YouTube";
 }
 
 function commentObjectLabel(item: BoardItem): string {

@@ -31,6 +31,7 @@ const MAX_LIVE_SESSIONS = 5;
 /** Requests retained between waits; the oldest are dropped and the drop count is reported. */
 const MAX_QUEUED_REQUESTS = 10;
 const COMMENT_BODY_PLACEHOLDER = "<your reply, at most 2000 characters>";
+const COMMENT_VIDEO_URL_PLACEHOLDER = "<a complete HTTPS YouTube or Vimeo link, or leave out>";
 const CARD_TEXT_PLACEHOLDER = "<the note's text, at most 1000 characters>";
 /** Largest millisecond value the Date type can represent. */
 const MAX_TIMESTAMP_MS = 8.64e15;
@@ -1252,8 +1253,16 @@ function replyPlan(
               stepAlias: firstAlias,
               action: request.action,
               body: COMMENT_BODY_PLACEHOLDER,
+              // The participant asked for a video, so the comment offers to carry one.
+              ...(request.action === "explain_with_video"
+                ? { videoUrl: COMMENT_VIDEO_URL_PLACEHOLDER }
+                : {}),
             },
-            note: "The watchToken and stepAlias name the step being answered, so the reply lands on it whatever the participant has selected now. Copy the action back so this comment is tagged with the request it answers, even if another request has queued on the step since.",
+            note: `The watchToken and stepAlias name the step being answered, so the reply lands on it whatever the participant has selected now. Copy the action back so this comment is tagged with the request it answers, even if another request has queued on the step since.${
+              request.action === "explain_with_video"
+                ? " The comment can carry the clip itself: pass videoUrl with a public YouTube or Vimeo link you are confident exists and is right for this class, or leave it out and say what to look for."
+                : ""
+            }`,
           },
         }
       : via === "board"

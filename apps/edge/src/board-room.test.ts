@@ -537,7 +537,7 @@ describe("BoardRoom initialization", () => {
         .one(),
     }));
     expect(state).toEqual({
-      migrations: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+      migrations: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
       boards: 1,
       owners: 1,
       classroomMode: 0,
@@ -7901,6 +7901,145 @@ describe("object comments", () => {
       }),
     );
     expect(invalidTransition.status).toBe(400);
+  });
+
+  it("carries a stored picture or a public video on a comment", async () => {
+    const stub = env.BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const enableImages = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ features: { images: true }, expectedAclVersion: 1 }),
+      }),
+    );
+    expect(enableImages.status).toBe(200);
+    await enableImages.arrayBuffer();
+
+    const owner = await connect(stub, actorId);
+    const itemId = "018f0000-0000-7000-8000-000000000c60";
+    owner.socket.send(
+      JSON.stringify(
+        createCommit(
+          "018f0000-0000-7000-8000-000000000c61",
+          "018f0000-0000-7000-8000-000000000c62",
+          itemId,
+        ),
+      ),
+    );
+    await owner.next((frame) => frame.t === "server.action" && frame.seq === 1);
+
+    const uploaded = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/assets`, {
+        method: "POST",
+        headers: { "content-type": "image/gif" },
+        body: Uint8Array.from(
+          atob("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAkQBADs="),
+          (character) => character.charCodeAt(0),
+        ),
+      }),
+    );
+    expect(uploaded.status, await uploaded.clone().text()).toBe(201);
+    const { assetId } = (await uploaded.json()) as { assetId: string };
+    const image = {
+      kind: "image",
+      assetId,
+      mimeType: "image/gif",
+      intrinsicWidth: 1,
+      intrinsicHeight: 1,
+      alt: "  A single grey pixel  ",
+    };
+
+    const withImage = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/comments`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ itemId, body: "Compare with this.", media: image }),
+      }),
+    );
+    expect(withImage.status, await withImage.clone().text()).toBe(201);
+    expect(await withImage.json()).toMatchObject({
+      media: { ...image, alt: "A single grey pixel" },
+    });
+
+    const withVideo = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/comments`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          itemId,
+          body: "This clip covers the same step.",
+          media: { kind: "video", url: "https://youtu.be/dQw4w9WgXcQ" },
+        }),
+      }),
+    );
+    expect(withVideo.status, await withVideo.clone().text()).toBe(201);
+    expect(await withVideo.json()).toMatchObject({
+      media: { kind: "video", provider: "youtube", url: "https://youtu.be/dQw4w9WgXcQ" },
+    });
+
+    const listed = (await (
+      await stub.fetch(internalRequest(`/api/v1/boards/${boardId}/comments`))
+    ).json()) as { comments: Record<string, unknown>[] };
+    expect(listed.comments).toHaveLength(2);
+    expect(listed.comments[0]?.media).toMatchObject({ kind: "image", assetId });
+    expect(listed.comments[1]?.media).toMatchObject({ kind: "video" });
+
+    // A picture must be one this board already holds, at the size the board stored.
+    const unknownAsset = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/comments`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          itemId,
+          body: "Elsewhere.",
+          // Canonical, but never stored on this board.
+          media: { ...image, assetId: `asset_${"M".repeat(42)}Q` },
+        }),
+      }),
+    );
+    expect(unknownAsset.status).toBe(404);
+
+    const wrongSize = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/comments`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ itemId, body: "Resized.", media: { ...image, intrinsicWidth: 2 } }),
+      }),
+    );
+    expect(wrongSize.status).toBe(404);
+
+    const notAVideo = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/comments`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          itemId,
+          body: "Watch.",
+          media: { kind: "video", url: "https://example.com/clip.mp4" },
+        }),
+      }),
+    );
+    expect(notAVideo.status).toBe(400);
+
+    const disableImages = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ features: { images: false }, expectedAclVersion: 2 }),
+      }),
+    );
+    expect(disableImages.status, await disableImages.clone().text()).toBe(200);
+    await disableImages.arrayBuffer();
+
+    const afterDisable = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/comments`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ itemId, body: "Still?", media: image }),
+      }),
+    );
+    expect(afterDisable.status).toBe(403);
   });
 
   it("stores writer metadata on assisted comments and keeps it through resolve", async () => {

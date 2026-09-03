@@ -36,7 +36,8 @@ The result is collaborative rather than conversational-only:
   identify a possible reasoning error, and comment on it where the class can act.
 - **Video support:** participants can place public YouTube and Vimeo material on
   the shared canvas, then discuss it beside notes, drawings, formulas, comments,
-  and AI-generated structures.
+  and AI-generated structures. A comment can carry a picture or a video of its
+  own, so feedback can show the worked example rather than describe it.
 - **Live learning loops:** the agent can watch the board's saved work for up to
   15 minutes, answer a participant's request on the step they asked about, and
   read an aggregate class vote without ever seeing who voted for what.
@@ -76,8 +77,8 @@ collaboration product with:
   generic writes;
 - permission-aware, acknowledged, realtime, atomic, and undoable writers that
   place one object where the call asks;
-- shared YouTube/Vimeo cards, MathJax learning content, comments, grouping,
-  sections, templates, and live participant roles;
+- shared YouTube/Vimeo cards, MathJax learning content, comments that carry a
+  picture or a video, grouping, sections, templates, and live participant roles;
 - contract, unit, edge, and Chromium coverage for the permission and WebMCP
   boundaries.
 
@@ -220,8 +221,11 @@ bypass read-only access, and each refuses an object kind the Space owner has swi
 `insert_image` never fetches an external URL: it accepts inline PNG, JPEG, WebP, or GIF data
 and reuses the private board-asset pipeline that a participant's own upload goes through.
 `insert_comment` attaches to a watched step by `watchToken` and `stepAlias`, to whatever saved
-object covers the location it names, or to the one object selected in that browser. Everything
-the agent writes—notes, pictures, embeds, and comments—retains `assistedBy` metadata for MCP
+object covers the location it names, or to the one object selected in that browser, and may
+carry one picture or one public video with its text—the same material the canvas takes,
+through the same asset pipeline and the same link check, so a reply can show the diagram or
+the clip it is talking about right beside the work. Everything the
+agent writes—notes, pictures, embeds, and comments—retains `assistedBy` metadata for MCP
 context and auditing, is attributed to the responsible participant's ordinary author initials,
 and carries a small AI mark so tool and human are always distinguishable. Every generated
 contribution is realtime and undoable in one step.

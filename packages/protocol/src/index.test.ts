@@ -5,11 +5,14 @@ import {
   ACTIVE_TOOLS,
   assertCanonicalAssetId,
   BOARD_FEATURE_KEYS,
+  CommentMediaError,
   canonicalRequestHashInput,
   canonicalStringify,
   DEFAULT_BOARD_FEATURES,
+  MAX_IMAGE_ALT_CODE_POINTS,
   normalizeBoardAccessPolicy,
   normalizeBoardFeatures,
+  normalizeCommentMedia,
   ProtocolValidationError,
   parseClientFrame,
   TEXT_FONT_FAMILIES,
@@ -1369,5 +1372,89 @@ describe("canonical and Unicode handling", () => {
     expect(validatePlainText("hello 🌍")).toBe("hello 🌍");
     expect(() => validatePlainText("bad\u0000text")).toThrow(/control/);
     expect(() => validatePlainText("\ud800")).toThrow(/surrogate/);
+  });
+});
+
+describe("comment media", () => {
+  const assetId = `asset_${"A".repeat(43)}`;
+
+  it("canonicalizes a picture already stored on the board", () => {
+    expect(
+      normalizeCommentMedia({
+        kind: "image",
+        assetId,
+        mimeType: "image/png",
+        intrinsicWidth: 800,
+        intrinsicHeight: 600,
+        alt: "  A parabola opening upward  ",
+      }),
+    ).toEqual({
+      kind: "image",
+      assetId,
+      mimeType: "image/png",
+      intrinsicWidth: 800,
+      intrinsicHeight: 600,
+      alt: "A parabola opening upward",
+    });
+    // An empty description is the same as none at all.
+    expect(
+      normalizeCommentMedia({
+        kind: "image",
+        assetId,
+        mimeType: "image/png",
+        intrinsicWidth: 800,
+        intrinsicHeight: 600,
+        alt: "   ",
+      }),
+    ).not.toHaveProperty("alt");
+  });
+
+  it("derives a video's provider from its link and normalizes the link", () => {
+    expect(normalizeCommentMedia({ kind: "video", url: "https://youtu.be/dQw4w9WgXcQ" })).toEqual({
+      kind: "video",
+      provider: "youtube",
+      url: "https://youtu.be/dQw4w9WgXcQ",
+    });
+    expect(
+      normalizeCommentMedia({
+        kind: "video",
+        provider: "vimeo",
+        url: "https://vimeo.com/123456?h=abcdef",
+      }),
+    ).toMatchObject({ provider: "vimeo" });
+  });
+
+  it("refuses anything the board would not store or play", () => {
+    const cases: unknown[] = [
+      null,
+      "https://youtu.be/dQw4w9WgXcQ",
+      { kind: "sound", url: "https://example.com/a.mp3" },
+      { kind: "video", url: "https://example.com/clip.mp4" },
+      { kind: "video", url: "http://youtu.be/dQw4w9WgXcQ" },
+      { kind: "video", provider: "youtube", url: "https://vimeo.com/123456" },
+      { kind: "video", url: "https://youtu.be/dQw4w9WgXcQ", title: "extra" },
+      {
+        kind: "image",
+        assetId: "asset_short",
+        mimeType: "image/png",
+        intrinsicWidth: 8,
+        intrinsicHeight: 6,
+      },
+      { kind: "image", assetId, mimeType: "image/svg+xml", intrinsicWidth: 8, intrinsicHeight: 6 },
+      { kind: "image", assetId, mimeType: "image/png", intrinsicWidth: 0, intrinsicHeight: 6 },
+      { kind: "image", assetId, mimeType: "image/png", intrinsicWidth: 8.5, intrinsicHeight: 6 },
+      { kind: "image", assetId, mimeType: "image/png", intrinsicHeight: 6 },
+      {
+        kind: "image",
+        assetId,
+        mimeType: "image/png",
+        intrinsicWidth: 8,
+        intrinsicHeight: 6,
+        alt: "a".repeat(MAX_IMAGE_ALT_CODE_POINTS + 1),
+      },
+    ];
+    for (const value of cases) {
+      expect(() => normalizeCommentMedia(value)).toThrow(CommentMediaError);
+    }
   });
 });

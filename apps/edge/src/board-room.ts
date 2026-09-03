@@ -12,11 +12,16 @@ import {
   BOARD_FEATURE_KEYS,
   type BoardFeatures,
   type ClientFrame,
+  type CommentImageMedia,
+  type CommentMedia,
+  CommentMediaError,
   canonicalRequestHashInput,
   DEFAULT_BOARD_FEATURES,
   MAX_BATCH_OPERATIONS,
+  MAX_COMMENT_MEDIA_JSON_LENGTH,
   MAX_SNAPSHOT_BYTES,
   normalizeBoardFeatures,
+  normalizeCommentMedia,
   type BoardItem as ProtocolBoardItem,
   ProtocolValidationError,
   parseClientFrame,
@@ -211,6 +216,8 @@ type CommentRow = {
   assisted_by: string | null;
   assistance_tool: string | null;
   assistance_action: string | null;
+  media_kind: string | null;
+  media_json: string | null;
   author_name: string;
   resolver_name: string | null;
 };
@@ -227,6 +234,8 @@ type BoardComment = {
   resolvedAt?: number;
   assistedBy?: "ai";
   assistance?: Assistance;
+  /** The one picture or video this comment carries beside its text, when it carries one. */
+  media?: CommentMedia;
 };
 
 type ActionRow = {
@@ -601,10 +610,15 @@ export class BoardRoom extends DurableObject<Env> {
     capturedBoard: BoardRow,
   ): Promise<Response> {
     const body = await readJsonBody(request, 16 * 1_024);
-    assertExactKeys(body, ["itemId", "body", "assistedBy", "assistance"], ["itemId", "body"]);
+    assertExactKeys(
+      body,
+      ["itemId", "body", "assistedBy", "assistance", "media"],
+      ["itemId", "body"],
+    );
     const itemId = requireOpaqueId(body.itemId, "comment target");
     const text = requireCommentBody(body.body);
     const assistance = requireCommentAssistance(body);
+    const media = requireCommentMedia(body);
     const commentId = randomOpaqueId("c_");
     const now = Date.now();
     let comment!: BoardComment;
@@ -618,6 +632,9 @@ export class BoardRoom extends DurableObject<Env> {
       if (target === undefined || target.deleted) {
         throw new HttpError(404, "NOT_FOUND", "The comment target no longer exists.");
       }
+      // A picture rides on the same private board asset a participant's own upload produces,
+      // so the comment may only name one this board already holds.
+      if (media?.kind === "image") this.requireCommentImageMedia(board, media);
       const count = this.#sql
         .exec<{ count: number }>("SELECT COUNT(*) AS count FROM comments")
         .one().count;
@@ -632,8 +649,8 @@ export class BoardRoom extends DurableObject<Env> {
         `INSERT INTO comments(
           comment_id, target_item_id, body, state, created_by,
           created_at_ms, resolved_by, resolved_at_ms, updated_at_ms,
-          assisted_by, assistance_tool, assistance_action
-        ) VALUES (?, ?, ?, 'open', ?, ?, NULL, NULL, ?, ?, ?, ?)`,
+          assisted_by, assistance_tool, assistance_action, media_kind, media_json
+        ) VALUES (?, ?, ?, 'open', ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)`,
         commentId,
         itemId,
         text,
@@ -643,6 +660,8 @@ export class BoardRoom extends DurableObject<Env> {
         assistance === null ? null : "ai",
         assistance?.tool ?? null,
         assistance?.action ?? null,
+        media?.kind ?? null,
+        media === null ? null : JSON.stringify(media),
       );
       comment = this.readComment(commentId) as BoardComment;
     });
@@ -710,7 +729,7 @@ export class BoardRoom extends DurableObject<Env> {
       .exec<CommentRow>(
         `SELECT c.comment_id, c.target_item_id, c.body, c.state, c.created_by,
           c.created_at_ms, c.resolved_by, c.resolved_at_ms, c.updated_at_ms,
-          c.assisted_by, c.assistance_tool, c.assistance_action,
+          c.assisted_by, c.assistance_tool, c.assistance_action, c.media_kind, c.media_json,
           author.display_name AS author_name, resolver.display_name AS resolver_name
          FROM comments c
          LEFT JOIN members author ON author.actor_id = c.created_by
@@ -5546,22 +5565,48 @@ export class BoardRoom extends DurableObject<Env> {
     board: BoardRow,
     item: Extract<ProtocolBoardItem, { kind: "image" }>,
   ): void {
-    const assetId = item.geometry.assetId;
-    const row = this.readBoardAsset(assetId);
-    if (
-      row === null ||
-      row.state !== "committed" ||
-      row.asset_id !== assetId ||
-      row.sha256 !== assetId.slice("asset_".length) ||
-      row.r2_key !== `boards/${board.public_id}/assets/${assetId}` ||
-      row.mime_type !== item.geometry.mimeType ||
-      row.intrinsic_width !== item.geometry.intrinsicWidth ||
-      row.intrinsic_height !== item.geometry.intrinsicHeight
-    ) {
+    if (!this.holdsCommittedImageAsset(board, item.geometry)) {
       throw new BoardDomainError(
         "INVALID_FRAME",
         "The image asset is not available on this board.",
       );
+    }
+  }
+
+  /**
+   * Whether this board holds exactly the committed asset a caller names: the same bytes, in
+   * this board's own bucket, at the dimensions and type it claims. Shared by the image cards
+   * the canvas takes and the pictures a comment carries.
+   */
+  private holdsCommittedImageAsset(
+    board: BoardRow,
+    asset: {
+      assetId: string;
+      mimeType: string;
+      intrinsicWidth: number;
+      intrinsicHeight: number;
+    },
+  ): boolean {
+    const row = this.readBoardAsset(asset.assetId);
+    return (
+      row !== null &&
+      row.state === "committed" &&
+      row.asset_id === asset.assetId &&
+      row.sha256 === asset.assetId.slice("asset_".length) &&
+      row.r2_key === `boards/${board.public_id}/assets/${asset.assetId}` &&
+      row.mime_type === asset.mimeType &&
+      row.intrinsic_width === asset.intrinsicWidth &&
+      row.intrinsic_height === asset.intrinsicHeight
+    );
+  }
+
+  /** Refuses a comment picture this Space has switched off or never stored. */
+  private requireCommentImageMedia(board: BoardRow, media: CommentImageMedia): void {
+    if (!featuresForBoard(board).images) {
+      throw new BoardDomainError("FORBIDDEN", "Images are disabled for this Space.");
+    }
+    if (!this.holdsCommittedImageAsset(board, media)) {
+      throw new HttpError(404, "NOT_FOUND", "The comment image is not available on this board.");
     }
   }
 
@@ -6615,6 +6660,39 @@ function requireCommentAssistance(body: Record<string, unknown>): Assistance | n
   return { tool: assistance.tool, action: assistance.action as AssistAction };
 }
 
+/**
+ * Reads the optional picture or video a comment carries. The shared normalizer decides the
+ * shape; this adds the text rules the board applies to every participant-authored string and
+ * the stored bound the comment row is written under.
+ */
+function requireCommentMedia(body: Record<string, unknown>): CommentMedia | null {
+  if (!Object.hasOwn(body, "media")) return null;
+  if (body.media === null) {
+    throw new HttpError(400, "BAD_REQUEST", "media must be an object or left out.");
+  }
+  let media: CommentMedia;
+  try {
+    media = normalizeCommentMedia(body.media);
+  } catch (error) {
+    if (error instanceof CommentMediaError) throw new HttpError(400, "BAD_REQUEST", error.message);
+    throw error;
+  }
+  if (media.kind === "image" && media.alt !== undefined) {
+    validateUnicodeText(media.alt, "comment image description");
+    if (containsDisallowedControlCharacter(media.alt)) {
+      throw new HttpError(
+        400,
+        "BAD_REQUEST",
+        "The comment image description contains invalid characters.",
+      );
+    }
+  }
+  if (JSON.stringify(media).length > MAX_COMMENT_MEDIA_JSON_LENGTH) {
+    throw new HttpError(400, "BAD_REQUEST", "The comment media is too large to store.");
+  }
+  return media;
+}
+
 function commentFromRow(row: CommentRow): BoardComment {
   const resolved = row.state === "resolved";
   if (
@@ -6623,6 +6701,7 @@ function commentFromRow(row: CommentRow): BoardComment {
   ) {
     throw new HttpError(500, "INTERNAL_ERROR", "Stored comment data is invalid.");
   }
+  const media = commentMediaFromRow(row);
   const assisted = row.assisted_by !== null;
   if (
     (assisted && (row.assisted_by !== "ai" || row.assistance_tool === null)) ||
@@ -6663,7 +6742,38 @@ function commentFromRow(row: CommentRow): BoardComment {
           },
         }
       : {}),
+    ...(media === null ? {} : { media }),
   };
+}
+
+/**
+ * Reads the stored picture or video back through the same normalizer that accepted it, so a
+ * row that no longer satisfies the contract is reported as corrupt rather than served.
+ */
+function commentMediaFromRow(row: CommentRow): CommentMedia | null {
+  if (row.media_kind === null && row.media_json === null) return null;
+  if (row.media_kind === null || row.media_json === null) {
+    throw new HttpError(500, "INTERNAL_ERROR", "Stored comment data is invalid.");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.media_json);
+  } catch {
+    throw new HttpError(500, "INTERNAL_ERROR", "Stored comment data is invalid.");
+  }
+  let media: CommentMedia;
+  try {
+    media = normalizeCommentMedia(parsed);
+  } catch (error) {
+    if (error instanceof CommentMediaError) {
+      throw new HttpError(500, "INTERNAL_ERROR", "Stored comment data is invalid.");
+    }
+    throw error;
+  }
+  if (media.kind !== row.media_kind) {
+    throw new HttpError(500, "INTERNAL_ERROR", "Stored comment data is invalid.");
+  }
+  return media;
 }
 
 function topologyItem(state: ItemEffect["before"]): BoardItem | undefined {

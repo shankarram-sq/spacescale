@@ -413,6 +413,20 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
         CHECK (assistance_action IS NULL OR length(assistance_action) <= 32);
     `,
   },
+  {
+    version: 15,
+    name: "comment_media",
+    sql: `
+      ALTER TABLE comments ADD COLUMN media_kind TEXT
+        CHECK (media_kind IS NULL OR media_kind IN ('image', 'video'));
+      ALTER TABLE comments ADD COLUMN media_json TEXT
+        CHECK (
+          (media_json IS NULL AND media_kind IS NULL) OR
+          (media_json IS NOT NULL AND media_kind IS NOT NULL AND
+           length(media_json) BETWEEN 2 AND 4096)
+        );
+    `,
+  },
 ] as const;
 
 export const ORGANISATION_SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [

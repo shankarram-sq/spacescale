@@ -1,11 +1,16 @@
 import {
   canonicalNumber,
   GeometryValidationError,
+  IMAGE_MIME_TYPES,
   type ImageGeometry,
+  type ImageMimeType,
   type ItemGeometry,
   inferAndNormalizeGeometry,
   isCanonicalImageAssetId,
   type LineGeometry,
+  MAX_IMAGE_ALT_CODE_POINTS,
+  MAX_IMAGE_INTRINSIC_DIMENSION,
+  MAX_IMAGE_INTRINSIC_PIXELS,
   MAX_TABLE_COLUMNS,
   MAX_TABLE_ROWS,
   normalizeCoordinate,
@@ -17,12 +22,14 @@ import {
   type Point,
   type PolygonGeometry,
   type ProtractorGeometry,
+  parseVideoEmbedReference,
   type RectangleGeometry,
   type StampGeometry,
   type StickyGeometry,
   type TableGeometry,
   type TextGeometry,
   type Transform,
+  type VideoEmbedReference,
   type ZoneGeometry,
 } from "@collab/geometry";
 
@@ -233,6 +240,189 @@ export type Assistance = {
   tool: string;
   action?: AssistAction;
 };
+
+/**
+ * The picture and video a comment can carry beside its text.
+ *
+ * A comment holds at most one of them, and it is the same material the canvas already takes:
+ * an image is a committed board asset from the private per-board bucket, never an external
+ * URL, and a video is one of the public YouTube or Vimeo links every embed surface accepts.
+ * Shared so the composer, the WebMCP write tool, the edge's validation and the stored row all
+ * read one definition.
+ */
+export const COMMENT_MEDIA_KINDS = ["image", "video"] as const;
+export type CommentMediaKind = (typeof COMMENT_MEDIA_KINDS)[number];
+
+/** Longest video link a comment accepts, matching the board's own embed field. */
+export const MAX_COMMENT_MEDIA_URL_LENGTH = 2_048;
+/**
+ * Longest JSON encoding of one comment's media. Every field above is separately bounded, so
+ * this only has to stop a pathological encoding from reaching the stored column.
+ */
+export const MAX_COMMENT_MEDIA_JSON_LENGTH = 4_096;
+
+export interface CommentImageMedia {
+  kind: "image";
+  assetId: string;
+  mimeType: ImageMimeType;
+  intrinsicWidth: number;
+  intrinsicHeight: number;
+  /** What the picture shows, for participants who cannot see it. */
+  alt?: string;
+}
+
+export interface CommentVideoMedia {
+  kind: "video";
+  provider: VideoEmbedReference["provider"];
+  url: string;
+}
+
+export type CommentMedia = CommentImageMedia | CommentVideoMedia;
+
+/** Why a comment's media was refused, carrying the field that failed for the caller's message. */
+export class CommentMediaError extends Error {
+  readonly field: string;
+
+  constructor(message: string, field: string) {
+    super(message);
+    this.name = "CommentMediaError";
+    this.field = field;
+  }
+}
+
+/**
+ * Validates one comment attachment and returns it in canonical form: an image's stored asset
+ * identity, or a video's provider and normalized source URL. Throws CommentMediaError with the
+ * offending field. The same function checks a request body, a server response, and a stored row,
+ * so none of the three can drift from the others.
+ */
+export function normalizeCommentMedia(value: unknown, path = "media"): CommentMedia {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new CommentMediaError("Comment media must be an object.", path);
+  }
+  const media = value as Record<string, unknown>;
+  if (media.kind === "image") return normalizeCommentImageMedia(media, path);
+  if (media.kind === "video") return normalizeCommentVideoMedia(media, path);
+  throw new CommentMediaError(
+    `Comment media kind must be one of ${COMMENT_MEDIA_KINDS.join(", ")}.`,
+    `${path}.kind`,
+  );
+}
+
+function normalizeCommentImageMedia(
+  media: Record<string, unknown>,
+  path: string,
+): CommentImageMedia {
+  expectCommentMediaKeys(
+    media,
+    ["kind", "assetId", "mimeType", "intrinsicWidth", "intrinsicHeight", "alt"],
+    ["kind", "assetId", "mimeType", "intrinsicWidth", "intrinsicHeight"],
+    path,
+  );
+  if (!isCanonicalImageAssetId(media.assetId)) {
+    throw new CommentMediaError(
+      "The image must be one already uploaded to this Space.",
+      `${path}.assetId`,
+    );
+  }
+  if (
+    typeof media.mimeType !== "string" ||
+    !(IMAGE_MIME_TYPES as readonly string[]).includes(media.mimeType)
+  ) {
+    throw new CommentMediaError(
+      `The image type must be one of ${IMAGE_MIME_TYPES.join(", ")}.`,
+      `${path}.mimeType`,
+    );
+  }
+  const intrinsicWidth = commentMediaDimension(media.intrinsicWidth, `${path}.intrinsicWidth`);
+  const intrinsicHeight = commentMediaDimension(media.intrinsicHeight, `${path}.intrinsicHeight`);
+  if (intrinsicWidth * intrinsicHeight > MAX_IMAGE_INTRINSIC_PIXELS) {
+    throw new CommentMediaError("That image has too many pixels.", `${path}.intrinsicWidth`);
+  }
+  const alt = commentMediaAlt(media.alt, `${path}.alt`);
+  return {
+    kind: "image",
+    assetId: media.assetId,
+    mimeType: media.mimeType as ImageMimeType,
+    intrinsicWidth,
+    intrinsicHeight,
+    ...(alt === undefined ? {} : { alt }),
+  };
+}
+
+function normalizeCommentVideoMedia(
+  media: Record<string, unknown>,
+  path: string,
+): CommentVideoMedia {
+  expectCommentMediaKeys(media, ["kind", "provider", "url"], ["kind", "url"], path);
+  if (typeof media.url !== "string" || media.url.length > MAX_COMMENT_MEDIA_URL_LENGTH) {
+    throw new CommentMediaError(
+      `The video link must be text of at most ${MAX_COMMENT_MEDIA_URL_LENGTH} characters.`,
+      `${path}.url`,
+    );
+  }
+  const reference = parseVideoEmbedReference(media.url);
+  if (reference === null) {
+    throw new CommentMediaError(
+      "The video link must be a complete HTTPS YouTube or Vimeo link.",
+      `${path}.url`,
+    );
+  }
+  // A caller may echo the provider back; it is derived, so it may agree but never decide.
+  if (media.provider !== undefined && media.provider !== reference.provider) {
+    throw new CommentMediaError("The video provider does not match its link.", `${path}.provider`);
+  }
+  return { kind: "video", provider: reference.provider, url: reference.sourceUrl };
+}
+
+function expectCommentMediaKeys(
+  media: Record<string, unknown>,
+  allowed: readonly string[],
+  required: readonly string[],
+  path: string,
+): void {
+  for (const key of Object.keys(media)) {
+    if (!allowed.includes(key)) {
+      throw new CommentMediaError(`Unknown comment media field ${key}.`, `${path}.${key}`);
+    }
+  }
+  for (const key of required) {
+    if (media[key] === undefined) {
+      throw new CommentMediaError(`Comment media is missing ${key}.`, `${path}.${key}`);
+    }
+  }
+}
+
+function commentMediaDimension(value: unknown, path: string): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < 1 ||
+    value > MAX_IMAGE_INTRINSIC_DIMENSION
+  ) {
+    throw new CommentMediaError(
+      `The image dimension must be a whole number of pixels up to ${MAX_IMAGE_INTRINSIC_DIMENSION}.`,
+      path,
+    );
+  }
+  return value;
+}
+
+function commentMediaAlt(value: unknown, path: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    throw new CommentMediaError("The image description must be text.", path);
+  }
+  const alt = value.trim();
+  if (alt.length === 0) return undefined;
+  if ([...alt].length > MAX_IMAGE_ALT_CODE_POINTS) {
+    throw new CommentMediaError(
+      `The image description must be at most ${MAX_IMAGE_ALT_CODE_POINTS} characters.`,
+      path,
+    );
+  }
+  return alt;
+}
 
 export interface BoardAccessPolicy {
   accessMode: AccessMode;

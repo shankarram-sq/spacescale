@@ -3,8 +3,11 @@ import {
   type AssistAction,
   type Assistance,
   type BoardFeatures,
+  type CommentMedia,
+  CommentMediaError,
   MAX_BATCH_OPERATIONS,
   normalizeBoardItem,
+  normalizeCommentMedia,
 } from "@collab/protocol";
 
 import type {
@@ -327,6 +330,7 @@ export class ApiClient {
     itemId: string,
     body: string,
     assistance?: Assistance,
+    media?: CommentMedia,
   ): Promise<BoardComment> {
     const result = await this.request<unknown>(
       `/api/v1/boards/${encodeURIComponent(boardId)}/comments`,
@@ -336,6 +340,7 @@ export class ApiClient {
           itemId,
           body,
           ...(assistance === undefined ? {} : { assistedBy: "ai", assistance }),
+          ...(media === undefined ? {} : { media }),
         }),
       },
     );
@@ -783,6 +788,7 @@ export function parseBoardComment(value: unknown): BoardComment {
     throw invalidCommentResponse(value);
   }
   const assistance = parseCommentAssistance(value);
+  const media = parseCommentMedia(value);
   return {
     id: value.id,
     itemId: value.itemId,
@@ -801,7 +807,19 @@ export function parseBoardComment(value: unknown): BoardComment {
         }
       : {}),
     ...(assistance === null ? {} : { assistedBy: "ai" as const, assistance }),
+    ...(media === null ? {} : { media }),
   };
+}
+
+/** Reads a comment's picture or video through the contract the edge validated it against. */
+function parseCommentMedia(value: Record<string, unknown>): CommentMedia | null {
+  if (value.media === undefined) return null;
+  try {
+    return normalizeCommentMedia(value.media);
+  } catch (error) {
+    if (error instanceof CommentMediaError) throw invalidCommentResponse(value);
+    throw error;
+  }
 }
 
 /** Validates the optional writer metadata pair; both fields must be present together. */
