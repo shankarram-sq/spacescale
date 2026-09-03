@@ -33,7 +33,7 @@ import {
 import { buildClearVoteDeletes, isVoteTable, summarizeVotes } from "../activities/voting";
 import { VIDEO_EMBED_HEIGHT, VIDEO_EMBED_WIDTH, videoEmbedFromText } from "../board/links";
 import { mathExportOptions } from "../board/math-export";
-import { BoardModel, SequenceError } from "../board/model";
+import { BoardModel, SequenceError, translateMatrix } from "../board/model";
 import { BoardRenderer, STICKY_PADDING } from "../board/renderer";
 import { randomBoardName } from "../board-name";
 import {
@@ -112,7 +112,7 @@ import type {
 } from "../types";
 import { canRoleComment, canRoleDraw, createId, PROTOCOL_VERSION } from "../types";
 import { ActivityTemplateWebMcp } from "../webmcp/activity-templates";
-import { BoardWriteWebMcp } from "../webmcp/board-writes";
+import { BoardWriteWebMcp, type StickyMove } from "../webmcp/board-writes";
 import { ClassDecisionWebMcp } from "../webmcp/class-decision";
 import { CollectiveInquiryWebMcp } from "../webmcp/collective-inquiry";
 import { EducationPartnerWebMcp, type EducationVisualSource } from "../webmcp/education-partner";
@@ -1591,6 +1591,12 @@ export class BoardApp {
         if (!inquiry) throw new Error("The board watch is not available in this browser.");
         return inquiry.watchedStepCommentTarget(watchToken, stepAlias, action);
       },
+      resolveWatchedStickies: (watchToken, stepAliases) => {
+        const inquiry = this.webMcp;
+        if (!inquiry) throw new Error("The board watch is not available in this browser.");
+        return inquiry.watchedStepItems(watchToken, stepAliases);
+      },
+      moveItems: (moves) => this.moveItemsFromWebMcp(moves),
       commit: (operation) => this.commitAndWait(operation),
       createComment: (itemId, body, assistance, media) =>
         this.commentFromWebMcp(itemId, body, assistance, media),
@@ -3695,6 +3701,51 @@ export class BoardApp {
     );
     if (!asset) throw new Error("The image could not be stored.");
     return asset;
+  }
+
+  /**
+   * Applies a WebMCP rearrangement. Each note carries its own delta, and the board's own rules
+   * then decide what travels with it: a note leaving or entering a Section changes membership,
+   * and a grouped note brings its group, so the batch can be larger than the notes named. It
+   * goes in as one batch, so a class puts the board back with a single undo.
+   */
+  private async moveItemsFromWebMcp(moves: readonly StickyMove[]): Promise<void> {
+    if (moves.length === 0) return;
+    const limit = Math.max(1, Math.min(100, Math.floor(this.bootstrap.limits.maxBatchItems)));
+    const items = savedAuthoritativeItems(
+      moves.map((move) => move.item.id),
+      this.model.items,
+      this.model.authoritativeItems,
+    );
+    if (!items) throw new Error("Wait for every note to finish saving before moving it.");
+    if (items.some((item) => !this.canModifyItem(item))) {
+      throw new Error("This arrangement includes a note this browser cannot modify.");
+    }
+    const deltaById = new Map(moves.map((move) => [move.item.id, move.delta]));
+    const directUpdates = items.map((item) => {
+      const delta = deltaById.get(item.id) ?? { x: 0, y: 0 };
+      return {
+        kind: "item.update" as const,
+        itemId: item.id,
+        expectedVersion: item.version,
+        patch: { transform: translateMatrix(item.transform, delta.x, delta.y) },
+      };
+    });
+    let operations: BatchItemOperation[];
+    try {
+      operations = buildTranslationMembershipOperations(
+        directUpdates,
+        this.model.items.values(),
+        this.bootstrap.board.features.grouping,
+        (item) => this.canModifyItem(item),
+        limit,
+      );
+    } catch (error) {
+      if (!(error instanceof GroupingError)) throw error;
+      throw new Error(error.message);
+    }
+    const accepted = await this.commitAndWait({ kind: "items.batch", operations });
+    if (!accepted) throw new Error("The move could not be queued for saving.");
   }
 
   /** The topmost saved object covering a board point, or undefined when none is saved there. */

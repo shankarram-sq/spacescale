@@ -996,6 +996,26 @@ describe("board-side assist requests", () => {
     expect(() => feed.commentTarget(token, "step_2")).toThrow("no longer on the board");
   });
 
+  it("resolves aliases to items for a move without spending the comment slot", async () => {
+    const { feed, items } = watching();
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    const token = String(started.watchToken);
+
+    const resolved = feed.watchedItems(token, ["step_1", "step_2"]);
+    expect([...resolved.keys()]).toEqual(["step_1", "step_2"]);
+    expect(resolved.get("step_1")).toMatchObject({ id: STICKY_ID });
+    expect(resolved.get("step_2")).toMatchObject({ id: TEXT_ID });
+    // Resolving reserves nothing, so a comment on the same step is still free to be written.
+    feed.commentTarget(token, "step_1").release(false);
+
+    expect(() => feed.watchedItems("missing", ["step_1"])).toThrow("missing or expired");
+    expect(() => feed.watchedItems(token, ["step_9"])).toThrow("step_9 is not part of this watch");
+
+    items.delete(TEXT_ID);
+    feed.recordAuthoritativeAction(serverAction(9, canvasText()), new Set([TEXT_ID]));
+    expect(() => feed.watchedItems(token, ["step_2"])).toThrow("step_2 is no longer on the board");
+  });
+
   it("enforces the per-watch comment cap through release", async () => {
     const { feed } = watching();
     const started = await feed.execute({ action: "start" }, new AbortController().signal);

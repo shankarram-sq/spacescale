@@ -382,6 +382,36 @@ export class ProblemStepWatchFeed {
     };
   }
 
+  /**
+   * Resolves step aliases to the saved objects they name, for a write that rearranges the board
+   * rather than replying to it. Aliases stay inside the page, so this is how a move names what
+   * it moves without the host ever learning an item id. It reserves nothing: unlike a comment,
+   * a move spends no per-watch budget, and resolving one changes no watch state.
+   */
+  watchedItems(token: string, aliases: readonly string[]): Map<string, BoardItem> {
+    if (this.destroyed) throw new Error("The problem-step watch is no longer available.");
+    this.expireSessions();
+    const session = this.sessions.get(token);
+    if (!session) {
+      throw new Error(
+        "This board watch is missing or expired. Start the watch again and use its fresh aliases.",
+      );
+    }
+    const itemIdByAlias = new Map<string, string>();
+    for (const [itemId, alias] of session.aliases) itemIdByAlias.set(alias, itemId);
+    const resolved = new Map<string, BoardItem>();
+    for (const alias of aliases) {
+      const itemId = itemIdByAlias.get(alias);
+      if (itemId === undefined) throw new Error(`${alias} is not part of this watch.`);
+      const item = session.steps.has(itemId)
+        ? this.options.getAuthoritativeItem(itemId)
+        : undefined;
+      if (!item) throw new Error(`${alias} is no longer on the board.`);
+      resolved.set(alias, item);
+    }
+    return resolved;
+  }
+
   execute(
     input: unknown,
     signal: AbortSignal,
