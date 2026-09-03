@@ -1230,8 +1230,11 @@ function replyPlan(
   permissions: { canComment: boolean },
 ): Record<string, unknown> {
   const guidance = ASSIST_GUIDANCE[request.action];
-  const via: ReplyChannel = permissions.canComment ? "comment" : "conversation";
-  const firstAlias = request.steps[0]?.alias ?? "step_1";
+  // A step can be deleted between the request and the host's next wait. Commenting on one the
+  // board no longer holds is refused at the target, so the plan aims at the first step that
+  // survived, and only gives up when none did.
+  const target = request.steps.find((step) => step.deleted !== true);
+  const via: ReplyChannel = permissions.canComment && target ? "comment" : "conversation";
   return {
     instruction: guidance.instruction,
     via,
@@ -1241,7 +1244,7 @@ function replyPlan(
             tool: "insert_comment",
             input: {
               watchToken,
-              stepAlias: firstAlias,
+              stepAlias: target?.alias ?? "step_1",
               action: request.action,
               body: COMMENT_BODY_PLACEHOLDER,
               // The participant asked for a video, so the comment offers to carry one.
@@ -1257,7 +1260,9 @@ function replyPlan(
           },
         }
       : {
-          note: "This browser cannot post comments, so answer in the conversation.",
+          note: permissions.canComment
+            ? "Every step this request named has been deleted, so there is nothing left to comment on. Answer in the conversation."
+            : "This browser cannot post comments, so answer in the conversation.",
         }),
   };
 }
