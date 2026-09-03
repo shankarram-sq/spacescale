@@ -1924,7 +1924,7 @@ export class ToolController {
       gesture.current = adjustedMovePoint;
     }
     void this.finishGesture(gesture);
-    if (tappedItem?.kind === "sticky") this.handleStickyTap(tappedItem, pointFromItem(tappedItem));
+    if (isTapEditable(tappedItem)) this.handleEditableTap(tappedItem, pointFromItem(tappedItem));
     else this.lastStickyTap = null;
     if (tappedItem?.kind === "table") this.handleTableTap(tappedItem, tapPoint);
     else this.lastTableTap = null;
@@ -2029,7 +2029,7 @@ export class ToolController {
     if ((event.key === "Enter" || event.key === "F2") && this.selected.size === 1) {
       const [selectedId] = this.selected;
       const item = selectedId === undefined ? undefined : this.options.model.getItem(selectedId);
-      if (item?.kind === "sticky" && this.options.canDraw()) {
+      if (isTapEditable(item) && this.options.canDraw()) {
         event.preventDefault();
         this.lastStickyTap = null;
         this.options.editText(pointFromItem(item), item);
@@ -2219,7 +2219,7 @@ export class ToolController {
             point,
             selectionHitPadding(event.pointerType, this.options.renderer.viewport.zoom),
           );
-    if (hit?.kind !== "sticky") this.lastStickyTap = null;
+    if (!isTapEditable(hit)) this.lastStickyTap = null;
     if (hit?.kind !== "table") this.lastTableTap = null;
     if (hit?.kind !== "zone") this.lastZoneTap = null;
     if (hit) {
@@ -2744,7 +2744,8 @@ export class ToolController {
     this.options.renderer.setSelection(this.selected);
   }
 
-  private handleStickyTap(item: Extract<BoardItem, { kind: "sticky" }>, point: Point): void {
+  /** A second tap on the same note or text within a beat opens it for editing. */
+  private handleEditableTap(item: TapEditableItem, point: Point): void {
     const now = performance.now();
     if (this.lastStickyTap?.itemId === item.id && now - this.lastStickyTap.at <= 450) {
       this.lastStickyTap = null;
@@ -3201,7 +3202,17 @@ export function buildShapeCreateOperation(
   };
 }
 
-function pointFromItem(item: Extract<BoardItem, { kind: "sticky" }>): Point {
+/** Objects a double tap with the select tool opens for editing: notes and plain text. */
+type TapEditableItem = Extract<BoardItem, { kind: "sticky" | "text" }>;
+
+function isTapEditable(item: BoardItem | undefined): item is TapEditableItem {
+  if (!item) return false;
+  if (item.kind === "sticky") return true;
+  // A video card is a text object carrying an embed; its text is not for editing in place.
+  return item.kind === "text" && item.geometry.embed !== "video";
+}
+
+function pointFromItem(item: TapEditableItem): Point {
   return [item.geometry.x, item.geometry.y];
 }
 
