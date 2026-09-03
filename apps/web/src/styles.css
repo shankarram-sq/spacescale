@@ -2905,7 +2905,9 @@ button:disabled {
 .landing {
   position: relative;
   width: 100%;
-  min-height: 100dvh;
+  /* Bounded by #app, which is overflow:hidden, so the landing's own overflow:auto
+     scrolls. A min-height here would instead grow the box past #app and clip it. */
+  height: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
   grid-template-rows: auto 1fr auto;
@@ -3114,8 +3116,10 @@ button:disabled {
     margin-top: 30px;
   }
 
+  /* Matches the two-column curve at 800px so the hero shrinks, never jumps,
+     as the viewport narrows across the breakpoint. */
   .landing-copy h1 {
-    font-size: clamp(48px, 14vw, 80px);
+    font-size: clamp(42px, 7vw, 64px);
   }
 
   .create-card {
@@ -3124,6 +3128,62 @@ button:disabled {
 
   .landing > footer {
     grid-column: 1;
+  }
+}
+
+/* Agent browsers (ChatGPT and similar) and small laptops sit between the desktop
+   two-column layout and the phone layout. At these widths the desktop grid pinned
+   the form to its 320px floor and squeezed the copy column, so give both columns
+   room by trimming the gutters rather than the content. */
+@media (min-width: 801px) and (max-width: 1024px) {
+  .landing {
+    gap: 28px clamp(28px, 4vw, 48px);
+    padding: 20px clamp(20px, 4vw, 44px) 26px;
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 0.78fr);
+  }
+
+  .landing-copy h1 {
+    font-size: clamp(46px, 7vw, 68px);
+  }
+
+  .landing-hero-mark {
+    width: 64px;
+    height: 64px;
+    margin-bottom: 16px;
+  }
+}
+
+/* Short viewports, which agent browsers usually are: compress the hero so the
+   board-name form and its button stay above the fold without scrolling. */
+@media (max-width: 1024px) and (max-height: 760px) {
+  .landing {
+    gap: 22px clamp(24px, 4vw, 44px);
+    padding: 16px clamp(20px, 4vw, 44px) 20px;
+  }
+
+  .landing-copy {
+    margin-top: 8px;
+  }
+
+  .landing-hero-mark {
+    width: 52px;
+    height: 52px;
+    margin-bottom: 12px;
+  }
+
+  .landing-copy h1 {
+    margin: 10px 0 14px;
+    font-size: clamp(34px, 5.4vw, 48px);
+  }
+
+  .landing-copy p {
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  .create-card {
+    gap: 14px;
+    padding: clamp(18px, 3vw, 26px);
   }
 }
 
@@ -3737,15 +3797,17 @@ button:disabled {
     display: none;
   }
 }
+/* The admin host is #app itself, which is overflow:hidden, so it has to do the
+   scrolling. A min-height here would grow it past #app and clip the page instead. */
 [data-organisation-admin="true"] {
   color: #172033;
   background: #f4f6fb;
-  min-height: 100vh;
+  overflow: auto;
 }
 .ssa-admin {
   box-sizing: border-box;
   width: min(1440px, 100%);
-  min-height: 100vh;
+  min-height: 100%;
   margin: 0 auto;
   padding: 32px;
   font:
