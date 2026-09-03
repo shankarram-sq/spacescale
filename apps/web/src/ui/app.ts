@@ -1035,7 +1035,7 @@ export class BoardApp {
     /** Finishes the edit the field belongs to, as that editor's own blur would. */
     finish: (save: boolean) => void;
   } | null = null;
-  private aiWatchCountdown: number | null = null;
+  private webMcpWatchCountdown: number | null = null;
   private aiAssistSelectionKey = "";
   private readonly pendingRenderedTextSectionUpdates = new Set<string>();
   private bootstrap: Bootstrap;
@@ -1160,8 +1160,6 @@ export class BoardApp {
   private readonly aiAssistMenu: HTMLElement;
   private readonly aiAssistScope: HTMLElement;
   private readonly aiAssistNote: HTMLInputElement;
-  private readonly aiWatchIndicator: HTMLElement;
-  private readonly aiWatchIndicatorText: HTMLElement;
   private readonly webMcpStatus: HTMLButtonElement;
   private readonly webMcpStatusText: HTMLElement;
   private readonly webMcpStatusTime: HTMLElement;
@@ -1269,8 +1267,6 @@ export class BoardApp {
     this.aiAssistMenu = query(this.selectionActions, "[data-testid='ai-assist-menu']", HTMLElement);
     this.aiAssistScope = query(this.aiAssistMenu, "[data-ai-assist-scope]", HTMLElement);
     this.aiAssistNote = query(this.aiAssistMenu, "[data-ai-assist-note]", HTMLInputElement);
-    this.aiWatchIndicator = query(this.root, "[data-ai-watch-indicator]", HTMLElement);
-    this.aiWatchIndicatorText = query(this.root, "[data-ai-watch-indicator-text]", HTMLElement);
     this.webMcpStatus = query(this.root, "[data-webmcp-status]", HTMLButtonElement);
     this.webMcpStatusText = query(this.root, "[data-webmcp-status-text]", HTMLElement);
     this.webMcpStatusTime = query(this.root, "[data-webmcp-status-time]", HTMLElement);
@@ -1605,6 +1601,10 @@ export class BoardApp {
 
   destroy(): void {
     window.clearInterval(this.previewExpiryTimer);
+    if (this.webMcpWatchCountdown !== null) {
+      window.clearInterval(this.webMcpWatchCountdown);
+      this.webMcpWatchCountdown = null;
+    }
     this.toolRailResizeObserver?.disconnect();
     this.toolRailResizeObserver = null;
     this.stopBroadcastingSpotlight();
@@ -1699,10 +1699,6 @@ export class BoardApp {
                 <ol class="mcp-activity-list" data-mcp-activity-list aria-live="polite"></ol>
               </section>
             </div>
-            <span class="ai-watch-indicator" data-ai-watch-indicator data-testid="ai-watch-indicator" role="status" aria-live="polite" hidden>
-              <span class="ai-mark" aria-hidden="true">AI</span>
-              <span data-ai-watch-indicator-text>AI watching</span>
-            </span>
             <div class="menu-wrap activities-wrap">
               <button class="topbar-button activities-button" type="button" data-testid="activities-button" aria-label="Add a template" aria-haspopup="menu" aria-controls="activities-menu" aria-expanded="false" hidden>
                 <span class="activities-button-mark" aria-hidden="true">＋</span>
@@ -7184,14 +7180,19 @@ export class BoardApp {
     this.mcpActivityMenu.dataset.state = visualState;
     this.webMcpStatusText.textContent = "MCP";
     const latestActivity = activityCalls[0];
-    this.webMcpStatusTime.textContent = latestActivity
-      ? new Date(latestActivity.startedAt).toLocaleTimeString([], {
-          hour: "numeric",
-          minute: "2-digit",
-        })
-      : watching
-        ? "Watching"
-        : "Ready";
+    const watchMinutes =
+      watching && this.aiWatchState.expiresAt !== null
+        ? Math.ceil(Math.max(0, this.aiWatchState.expiresAt - Date.now()) / 60_000)
+        : null;
+    this.webMcpStatusTime.textContent =
+      watchMinutes !== null
+        ? `${watchMinutes} min left`
+        : latestActivity
+          ? new Date(latestActivity.startedAt).toLocaleTimeString([], {
+              hour: "numeric",
+              minute: "2-digit",
+            })
+          : "Ready";
 
     this.mcpActivitySummary.textContent =
       activeCallCount > 0
@@ -7318,29 +7319,19 @@ export class BoardApp {
     this.aiWatchState = state;
     this.renderWebMcpStatus(this.webMcpState);
     const watching = state.phase !== "idle";
-    this.aiWatchIndicator.hidden = !watching;
     this.aiShareButton.hidden = !watching;
     if (!watching) this.setAiShareMenuOpen(false);
-    if (this.aiWatchCountdown !== null) {
-      window.clearInterval(this.aiWatchCountdown);
-      this.aiWatchCountdown = null;
+    if (this.webMcpWatchCountdown !== null) {
+      window.clearInterval(this.webMcpWatchCountdown);
+      this.webMcpWatchCountdown = null;
     }
     if (watching) {
-      this.renderAiWatchIndicator();
-      this.aiWatchCountdown = window.setInterval(() => this.renderAiWatchIndicator(), 30_000);
+      this.webMcpWatchCountdown = window.setInterval(
+        () => this.renderWebMcpStatus(this.webMcpState),
+        30_000,
+      );
     }
     this.updateSelectionActions(this.tools.selection);
-  }
-
-  private renderAiWatchIndicator(): void {
-    const { phase, expiresAt } = this.aiWatchState;
-    if (phase === "idle" || expiresAt === null) return;
-    const remaining = Math.max(0, expiresAt - Date.now());
-    const minutes = Math.ceil(remaining / 60_000);
-    const label = phase === "listening" ? "AI listening" : "AI watching";
-    this.aiWatchIndicatorText.textContent = `${label} · ${minutes} min left`;
-    this.aiWatchIndicator.title =
-      "The AI assistant is following your selected steps. Select a step and use Ask AI to send it a request.";
   }
 
   private sendAiAssistRequest(action: AssistAction): void {

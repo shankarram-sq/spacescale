@@ -110,7 +110,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   await expect(mcpActivity).toBeHidden();
   // The AI button exists only while a problem-step watch is live in this browser.
   await expect(page.locator("[data-selection-ai-wrap]")).toBeHidden();
-  await expect(page.getByTestId("ai-watch-indicator")).toBeHidden();
+  await expect(page.getByTestId("ai-watch-indicator")).toHaveCount(0);
   await expect(page.getByTestId("tool-ai")).toBeHidden();
   expect(
     await page.evaluate(() => window.__spaceScaleWebMcpTools.watch_board?.annotations),
@@ -162,8 +162,8 @@ test("a board participant can use headless WebMCP tools with neutral board attri
     canComment: true,
     steps: expect.arrayContaining([expect.objectContaining({ kind: "sticky" })]),
   });
-  await expect(page.getByTestId("ai-watch-indicator")).toBeVisible();
-  await expect(page.getByTestId("ai-watch-indicator")).toContainText("AI watching");
+  await expect(page.getByTestId("ai-watch-indicator")).toHaveCount(0);
+  await expect(webMcpStatusTime).toHaveText(/^\d+ min left$/u);
   await expect(webMcpStatus).toHaveAttribute("data-state", "watch");
   const askAi = page.getByTestId("selection-ai");
   await expect(askAi).toBeVisible();
@@ -243,7 +243,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   expect(answered).toMatchObject({ status: "commented", stepAlias, writtenBy: "ai" });
   await expect(page.locator("[data-comments-count]")).toHaveText("1");
   await expect(webMcpStatus).toHaveAttribute("data-state", "watch");
-  await expect(webMcpStatusTime).toHaveText(/^\d{1,2}:\d{2}\s?(?:AM|PM)?$/iu);
+  await expect(webMcpStatusTime).toHaveText(/^\d+ min left$/u);
   await webMcpStatus.click();
   await expect(mcpActivity).toContainText("insert_comment");
   await expect(mcpActivity).toContainText("Completed");
@@ -303,7 +303,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
     return tool.execute({ action: "stop", watchToken }, { signal: new AbortController().signal });
   }, String(watchStart.watchToken));
   await expect(page.locator("[data-selection-ai-wrap]")).toBeHidden();
-  await expect(page.getByTestId("ai-watch-indicator")).toBeHidden();
+  await expect(page.getByTestId("ai-watch-indicator")).toHaveCount(0);
   await expect(page.getByTestId("tool-ai")).toBeHidden();
 
   // Each generic write lands one object where the call asks, tagged as written by AI.

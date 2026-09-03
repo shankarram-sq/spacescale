@@ -219,21 +219,6 @@ button:is(:hover, :focus-visible) .ai-sparkle-spark-late {
   }
 }
 
-.ai-watch-indicator {
-  height: 32px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 9px;
-  border: 1px solid #d8cdf0;
-  border-radius: 999px;
-  background: #f7f4fb;
-  color: #5f477f;
-  font-size: 11px;
-  font-weight: 650;
-  white-space: nowrap;
-}
-
 .selection-ai-wrap {
   position: relative;
 }
@@ -551,10 +536,6 @@ button:is(:hover, :focus-visible) .ai-sparkle-spark-late {
 }
 
 @media (max-width: 650px) {
-  .ai-watch-indicator {
-    display: none;
-  }
-
   .mcp-activity-menu {
     position: fixed;
     top: 58px;
