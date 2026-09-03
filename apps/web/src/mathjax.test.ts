@@ -20,6 +20,7 @@ describe("containsMathMarkup", () => {
   it("still recognizes single-dollar variables alongside currency", () => {
     expect(containsMathMarkup("Budget: $100; rate: $r=0.05$")).toBe(true);
     expect(containsMathMarkup("Check $2+2=4$ before continuing.")).toBe(true);
+    expect(containsMathMarkup("Scale by $2x$ before continuing.")).toBe(true);
     expect(containsMathMarkup("Use \\(2+2=4\\) when a formula starts with a number.")).toBe(true);
     expect(normalizeSingleDollarMath("Budget: $100; rate: $r=0.05$ and $p$.")).toBe(
       "Budget: $100; rate: \\(r=0.05\\) and \\(p\\).",
@@ -29,6 +30,9 @@ describe("containsMathMarkup", () => {
     );
     expect(normalizeSingleDollarMath("$$a^2+b^2=c^2$$")).toBe("$$a^2+b^2=c^2$$");
     expect(normalizeSingleDollarMath("Check $2+2=4$.")).toBe("Check \\(2+2=4\\).");
+    expect(normalizeSingleDollarMath("Use $2x$, but $100$ remains currency.")).toBe(
+      "Use \\(2x\\), but $100$ remains currency.",
+    );
   });
 
   it("segments normalized math before surrounding prose is linkified", () => {

@@ -71,7 +71,35 @@ export function splitMathMarkup(value: string): Array<{ kind: "math" | "text"; t
 
 function singleDollarExpressionIsMath(value: string): boolean {
   const first = value[0];
-  return first === undefined || !/\d/u.test(first) || /[+\-*/=^_<>\\]/u.test(value);
+  return (
+    first === undefined ||
+    !/\d/u.test(first) ||
+    /[+\-*/=^_<>\\]/u.test(value) ||
+    /^\d+(?:\.\d+)?[A-Za-z]/u.test(value)
+  );
+}
+
+function mathExpressionSource(markup: string): string {
+  if (
+    (markup.startsWith("\\(") && markup.endsWith("\\)")) ||
+    (markup.startsWith("\\[") && markup.endsWith("\\]"))
+  ) {
+    return markup.slice(2, -2);
+  }
+  if (markup.startsWith("$$") && markup.endsWith("$$")) return markup.slice(2, -2);
+  return markup;
+}
+
+function labelRenderedMath(container: HTMLElement, source: string): void {
+  const formulae = splitMathMarkup(source)
+    .filter((segment) => segment.kind === "math")
+    .map((segment) => mathExpressionSource(segment.text));
+  container.querySelectorAll<HTMLElement>("mjx-container").forEach((rendered, index) => {
+    const formula = formulae[index];
+    if (formula === undefined) return;
+    rendered.setAttribute("role", "math");
+    rendered.setAttribute("aria-label", `Formula: ${formula}`);
+  });
 }
 
 function dollarIsEscaped(value: string, index: number): boolean {
@@ -141,6 +169,7 @@ export function typesetMath(container: HTMLElement, onReady?: () => void): void 
     mathJax.typesetClear?.([container]);
     await mathJax.typesetPromise?.([container]);
     if (!container.isConnected) return;
+    labelRenderedMath(container, source);
     container.dataset.mathState = "ready";
     onReady?.();
   }).catch(() => {

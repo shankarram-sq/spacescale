@@ -73,6 +73,7 @@ export const TABLE_CHARACTER_WIDTH = 0.56;
 export const RESIZE_HANDLE_RADIUS_CSS_PX = 6;
 export const RESIZE_HANDLE_HIT_RADIUS_CSS_PX = 22;
 export const ROTATE_HANDLE_OFFSET_CSS_PX = 30;
+const MAX_MATH_TEXT_WIDTH = 720;
 
 type ResizableCardItem = Extract<BoardItem, { kind: "sticky" | "image" }>;
 export type ResizableStructuredItem = Extract<BoardItem, { kind: "table" | "zone" }>;
@@ -1425,7 +1426,7 @@ function mathTextNode(
   const lines = geometry.text.split("\n");
   const estimatedWidth =
     Math.max(1, ...lines.map((line) => [...line].length)) * style.fontSize * 0.7;
-  const width = Math.max(180, Math.min(720, estimatedWidth));
+  const width = Math.max(180, Math.min(MAX_MATH_TEXT_WIDTH, estimatedWidth));
   const height = Math.max(style.fontSize * 2.2, lines.length * style.fontSize * 1.5);
   const node = svgElement("g");
   node.classList.add("board-math-text");
@@ -1592,10 +1593,19 @@ function mathForeignObject(
   content.style.fontWeight = resolveTextFontWeight(style.fontWeight, options.defaultWeight);
   content.style.fontStyle = style.fontStyle ?? "normal";
   content.style.textDecoration = style.textDecoration ?? "none";
+  if (options.fitContent) {
+    content.style.width = "max-content";
+    content.style.maxWidth = `${MAX_MATH_TEXT_WIDTH}px`;
+  }
   foreign.append(content);
   typesetMath(content, () => {
     if (!options.fitContent || !foreign.isConnected) return;
-    const renderedWidth = Math.ceil(Math.max(width, content.scrollWidth));
+    const renderedWidth = Math.ceil(
+      Math.min(
+        MAX_MATH_TEXT_WIDTH,
+        Math.max(1, content.scrollWidth, content.getBoundingClientRect().width),
+      ),
+    );
     const renderedHeight = Math.ceil(Math.max(height, content.scrollHeight));
     foreign.setAttribute("width", String(renderedWidth));
     foreign.setAttribute("height", String(renderedHeight));

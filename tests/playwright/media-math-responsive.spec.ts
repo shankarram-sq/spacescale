@@ -91,6 +91,23 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   const selectionHeight = Number(await page.locator(".selection-outline").getAttribute("height"));
   expect(selectionHeight).toBeGreaterThanOrEqual(mathSize.height);
 
+  const compactPoint = await canvasPoint(page, 0.5, 0.18);
+  await page.getByTestId("tool-text").click();
+  await page.mouse.click(compactPoint.x, compactPoint.y);
+  const compactEditor = page.getByTestId("canvas-text-editor");
+  await compactEditor.fill("$2x$");
+  await compactEditor.press("Control+Enter");
+  const compactMath = page.locator(".board-math-content").last();
+  await expect(compactMath).toHaveAttribute("data-math-state", "ready");
+  const compactFormula = compactMath.locator("mjx-container");
+  await expect(compactFormula).toHaveAttribute("role", "math");
+  await expect(compactFormula).toHaveAttribute("aria-label", "Formula: 2x");
+  const compactWidth = await compactMath.evaluate((content) =>
+    Number(content.closest("foreignObject")?.getAttribute("width")),
+  );
+  expect(compactWidth).toBeGreaterThan(0);
+  expect(compactWidth).toBeLessThan(180);
+
   const sectionPoint = await canvasPoint(page, 0.28, 0.68);
   await page.getByTestId("tool-zone").click();
   await page.mouse.click(sectionPoint.x, sectionPoint.y);
@@ -205,7 +222,7 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   await expect(videoHeading).toHaveAttribute("data-clicked", "true");
 
   await page.reload();
-  await expect(page.locator("#drawing-area [data-math-state='ready']")).toHaveCount(5);
+  await expect(page.locator("#drawing-area [data-math-state='ready']")).toHaveCount(6);
   await expect(page.locator("#drawing-area .video-embed-item")).toHaveCount(1);
   await expect(page.locator("#drawing-area .board-text-link")).toHaveCount(2);
   const videoDragHandle = video.locator("[data-video-drag-handle]");
