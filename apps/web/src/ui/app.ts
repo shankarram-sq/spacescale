@@ -805,6 +805,35 @@ export function savedAuthoritativeItems(
   return result;
 }
 
+/**
+ * Why a set of per-note translations would tear an explicit group apart, or null when it would
+ * not. Grouped objects move as one unit when a participant drags them, and
+ * `buildTranslationMembershipOperations` only fills in the members a call left out — it never
+ * overrides a delta the call supplied. So two members given different destinations would drift
+ * apart while still sharing a groupId, which no drag can produce. Naming one member is fine: the
+ * rest of the group follows it, exactly as a drag would.
+ */
+export function shearedGroupIssue(
+  items: readonly BoardItem[],
+  deltaById: ReadonlyMap<string, { x: number; y: number }>,
+): string | null {
+  const byGroup = new Map<string, { x: number; y: number }>();
+  for (const item of items) {
+    const groupId = item.groupId;
+    if (groupId === undefined || groupId === null) continue;
+    const delta = deltaById.get(item.id) ?? { x: 0, y: 0 };
+    const first = byGroup.get(groupId);
+    if (!first) {
+      byGroup.set(groupId, delta);
+      continue;
+    }
+    if (first.x !== delta.x || first.y !== delta.y) {
+      return "Notes that are grouped together move as one unit, so sending two of them to different places would pull the group apart. Give every note in a group the same shift, or name just one of them and let the group follow it.";
+    }
+  }
+  return null;
+}
+
 export function lockedSectionIdForItem(
   item: BoardItem,
   items: ReadonlyMap<string, BoardItem>,
@@ -3722,6 +3751,10 @@ export class BoardApp {
       throw new Error("This arrangement includes a note this browser cannot modify.");
     }
     const deltaById = new Map(moves.map((move) => [move.item.id, move.delta]));
+    if (this.bootstrap.board.features.grouping) {
+      const sheared = shearedGroupIssue(items, deltaById);
+      if (sheared) throw new Error(sheared);
+    }
     const directUpdates = items.map((item) => {
       const delta = deltaById.get(item.id) ?? { x: 0, y: 0 };
       return {

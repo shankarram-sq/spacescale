@@ -195,7 +195,9 @@ watch reported, or by a point the note covers—and never by an item id, and it
 moves nothing else: a call that names a drawing, a text object, or a Section is
 refused rather than partly applied, as is a call that names one note twice. The
 board's own rules then decide what travels with each note, so a note leaving or
-entering a Section changes membership and a grouped note brings its group. The
+entering a Section changes membership and a grouped note brings its group;
+sending two notes of one group to different places is refused rather than
+tearing the group apart, since no drag can produce that. The
 whole rearrangement is one batch within the Space's batch limit, so a class
 reverses it with a single undo. Moving a note changes only its position: the note
 keeps its author and is not marked as AI-written, because rearranging someone's

@@ -31,6 +31,7 @@ import {
   STAMP_CHOICES,
   STICKY_COLORS,
   savedAuthoritativeItems,
+  shearedGroupIssue,
   serializeAttributedData,
   tableCellDraftFromOperation,
   templateAvailabilityIssue,
@@ -723,6 +724,55 @@ describe("sticky note UI configuration", () => {
     ]);
     expect(
       savedAuthoritativeItems([first.id, second.id], renderedWithPending, authoritative),
+    ).toBeNull();
+  });
+
+  it("refuses per-note moves that would tear an explicit group apart", () => {
+    const note: Extract<BoardItem, { kind: "sticky" }> = {
+      id: "sticky-a",
+      kind: "sticky",
+      z: 1,
+      version: 4,
+      createdBy: "student-a",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: { kind: "sticky", fill: "#fde68a", textColor: "#292524", fontSize: 20, opacity: 1 },
+      geometry: { x: 10, y: 20, width: 180, height: 140, text: "First" },
+    };
+    const grouped = { ...note, groupId: "group-1" };
+    const peer = { ...grouped, id: "sticky-b", version: 6 };
+    const ungrouped = { ...note, id: "sticky-c" };
+
+    // Two members of one group sent to different places would drift apart while still grouped.
+    expect(
+      shearedGroupIssue(
+        [grouped, peer],
+        new Map([
+          ["sticky-a", { x: 10, y: 0 }],
+          ["sticky-b", { x: 40, y: 0 }],
+        ]),
+      ),
+    ).toContain("pull the group apart");
+    // The same shift keeps the group intact, so it is allowed.
+    expect(
+      shearedGroupIssue(
+        [grouped, peer],
+        new Map([
+          ["sticky-a", { x: 10, y: 0 }],
+          ["sticky-b", { x: 10, y: 0 }],
+        ]),
+      ),
+    ).toBeNull();
+    // Naming one member is how a drag moves a group, so it is left to the board to propagate.
+    expect(shearedGroupIssue([grouped], new Map([["sticky-a", { x: 10, y: 0 }]]))).toBeNull();
+    // Notes in no group are independent however far apart they are sent.
+    expect(
+      shearedGroupIssue(
+        [note, ungrouped],
+        new Map([
+          ["sticky-a", { x: 10, y: 0 }],
+          ["sticky-c", { x: 900, y: 0 }],
+        ]),
+      ),
     ).toBeNull();
   });
 

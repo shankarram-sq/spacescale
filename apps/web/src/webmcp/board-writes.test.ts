@@ -736,6 +736,32 @@ describe("generic board writes", () => {
     writes.destroy();
   });
 
+  it("reports the move the board accepted even when the host aborts mid-commit", async () => {
+    const note = sticky();
+    const controller = new AbortController();
+    const applied: StickyMove[][] = [];
+    const { writes, tools } = harness({
+      itemAt: note,
+      moveItems: async (moves) => {
+        // The board takes the batch, then the host walks away before the answer arrives.
+        applied.push([...moves]);
+        controller.abort();
+      },
+    });
+    await vi.waitFor(() => expect(tools.has("move_stickies")).toBe(true));
+    const tool = tools.get("move_stickies");
+    if (!tool) throw new Error("move_stickies is not defined.");
+
+    // Telling the caller it failed would have it retry the shift and move the note twice.
+    const result = await tool.execute(
+      { moves: [{ at: { x: 1, y: 1 }, by: { x: 30, y: 0 } }] },
+      { signal: controller.signal },
+    );
+    expect(result).toMatchObject({ status: "moved", movedCount: 1 });
+    expect(applied).toHaveLength(1);
+    writes.destroy();
+  });
+
   it("passes the board's refusal back to the caller", async () => {
     const note = sticky();
     const { writes, revealed, notices, call } = await ready({
