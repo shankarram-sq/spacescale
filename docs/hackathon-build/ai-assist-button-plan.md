@@ -107,7 +107,7 @@ participant-confirmed write.
 
 | Channel                       | Exists today                                                                                                                                                                                                                                     | Gap for this feature                                                                                                                                                                        |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Comment on the step**       | Per-item object comments: `ApiClient.createComment` (`apps/web/src/transport/api.ts:318`), edge route `POST /comments` with a 2,000-code-point limit (`apps/edge/src/board-room.ts:444`, `:6551`), `canComment()` role gating, MathJax rendering, `server.comments.refresh` broadcast so every client redraws. | No WebMCP tool can post a comment. Add `comment_on_watched_step` (step 2b below). Comments have no origin metadata field; see the flag under decision 4b.                                    |
+| **Comment on the step**       | Per-item object comments: `ApiClient.createComment` (`apps/web/src/transport/api.ts:318`), edge route `POST /comments` with a 2,000-code-point limit (`apps/edge/src/board-room.ts:444`, `:6551`), `canComment()` role gating, MathJax rendering, `server.comments.refresh` broadcast so every client redraws. | No WebMCP tool can post a comment. Add `comment_on_watched_step` (step 2b below). Comments have no writer metadata; decision 4b adds `origin` and a visible tag.                              |
 | **Insert cards near the work** | `add_thinking_expansion`, `add_idea_sensemaking`, `add_collective_reasoning`, `add_learning_action_plan`, `add_group_decision_scaffold`, `add_content_visuals`, `stage_collective_inquiry`. All resolve `sourceAliases` by name against a `CollectiveInquirySnapshot` looked up by `selectionToken` and version-check every source (`education-partner.ts:955-1005`). | Only `read_selected_class_ideas` mints tokens, and only for sticky notes. The watch should mint a compatible token for its sticky steps so the agent can insert without a second read call. |
 | **Host conversation**         | Every `wait` result already tells the agent to comment in the conversation.                                                                                                                                                                        | Keep as fallback; the result now says which channel to prefer.                                                                                                                              |
 
@@ -124,21 +124,57 @@ and is exactly what the safety doc allows ("confirmed output is ordinary board
 content"). The card tools place output to the right of all board content, which
 suits new ideas but not an answer to "explain step 2".
 
-### 4b. Attribution of AI-authored comments — decision needed
+### 4b. Every comment is tagged with who wrote it — decided
 
-Comments are attributed to the calling participant (`author: Actor`), matching
-the rule that generated content carries the responsible participant's badge,
-not a synthetic AI actor. Unlike board items, comment rows have no internal
-`origin` metadata, so an AI-authored comment is indistinguishable from a typed
-one in exports and audit. Options:
+Two facts are recorded on every comment and both are visible:
 
-- **A (recommended):** add an optional `origin?: "webmcp"` column to the
-  comment row and `BoardComment`, set only by the new tool, never shown as a
-  label. Small edge + web type change, keeps the audit story intact.
-- **B:** ship without it and rely on the host's tool-call log. Cheaper; weaker
-  auditability. Acceptable for the hackathon build only.
+- **Accountable participant** — the existing `author: Actor`. For an
+  AI-written comment this is the participant whose browser ran the tool, the
+  same rule the card tools use. Unchanged.
+- **Writer** — new `origin` metadata saying whether the participant typed the
+  comment or the visiting agent wrote it through WebMCP, and if so which tool
+  and which requested action.
 
-The plan below assumes A; B removes the edge sub-step from step 2b.
+Shape (web `BoardComment.origin`, always present in API responses; rows
+created before the migration read back as `participant`):
+
+```ts
+export type CommentOrigin =
+  | { kind: "participant" }
+  | { kind: "webmcp"; tool: string; action?: AssistAction; stepAlias?: string };
+```
+
+Storage: three nullable-safe columns on `comments`:
+
+| Column           | Type                                                              | Set by                                            |
+| ---------------- | ----------------------------------------------------------------- | ------------------------------------------------- |
+| `origin`         | `TEXT NOT NULL DEFAULT 'participant' CHECK (origin IN ('participant','webmcp'))` | `POST /comments` from the request body, default otherwise |
+| `origin_tool`    | `TEXT` (≤ 64, `^[a-z][a-z0-9_]{0,63}$`)                            | only when `origin = 'webmcp'`                     |
+| `origin_action`  | `TEXT` (one of `ASSIST_ACTIONS`)                                  | optional, only when `origin = 'webmcp'`           |
+
+`stepAlias` is returned to the agent but **not stored** — aliases are
+per-watch and meaningless after the session ends.
+
+Display: the comment card heading in the drawer already shows the author
+name. Add a small tag next to it for `webmcp` comments:
+**"AI · Critique"** (tool label + action label), with
+`title="Written by the AI assistant through {tool} on behalf of {author}"`.
+Participant-written comments get no tag, so the drawer looks as it does today
+for every existing comment. The canvas comment marker rendered by
+`BoardRenderer.setComments` is unchanged — the tag lives in the drawer only.
+
+**Policy note.** `docs/classroom-ai-safety.md` currently says SpaceScale adds
+"no AI-specific chrome or board labels". A visible AI tag on a comment is a
+deliberate change to that rule for comments: a reader must be able to tell a
+peer's remark from the assistant's. Step 7 updates the doc; the rule stays as
+it is for board items.
+
+**Pre-existing gap, out of scope.** README and `spec.md` state that generated
+*items* "retain internal origin metadata for MCP context and auditing". No such
+field exists on `BoardItem`, `DurableOperation`, the protocol, or board-core —
+grep for `origin`/`provenance`/`generatedBy` finds nothing. Comments will be
+the first object with a real origin marker. Fixing the item side is a separate
+piece of work; the docs should stop claiming it until then.
 
 ### 3. Optional note
 
@@ -325,11 +361,14 @@ merge first behind the existing tools.
 
 4. Options added to `CollectiveInquiryWebMcpOptions`:
    `canComment: () => boolean` and
-   `createComment: (itemId: string, body: string) => Promise<void>`. In
-   `app.ts` wire them to `this.canComment()` and to a new
-   `commentFromWebMcp(itemId, body)` that calls `this.api.createComment`,
-   upserts into `this.comments`, and calls `applyCommentChange()` — the same
-   three lines `submitComment` runs after its own request (line ~5567).
+   `createComment: (itemId: string, body: string, origin: CommentOrigin) => Promise<void>`.
+   In `app.ts` wire them to `this.canComment()` and to a new
+   `commentFromWebMcp(itemId, body, origin)` that calls
+   `this.api.createComment(boardId, itemId, body, origin)`, upserts into
+   `this.comments`, and calls `applyCommentChange()` — the same three lines
+   `submitComment` runs after its own request (line ~5567). `submitComment`
+   itself passes `{ kind: "participant" }` (or omits `origin`; the edge
+   defaults it).
 5. Register the tool:
 
    ```ts
@@ -347,15 +386,54 @@ merge first behind the existing tools.
    `watchToken` + `stepAlias` → `itemId` via a new
    `ProblemStepWatchFeed.resolveStep(token, alias)` that throws the same
    "missing or expired" message as `execute`, check `canComment()` (throw
-   "This browser cannot comment on this Space."), call `createComment`,
-   return `{ status: "commented", stepAlias, characters, privacy: "…" }`.
+   "This browser cannot comment on this Space."), call `createComment` with
+   `origin: { kind: "webmcp", tool: "comment_on_watched_step", action, stepAlias }`
+   where `action` is the most recent requested action for that alias if one is
+   pending or was delivered in the last result, else omitted. Return
+   `{ status: "commented", stepAlias, characters, writtenBy: "webmcp", onBehalfOf: { displayName }, privacy: "…" }`.
    Rate-limit to one in flight per session and at most 20 comments per watch,
    so a looping host cannot flood the 10,000-comment board cap.
-6. Edge (option A from decision 4b): add nullable `origin TEXT` to the comment
-   row, accept `origin: "webmcp"` in `createComment` only from the same
-   validated body, return it in `commentFromRow`. Web: `BoardComment.origin?`,
-   `parseBoardComment` passthrough, `createComment(boardId, itemId, body, origin?)`.
-   No UI renders it.
+6. **Edge — writer metadata** (`apps/edge/src/migrations.ts`, `board-room.ts`):
+   - Board migration `version: 14, name: "comment_origin"`:
+     ```sql
+     ALTER TABLE comments ADD COLUMN origin TEXT NOT NULL DEFAULT 'participant'
+       CHECK (origin IN ('participant', 'webmcp'));
+     ALTER TABLE comments ADD COLUMN origin_tool TEXT
+       CHECK (origin_tool IS NULL OR (length(origin_tool) BETWEEN 1 AND 64));
+     ALTER TABLE comments ADD COLUMN origin_action TEXT
+       CHECK (origin_action IS NULL OR length(origin_action) <= 32);
+     ```
+     Existing rows become `participant` with no tool or action.
+   - `CommentRow` gains `origin`, `origin_tool`, `origin_action`. Check the
+     `readComment` / `listComments` SELECTs project them (they join
+     `members` for `author_name`; add the three columns explicitly if the
+     select is not `c.*`).
+   - `createComment`: `assertExactKeys(body, ["itemId", "body"], ["itemId", "body", "origin"])`;
+     new `requireCommentOrigin(value)` returns `{ kind: "participant" }` for
+     `undefined`, validates `kind`, `tool` against `^[a-z][a-z0-9_]{0,63}$`,
+     `action` against the assist enum (shared via `@collab/protocol` so web
+     and edge cannot drift), and rejects `tool`/`action` when
+     `kind !== "webmcp"`. INSERT writes the three columns.
+   - `commentFromRow` emits `origin` as the `CommentOrigin` union; a row with
+     `origin = 'webmcp'` and `origin_tool IS NULL` is invalid stored data, same
+     as the existing resolved/resolver consistency check.
+   - Comments are not part of `export.json` / `export.attributed.json` today,
+     so no export change; add a follow-up if comment export is wanted.
+7. **Web — type, parser, drawer** (`types.ts`, `transport/api.ts`, `ui/app.ts`, `styles.css`):
+   - `BoardComment.origin: CommentOrigin` (required; `parseBoardComment`
+     defaults a missing field to `{ kind: "participant" }` so the web stays
+     compatible with an edge that has not migrated yet, and validates the
+     `webmcp` variant's fields).
+   - `ApiClient.createComment(boardId, itemId, body, origin?)` sends `origin`
+     only when provided.
+   - `renderComments` (line ~5655, where `author.textContent` is set): after
+     the author `<strong>`, append
+     `<span class="comment-origin-tag" title="…">AI · Critique</span>` for
+     `webmcp` comments. Label table: tool `comment_on_watched_step` → "AI";
+     action → the toolbar label from the action catalog; unknown tool → "AI".
+   - CSS: `.comment-origin-tag` as a small pill matching `.comment-state`;
+     add it after the existing `.comment-*` rules to keep specificity lint clean.
+   - `CommentStore.upsert`/`reconcile` need no change; `origin` is inert data.
 
 **Guidance** (`problem-step-watch.ts`)
 
@@ -476,8 +554,19 @@ outside the watch; and that the token it mints is accepted by
 pointed at the inquiry instance and call `add_thinking_expansion` with
 `sourceAliases: ["step_1"]`).
 
-`apps/edge/src/board-room.test.ts` (option A only): `origin` round-trips
-through create → list and is absent for ordinary comments.
+`apps/edge/src/board-room.test.ts` (next to the existing comment tests at
+~7808): `origin` round-trips through create → list for `webmcp` with tool and
+action; an omitted `origin` reads back as `{ kind: "participant" }`; `tool`
+without `kind: "webmcp"`, a bad tool name, and an unknown action are rejected
+with 400; a legacy row inserted before the migration reads back as
+`participant`; `PATCH` resolve preserves `origin`.
+
+`apps/web/src/transport/api.test.ts` (or wherever `parseBoardComment` is
+covered): missing `origin` defaults to participant; malformed `webmcp` origin
+throws `INVALID_RESPONSE`.
+
+`apps/web/src/ui/app.test.ts`: drawer renders the "AI · Critique" tag for a
+`webmcp` comment and no tag for a participant comment.
 
 `apps/web/src/ui/app.test.ts`: if a `BoardApp` harness exists there for
 selection actions, add: button hidden when idle; visible and enabled with a
@@ -499,9 +588,11 @@ Add a test:
    `responseGuidance.replyVia === "comment"`.
 4. Call `comment_on_watched_step` with the returned `watchToken`, `step_1`,
    and a body containing `$x^2$`; assert the comments count badge increments,
-   the comment appears in the drawer under the sticky, and — in a second page
-   on the same board (the two-client pattern in `collaboration.spec.ts`) — it
-   arrives via the refresh broadcast.
+   the comment appears in the drawer under the sticky with the author's name
+   **and** the "AI · Critique" tag, and — in a second page on the same board
+   (the two-client pattern in `collaboration.spec.ts`) — it arrives via the
+   refresh broadcast with the same tag. Type a comment by hand in the
+   composer and assert it has no tag.
 5. Call `add_thinking_expansion` with the result's `selectionToken` and
    `sourceAliases: ["step_1"]`; assert two new cards appear.
 6. Deselect, select an unwatched sticky → button disabled with the title.
@@ -523,11 +614,16 @@ build is unavailable (`launchOptions.executablePath`).
   action, and an optional 280-character note; that the button exists only
   while a watch is live; that `check_work` deliberately replaces grading; and
   that replies land as ordinary comments or cards attributed to the
-  participant, with internal `origin` metadata and no AI label, under the
-  existing "Safety, review, and board mutations" rules. Note that the caller's
-  WebMCP permission is the confirmation for a comment, as it already is for
-  the five headless card tools.
-- README tool count: fifteen becomes sixteen.
+  participant under the existing "Safety, review, and board mutations" rules.
+  Amend the "no AI-specific chrome or board labels" sentence: comments carry
+  writer metadata and a visible "AI" tag in the comments drawer so a peer's
+  remark is never mistaken for the assistant's; board items are unchanged.
+  Note that the caller's WebMCP permission is the confirmation for a comment,
+  as it already is for the five headless card tools. Add `origin` to the
+  metadata-only audit record list.
+- README tool count: fifteen becomes sixteen. Also correct the sentence that
+  generated items "retain internal origin metadata" (see the gap in 4b) or
+  link it to the follow-up.
 
 ### Step 8 — Optional follow-ups (not in v1)
 
@@ -541,6 +637,10 @@ build is unavailable (`launchOptions.executablePath`).
   `read_selected_class_ideas`'s contract and deserves its own review.
 - Auto-opening the comments drawer on the step when an AI comment arrives in
   the requesting browser (match `requestId` to the next `server.comments.refresh`).
+- Origin metadata for generated board items, so the README's existing claim
+  becomes true and items and comments share one `origin` shape.
+- Including comments (with `origin`) in `export.attributed.json`.
+- Filtering the comments drawer by writer (participant vs AI).
 
 ## Verification
 
@@ -560,7 +660,15 @@ inserted, ask the host to stop, confirm the button disappears.
 
 - **Grade vs check_work** — decision needed (see Design decision 2). Default in
   this plan is `check_work`.
-- **Comment origin metadata** — decision needed (see 4b). Default is option A.
+- **Self-declared origin** — the edge cannot verify that a `webmcp` origin
+  really came from an agent, or that a comment without one was typed by hand;
+  it trusts the page, exactly as it trusts everything else the page sends.
+  The tag is an honest-client record, not a security boundary.
+- **Migration ordering** — the web defaults a missing `origin` to
+  `participant`, so a web deploy ahead of the edge migration is safe; an edge
+  deploy ahead of the web is also safe because the extra field is ignored by
+  the old parser only if `parseBoardComment` is not strict about unknown
+  keys — it is not, so both orders work.
 - **Viewer-role participants** — a browser that can read but not comment gets
   `replyVia: "conversation"`; the button still works, the answer just stays in
   chat. The card tools already refuse without edit access.
