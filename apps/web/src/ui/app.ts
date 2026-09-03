@@ -4139,6 +4139,13 @@ export class BoardApp {
       this.creatorNames.set(actorId, displayName);
     }
     this.model.load(next.snapshot as BoardSnapshot, true);
+    try {
+      // A replacement cannot be expressed as individual changes, so active watches
+      // re-snapshot and report a resync instead of retaining stale text and sequences.
+      this.webMcp?.recordAuthoritativeReload(this.model.lastAppliedSeq);
+    } catch {
+      this.notify("The problem-step watch could not follow the refreshed board.", "warning");
+    }
     for (const entry of activeEntries) {
       this.model.restoreQueued(entry.command, next.actor.id);
       this.hydrateOutboxRecovery(entry.command.commandId, entry.recovery);

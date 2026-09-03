@@ -83,6 +83,10 @@ export class CollectiveInquiryWebMcp {
     this.problemStepWatch.recordAuthoritativeAction(action, changedIds);
   }
 
+  recordAuthoritativeReload(seq: number): void {
+    this.problemStepWatch.recordAuthoritativeReload(seq);
+  }
+
   destroy(): void {
     this.destroyed = true;
     this.registration.abort();
@@ -129,7 +133,7 @@ export class CollectiveInquiryWebMcp {
       await modelContext.registerTool(
         {
           name: PROBLEM_STEP_WATCH_TOOL,
-          description: `Start, continue, or stop a 15-minute read-only watch of the exact saved text items selected in this browser. Use this when a participant asks for real-time feedback while working through a problem. First call with action start. Briefly comment on every returned change, then call action wait again with the returned watchToken and nextSeq; repeat after timeouts until the watch expires or the participant asks to stop. Each wait returns once and lasts at most 20 seconds. The watch never includes unsaved keystrokes, other contents of a selected Section, unselected content, stable item IDs, coordinates, presence, or history. ${WEBMCP_MATHJAX_GUIDANCE}`,
+          description: `Start, continue, or stop a 15-minute read-only watch of the exact saved text items selected in this browser. Use this when a participant asks for real-time feedback while working through a problem. First call with action start. Briefly comment on every returned change, then call action wait again with the returned watchToken and nextSeq; repeat after timeouts until the watch expires or the participant asks to stop. Each wait returns once and lasts at most 20 seconds and reports status changed, timeout, resync, stopped, expired, or replaced; every status except changed, timeout and resync ends the watch, and resync carries a fresh snapshot after the board reloaded. The watch never includes unsaved keystrokes, other contents of a selected Section, unselected content, stable item IDs, coordinates, presence, or history. ${WEBMCP_MATHJAX_GUIDANCE}`,
           inputSchema: {
             type: "object",
             properties: {

@@ -204,7 +204,9 @@ describe("problem-step WebMCP watch", () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     const result = await pending;
-    expect(result).toMatchObject({ status: "timeout", changes: [], nextSeq: 8 });
+    // nextSeq stays at the last sequence that changed a watched step. Advancing it to 8 would
+    // disclose that an unselected item was edited, which this watch promises to exclude.
+    expect(result).toMatchObject({ status: "timeout", changes: [], nextSeq: 7 });
     expect(JSON.stringify(result)).not.toContain("Private next step");
     feed.destroy();
   });
@@ -278,6 +280,99 @@ describe("problem-step WebMCP watch", () => {
         new AbortController().signal,
       ),
     ).resolves.toMatchObject({ status: "expired", continueWatching: false });
+    feed.destroy();
+  });
+
+  it("reports a resync with fresh text when the board is reloaded wholesale", async () => {
+    vi.useFakeTimers();
+    const { feed, items, setSequence } = setup();
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    const watchToken = String(started.watchToken);
+    const pending = feed.execute(
+      { action: "wait", watchToken, afterSeq: 7, waitMs: 5_000 },
+      new AbortController().signal,
+    );
+
+    // Sequence-gap recovery and snapshot restore replace authoritative state outright, so no
+    // individual action ever reaches the feed for the changes the replacement carried.
+    items.set(STICKY_ID, sticky("Let $2x=6$ so $x=3$", 4));
+    setSequence(42);
+    feed.recordAuthoritativeReload(42);
+
+    const result = await pending;
+    expect(result).toMatchObject({ status: "resync", nextSeq: 42 });
+    expect(result.steps).toEqual([
+      {
+        alias: "step_1",
+        kind: "sticky",
+        text: "Let $2x=6$ so $x=3$",
+        createdBy: { displayName: "Sam" },
+      },
+    ]);
+
+    // The stale sequence the caller still holds resolves to one more resync, then normal waits.
+    const stale = await feed.execute(
+      { action: "wait", watchToken, afterSeq: 7, waitMs: 1_000 },
+      new AbortController().signal,
+    );
+    expect(stale).toMatchObject({ status: "resync" });
+    const followUp = feed.execute(
+      { action: "wait", watchToken, afterSeq: 42, waitMs: 1_000 },
+      new AbortController().signal,
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(await followUp).toMatchObject({ status: "timeout", nextSeq: 42 });
+    feed.destroy();
+  });
+
+  it("keeps a change recordable when a step snapshot would have been updated first", async () => {
+    const { feed, items } = setup();
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    const watchToken = String(started.watchToken);
+    const update = sticky("Let $2x=6$ so $x=3$", 2);
+    items.set(STICKY_ID, update);
+
+    // acceptedAt passes frame validation as a safe integer but cannot be formatted as a date.
+    const hostile = { ...serverAction(8, update), acceptedAt: Number.MAX_SAFE_INTEGER };
+    expect(() => feed.recordAuthoritativeAction(hostile, new Set([STICKY_ID]))).not.toThrow();
+
+    const result = await feed.execute(
+      { action: "wait", watchToken, afterSeq: 7, waitMs: 1_000 },
+      new AbortController().signal,
+    );
+    expect(result).toMatchObject({ status: "changed", nextSeq: 8 });
+    expect(result.changes).toMatchObject([
+      { seq: 8, steps: [{ alias: "step_1", change: "updated" }] },
+    ]);
+    feed.destroy();
+  });
+
+  it("ends a watch on stop and on replacement with guidance not to wait again", async () => {
+    const { feed } = setup();
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    const watchToken = String(started.watchToken);
+    const stopped = await feed.execute(
+      { action: "stop", watchToken },
+      new AbortController().signal,
+    );
+    expect(stopped).toMatchObject({ status: "stopped", continueWatching: false });
+    expect(stopped.nextAction).toContain("Do not call wait again");
+    expect(() =>
+      feed.execute({ action: "wait", watchToken, afterSeq: 7 }, new AbortController().signal),
+    ).toThrow(/missing or expired/);
+
+    // A sixth concurrent watch evicts the oldest, which must say why rather than going quiet.
+    const tokens: string[] = [];
+    for (let index = 0; index < 6; index += 1) {
+      const session = await feed.execute({ action: "start" }, new AbortController().signal);
+      tokens.push(String(session.watchToken));
+    }
+    expect(() =>
+      feed.execute(
+        { action: "wait", watchToken: String(tokens[0]), afterSeq: 7 },
+        new AbortController().signal,
+      ),
+    ).toThrow(/missing or expired/);
     feed.destroy();
   });
 

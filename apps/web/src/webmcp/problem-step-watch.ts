@@ -8,6 +8,8 @@ export const PROBLEM_STEP_WATCH_MAX_WAIT_MS = 20_000;
 
 const MAX_WATCHED_ITEMS = 30;
 const MAX_RETAINED_CHANGES = 100;
+/** Largest millisecond value the Date type can represent. */
+const MAX_TIMESTAMP_MS = 8.64e15;
 
 type WatchableItem = Extract<BoardItem, { kind: "text" | "sticky" | "table" | "zone" }>;
 
@@ -43,8 +45,14 @@ type WatchSession = {
   startedAt: number;
   expiresAt: number;
   startSeq: number;
-  lastObservedSeq: number;
+  /**
+   * Only advances when a watched step actually changed. Tracking the board sequence here
+   * instead would disclose the rate of every unrelated edit through nextSeq, which the tool
+   * promises to exclude along with unselected board content.
+   */
+  lastReportedSeq: number;
   discardedThroughSeq: number;
+  needsResync: boolean;
   itemIds: Set<string>;
   aliases: Map<string, string>;
   steps: Map<string, WatchedStep>;
@@ -90,11 +98,7 @@ export class ProblemStepWatchFeed {
     this.expireSessions();
     if (action === "stop") {
       this.stopSession(session, "stopped");
-      return Promise.resolve({
-        status: "stopped",
-        watchToken: token,
-        continueWatching: false,
-      });
+      return Promise.resolve(endedResult(token, "stopped"));
     }
     return this.wait(session, input, signal);
   }
@@ -102,16 +106,21 @@ export class ProblemStepWatchFeed {
   recordAuthoritativeAction(action: ServerAction, changedIds: ReadonlySet<string>): void {
     if (this.destroyed) return;
     this.expireSessions();
+    // Resolved before any session is touched. A throw here after the step snapshots were
+    // updated would leave the change unrecorded while future diffs compare against the new
+    // text, hiding it forever, and the caller only surfaces a warning.
+    const changedAt = changeTimestamp(action.acceptedAt);
+    const actor = { displayName: action.actor.displayName };
     for (const session of this.sessions.values()) {
-      session.lastObservedSeq = Math.max(session.lastObservedSeq, action.seq);
       const steps: StepChange[] = [];
+      const applied = new Map<string, WatchedStep | undefined>();
       for (const itemId of changedIds) {
         if (!session.itemIds.has(itemId)) continue;
         const previous = session.steps.get(itemId);
         const item = this.options.getAuthoritativeItem(itemId);
         const current = item ? this.toWatchedStep(item, session.aliases.get(itemId)) : undefined;
         if (current) {
-          session.steps.set(itemId, current);
+          applied.set(itemId, current);
           if (!previous) {
             steps.push({ ...current, change: "created" });
           } else if (
@@ -122,17 +131,18 @@ export class ProblemStepWatchFeed {
             steps.push({ ...current, change: "updated" });
           }
         } else if (previous) {
-          session.steps.delete(itemId);
+          applied.set(itemId, undefined);
           steps.push({ alias: previous.alias, kind: previous.kind, change: "deleted" });
         }
       }
+      // Every step snapshot is committed only once the change record is fully built.
+      for (const [itemId, step] of applied) {
+        if (step) session.steps.set(itemId, step);
+        else session.steps.delete(itemId);
+      }
       if (steps.length === 0) continue;
-      session.changes.push({
-        seq: action.seq,
-        changedAt: new Date(action.acceptedAt).toISOString(),
-        actor: { displayName: action.actor.displayName },
-        steps,
-      });
+      session.lastReportedSeq = Math.max(session.lastReportedSeq, action.seq);
+      session.changes.push({ seq: action.seq, changedAt, actor, steps });
       while (session.changes.length > MAX_RETAINED_CHANGES) {
         const discarded = session.changes.shift();
         if (discarded) session.discardedThroughSeq = discarded.seq;
@@ -140,6 +150,32 @@ export class ProblemStepWatchFeed {
       if (session.pending && action.seq > session.pending.afterSeq) {
         this.resolvePending(session, this.changesResult(session, session.pending.afterSeq));
       }
+    }
+  }
+
+  /**
+   * Called when the authoritative board is replaced wholesale rather than advanced by an
+   * action, which is how sequence-gap recovery and snapshot restore work. Individual changes
+   * cannot be reconstructed from a replacement, so each session re-snapshots its steps and
+   * reports a resync rather than silently keeping stale text and a stale sequence.
+   */
+  recordAuthoritativeReload(seq: number): void {
+    if (this.destroyed) return;
+    this.expireSessions();
+    for (const session of this.sessions.values()) {
+      for (const itemId of session.itemIds) {
+        const item = this.options.getAuthoritativeItem(itemId);
+        const step = item ? this.toWatchedStep(item, session.aliases.get(itemId)) : undefined;
+        if (step) session.steps.set(itemId, step);
+        else session.steps.delete(itemId);
+      }
+      session.changes = [];
+      session.lastReportedSeq = seq;
+      // One less than the sequence handed back as nextSeq, so a caller resuming at nextSeq
+      // waits normally while any older afterSeq still resolves to a resync.
+      session.discardedThroughSeq = seq - 1;
+      session.needsResync = true;
+      if (session.pending) this.resolvePending(session, this.resyncResult(session));
     }
   }
 
@@ -173,8 +209,9 @@ export class ProblemStepWatchFeed {
       startedAt: now,
       expiresAt: now + PROBLEM_STEP_WATCH_DURATION_MS,
       startSeq,
-      lastObservedSeq: startSeq,
+      lastReportedSeq: startSeq,
       discardedThroughSeq: startSeq - 1,
+      needsResync: false,
       itemIds: new Set(),
       aliases: new Map(),
       steps: new Map(),
@@ -215,6 +252,12 @@ export class ProblemStepWatchFeed {
     signal: AbortSignal,
   ): Promise<Record<string, unknown>> {
     if (session.pending) throw new Error("This problem-step watch already has a pending wait.");
+    // A board replacement invalidates the caller's sequence, so hand back a fresh snapshot
+    // before validating afterSeq against it.
+    if (session.needsResync) {
+      session.needsResync = false;
+      return Promise.resolve(this.resyncResult(session));
+    }
     const afterSeq = safeInteger(input.afterSeq, "afterSeq", 0);
     if (afterSeq < session.startSeq) {
       throw new Error(`afterSeq must be at least the watch start sequence ${session.startSeq}.`);
@@ -264,9 +307,9 @@ export class ProblemStepWatchFeed {
       status: "changed",
       watchToken: session.token,
       changes: session.changes.filter((change) => change.seq > afterSeq),
-      nextSeq: session.lastObservedSeq,
+      nextSeq: session.lastReportedSeq,
       remainingSeconds: remainingSeconds(session),
-      ...watchGuidance(session.token, session.lastObservedSeq),
+      ...watchGuidance(session.token, session.lastReportedSeq),
     };
   }
 
@@ -275,9 +318,9 @@ export class ProblemStepWatchFeed {
       status: "timeout",
       watchToken: session.token,
       changes: [],
-      nextSeq: session.lastObservedSeq,
+      nextSeq: session.lastReportedSeq,
       remainingSeconds: remainingSeconds(session),
-      ...watchGuidance(session.token, session.lastObservedSeq),
+      ...watchGuidance(session.token, session.lastReportedSeq),
     };
   }
 
@@ -288,22 +331,14 @@ export class ProblemStepWatchFeed {
       reason:
         "More changes occurred than this page retains for one watch. Use this fresh snapshot.",
       steps: this.currentSteps(session),
-      nextSeq: session.lastObservedSeq,
+      nextSeq: session.lastReportedSeq,
       remainingSeconds: remainingSeconds(session),
-      ...watchGuidance(session.token, session.lastObservedSeq),
+      ...watchGuidance(session.token, session.lastReportedSeq),
     };
   }
 
   private expiredResult(session: WatchSession): Record<string, unknown> {
-    return {
-      status: "expired",
-      watchToken: session.token,
-      changes: [],
-      nextSeq: session.lastObservedSeq,
-      continueWatching: false,
-      nextAction:
-        "The 15-minute watch ended. Do not call wait again unless the participant selects the intended steps and asks to start another watch.",
-    };
+    return { ...endedResult(session.token, "expired"), nextSeq: session.lastReportedSeq };
   }
 
   private currentSteps(session: WatchSession): WatchedStep[] {
@@ -334,14 +369,8 @@ export class ProblemStepWatchFeed {
     }
   }
 
-  private stopSession(session: WatchSession, status: "stopped" | "expired" | "replaced"): void {
-    if (session.pending) {
-      this.resolvePending(session, {
-        status,
-        watchToken: session.token,
-        continueWatching: false,
-      });
-    }
+  private stopSession(session: WatchSession, status: WatchEndedStatus): void {
+    if (session.pending) this.resolvePending(session, endedResult(session.token, status));
     this.sessions.delete(session.token);
   }
 
@@ -389,6 +418,37 @@ function safeInteger(value: unknown, field: string, minimum: number, maximum?: n
     throw new Error(`${field} must be an integer in the range ${range}.`);
   }
   return value;
+}
+
+type WatchEndedStatus = "stopped" | "expired" | "replaced";
+
+const WATCH_ENDED_REASON: Record<WatchEndedStatus, string> = {
+  stopped: "The participant asked to stop this watch.",
+  expired: "The 15-minute watch ended.",
+  replaced: "A newer watch started in this browser and replaced this one.",
+};
+
+/** Every terminal result says why it ended and that no further wait should be issued. */
+function endedResult(watchToken: string, status: WatchEndedStatus): Record<string, unknown> {
+  return {
+    status,
+    watchToken,
+    changes: [],
+    continueWatching: false,
+    reason: WATCH_ENDED_REASON[status],
+    nextAction:
+      "Do not call wait again unless the participant selects the intended steps and asks to start another watch.",
+  };
+}
+
+/**
+ * Frame validation accepts any safe integer, and values above the maximum representable date
+ * make toISOString throw, so an out-of-range timestamp is reported rather than crashing the
+ * feed midway through recording a change.
+ */
+function changeTimestamp(acceptedAt: number): string {
+  const clamped = Math.min(Math.max(acceptedAt, 0), MAX_TIMESTAMP_MS);
+  return new Date(clamped).toISOString();
 }
 
 function remainingSeconds(session: WatchSession): number {
