@@ -19,11 +19,7 @@
     "codex_usage": "Codex supported product scoping, WebMCP tool and permission architecture, implementation, automated tests, debugging, review, demo preparation, and submission documentation."
   },
   "current_stage": "prepare-submission",
-  "completed_stages": [
-    "start-hackathon",
-    "review",
-    "prepare-submission"
-  ],
+  "completed_stages": ["start-hackathon", "review", "prepare-submission"],
   "rules_acknowledged": true,
   "learning": {
     "status": "not-started",
