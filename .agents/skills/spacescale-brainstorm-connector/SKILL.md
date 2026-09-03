@@ -40,8 +40,9 @@ Two kinds of agent, two jobs.
   comment under the word limit, or "no comment" with a reason. Then go
   straight back to waiting on the watch. Do not block on the analysis.
 - **Coordinate the replies.** When a draft comes back, check it against the
-  rules (a hint, not an answer; under the word limit; nothing about other
-  students), then post it with the tool the reply plan or the table names.
+  rules (under the word limit; names the peers by display name and summarises
+  the overlap; never copies another student's text across), then post it with
+  the tool the reply plan or the table names.
   If two drafts land for the same student, post the later one only.
 - **Keep at most two background tasks in flight.** Queue the rest in order.
   If a step changes again before its draft returns, drop the old task and
@@ -100,15 +101,17 @@ list with members, and the outliers as a separate list, so nobody is lost.
 ## Demo scenario
 
 Board: insert the template **Brainstorm: traffic near school**. Six
-students, three sticky notes each. If the working folder has no files, use
-the values below: four groups, keep Rohan and Kabir apart.
+students with very different output: Aarav has five cards, Zoya one. Two
+cards sit outside every Section. If the working folder has no files, use the
+values below: four groups, keep Rohan and Kabir apart.
 
 Teacher's opening prompt:
 
 > Watch this brainstorm and connect students who picked the same issue.
 
-Your opening line after `read_board`: "Four themes so far: spreading the
-peak, evidence first, walking and cycling, and the road layout. Watching."
+Your opening line after `read_board`: "Five themes so far: spreading the
+peak, evidence first, walking and cycling, the road layout, and doubts about
+the whole thing. Watching."
 
 The themes, from the stickies on the board:
 
@@ -116,8 +119,9 @@ The themes, from the stickies on the board:
 | --- | --- | --- |
 | Spread the peak | Aarav, Kabir, Isha | Stagger the end of the day; later start on Wednesdays and measure; most of the traffic is in ten minutes, so spread those ten |
 | Evidence first | Meera, Isha | Count the cars for a week; ask the council for the accident record; survey families |
-| Walking and cycling | Zoya, Meera, Aarav, Isha | Cycle racks; the bike route junction; buddy system; walking bus; park a street away and walk; prizes for the class that walks or cycles most |
-| Road layout | Rohan, Kabir | One-way gate road; paint a crossing; drop-off loop; move the bus stop |
+| Walking and cycling | Aarav, Zoya, Isha | Park a street away and walk; safe cycle racks; prizes for the class that walks or cycles most; the stray "e-scooters??" card |
+| Road layout | Rohan, Kabir | One-way gate road; paint a crossing; a lollipop person at the junction; drop-off loop; move the bus stop; the stray "PARKING" card |
+| Doubts | Aarav, Rohan, Isha | Is it worth all this; the council will never agree; who would enforce it; who pays |
 
 Live moments, in this order:
 
@@ -127,9 +131,9 @@ Live moments, in this order:
    traffic is in ten minutes. Yours is the only one that measures the
    difference. Want to design that measurement together?"
 2. The teacher adds a sticky in Zoya's Section: "Could we get a crossing
-   patrol at the junction?" Comment on it: "Rohan also wants a proper crossing
-   where everyone already crosses. Yours puts a person at the junction. Want
-   to compare which spot is worse at 8 am?"
+   patrol at the junction?" Comment on it: "Rohan wants a lollipop person at
+   the junction and a proper crossing. Yours is the same person from the
+   other side. Want to compare which spot is worse at 8 am?"
 3. The teacher uses the board's AI action with the task "Propose four
    groups". Post one `insert_sticky` in the empty space below the Sections:
    "Groups to confirm. Spread the peak: Aarav, Kabir. Evidence first: Meera,
@@ -137,5 +141,5 @@ Live moments, in this order:
    Rohan and Kabir are apart, as the brief asks, and Kabir's measuring idea
    fits the peak group.
 4. The teacher types "stop". Stop the watch and give the theme list with
-   members, then the outliers list. There are no outliers on this board; say
-   so.
+   members, then the doubts as their own list so the teacher can answer them
+   in the room. The two stray cards go with the themes they fit.

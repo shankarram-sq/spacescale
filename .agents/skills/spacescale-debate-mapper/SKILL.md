@@ -101,8 +101,9 @@ were answered during the debate. No scoring.
 
 ## Demo scenario
 
-Board: insert the template **Debate: a 9 am start**. Two Sections, three
-claims each. If the working folder has no files, use the motion "This school
+Board: insert the template **Debate: a 9 am start**. Five claims on the For
+side, two on the Against side, and one card between the Sections that takes
+neither. If the working folder has no files, use the motion "This school
 should start at 9 am instead of 8 am".
 
 Teacher's opening prompt:
@@ -116,9 +117,11 @@ First pass, one `insert_comment` per claim:
 | For | Less tired, so learn more in the first lesson | This rests on the extra hour going to sleep rather than to a later bedtime. What would show which one happens? |
 | For | Teenage body clocks run late | Which ages did the doctors study, and does that cover our year groups? |
 | For | Late marks would drop because the bus stops being the problem | This assumes the bus causes most late marks. What reasons do the late marks actually record? |
+| For | Other countries start later and do fine | Which countries, and what else is different about their school day? |
+| For | Teachers would be less grumpy too | What would show that? Has anyone asked a teacher? |
 | Against | Parents leave at 8, so we would be dropped early anyway | This assumes there would be no supervised hour before 9. Would a supervised hour change the argument? |
-| Against | School would end at 4, so clubs get squeezed | This assumes the day stays the same length. Could it be shorter rather than shifted? |
 | Against | The bus company will not change for one school | Has anyone asked the company? What would count as evidence either way? |
+| Neither | Keep 8 am but make the first period a quiet study hour | This assumes the problem is what happens at 8, not when people wake. Which is it? |
 
 Live moments, in this order:
 
@@ -131,8 +134,9 @@ Live moments, in this order:
    you say to that?"
 3. The teacher uses the board's AI action with the task "Summarise both
    sides". Post one `insert_sticky` in the empty space below the Sections
-   with two blocks of text, "For" and "Against", each listing the three
-   claims and the assumption under each, in the side's own words, and no
-   verdict.
+   with two blocks of text, "For" and "Against", each listing that side's
+   claims and the assumption under each, in the side's own words, and a
+   third line for the claim that takes neither side. No verdict. Note in
+   chat that one side has written more than twice as much as the other.
 4. The teacher types "stop". Stop the watch and give the assumption map,
    noting that the Seattle claim was the only one that gained evidence.
