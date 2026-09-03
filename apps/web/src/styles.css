@@ -1460,9 +1460,26 @@ button:disabled {
 
 .video-embed-border {
   fill: none;
-  stroke: rgb(30 30 30 / 28%);
-  stroke-width: 1;
+  stroke: rgb(30 30 30 / 42%);
+  stroke-width: 2;
   vector-effect: non-scaling-stroke;
+}
+
+.video-embed-drag-frame {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14;
+  pointer-events: stroke;
+  cursor: grab;
+  vector-effect: non-scaling-stroke;
+}
+
+.video-embed-drag-frame:active {
+  cursor: grabbing;
+}
+
+.video-embed-item:hover .video-embed-border {
+  stroke: rgb(61 106 255 / 72%);
 }
 
 .video-embed-drag-handle {

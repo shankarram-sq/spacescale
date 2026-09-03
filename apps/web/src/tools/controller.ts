@@ -2207,11 +2207,18 @@ export class ToolController {
       event.preventDefault();
       return;
     }
-
-    const hit = this.options.model.hitTest(
-      point,
-      selectionHitPadding(event.pointerType, this.options.renderer.viewport.zoom),
+    const videoDragTarget = eventTarget?.closest<SVGElement>(
+      "[data-video-drag-frame], [data-video-drag-handle]",
     );
+    const videoItemId = videoDragTarget?.closest<SVGElement>("[data-item-id]")?.dataset.itemId;
+    const videoItem = videoItemId ? this.options.model.getItem(videoItemId) : undefined;
+    const hit =
+      videoItem?.kind === "text" && videoItem.geometry.embed === "video"
+        ? videoItem
+        : this.options.model.hitTest(
+            point,
+            selectionHitPadding(event.pointerType, this.options.renderer.viewport.zoom),
+          );
     if (hit?.kind !== "sticky") this.lastStickyTap = null;
     if (hit?.kind !== "table") this.lastTableTap = null;
     if (hit?.kind !== "zone") this.lastZoneTap = null;

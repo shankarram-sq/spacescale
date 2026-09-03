@@ -1524,6 +1524,7 @@ type VideoEmbedParts = {
   video: VideoEmbed;
   preview: boolean;
   foreign: SVGForeignObjectElement;
+  dragFrame?: SVGRectElement;
   border: SVGRectElement;
   handleSurface?: SVGRectElement;
   handleGrip?: SVGTextElement;
@@ -1541,7 +1542,8 @@ function layoutVideoEmbedNode(
   const x = geometry.x;
   const y = geometry.y - style.fontSize;
   node.setAttribute("opacity", String(style.opacity));
-  for (const box of [parts.foreign, parts.border]) {
+  for (const box of [parts.foreign, parts.dragFrame, parts.border]) {
+    if (!box) continue;
     box.setAttribute("x", String(x));
     box.setAttribute("y", String(y));
   }
@@ -1638,13 +1640,22 @@ function videoEmbedNode(
   border.setAttribute("height", String(VIDEO_EMBED_HEIGHT));
   border.setAttribute("rx", "12");
   border.setAttribute("pointer-events", "none");
-  node.append(foreign, border);
+  const dragFrame = preview ? undefined : svgElement("rect");
+  if (dragFrame) {
+    dragFrame.classList.add("video-embed-drag-frame");
+    dragFrame.dataset.videoDragFrame = "true";
+    dragFrame.setAttribute("width", String(VIDEO_EMBED_WIDTH));
+    dragFrame.setAttribute("height", String(VIDEO_EMBED_HEIGHT));
+    dragFrame.setAttribute("rx", "12");
+  }
+  node.append(foreign, ...(dragFrame ? [dragFrame] : []), border);
   const handle = preview ? undefined : videoDragHandleNode();
   if (handle) node.append(handle.node);
   const parts: VideoEmbedParts = {
     video,
     preview,
     foreign,
+    ...(dragFrame ? { dragFrame } : {}),
     border,
     ...(handle ? { handleSurface: handle.surface, handleGrip: handle.grip } : {}),
   };
