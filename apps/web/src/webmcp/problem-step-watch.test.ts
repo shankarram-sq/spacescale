@@ -562,7 +562,11 @@ describe("board-side assist requests", () => {
       { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
       new AbortController().signal,
     );
-    expect(second).toMatchObject({ status: "changed", changes: [{ seq: 8 }] });
+    expect(second).toMatchObject({
+      status: "changed",
+      changes: [{ seq: 8 }],
+      selectionToken: expect.stringMatching(/^token_/u),
+    });
     expect(second).not.toHaveProperty("droppedRequests");
   });
 

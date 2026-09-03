@@ -603,10 +603,14 @@ export class ProblemStepWatchFeed {
   }
 
   private changesResult(session: WatchSession, afterSeq: number): Record<string, unknown> {
+    // A change bumps item versions, which invalidates any earlier selection token, so every
+    // result that reports new text also carries a fresh one.
+    const selectionToken = this.selectionTokenFor(session);
     return {
       status: "changed",
       watchToken: session.token,
       changes: session.changes.filter((change) => change.seq > afterSeq),
+      ...(selectionToken === undefined ? {} : { selectionToken }),
       nextSeq: session.lastReportedSeq,
       remainingSeconds: remainingSeconds(session),
       ...watchGuidance(session.token, session.lastReportedSeq),
@@ -625,12 +629,14 @@ export class ProblemStepWatchFeed {
   }
 
   private resyncResult(session: WatchSession): Record<string, unknown> {
+    const selectionToken = this.selectionTokenFor(session);
     return {
       status: "resync",
       watchToken: session.token,
       reason:
         "More changes occurred than this page retains for one watch. Use this fresh snapshot.",
       steps: this.currentSteps(session),
+      ...(selectionToken === undefined ? {} : { selectionToken }),
       nextSeq: session.lastReportedSeq,
       remainingSeconds: remainingSeconds(session),
       ...watchGuidance(session.token, session.lastReportedSeq),
