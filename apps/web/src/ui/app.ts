@@ -1042,7 +1042,7 @@ export class BoardApp {
     opacity: 1,
     lineArrowhead: "none",
     shapeVariant: "rectangle",
-    fontSize: 28,
+    fontSize: 20,
     fontFamily: "sans",
     stickyFill: STICKY_COLORS[0].value,
     stickyTextColor: UI_COLORS.ink,
@@ -1791,8 +1791,8 @@ export class BoardApp {
                 <select data-selection-font-size aria-label="Text size">
                   <option value="" disabled>Mixed sizes</option>
                   <option value="16">Small</option>
+                  <option value="20">Default</option>
                   <option value="24">Medium</option>
-                  <option value="28">Default</option>
                   <option value="36">Large</option>
                   <option value="52">Extra large</option>
                   <option value="72">Huge</option>
@@ -1899,7 +1899,7 @@ export class BoardApp {
               <option value="handwritten">Handwritten</option>
               <option value="mono">Mono</option>
             </select></label>
-            <label class="range-row" data-style-font-row><span>Text</span><output data-font-output>28</output><input type="range" min="8" max="96" value="28" step="1" data-style-font /></label>
+            <label class="range-row" data-style-font-row><span>Text</span><output data-font-output>20</output><input type="range" min="8" max="96" value="20" step="1" data-style-font /></label>
           </section>
         </div>
 
@@ -4750,12 +4750,16 @@ export class BoardApp {
           : "Add text",
     );
     editor.maxLength = mode === "sticky" ? MAX_STICKY_TEXT_CODE_POINTS * 2 : 5_000;
-    editor.rows = mode === "sticky" ? 6 : 2;
+    editor.rows = mode === "sticky" ? 6 : 1;
     editor.value = recovery?.text ?? editedItem?.geometry.text ?? "";
     editor.dataset.boardX = String(textPoint[0]);
     editor.dataset.boardY = String(textPoint[1]);
     if (!editedItem) editor.dataset.draftItemId = recovery?.draftItemId ?? createId();
-    editor.placeholder = mode === "sticky" ? "Add an idea…" : "Type something";
+    editor.placeholder = mode === "sticky" ? "Add an idea…" : "Add text";
+    if (mode === "text") {
+      editor.title = "Enter to add · Ctrl/⌘ Enter for a new line";
+      editor.setAttribute("aria-keyshortcuts", "Enter Control+Enter Meta+Enter");
+    }
     const zoom = this.renderer.viewport.zoom;
     if (mode === "sticky") {
       const editorWidth = Math.min(
@@ -4839,9 +4843,19 @@ export class BoardApp {
       if (event.key === "Escape") {
         event.preventDefault();
         void this.closeTextEditor(false);
-      } else if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-        event.preventDefault();
-        void this.closeTextEditor(true);
+      } else if (event.key === "Enter" && !event.isComposing) {
+        if (mode === "text") {
+          event.preventDefault();
+          if (event.ctrlKey || event.metaKey) {
+            editor.setRangeText("\n", editor.selectionStart, editor.selectionEnd, "end");
+            schedule();
+          } else {
+            void this.closeTextEditor(true);
+          }
+        } else if (event.ctrlKey || event.metaKey) {
+          event.preventDefault();
+          void this.closeTextEditor(true);
+        }
       }
     });
     preview();
@@ -4936,7 +4950,7 @@ export class BoardApp {
     if (this.textEditor !== editor || attempt !== this.textEditorCloseAttempt) return;
     this.textEditorClosing = false;
     if (accepted) {
-      if (mode === "sticky" && context === null) {
+      if ((mode === "sticky" || mode === "text") && context === null) {
         this.tools.setTool("select");
         this.tools.selectOnly([draftItemId]);
       }

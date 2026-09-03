@@ -191,7 +191,7 @@ test("shape palette, rotatable protractor, snapping, partial erase, and feature 
     const toggle = settings.locator(`input[data-feature='${feature}']`);
     if (await toggle.isChecked()) await toggle.uncheck();
   }
-  const moreTools = page.getByTestId("more-tools");
+  const moreTools = page.getByTestId("tool-more");
   await expect(moreTools).toBeVisible();
   await protractorGate.uncheck();
   await expect(moreTools).toBeHidden();

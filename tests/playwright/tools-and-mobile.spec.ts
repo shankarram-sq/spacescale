@@ -57,7 +57,7 @@ test("line, text, styles, constrained shapes, eraser, and pen input commit canon
   const editor = page.getByTestId("canvas-text-editor");
   await expect(editor).toBeVisible();
   await editor.fill("Shared words");
-  await editor.press("Control+Enter");
+  await editor.press("Enter");
   const text = page.locator("#drawing-area .board-item-text");
   await expect(text).toHaveCount(1);
   await expect(text).toContainText("Shared words");
@@ -225,10 +225,35 @@ test("board shortcuts stay disabled while text and sticky editors are active", a
   await expect(textEditor).toBeFocused();
   await expect(textEditor).toHaveValue(`Text ${shortcutText}`);
   await expect(textTool).toHaveAttribute("aria-pressed", "true");
+  await expect(textEditor).toHaveAttribute("rows", "1");
+  expect(
+    await textEditor.evaluate((node) => {
+      const style = getComputedStyle(node);
+      return {
+        width: style.width,
+        minHeight: style.minHeight,
+        padding: style.padding,
+        fontSize: style.fontSize,
+      };
+    }),
+  ).toEqual({
+    width: "240px",
+    minHeight: "32px",
+    padding: "3px 5px",
+    fontSize: "20px",
+  });
   await textEditor.press("Control+Enter");
+  await expect(textEditor).toBeVisible();
+  await expect(textEditor).toBeFocused();
+  await expect(textEditor).toHaveValue(`Text ${shortcutText}\n`);
+  await textEditor.type("Continued");
+  await textEditor.press("Enter");
+  await expect(textEditor).toHaveCount(0);
+  await expect(page.getByTestId("tool-select")).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#drawing-area .board-item-text")).toContainText(
     `Text ${shortcutText}`,
   );
+  await expect(page.locator("#drawing-area .board-item-text")).toContainText("Continued");
 
   const stickyPoint = await canvasPoint(page, 0.68, 0.3);
   const stickyTool = page.getByTestId("tool-sticky");
@@ -396,7 +421,7 @@ test("the complete board remains usable at a 320px viewport", async ({ page }, t
   await page.getByRole("button", { name: /^Text/u }).click();
   await page.mouse.click(textPoint.x, textPoint.y);
   await page.getByTestId("canvas-text-editor").fill("Mobile note");
-  await page.getByTestId("canvas-text-editor").press("Control+Enter");
+  await page.getByTestId("canvas-text-editor").press("Enter");
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
   await page.getByTestId("tool-select").click();
   await page.locator("#drawing-area .board-item-text").click();

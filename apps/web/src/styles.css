@@ -2877,9 +2877,9 @@ button:disabled {
 .canvas-text-editor {
   position: fixed;
   z-index: 90;
-  width: min(320px, calc(100vw - 20px));
-  min-height: 48px;
-  padding: 4px 7px;
+  width: min(240px, calc(100vw - 20px));
+  min-height: 32px;
+  padding: 3px 5px;
   resize: both;
   border: 1.5px solid var(--blue);
   border-radius: 7px;

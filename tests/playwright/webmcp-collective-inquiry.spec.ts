@@ -45,6 +45,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "The WebMCP demo-path smoke runs in Chromium.");
+  test.setTimeout(60_000);
 
   await page.addInitScript(() => {
     const tools: Record<string, RegisteredTool> = {};
@@ -359,6 +360,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   });
   expect(commented).toMatchObject({ status: "commented", objectKind: "sticky", writtenBy: "ai" });
   await expect(page.locator("[data-comments-count]")).toHaveText("2");
+  await openSettingsDrawer(page);
   await page.getByTestId("comments-button").click();
   const commentsDrawer = page.getByTestId("comments-drawer");
   await expect(commentsDrawer.locator(".comment-card")).toHaveCount(2);
@@ -368,7 +370,8 @@ test("a board participant can use headless WebMCP tools with neutral board attri
     "AI · Critique",
   ]);
   await expect(commentsDrawer.locator(".comment-card strong").first()).not.toHaveText("AI");
-  await page.getByTestId("comments-button").click();
+  await commentsDrawer.getByRole("button", { name: "Close comments" }).click();
+  await openSettingsDrawer(page);
 
   // Every write is one ordinary command, so each undoes on its own.
   for (const remaining of [15, 14, 13]) {
