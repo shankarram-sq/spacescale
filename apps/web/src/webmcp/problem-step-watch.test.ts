@@ -142,7 +142,8 @@ function setup(board: BoardItem[] = [sticky()]) {
     ]),
   );
   const feed = new ProblemStepWatchFeed({
-    getBoardItems: () => board,
+    // The board holds whatever the authoritative map currently says, as it does in the app.
+    getBoardItems: () => board.map((item) => items.get(item.id) ?? item),
     getAuthoritativeItem: (itemId) => items.get(itemId),
     getSequence: () => sequence,
     getParticipantDisplayName: (participantId) =>
@@ -505,7 +506,7 @@ describe("board-side assist requests", () => {
     let canWrite = true;
     const context = setup(board);
     const feed = new ProblemStepWatchFeed({
-      getBoardItems: () => board,
+      getBoardItems: () => board.map((item) => context.items.get(item.id) ?? item),
       getAuthoritativeItem: (itemId) => context.items.get(itemId),
       getSequence: () => 7,
       getParticipantDisplayName: () => "Sam",
@@ -870,17 +871,19 @@ describe("whole-board watching", () => {
     expect(result).toMatchObject({
       status: "requested",
       continueWatching: true,
-      boardShare: {
-        action: "check_work",
-        scope: "entire_board",
-        itemCount: 2,
-        reply: { via: "act_on_board" },
-      },
+      boardShares: [
+        {
+          action: "check_work",
+          scope: "entire_board",
+          itemCount: 2,
+          reply: { via: "act_on_board" },
+        },
+      ],
     });
     // The prompt is what tells the host what to do with the board it was just handed.
-    const share = result.boardShare as { prompt: string };
-    expect(share.prompt).toContain("reply as comments");
-    expect(share.prompt).toContain("debug");
+    const share = (result.boardShares as Array<{ prompt: string }>)[0];
+    expect(share?.prompt).toContain("reply as comments");
+    expect(share?.prompt).toContain("debug");
     feed.destroy();
   });
 
@@ -898,7 +901,9 @@ describe("whole-board watching", () => {
     );
 
     expect(result.requests).toHaveLength(0);
-    expect(result).toMatchObject({ boardShare: { action: "critique", note: "whole thing" } });
+    expect(result).toMatchObject({
+      boardShares: [{ action: "critique", note: "whole thing" }],
+    });
     feed.destroy();
   });
 
@@ -950,6 +955,59 @@ describe("character budget over the life of a watch", () => {
     const resyncStep = (resync.steps as Array<Record<string, unknown>>)[0];
     expect(resyncStep).toMatchObject({ textTruncated: true });
     expect(String(resyncStep?.text ?? "")).toHaveLength(120_000);
+    feed.destroy();
+  });
+});
+
+describe("whole-board reconciliation and queued shares", () => {
+  it("takes in objects a reload introduced and drops ones it removed", async () => {
+    const first = sticky("first");
+    const later = { ...canvasText(), version: 3 };
+    const board: BoardItem[] = [first];
+    const items = new Map<string, BoardItem>([[first.id, first]]);
+    const feed = new ProblemStepWatchFeed({
+      getBoardItems: () => board,
+      getAuthoritativeItem: (itemId) => items.get(itemId),
+      getSequence: () => 7,
+      getParticipantDisplayName: () => "Sam",
+    });
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    expect(started.steps).toHaveLength(1);
+
+    // A snapshot restore swaps the board wholesale.
+    board.length = 0;
+    board.push(later);
+    items.clear();
+    items.set(later.id, later);
+    feed.recordAuthoritativeReload(9);
+
+    const resync = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(resync).toMatchObject({ status: "resync" });
+    expect(resync.steps).toMatchObject([{ kind: "text", text: "Divide both sides by $2$" }]);
+    feed.destroy();
+  });
+
+  it("keeps both whole-board asks when two are made before the host polls", async () => {
+    const only = sticky();
+    const board = [only];
+    const feed = new ProblemStepWatchFeed({
+      getBoardItems: () => board,
+      getAuthoritativeItem: (itemId) => (itemId === only.id ? only : undefined),
+      getSequence: () => 7,
+      getParticipantDisplayName: () => "Sam",
+    });
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    feed.shareEntireBoard({ action: "explain", itemCount: 1 });
+    feed.shareEntireBoard({ action: "critique", itemCount: 1 });
+
+    const result = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(result.boardShares).toMatchObject([{ action: "explain" }, { action: "critique" }]);
     feed.destroy();
   });
 });

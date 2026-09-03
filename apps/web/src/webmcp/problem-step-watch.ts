@@ -160,8 +160,8 @@ type WatchSession = {
   requests: AssistRequest[];
   droppedRequests: number;
   nextRequestId: number;
-  /** Set when the participant shared the whole board; cleared once a wait delivers it. */
-  boardShare?: SharedBoard;
+  /** Whole-board asks awaiting a wait, oldest first. */
+  boardShares: SharedBoard[];
   /** Latest action requested per step alias, attached to the comment that answers it. */
   requestedActions: Map<string, AssistAction>;
   commentsPosted: number;
@@ -270,14 +270,15 @@ export class ProblemStepWatchFeed {
     session.requests = [];
     session.droppedRequests = 0;
     const requestId = `share_${session.nextRequestId}`;
-    session.boardShare = {
+    // Two rail actions before the host polls both survive; neither silently replaces the other.
+    session.boardShares.push({
       requestId,
       requestedAt: new Date().toISOString(),
       action,
       ...(note === undefined ? {} : { note }),
       itemCount: input.itemCount,
-    };
-    // Delivering clears session.boardShare, so the id is read before the wait resolves.
+    });
+    while (session.boardShares.length > MAX_QUEUED_REQUESTS) session.boardShares.shift();
     const delivered = session.pending !== undefined;
     if (delivered) this.resolvePending(session, this.requestedResult(session));
     return { requestId, delivered };
@@ -444,13 +445,17 @@ export class ProblemStepWatchFeed {
   recordAuthoritativeReload(seq: number): void {
     if (this.destroyed) return;
     this.expireSessions();
+    const board = this.options.getBoardItems();
+    const present = new Set(board.map((item) => item.id));
     for (const session of this.sessions.values()) {
-      for (const itemId of session.itemIds) {
-        const item = this.options.getAuthoritativeItem(itemId);
-        const step = item ? this.toWatchedStep(item, session.aliases.get(itemId)) : undefined;
-        if (step) session.steps.set(itemId, step);
-        else session.steps.delete(itemId);
+      // A reload can add or remove objects, so the watch reconciles against the board rather
+      // than re-reading only the objects it already knew about.
+      for (const itemId of [...session.itemIds]) {
+        if (present.has(itemId)) continue;
+        session.itemIds.delete(itemId);
+        session.steps.delete(itemId);
       }
+      for (const item of board) this.trackItem(session, item);
       session.changes = [];
       session.lastReportedSeq = seq;
       // One less than the sequence handed back as nextSeq, so a caller resuming at nextSeq
@@ -484,7 +489,7 @@ export class ProblemStepWatchFeed {
       );
     }
     const boardCodePoints = watchable.reduce(
-      (total, item) => total + [...(stepText(item) ?? "")].length,
+      (total, item) => total + [...(stepText(item) ?? visualDescription(item))].length,
       0,
     );
     if (boardCodePoints > MAX_WATCHED_TEXT_CODE_POINTS) {
@@ -511,6 +516,7 @@ export class ProblemStepWatchFeed {
       requests: [],
       droppedRequests: 0,
       nextRequestId: 0,
+      boardShares: [],
       requestedActions: new Map(),
       commentsPosted: 0,
       commentInFlight: false,
@@ -579,7 +585,7 @@ export class ProblemStepWatchFeed {
         : safeInteger(input.waitMs, "waitMs", 1_000, PROBLEM_STEP_WATCH_MAX_WAIT_MS);
     // Requests embed the current step text, so they do not depend on the caller's cursor and
     // go out ahead of queued changes; nextSeq is unchanged and the changes follow next time.
-    if (session.requests.length > 0 || session.boardShare !== undefined) {
+    if (session.requests.length > 0 || session.boardShares.length > 0) {
       return Promise.resolve(this.requestedResult(session));
     }
     if (afterSeq <= session.discardedThroughSeq) {
@@ -620,8 +626,7 @@ export class ProblemStepWatchFeed {
     const requests = session.requests.splice(0);
     const droppedRequests = session.droppedRequests;
     session.droppedRequests = 0;
-    const boardShare = session.boardShare;
-    session.boardShare = undefined;
+    const boardShares = session.boardShares.splice(0);
     const selection = this.selectionTokenFields(session);
     const canComment = this.options.canComment?.() ?? false;
     const canWrite = this.options.canWrite?.() ?? false;
@@ -637,23 +642,23 @@ export class ProblemStepWatchFeed {
         };
       }),
       ...(droppedRequests > 0 ? { droppedRequests } : {}),
-      ...(boardShare === undefined
+      ...(boardShares.length === 0
         ? {}
         : {
-            boardShare: {
-              requestId: boardShare.requestId,
-              requestedAt: boardShare.requestedAt,
-              action: boardShare.action,
-              ...(boardShare.note === undefined ? {} : { note: boardShare.note }),
-              itemCount: boardShare.itemCount,
+            boardShares: boardShares.map((share) => ({
+              requestId: share.requestId,
+              requestedAt: share.requestedAt,
+              action: share.action,
+              ...(share.note === undefined ? {} : { note: share.note }),
+              itemCount: share.itemCount,
               scope: "entire_board",
-              prompt: ASSIST_GUIDANCE[boardShare.action].instruction,
+              prompt: ASSIST_GUIDANCE[share.action].instruction,
               reply: {
                 via: "act_on_board",
                 instruction:
                   "This watch already follows the whole board, so nothing needs re-scoping. Carry out the prompt across the steps it reports, replying the way the prompt asks.",
               },
-            },
+            })),
           }),
       ...selection,
       canComment,
@@ -1052,11 +1057,28 @@ function visualDescription(item: BoardItem): string {
  * Trims step text so one result can never exceed the watch's character budget. A trimmed step
  * says so, rather than quietly handing the host a truncated answer it would treat as complete.
  */
-function withinTextBudget<Step extends { alias: string; text?: string; textTruncated?: true }>(
-  steps: readonly Step[],
-): Step[] {
+function withinTextBudget<
+  Step extends {
+    alias: string;
+    kind?: BoardItem["kind"];
+    text?: string;
+    textTruncated?: true;
+    visual?: { description: string; revision: number };
+  },
+>(steps: readonly Step[]): Step[] {
   let remaining = MAX_WATCHED_TEXT_CODE_POINTS;
   return steps.map((step) => {
+    if (step.visual !== undefined) {
+      // An image description carries its alt text, so descriptions spend the budget too.
+      const described = [...step.visual.description];
+      if (described.length <= remaining) {
+        remaining -= described.length;
+        return step;
+      }
+      remaining = 0;
+      // Falls back to the bare kind rather than a description cut off mid-sentence.
+      return { ...step, visual: { ...step.visual, description: step.kind ?? "object" } };
+    }
     if (step.text === undefined) return step;
     const points = [...step.text];
     if (points.length <= remaining) {
@@ -1076,7 +1098,10 @@ function withinTextBudget<Step extends { alias: string; text?: string; textTrunc
 function retainedCodePoints(changes: readonly WatchChange[]): number {
   let total = 0;
   for (const change of changes) {
-    for (const step of change.steps) total += [...("text" in step ? (step.text ?? "") : "")].length;
+    for (const step of change.steps) {
+      if (!("text" in step)) continue;
+      total += [...(step.text ?? step.visual?.description ?? "")].length;
+    }
   }
   return total;
 }
