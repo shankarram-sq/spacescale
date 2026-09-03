@@ -1458,7 +1458,9 @@ button:disabled {
 
 .shape-menu {
   left: 50%;
-  bottom: 78px;
+  /* .style-wrap already sits above the tool rail; anchor to its bottom edge like .style-popover
+     so the shape and tools menus open directly over the rail instead of floating mid-canvas. */
+  bottom: 0;
   width: min(390px, calc(100vw - 32px));
   padding: 8px;
   translate: -50% 0;
