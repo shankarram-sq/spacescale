@@ -743,6 +743,86 @@ describe("comment API responses", () => {
     ).toThrow(expect.objectContaining({ code: "INVALID_RESPONSE" }));
   });
 
+  it("keeps a comment's picture or video, and refuses one the contract does not allow", () => {
+    const base = {
+      id: `c_${"A".repeat(22)}`,
+      itemId: "018f0000-0000-7000-8000-000000000c01",
+      body: "Compare this with your sketch",
+      state: "open",
+      author: { id: `a_${"B".repeat(22)}`, displayName: "Asha" },
+      createdAt: 100,
+      updatedAt: 120,
+    };
+    expect(parseBoardComment(base)).not.toHaveProperty("media");
+    expect(
+      parseBoardComment({
+        ...base,
+        media: {
+          kind: "image",
+          assetId: `asset_${"A".repeat(43)}`,
+          mimeType: "image/png",
+          intrinsicWidth: 800,
+          intrinsicHeight: 600,
+          alt: "A parabola",
+        },
+      }).media,
+    ).toMatchObject({ kind: "image", alt: "A parabola" });
+    expect(
+      parseBoardComment({
+        ...base,
+        media: { kind: "video", provider: "vimeo", url: "https://vimeo.com/123456" },
+      }).media,
+    ).toEqual({ kind: "video", provider: "vimeo", url: "https://vimeo.com/123456" });
+
+    expect(() =>
+      parseBoardComment({ ...base, media: { kind: "video", url: "https://example.com/clip" } }),
+    ).toThrow(expect.objectContaining({ code: "INVALID_RESPONSE" }));
+    expect(() =>
+      parseBoardComment({ ...base, media: { kind: "sound", url: "https://example.com/a.mp3" } }),
+    ).toThrow(expect.objectContaining({ code: "INVALID_RESPONSE" }));
+  });
+
+  it("sends the comment's media only when createComment is given some", async () => {
+    const requests: CapturedRequest[] = [];
+    const comment = {
+      id: `c_${"A".repeat(22)}`,
+      itemId: "018f0000-0000-7000-8000-000000000c01",
+      body: "Watch this before the next step",
+      state: "open",
+      author: { id: `a_${"B".repeat(22)}`, displayName: "Asha" },
+      createdAt: 100,
+      updatedAt: 100,
+    };
+    const media = {
+      kind: "video" as const,
+      provider: "youtube" as const,
+      url: "https://youtu.be/dQw4w9WgXcQ",
+    };
+    const responses: unknown[] = [{ csrfToken: "csrf-token" }, { ...comment, media }];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+        requests.push({ path: String(input), init });
+        return Response.json(responses.shift());
+      }),
+    );
+
+    const api = new ApiClient();
+    await api.ensureSession();
+    const posted = await api.createComment(
+      "b_1234567890123456789012",
+      comment.itemId,
+      comment.body,
+      undefined,
+      media,
+    );
+
+    expect(requests[1]?.init.body).toBe(
+      JSON.stringify({ itemId: comment.itemId, body: comment.body, media }),
+    );
+    expect(posted.media).toEqual(media);
+  });
+
   it("sends assistedBy and assistance only when createComment is given assistance", async () => {
     const requests: CapturedRequest[] = [];
     const comment = {

@@ -1,6 +1,15 @@
 import { expect, test } from "@playwright/test";
 import { canvasPoint, createBoard, drawShape, moveItem } from "./helpers";
 
+const PNG_FILE = {
+  name: "worked-example.png",
+  mimeType: "image/png",
+  buffer: Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  ),
+};
+
 test("object comments follow moves, hide after orphaning, and resolve", async ({
   page,
 }, testInfo) => {
@@ -86,4 +95,66 @@ test("object comments follow moves, hide after orphaning, and resolve", async ({
   await drawer.getByRole("checkbox", { name: "Show resolved & orphaned" }).uncheck();
   await expect(drawer.locator(".comment-card")).toHaveCount(0);
   expect(browserProblems).toEqual([]);
+});
+
+test("a comment can carry a video and a picture", async ({ page }, testInfo) => {
+  test.skip(
+    !["chromium", "mobile-chromium"].includes(testInfo.project.name),
+    "Comment media runs in Chromium.",
+  );
+
+  await createBoard(page, "Comment media");
+  const start = await canvasPoint(page, 0.34, 0.4);
+  const shape = await drawShape(page, "Rectangle", start, { x: start.x + 140, y: start.y + 92 });
+  const bounds = await shape.boundingBox();
+  if (!bounds) throw new Error("The comment target has no layout bounds.");
+  await page.getByRole("button", { name: /^Select/u }).click();
+  await page.mouse.click(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  await page.getByRole("button", { name: "Comment on selected object" }).click();
+
+  const drawer = page.getByTestId("comments-drawer");
+  await expect(drawer).toBeVisible();
+
+  // A video rides along as a link the class can play in the drawer.
+  await drawer.getByTestId("comment-add-video").click();
+  const videoField = drawer.locator("[data-comment-video-field]");
+  await videoField.getByRole("textbox").fill("not a video");
+  await videoField.getByRole("button", { name: "Attach video" }).click();
+  await expect(videoField.locator("[data-comment-video-error]")).toContainText("YouTube or Vimeo");
+  await videoField.getByRole("textbox").fill("https://youtu.be/dQw4w9WgXcQ");
+  await videoField.getByRole("button", { name: "Attach video" }).click();
+  await expect(drawer.getByTestId("comment-attachment")).toContainText("YouTube video attached");
+  await drawer.getByRole("textbox", { name: "Comment" }).fill("Watch this before step three.");
+  await drawer.getByRole("button", { name: "Comment", exact: true }).click();
+
+  const videoCard = drawer.locator(".comment-card").filter({ hasText: "step three" });
+  await expect(videoCard.locator(".comment-media-video-link")).toHaveAttribute(
+    "href",
+    "https://youtu.be/dQw4w9WgXcQ",
+  );
+  await expect(drawer.getByTestId("comment-attachment")).toBeHidden();
+  await videoCard.getByRole("button", { name: "Play video here" }).click();
+  await expect(videoCard.locator("iframe")).toHaveAttribute(
+    "src",
+    "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ",
+  );
+  await videoCard.getByRole("button", { name: "Stop video" }).click();
+  await expect(videoCard.locator("iframe")).toHaveCount(0);
+
+  // A picture goes through the board's own upload, then hangs under the comment text.
+  const chooser = page.waitForEvent("filechooser");
+  await drawer.getByTestId("comment-add-image").click();
+  await (await chooser).setFiles(PNG_FILE);
+  await expect(drawer.getByTestId("comment-attachment")).toContainText("Image attached");
+  await drawer.getByRole("textbox", { name: "Describe the image" }).fill("A worked example");
+  await drawer.getByRole("textbox", { name: "Comment" }).fill("Here is the same step worked out.");
+  await drawer.getByRole("button", { name: "Comment", exact: true }).click();
+
+  const imageCard = drawer.locator(".comment-card").filter({ hasText: "worked out" });
+  const picture = imageCard.locator("img");
+  await expect(picture).toHaveAttribute("alt", "A worked example");
+  await expect
+    .poll(() => picture.evaluate((node: HTMLImageElement) => node.currentSrc.length > 0))
+    .toBe(true);
+  await expect(imageCard.locator("figcaption")).toHaveText("A worked example");
 });
