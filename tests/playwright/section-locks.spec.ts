@@ -66,6 +66,8 @@ test("an owner lock freezes a Section and every participant's contents", async (
     );
     const lockButton = page.getByRole("button", { name: "Lock Section", exact: true });
     await expect(lockButton).toBeVisible();
+    await expect(lockButton.locator("svg")).toHaveCount(1);
+    await expect(lockButton).toHaveAttribute("data-section-locked", "false");
     await lockButton.click();
     await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
     await expect(ownerSection).toHaveAttribute("data-section-locked", "true");
@@ -133,6 +135,8 @@ test("an owner lock freezes a Section and every participant's contents", async (
     );
     const unlockButton = page.getByRole("button", { name: "Unlock Section", exact: true });
     await expect(unlockButton).toBeVisible();
+    await expect(unlockButton.locator("svg")).toHaveCount(1);
+    await expect(unlockButton).toHaveAttribute("data-section-locked", "true");
     await unlockButton.click();
     await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
     await expect(ownerSection).not.toHaveAttribute("data-section-locked", "true");

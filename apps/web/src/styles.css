@@ -1250,9 +1250,15 @@ button:disabled {
   border-width: 1px;
 }
 
-.selection-comment-button svg {
+.selection-comment-button svg,
+.selection-icon-button svg {
   width: 18px;
   height: 18px;
+}
+
+[data-selection-section-lock][data-section-locked="true"] .section-lock-icon-closed,
+[data-selection-section-lock][data-section-locked="false"] .section-lock-icon-open {
+  display: none;
 }
 
 .selection-arrange-wrap {

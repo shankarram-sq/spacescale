@@ -1847,7 +1847,7 @@ export class BoardApp {
                 </div>
               </div>
               <button class="selection-comment-button" type="button" data-selection-comment aria-label="Comment on selected object" title="Comment"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h9a4 4 0 0 1 4 4Z"/><path d="M8 9h8M8 13h5"/></svg></button>
-              <button type="button" data-selection-section-lock aria-label="Lock Section" aria-pressed="false" hidden>Lock Section</button>
+              <button class="selection-icon-button" type="button" data-selection-section-lock data-section-locked="false" aria-label="Lock Section" title="Lock Section" aria-pressed="false" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path class="section-lock-icon-closed" d="M8 10V7a4 4 0 0 1 8 0v3"/><path class="section-lock-icon-open" d="M16 10V7a4 4 0 0 0-7.8-1.2"/><circle cx="12" cy="15.5" r="1"/></svg></button>
               <button type="button" data-selection-group aria-label="Group selected items" hidden>Group</button>
               <button type="button" data-selection-ungroup aria-label="Ungroup selected items" hidden>Ungroup</button>
               <div class="selection-arrange-wrap">
@@ -6946,7 +6946,7 @@ export class BoardApp {
     const sectionLocked = selectedSection?.geometry.locked === true;
     sectionLock.hidden = this.bootstrap.actor.role !== "owner" || selectedSection === undefined;
     sectionLock.disabled = !canEdit || !allSelectedAuthoritative || selectedSection === undefined;
-    sectionLock.textContent = sectionLocked ? "Unlock Section" : "Lock Section";
+    sectionLock.dataset.sectionLocked = String(sectionLocked);
     sectionLock.setAttribute("aria-label", sectionLocked ? "Unlock Section" : "Lock Section");
     sectionLock.setAttribute("aria-pressed", String(sectionLocked));
     sectionLock.title = sectionLock.disabled
