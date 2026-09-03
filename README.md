@@ -73,11 +73,15 @@ press `Esc` or choose **Stop** to leave that Spotlight session; a later session
 can be followed normally. Spotlight traffic is ephemeral and never enters board
 history, snapshots, exports, or the offline outbox.
 
-The **Templates** menu includes five built-in starter layouts—Exit ticket,
-K-W-L, Sort it, Pair share, and Vote with stamps—as ordinary attributed item
-batches. Owners of an organisation-managed Space can also save a selection as
-an organisation template. Those templates appear in every Space signed for the
-same Organisation and remain isolated from every other Organisation.
+The **Templates** menu includes nine built-in layouts. Six compact classroom
+starters cover Collective inquiry, Exit ticket, K-W-L, Sort it, Pair share, and
+Vote with stamps. Three one-click test boards—Product discovery, Incident
+response, and Design critique—exercise larger canvases with Sections, grouped
+objects, transforms, tables, arrows, reactions, safe links, varied typography,
+and labelled comment targets. Owners of an organisation-managed Space can also
+save a selection as an organisation template. Those templates appear in every
+Space signed for the same Organisation and remain isolated from every other
+Organisation.
 Vote totals are derived live from each participant's latest stamp in the vote
 table and are not stored in board history or exports. Only owners receive the
 bulk **Clear votes** action; the underlying stamps remain ordinary board items.

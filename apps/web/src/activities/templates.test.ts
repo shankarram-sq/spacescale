@@ -16,7 +16,7 @@ function deterministicIds(): () => string {
 }
 
 describe("classroom templates", () => {
-  it("builds all six templates as small valid ordinary-item batches", () => {
+  it("builds all nine templates as small valid ordinary-item batches", () => {
     const expectedCounts: Record<ActivityTemplateId, number> = {
       "collective-inquiry-demo": 13,
       "exit-ticket": 7,
@@ -24,6 +24,9 @@ describe("classroom templates", () => {
       "sort-it": 12,
       "pair-share": 7,
       "vote-with-stamps": 4,
+      "product-discovery-lab": 28,
+      "incident-response-room": 24,
+      "design-critique-studio": 30,
     };
 
     expect(ACTIVITY_TEMPLATES.map(({ id }) => id)).toEqual(Object.keys(expectedCounts));
@@ -32,13 +35,25 @@ describe("classroom templates", () => {
       expect(result.operation.operations).toHaveLength(expectedCounts[template.id]);
       expect(result.operation.operations.length).toBeLessThanOrEqual(MAX_BATCH_OPERATIONS);
       expect(new Set(result.itemIds).size).toBe(result.itemIds.length);
-      expect(
-        result.operation.operations.every(
-          (operation) =>
-            operation.kind === "item.create" &&
-            operation.item.transform.join(",") === "1,0,0,1,12.35,-9.88",
-        ),
-      ).toBe(true);
+      for (const [index, operation] of result.operation.operations.entries()) {
+        const source = template.items[index];
+        if (source === undefined) throw new Error("Template source item missing.");
+        const local = source.transform ?? [1, 0, 0, 1, 0, 0];
+        const round = (value: number): number => Math.round(value * 100) / 100;
+        expect(operation).toMatchObject({
+          kind: "item.create",
+          item: {
+            transform: [
+              local[0],
+              local[1],
+              local[2],
+              local[3],
+              round(local[4] + 12.35),
+              round(local[5] - 9.88),
+            ],
+          },
+        });
+      }
       expect(() => validateDurableOperation(result.operation)).not.toThrow();
       expect(() =>
         validateClientFrame({
@@ -51,6 +66,45 @@ describe("classroom templates", () => {
         }),
       ).not.toThrow();
     }
+  });
+
+  it("remaps rich board Sections and groups without leaking template metadata", () => {
+    const product = buildActivityBatch("product-discovery-lab", [0, 0], deterministicIds());
+    const created = product.operation.operations.flatMap((operation) =>
+      operation.kind === "item.create" ? [operation.item] : [],
+    );
+    const opportunitySection = created.find(
+      (item) => item.kind === "zone" && item.geometry.title === "3 · Opportunities",
+    );
+    const commentTarget = created.find(
+      (item) => item.kind === "sticky" && item.geometry.text.includes("COMMENT TARGET"),
+    );
+    expect(opportunitySection).toBeDefined();
+    expect(commentTarget?.sectionId).toBe(opportunitySection?.id);
+
+    const evidenceCluster = created.filter(
+      (item) =>
+        item.kind === "sticky" &&
+        (item.geometry.text.includes("7 of 10") || item.geometry.text.includes("Support tickets")),
+    );
+    expect(evidenceCluster).toHaveLength(2);
+    expect(new Set(evidenceCluster.map((item) => item.groupId)).size).toBe(1);
+    expect(evidenceCluster[0]?.groupId).toBeTruthy();
+    expect(
+      created.every(
+        (item) => !("templateKey" in item) && !("groupKey" in item) && !("sectionKey" in item),
+      ),
+    ).toBe(true);
+
+    const incident = buildActivityBatch("incident-response-room", [0, 0], deterministicIds());
+    const rotatedTarget = incident.operation.operations.find(
+      (operation) =>
+        operation.kind === "item.create" &&
+        operation.item.kind === "sticky" &&
+        operation.item.geometry.text.includes("COMMENT TARGET"),
+    );
+    if (rotatedTarget?.kind !== "item.create") throw new Error("Rotated target missing.");
+    expect(rotatedTarget.item.transform.slice(0, 4)).not.toEqual([1, 0, 0, 1]);
   });
 
   it("keeps the starter layouts focused on their intended primitives", () => {

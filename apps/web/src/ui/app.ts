@@ -211,12 +211,28 @@ const FEATURE_LABELS: Readonly<Record<BoardFeatureKey, { label: string; detail: 
 };
 
 export function templateFeatureIssue(
-  items: readonly { kind: string; geometry?: unknown; transform?: readonly number[] }[],
+  items: readonly {
+    kind: string;
+    geometry?: unknown;
+    transform?: readonly number[];
+    groupId?: string;
+    sectionId?: string;
+    groupKey?: string;
+    sectionKey?: string;
+  }[],
   features: BoardFeatures,
 ): string | null {
   const unavailable = new Set<BoardFeatureKey>();
   for (const item of items) {
     const feature = featureForTemplateItem(item);
+    if (
+      !features.grouping &&
+      [item.groupId, item.sectionId, item.groupKey, item.sectionKey].some(
+        (relationship) => typeof relationship === "string",
+      )
+    ) {
+      unavailable.add("grouping");
+    }
     if (feature !== null && !features[feature]) unavailable.add(feature);
     if (
       !features.objectTransforms &&

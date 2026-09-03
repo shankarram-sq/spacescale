@@ -10,6 +10,7 @@ import type {
   TableStyle,
 } from "../types";
 import { createId, roundBoard } from "../types";
+import { RICH_TEST_BOARD_TEMPLATES } from "./rich-test-boards";
 import { VOTE_TABLE_STYLE } from "./voting";
 
 export type ActivityTemplateId =
@@ -18,10 +19,25 @@ export type ActivityTemplateId =
   | "sort-it"
   | "pair-share"
   | "collective-inquiry-demo"
-  | "vote-with-stamps";
+  | "vote-with-stamps"
+  | "product-discovery-lab"
+  | "incident-response-room"
+  | "design-critique-studio";
 
 export type ActivityTemplateItem = {
-  [Kind in NewBoardItem["kind"]]: Omit<Extract<NewBoardItem, { kind: Kind }>, "id" | "transform">;
+  [Kind in NewBoardItem["kind"]]: Omit<
+    Extract<NewBoardItem, { kind: Kind }>,
+    "id" | "transform" | "groupId" | "sectionId"
+  > & {
+    /** Stable name used only while remapping relationships inside this template. */
+    templateKey?: string;
+    /** Items with the same group key receive one fresh group ID per insertion. */
+    groupKey?: string;
+    /** References the templateKey of a Section in this template. */
+    sectionKey?: string;
+    /** Optional local transform composed with the insertion-point translation. */
+    transform?: Matrix;
+  };
 }[NewBoardItem["kind"]];
 
 export type ActivityTemplate = {
@@ -290,6 +306,7 @@ export const ACTIVITY_TEMPLATES: readonly ActivityTemplate[] = [
       stamp(-280, 175),
     ],
   },
+  ...RICH_TEST_BOARD_TEMPLATES,
 ] as const;
 
 export function getActivityTemplate(templateId: ActivityTemplateId): ActivityTemplate {
@@ -307,15 +324,61 @@ export function buildActivityBatch(
   if (template.items.length < 1 || template.items.length > MAX_BATCH_OPERATIONS) {
     throw new RangeError(`Activity templates must contain 1 to ${MAX_BATCH_OPERATIONS} items.`);
   }
-  const transform: Matrix = [1, 0, 0, 1, roundBoard(center[0]), roundBoard(center[1])];
-  const itemIds: string[] = [];
-  const operations: BatchItemOperation[] = template.items.map((source) => {
+  const allocatedIds = new Set<string>();
+  const allocateId = (): string => {
     const id = idFactory();
-    itemIds.push(id);
+    if (allocatedIds.has(id)) {
+      throw new RangeError("Activity templates require unique generated IDs.");
+    }
+    allocatedIds.add(id);
+    return id;
+  };
+  const itemIds = template.items.map(() => allocateId());
+  const itemKeyIndexes = new Map<string, number>();
+  for (const [index, source] of template.items.entries()) {
+    if (source.templateKey === undefined) continue;
+    if (itemKeyIndexes.has(source.templateKey)) {
+      throw new RangeError(`Duplicate activity template key: ${source.templateKey}`);
+    }
+    itemKeyIndexes.set(source.templateKey, index);
+  }
+  const groupIds = new Map<string, string>();
+  for (const source of template.items) {
+    if (source.groupKey !== undefined && !groupIds.has(source.groupKey)) {
+      groupIds.set(source.groupKey, allocateId());
+    }
+  }
+  const offsetX = roundBoard(center[0]);
+  const offsetY = roundBoard(center[1]);
+  const operations: BatchItemOperation[] = template.items.map((source, index) => {
+    const {
+      templateKey: _templateKey,
+      groupKey,
+      sectionKey,
+      transform: sourceTransform = [1, 0, 0, 1, 0, 0],
+      ...sourceItem
+    } = structuredClone(source);
+    const sectionIndex = sectionKey === undefined ? undefined : itemKeyIndexes.get(sectionKey);
+    const sectionSource = sectionIndex === undefined ? undefined : template.items[sectionIndex];
+    if (sectionKey !== undefined && sectionSource?.kind !== "zone") {
+      throw new RangeError(`Unknown activity template Section: ${sectionKey}`);
+    }
+    const id = itemIds[index];
+    if (id === undefined) throw new RangeError("Activity template item ID allocation failed.");
+    const transform: Matrix = [
+      sourceTransform[0],
+      sourceTransform[1],
+      sourceTransform[2],
+      sourceTransform[3],
+      roundBoard(sourceTransform[4] + offsetX),
+      roundBoard(sourceTransform[5] + offsetY),
+    ];
     const item = {
-      ...structuredClone(source),
+      ...sourceItem,
       id,
-      transform: [...transform] as Matrix,
+      ...(groupKey === undefined ? {} : { groupId: groupIds.get(groupKey) }),
+      ...(sectionIndex === undefined ? {} : { sectionId: itemIds[sectionIndex] }),
+      transform,
     } as NewBoardItem;
     return { kind: "item.create", item };
   });

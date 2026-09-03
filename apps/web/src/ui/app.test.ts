@@ -198,6 +198,18 @@ describe("template feature preflight", () => {
   });
 });
 
+describe("template relationship preflight", () => {
+  it("requires grouping for saved and logical template relationships", () => {
+    const features = { ...DEFAULT_BOARD_FEATURES, grouping: false };
+    expect(templateFeatureIssue([{ kind: "sticky", groupKey: "pair" }], features)).toMatch(
+      /Grouping/u,
+    );
+    expect(
+      templateFeatureIssue([{ kind: "sticky", sectionId: crypto.randomUUID() }], features),
+    ).toMatch(/Grouping/u);
+  });
+});
+
 describe("student item ownership preflight", () => {
   const studentId = "student-a";
   const otherStudentId = "student-b";
