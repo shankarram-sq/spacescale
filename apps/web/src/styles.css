@@ -19,7 +19,9 @@
   --shadow: 0 18px 50px rgb(30 30 30 / 14%), 0 2px 8px rgb(30 30 30 / 8%);
 }
 
-* {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
@@ -3617,10 +3619,10 @@ button:disabled {
     .board-item-table .table-cell-text,
     .board-item-zone .zone-title
   ) {
-  pointer-events: auto !important;
+  pointer-events: auto;
   cursor: text;
-  user-select: text !important;
-  -webkit-user-select: text !important;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .space-viewer__canvas-host .creator-badge,
@@ -3704,11 +3706,6 @@ button:disabled {
     BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
-}
-.ssa-admin *,
-.ssa-admin *::before,
-.ssa-admin *::after {
-  box-sizing: border-box;
 }
 .ssa-header {
   display: flex;
@@ -3995,9 +3992,9 @@ button:disabled {
 .ssa-view-link:hover {
   background: #e8dfff;
 }
-.ssa-muted {
-  color: #8e8798 !important;
-  background: transparent !important;
+.ssa-admin .ssa-muted {
+  color: #8e8798;
+  background: transparent;
 }
 .ssa-empty,
 .ssa-state {
