@@ -86,6 +86,19 @@ describe("videoEmbedFromText", () => {
     });
   });
 
+  it("preserves Vimeo unlisted-video hashes", () => {
+    expect(videoEmbedFromText("https://vimeo.com/76979871/abc123def4")).toMatchObject({
+      provider: "vimeo",
+      embedUrl: "https://player.vimeo.com/video/76979871?h=abc123def4",
+    });
+    expect(
+      videoEmbedFromText("https://player.vimeo.com/video/76979871?h=abc123def4"),
+    ).toMatchObject({
+      provider: "vimeo",
+      embedUrl: "https://player.vimeo.com/video/76979871?h=abc123def4",
+    });
+  });
+
   it("rejects non-HTTPS, credentialed, malformed, and unsupported URLs", () => {
     expect(videoEmbedFromText("http://youtu.be/dQw4w9WgXcQ")).toBeNull();
     expect(videoEmbedFromText("https://user:secret@youtu.be/dQw4w9WgXcQ")).toBeNull();

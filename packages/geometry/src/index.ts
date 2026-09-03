@@ -84,6 +84,7 @@ export interface VideoEmbedReference {
   provider: "youtube" | "vimeo";
   videoId: string;
   sourceUrl: string;
+  vimeoHash?: string;
 }
 
 /** Parses the complete HTTPS video URLs supported by every render and validation surface. */
@@ -120,9 +121,30 @@ export function parseVideoEmbedReference(value: string): VideoEmbedReference | n
   }
   if (host === "vimeo.com" || host === "www.vimeo.com" || host === "player.vimeo.com") {
     const parts = parsed.pathname.split("/").filter(Boolean);
-    const videoId = host === "player.vimeo.com" && parts[0] === "video" ? parts[1] : parts[0];
+    const playerUrl = host === "player.vimeo.com";
+    const videoId =
+      playerUrl && parts[0] === "video" && parts.length === 2
+        ? parts[1]
+        : !playerUrl && parts.length >= 1 && parts.length <= 2
+          ? parts[0]
+          : null;
     if (!videoId || !/^\d{5,12}$/u.test(videoId)) return null;
-    return { provider: "vimeo", videoId, sourceUrl: parsed.href };
+    const pathHash = !playerUrl && parts.length === 2 ? parts[1] : undefined;
+    const queryHash = parsed.searchParams.has("h") ? parsed.searchParams.get("h") : undefined;
+    if (
+      (pathHash !== undefined && queryHash !== undefined && pathHash !== queryHash) ||
+      (queryHash === null && parsed.searchParams.has("h"))
+    ) {
+      return null;
+    }
+    const vimeoHash = queryHash ?? pathHash;
+    if (vimeoHash !== undefined && !/^[A-Za-z0-9_-]{6,64}$/u.test(vimeoHash)) return null;
+    return {
+      provider: "vimeo",
+      videoId,
+      sourceUrl: parsed.href,
+      ...(vimeoHash === undefined ? {} : { vimeoHash }),
+    };
   }
   return null;
 }

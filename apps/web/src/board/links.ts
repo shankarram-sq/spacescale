@@ -107,7 +107,9 @@ export function videoEmbedFromText(value: string): VideoEmbed | null {
     return {
       provider: "vimeo",
       sourceUrl: reference.sourceUrl,
-      embedUrl: `https://player.vimeo.com/video/${reference.videoId}`,
+      embedUrl: `https://player.vimeo.com/video/${reference.videoId}${
+        reference.vimeoHash === undefined ? "" : `?h=${encodeURIComponent(reference.vimeoHash)}`
+      }`,
       title: "Vimeo video",
     };
   }

@@ -71,6 +71,20 @@ describe("geometry normalization", () => {
       videoId: "dQw4w9WgXcQ",
       sourceUrl: "https://youtu.be/dQw4w9WgXcQ?t=10",
     });
+    expect(parseVideoEmbedReference("https://vimeo.com/76979871/abc123def4")).toEqual({
+      provider: "vimeo",
+      videoId: "76979871",
+      sourceUrl: "https://vimeo.com/76979871/abc123def4",
+      vimeoHash: "abc123def4",
+    });
+    expect(
+      parseVideoEmbedReference("https://player.vimeo.com/video/76979871?h=abc123def4"),
+    ).toEqual({
+      provider: "vimeo",
+      videoId: "76979871",
+      sourceUrl: "https://player.vimeo.com/video/76979871?h=abc123def4",
+      vimeoHash: "abc123def4",
+    });
     expect(
       normalizeTextGeometry({
         x: 10,
@@ -90,6 +104,8 @@ describe("geometry normalization", () => {
         embed: "video",
       }),
     ).toThrow(/supported HTTPS YouTube or Vimeo/);
+    expect(parseVideoEmbedReference("https://vimeo.com/76979871/bad/hash")).toBeNull();
+    expect(parseVideoEmbedReference("https://vimeo.com/76979871/a?h=b")).toBeNull();
   });
 
   it("canonicalizes legacy rectangles and persists an explicit square subtype", () => {

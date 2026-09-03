@@ -8,6 +8,8 @@ import {
   lineArrowheadPoints,
   polygonPoints,
   protractorPoint,
+  transformBounds,
+  unionBounds,
   visibleOutlinePaths,
   ZONE_TITLE_PADDING,
   zoneTitleBandHeight,
@@ -635,9 +637,31 @@ function ensureNonDegenerate(bounds: Bounds): Bounds {
   return { minX, minY, maxX, maxY };
 }
 
+function rawExportTextBounds(item: Extract<BoardItem, { kind: "text" }>): Bounds {
+  const lines = item.geometry.text.split(/\r\n?|\n/u);
+  const lineHeight = item.style.fontSize * 1.2;
+  const width = Math.max(
+    ...lines.map((line) => Array.from(line).length * item.style.fontSize * 0.6),
+  );
+  return transformBounds(
+    {
+      minX: item.geometry.x,
+      minY: item.geometry.y - item.style.fontSize,
+      maxX: item.geometry.x + width,
+      maxY: item.geometry.y - item.style.fontSize + Math.max(1, lines.length) * lineHeight,
+    },
+    item.transform,
+  );
+}
+
 function calculateViewBox(items: readonly BoardItem[], padding: number): Bounds {
-  const contentBounds = boundsForItems(items);
+  let contentBounds = boundsForItems(items);
   if (contentBounds === null) return { minX: -50, minY: -50, maxX: 50, maxY: 50 };
+  for (const item of items) {
+    if (item.kind === "text" && item.geometry.embed !== "video") {
+      contentBounds = unionBounds(contentBounds, rawExportTextBounds(item));
+    }
+  }
   return ensureNonDegenerate(expandBounds(contentBounds, padding));
 }
 
