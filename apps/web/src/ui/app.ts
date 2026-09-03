@@ -10,6 +10,7 @@ import {
   MAX_ZONE_TITLE_CODE_POINTS,
   normalizeBoardFeatures,
   normalizeBoardItem,
+  resolveTextFontWeight,
   textFontStack,
   validateClientFrame,
   validateDurableOperation,
@@ -46,12 +47,16 @@ import {
   buildCapturedTextUpdate,
   buildImageCreateOperation,
   buildStickyCreateOperation,
+  buildTranslationMembershipOperations,
   type CapturedTextEdit,
   DEFAULT_STICKY_HEIGHT,
   DEFAULT_STICKY_WIDTH,
+  assignCreatedItemsToSections as decorateCreatedItemsWithSections,
   type ShapeVariant,
+  sectionIdAfterBoundsChange,
   ToolController,
 } from "../tools/controller";
+import { explicitGroupClosure, GroupingError } from "../tools/grouping";
 import {
   type ApiClient,
   ApiError,
@@ -89,7 +94,10 @@ import type {
   SpotlightFrame,
   StampKind,
   TableGeometry,
+  TextDecoration,
   TextFontFamily,
+  TextFontStyle,
+  TextFontWeight,
   ToolName,
 } from "../types";
 import { canRoleDraw, createId, PROTOCOL_VERSION } from "../types";
@@ -194,20 +202,29 @@ const FEATURE_LABELS: Readonly<Record<BoardFeatureKey, { label: string; detail: 
   protractor: { label: "Protractor", detail: "Movable 180° measuring tool" },
   eraser: { label: "Eraser", detail: "Erase board work" },
   partialEraser: { label: "Partial eraser", detail: "Cut only touched line segments" },
+  objectTransforms: { label: "Scale and rotate", detail: "Transform shapes, images, and tools" },
+  grouping: { label: "Grouping", detail: "Move and copy related items together" },
   templates: { label: "Templates", detail: "Built-in starter layouts" },
   organisationTemplates: { label: "Organisation templates", detail: "Shared reusable layouts" },
   voting: { label: "Voting", detail: "Vote controls on templates" },
   spotlight: { label: "Follow me", detail: "Coach-led viewport spotlight" },
 };
 
-function templateFeatureIssue(
-  items: readonly { kind: string; geometry?: unknown }[],
+export function templateFeatureIssue(
+  items: readonly { kind: string; geometry?: unknown; transform?: readonly number[] }[],
   features: BoardFeatures,
 ): string | null {
   const unavailable = new Set<BoardFeatureKey>();
   for (const item of items) {
     const feature = featureForTemplateItem(item);
     if (feature !== null && !features[feature]) unavailable.add(feature);
+    if (
+      !features.objectTransforms &&
+      Array.isArray(item.transform) &&
+      [1, 0, 0, 1].some((expected, index) => item.transform?.[index] !== expected)
+    ) {
+      unavailable.add("objectTransforms");
+    }
     if (
       item.geometry !== null &&
       typeof item.geometry === "object" &&
@@ -590,29 +607,68 @@ export function buildElementColourOperations(
   });
 }
 
+export type TextStylePatch = {
+  fontFamily?: TextFontFamily;
+  fontSize?: number;
+  fontWeight?: TextFontWeight;
+  fontStyle?: TextFontStyle;
+  textDecoration?: TextDecoration;
+};
+
+type TextWeightItem = {
+  kind: "text" | "sticky" | "table" | "zone";
+  style: { fontWeight?: TextFontWeight };
+};
+
+export function effectiveTextFontWeight(item: TextWeightItem): TextFontWeight {
+  return item.style.fontWeight ?? (item.kind === "zone" ? "bold" : "normal");
+}
+
 export function buildTextStyleOperations(
   items: readonly BoardItem[],
-  patch: { fontFamily?: TextFontFamily; fontSize?: number },
+  patch: TextStylePatch,
+  allItems: Iterable<BoardItem> = items,
+  assignNewMembership = true,
 ): BatchItemOperation[] {
-  if (items.length === 0 || items.some((item) => item.kind !== "text" || item.version <= 0)) {
+  const textItems = items.filter(
+    (item) =>
+      item.kind === "text" ||
+      item.kind === "sticky" ||
+      item.kind === "table" ||
+      item.kind === "zone",
+  );
+  if (
+    textItems.length !== items.length ||
+    textItems.length === 0 ||
+    textItems.some((item) => item.version <= 0)
+  ) {
     return [];
   }
-  return items.flatMap((item) => {
-    if (item.kind !== "text") return [];
+  const boardItems = [...allItems];
+  return textItems.flatMap((item) => {
     const nextStyle = { ...item.style, ...patch };
-    if (
-      nextStyle.fontFamily === item.style.fontFamily &&
-      nextStyle.fontSize === item.style.fontSize
-    ) {
-      return [];
-    }
+    const changed = (Object.keys(patch) as Array<keyof TextStylePatch>).some(
+      (key) => nextStyle[key] !== item.style[key],
+    );
+    if (!changed) return [];
+    const sectionId =
+      item.kind === "text" && patch.fontSize !== undefined
+        ? sectionIdAfterBoundsChange(
+            boardItems,
+            { ...item, style: nextStyle } as Extract<BoardItem, { kind: "text" }>,
+            assignNewMembership,
+          )
+        : item.sectionId;
     return [
       {
         kind: "item.update" as const,
         itemId: item.id,
         expectedVersion: item.version,
-        patch: { style: nextStyle },
-      },
+        patch: {
+          style: nextStyle,
+          ...(sectionId === item.sectionId ? {} : { sectionId: sectionId ?? null }),
+        },
+      } as BatchItemOperation,
     ];
   });
 }
@@ -639,16 +695,140 @@ export function savedAuthoritativeItems(
   return result;
 }
 
-export function operationAllowedForActor(
+export function lockedSectionIdForItem(
+  item: BoardItem,
+  items: ReadonlyMap<string, BoardItem>,
+): string | null {
+  if (item.kind === "zone" && item.geometry.locked === true) return item.id;
+  if (item.sectionId === undefined) return null;
+  const section = items.get(item.sectionId);
+  return section?.kind === "zone" && section.geometry.locked === true ? section.id : null;
+}
+
+function sectionLockChange(
+  operation: BatchItemOperation,
+  items: ReadonlyMap<string, BoardItem>,
+): { section: Extract<BoardItem, { kind: "zone" }>; locked: boolean } | null {
+  if (operation.kind !== "item.update" || operation.patch.geometry === undefined) return null;
+  const section = items.get(operation.itemId);
+  if (section?.kind !== "zone") return null;
+  const geometry = operation.patch.geometry as Partial<typeof section.geometry>;
+  const locked = geometry.locked === true;
+  return locked === (section.geometry.locked === true) ? null : { section, locked };
+}
+
+function pureSectionLockChange(
+  operation: BatchItemOperation,
+  section: Extract<BoardItem, { kind: "zone" }>,
+): boolean {
+  if (
+    operation.kind !== "item.update" ||
+    operation.patch.geometry === undefined ||
+    Object.keys(operation.patch).length !== 1
+  ) {
+    return false;
+  }
+  const geometry = operation.patch.geometry;
+  return (
+    "title" in geometry &&
+    geometry.x === section.geometry.x &&
+    geometry.y === section.geometry.y &&
+    geometry.width === section.geometry.width &&
+    geometry.height === section.geometry.height &&
+    geometry.title === section.geometry.title &&
+    (geometry.locked === true) !== (section.geometry.locked === true)
+  );
+}
+
+export function operationBlockedBySectionLock(
+  operation: DurableOperation,
+  role: Role,
+  items: ReadonlyMap<string, BoardItem>,
+): boolean {
+  if (operation.kind === "board.clear") {
+    return [...items.values()].some(
+      (item) => item.kind === "zone" && item.geometry.locked === true,
+    );
+  }
+  if (operation.kind === "history.undo" || operation.kind === "history.redo") return false;
+  const operations = operation.kind === "items.batch" ? operation.operations : [operation];
+  const lockChanges = operations.flatMap((child) => {
+    const change = sectionLockChange(child, items);
+    return change === null ? [] : [{ operation: child, ...change }];
+  });
+  const [lockChange] = lockChanges;
+  if (
+    lockChange !== undefined &&
+    (role !== "owner" ||
+      operations.length !== 1 ||
+      lockChanges.length !== 1 ||
+      !pureSectionLockChange(lockChange.operation, lockChange.section))
+  ) {
+    return true;
+  }
+
+  for (const child of operations) {
+    if (
+      child.kind === "item.create" &&
+      child.item.kind === "zone" &&
+      child.item.geometry.locked === true &&
+      role !== "owner"
+    ) {
+      return true;
+    }
+    const source =
+      child.kind === "item.create"
+        ? undefined
+        : items.get(child.kind === "item.copy" ? child.sourceItemId : child.itemId);
+    if (source?.kind === "zone" && source.geometry.locked === true) {
+      const change = sectionLockChange(child, items);
+      if (
+        change !== null &&
+        role === "owner" &&
+        change.locked === false &&
+        pureSectionLockChange(child, source)
+      ) {
+        continue;
+      }
+      return true;
+    }
+    if (source && lockedSectionIdForItem(source, items) !== null) return true;
+    const prospectiveSectionId =
+      child.kind === "item.create"
+        ? child.item.sectionId
+        : child.kind === "item.update"
+          ? typeof child.patch.sectionId === "string"
+            ? child.patch.sectionId
+            : undefined
+          : child.kind === "item.copy" && typeof child.newSectionId === "string"
+            ? child.newSectionId
+            : undefined;
+    if (prospectiveSectionId !== undefined) {
+      const section = items.get(prospectiveSectionId);
+      if (section?.kind === "zone" && section.geometry.locked === true) return true;
+    }
+  }
+  return false;
+}
+
+export type OperationDenial = "section-locked" | "ownership";
+
+/**
+ * Explains why the local actor may not commit `operation`, or returns null
+ * when it is allowed. The Section-lock scan runs exactly once here; callers
+ * that need to pick a message should use this rather than re-running it.
+ */
+export function operationDenialForActor(
   operation: DurableOperation,
   role: Role,
   actorId: string,
   authoritativeItems: ReadonlyMap<string, BoardItem>,
-): boolean {
-  if (role === "owner") return true;
-  if (role !== "editor") return false;
-  if (operation.kind === "history.undo" || operation.kind === "history.redo") return true;
-  if (operation.kind === "board.clear") return false;
+): OperationDenial | null {
+  if (operationBlockedBySectionLock(operation, role, authoritativeItems)) return "section-locked";
+  if (role === "owner") return null;
+  if (role !== "editor") return "ownership";
+  if (operation.kind === "history.undo" || operation.kind === "history.redo") return null;
+  if (operation.kind === "board.clear") return "ownership";
 
   const ownedItemIds = new Set(
     [...authoritativeItems.values()]
@@ -662,12 +842,40 @@ export function operationAllowedForActor(
     } else if (child.kind === "item.copy") {
       ownedItemIds.add(child.newItemId);
     } else if (!ownedItemIds.has(child.itemId)) {
-      return false;
+      if (!isOwnSectionDetach(child, actorId, authoritativeItems)) return "ownership";
     } else if (child.kind === "item.delete") {
       ownedItemIds.delete(child.itemId);
     }
   }
-  return true;
+  return null;
+}
+
+export function operationAllowedForActor(
+  operation: DurableOperation,
+  role: Role,
+  actorId: string,
+  authoritativeItems: ReadonlyMap<string, BoardItem>,
+): boolean {
+  return operationDenialForActor(operation, role, actorId, authoritativeItems) === null;
+}
+
+/**
+ * A Section's creator may detach members they do not own from that Section.
+ * Membership is assigned by geometry, so the creator must be able to reverse
+ * it (and delete the Section) without the member's author. Only a bare
+ * `{ sectionId: null }` patch qualifies; the edge enforces the same rule.
+ */
+function isOwnSectionDetach(
+  child: BatchItemOperation,
+  actorId: string,
+  items: ReadonlyMap<string, BoardItem>,
+): boolean {
+  if (child.kind !== "item.update") return false;
+  const patch = child.patch as Record<string, unknown>;
+  if (Object.keys(patch).length !== 1 || patch.sectionId !== null) return false;
+  const member = items.get(child.itemId);
+  const section = member?.sectionId === undefined ? undefined : items.get(member.sectionId);
+  return section?.kind === "zone" && section.createdBy === actorId;
 }
 
 export function buildCreatorNameMap(creators: readonly Actor[], self: Actor): Map<string, string> {
@@ -980,6 +1188,7 @@ export class BoardApp {
       (actorId) => this.creatorNames.get(actorId),
     );
     this.renderer.setVotingEnabled(this.bootstrap.board.features.voting);
+    this.renderer.setObjectTransformsEnabled(this.bootstrap.board.features.objectTransforms);
     this.renderer.viewport.subscribe((zoom) => {
       this.zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
       this.renderer.refreshSelection();
@@ -996,6 +1205,8 @@ export class BoardApp {
       canUseImages: () => this.canUploadImages(),
       canUseTool: (tool) => this.isToolEnabled(tool),
       canSnapLines: () => this.bootstrap.board.features.lineSnapping,
+      canTransformObjects: () => this.bootstrap.board.features.objectTransforms,
+      canGroup: () => this.bootstrap.board.features.grouping,
       usePartialEraser: () => this.bootstrap.board.features.partialEraser,
       getStyle: () => this.style,
       commit: (operation, actionId) => this.commit(operation, actionId),
@@ -1330,10 +1541,16 @@ export class BoardApp {
                   <option value="52">Extra large</option>
                   <option value="72">Huge</option>
                 </select>
+                <button type="button" data-selection-font-weight aria-label="Bold" aria-pressed="false"><strong>B</strong></button>
+                <button type="button" data-selection-font-style aria-label="Italic" aria-pressed="false"><em>I</em></button>
+                <button type="button" data-selection-text-decoration aria-label="Underline" aria-pressed="false"><u>U</u></button>
               </div>
               <span class="selection-actions-divider" data-selection-style-divider aria-hidden="true" hidden></span>
               <button type="button" data-selection-comment aria-label="Comment on selected object">Comment</button>
+              <button type="button" data-selection-section-lock aria-label="Lock Section" aria-pressed="false" hidden>Lock Section</button>
               <button type="button" data-selection-copy aria-label="Copy selected items">Copy</button>
+              <button type="button" data-selection-group aria-label="Group selected items" hidden>Group</button>
+              <button type="button" data-selection-ungroup aria-label="Ungroup selected items" hidden>Ungroup</button>
               <div class="selection-arrange-wrap">
                 <button type="button" data-selection-arrange aria-label="Arrange selected items" aria-haspopup="menu" aria-controls="arrange-menu" aria-expanded="false">Arrange</button>
                 <div class="arrange-menu" data-testid="arrange-menu" id="arrange-menu" role="menu" aria-label="Arrange selected items" hidden>
@@ -1787,6 +2004,7 @@ export class BoardApp {
         template,
         [view.center.x, view.center.y],
         createId,
+        this.bootstrap.board.features.grouping,
       );
       const accepted = await this.commit(batch.operation);
       if (!accepted) return;
@@ -2042,10 +2260,7 @@ export class BoardApp {
     await this.commit({ kind: "items.batch", operations });
   }
 
-  private async restyleSelectedText(patch: {
-    fontFamily?: TextFontFamily;
-    fontSize?: number;
-  }): Promise<void> {
+  private async restyleSelectedText(patch: TextStylePatch): Promise<void> {
     if (!this.canCommit()) return;
     const selectedIds = [...this.tools.selection];
     const limit = Math.max(1, Math.min(100, Math.floor(this.bootstrap.limits.maxBatchItems)));
@@ -2066,19 +2281,54 @@ export class BoardApp {
       this.notify("You can edit only work that you created.", "warning");
       return;
     }
-    const operations = buildTextStyleOperations(items, patch);
+    const operations = buildTextStyleOperations(
+      items,
+      patch,
+      this.model.authoritativeItems.values(),
+      this.bootstrap.board.features.grouping,
+    );
     if (operations.length > 0) await this.commit({ kind: "items.batch", operations });
+  }
+
+  private async toggleSelectedSectionLock(): Promise<void> {
+    if (this.bootstrap.actor.role !== "owner" || !this.canCommit()) return;
+    const [selectedId] = this.tools.selection;
+    if (this.tools.selection.size !== 1 || selectedId === undefined) return;
+    const selected = savedAuthoritativeItems(
+      [selectedId],
+      this.model.items,
+      this.model.authoritativeItems,
+    )?.[0];
+    if (selected?.kind !== "zone") return;
+    const nextLocked = selected.geometry.locked !== true;
+    const accepted = await this.commit({
+      kind: "item.update",
+      itemId: selected.id,
+      expectedVersion: selected.version,
+      patch: { geometry: { ...selected.geometry, locked: nextLocked } },
+    });
+    if (accepted) {
+      this.notify(
+        nextLocked
+          ? "Section locked. Its contents are now read only for everyone."
+          : "Section unlocked. Its contents can be edited again.",
+        "info",
+      );
+    }
   }
 
   private async arrangeSelection(kind: ArrangeKind): Promise<void> {
     if (!this.canCommit()) return;
     const selectedIds = [...this.tools.selection];
-    const participantIds =
+    const seedIds =
       kind === "tidy-stickies"
         ? selectedIds.filter((id) => this.model.getItem(id)?.kind === "sticky")
         : selectedIds;
     const minimum = kind.startsWith("distribute-") ? 3 : 2;
-    if (participantIds.length < minimum) return;
+    if (seedIds.length < minimum) return;
+    const participantIds = this.bootstrap.board.features.grouping
+      ? explicitGroupClosure(this.model.items.values(), seedIds).map((item) => item.id)
+      : seedIds;
     const limit = Math.max(1, Math.min(100, Math.floor(this.bootstrap.limits.maxBatchItems)));
     if (participantIds.length > limit) {
       this.notify(`Arrange ${limit} items or fewer at a time.`, "warning");
@@ -2093,11 +2343,25 @@ export class BoardApp {
       this.notify("Wait for every selected item to finish saving before arranging.", "info");
       return;
     }
-    const operations = buildArrangeUpdates(kind, items);
+    const directUpdates = buildArrangeUpdates(kind, items, this.bootstrap.board.features.grouping);
     this.setArrangeMenuOpen(false);
     this.arrangeButton.focus();
-    if (operations.length === 0) {
+    if (directUpdates.length === 0) {
       this.notify("Those items are already arranged that way.", "info");
+      return;
+    }
+    let operations: BatchItemOperation[];
+    try {
+      operations = buildTranslationMembershipOperations(
+        directUpdates,
+        this.model.items.values(),
+        this.bootstrap.board.features.grouping,
+        (item) => this.canModifyItem(item),
+        limit,
+      );
+    } catch (error) {
+      if (!(error instanceof GroupingError)) throw error;
+      this.notify(error.message, "warning");
       return;
     }
     const accepted = await this.commit({ kind: "items.batch", operations });
@@ -2274,6 +2538,44 @@ export class BoardApp {
         void this.restyleSelectedText({ fontSize });
       },
     );
+    const toggleTextStyle = (
+      key: "fontWeight" | "fontStyle" | "textDecoration",
+      active: "bold" | "italic" | "underline",
+      inactive: "normal" | "none",
+    ): void => {
+      const items = [...this.tools.selection].flatMap((id) => {
+        const item = this.model.getItem(id);
+        return item &&
+          (item.kind === "text" ||
+            item.kind === "sticky" ||
+            item.kind === "table" ||
+            item.kind === "zone")
+          ? [item]
+          : [];
+      });
+      const allActive =
+        items.length > 0 &&
+        items.every((item) =>
+          key === "fontWeight"
+            ? effectiveTextFontWeight(item) === "bold"
+            : item.style[key] === active,
+        );
+      void this.restyleSelectedText({ [key]: allActive ? inactive : active });
+    };
+    query(
+      this.selectionActions,
+      "[data-selection-font-weight]",
+      HTMLButtonElement,
+    ).addEventListener("click", () => toggleTextStyle("fontWeight", "bold", "normal"));
+    query(this.selectionActions, "[data-selection-font-style]", HTMLButtonElement).addEventListener(
+      "click",
+      () => toggleTextStyle("fontStyle", "italic", "normal"),
+    );
+    query(
+      this.selectionActions,
+      "[data-selection-text-decoration]",
+      HTMLButtonElement,
+    ).addEventListener("click", () => toggleTextStyle("textDecoration", "underline", "none"));
     this.selectionColourMenu.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
@@ -2287,9 +2589,21 @@ export class BoardApp {
         if (itemId && this.tools.selection.size === 1) this.openCommentsForItem(itemId);
       },
     );
+    query(this.root, "[data-selection-section-lock]", HTMLButtonElement).addEventListener(
+      "click",
+      () => void this.toggleSelectedSectionLock(),
+    );
     query(this.root, "[data-selection-copy]", HTMLButtonElement).addEventListener(
       "click",
       () => void this.tools.copySelection(),
+    );
+    query(this.root, "[data-selection-group]", HTMLButtonElement).addEventListener(
+      "click",
+      () => void this.tools.groupSelection(),
+    );
+    query(this.root, "[data-selection-ungroup]", HTMLButtonElement).addEventListener(
+      "click",
+      () => void this.tools.ungroupSelection(),
     );
     query(this.root, "[data-selection-delete]", HTMLButtonElement).addEventListener(
       "click",
@@ -2873,6 +3187,13 @@ export class BoardApp {
     editor.style.height = `${height}px`;
     editor.style.fontSize = `${Math.max(14, Math.min(36, item.style.fontSize * this.renderer.viewport.zoom))}px`;
     editor.style.color = item.style.textColor;
+    editor.style.fontFamily = textFontStack(item.style.fontFamily ?? "sans");
+    editor.style.fontWeight = resolveTextFontWeight(
+      item.style.fontWeight,
+      item.geometry.headerRow === true && row === 0 ? "700" : "500",
+    );
+    editor.style.fontStyle = item.style.fontStyle ?? "normal";
+    editor.style.textDecoration = item.style.textDecoration ?? "none";
     editor.style.background =
       item.geometry.headerRow === true && row === 0 ? item.style.headerFill : item.style.fill;
     document.body.append(editor);
@@ -3003,6 +3324,10 @@ export class BoardApp {
     editor.style.height = `${height}px`;
     editor.style.fontSize = `${Math.max(14, Math.min(32, item.style.fontSize * this.renderer.viewport.zoom))}px`;
     editor.style.color = item.style.textColor;
+    editor.style.fontFamily = textFontStack(item.style.fontFamily ?? "sans");
+    editor.style.fontWeight = resolveTextFontWeight(item.style.fontWeight, "700");
+    editor.style.fontStyle = item.style.fontStyle ?? "normal";
+    editor.style.textDecoration = item.style.textDecoration ?? "none";
     document.body.append(editor);
     this.zoneTitleEditor = editor;
 
@@ -3166,6 +3491,11 @@ export class BoardApp {
     }
   }
 
+  private assignCreatedItemsToSections(operation: DurableOperation): DurableOperation {
+    if (!this.bootstrap.board.features.grouping) return operation;
+    return decorateCreatedItemsWithSections(operation, this.model.items.values());
+  }
+
   private async commit(
     operation: DurableOperation,
     actionId = createId(),
@@ -3184,20 +3514,26 @@ export class BoardApp {
     const commandId = createId();
     let normalizedOperation: DurableOperation;
     try {
-      normalizedOperation = validateDurableOperation(operation) as DurableOperation;
+      normalizedOperation = validateDurableOperation(
+        this.assignCreatedItemsToSections(operation),
+      ) as DurableOperation;
     } catch {
       this.notify("That gesture could not be converted into a valid board edit.", "error");
       return false;
     }
-    if (
-      !operationAllowedForActor(
-        normalizedOperation,
-        this.bootstrap.actor.role,
-        this.bootstrap.actor.id,
-        this.model.authoritativeItems,
-      )
-    ) {
-      this.notify("You can edit only work that you created. Make a copy to adapt it.", "warning");
+    const denial = operationDenialForActor(
+      normalizedOperation,
+      this.bootstrap.actor.role,
+      this.bootstrap.actor.id,
+      this.model.authoritativeItems,
+    );
+    if (denial !== null) {
+      this.notify(
+        denial === "section-locked"
+          ? "This Section is locked. An owner must unlock it before its contents can change."
+          : "You can edit only work that you created. Make a copy to adapt it.",
+        "warning",
+      );
       return false;
     }
     const command: CommitFrame = {
@@ -3740,6 +4076,7 @@ export class BoardApp {
           itemId: editedItem.id,
           expectedVersion: editedItem.version,
           geometry: structuredClone(editedItem.geometry),
+          item: structuredClone(editedItem),
         }
       : null;
     const textPoint: Point = editedItem ? [editedItem.geometry.x, editedItem.geometry.y] : point;
@@ -3802,6 +4139,10 @@ export class BoardApp {
       editor.style.padding = `${Math.max(10, Math.min(18, STICKY_PADDING * zoom))}px`;
       editor.style.fontSize = `${Math.max(14, Math.min(48, stickyStyle.fontSize * zoom))}px`;
       editor.style.color = stickyStyle.textColor;
+      editor.style.fontFamily = textFontStack(stickyStyle.fontFamily ?? "sans");
+      editor.style.fontWeight = resolveTextFontWeight(stickyStyle.fontWeight);
+      editor.style.fontStyle = stickyStyle.fontStyle ?? "normal";
+      editor.style.textDecoration = stickyStyle.textDecoration ?? "none";
       editor.style.background = stickyStyle.fill;
       editor.style.opacity = String(stickyStyle.opacity);
     } else {
@@ -3810,6 +4151,9 @@ export class BoardApp {
       editor.style.fontSize = `${Math.max(14, Math.min(48, (textItem?.style.fontSize ?? style.fontSize) * zoom))}px`;
       editor.style.color = textItem?.style.color ?? style.color;
       editor.style.fontFamily = textFontStack(textItem?.style.fontFamily ?? style.fontFamily);
+      editor.style.fontWeight = resolveTextFontWeight(textItem?.style.fontWeight);
+      editor.style.fontStyle = textItem?.style.fontStyle ?? "normal";
+      editor.style.textDecoration = textItem?.style.textDecoration ?? "none";
     }
     document.body.append(editor);
     this.textEditor = editor;
@@ -3892,7 +4236,12 @@ export class BoardApp {
     const point: Point = [Number(editor.dataset.boardX), Number(editor.dataset.boardY)];
     const draftItemId = editor.dataset.draftItemId ?? createId();
     const operation: DurableOperation = context
-      ? buildCapturedTextUpdate(context, value)
+      ? buildCapturedTextUpdate(
+          context,
+          value,
+          this.model.authoritativeItems.values(),
+          this.bootstrap.board.features.grouping,
+        )
       : mode === "sticky"
         ? buildStickyCreateOperation(draftItemId, point, this.style, value)
         : {
@@ -5270,6 +5619,7 @@ export class BoardApp {
   }
 
   private canModifyItem(item: BoardItem): boolean {
+    if (lockedSectionIdForItem(item, this.model.items) !== null) return false;
     return (
       this.bootstrap.actor.role === "owner" ||
       (this.bootstrap.actor.role === "editor" && item.createdBy === this.bootstrap.actor.id)
@@ -5391,6 +5741,7 @@ export class BoardApp {
       this.organisationTemplateDialog.close();
     }
     this.renderer.setVotingEnabled(this.bootstrap.board.features.voting);
+    this.renderer.setObjectTransformsEnabled(this.bootstrap.board.features.objectTransforms);
     if (this.activitiesButton.disabled || this.activitiesButton.hidden) {
       this.closeActivitiesMenu();
     }
@@ -5640,6 +5991,9 @@ export class BoardApp {
     const allSelectedAuthoritative =
       savedAuthoritativeItems(selectedIds, this.model.items, this.model.authoritativeItems) !==
       null;
+    const allSelectedUnlocked =
+      selectedItems.length === selectedIds.length &&
+      selectedItems.every((item) => lockedSectionIdForItem(item, this.model.items) === null);
     const allSelectedOwned =
       selectedItems.length === selectedIds.length &&
       selectedItems.every((item) => this.canModifyItem(item));
@@ -5669,7 +6023,11 @@ export class BoardApp {
     this.arrangeButton.hidden = ids.size < 2;
     this.arrangeButton.disabled = enabledArrangeActions === 0;
     if (this.arrangeButton.hidden || this.arrangeButton.disabled) this.setArrangeMenuOpen(false);
-    const copyReady = canEdit && allSelectedAuthoritative && selectedIds.length <= maxBatchItems;
+    const copyReady =
+      canEdit &&
+      allSelectedAuthoritative &&
+      allSelectedUnlocked &&
+      selectedIds.length <= maxBatchItems;
     const mutationReady =
       canEdit && allSelectedAuthoritative && selectedIds.length <= maxBatchItems;
     const copy = query(this.selectionActions, "[data-selection-copy]", HTMLButtonElement);
@@ -5681,12 +6039,38 @@ export class BoardApp {
       : "Wait for the selected object to finish saving.";
     copy.disabled = !copyReady;
     remove.disabled = !mutationReady || !allSelectedOwned;
+    const group = query(this.selectionActions, "[data-selection-group]", HTMLButtonElement);
+    const ungroup = query(this.selectionActions, "[data-selection-ungroup]", HTMLButtonElement);
+    const selectedGroupIds = new Set(
+      selectedItems.flatMap((item) => (item.groupId ? [item.groupId] : [])),
+    );
+    const selectedGroupId =
+      selectedGroupIds.size === 1 && selectedItems.every((item) => item.groupId)
+        ? [...selectedGroupIds][0]
+        : undefined;
+    const completeSingleGroup =
+      selectedGroupId !== undefined &&
+      [...this.model.items.values()].filter((item) => item.groupId === selectedGroupId).length ===
+        selectedItems.length;
+    const groupingEnabled = this.bootstrap.board.features.grouping;
+    group.hidden = !groupingEnabled || selectedIds.length < 2 || completeSingleGroup;
+    ungroup.hidden = !groupingEnabled || !completeSingleGroup;
+    group.disabled = !mutationReady || !allSelectedOwned;
+    ungroup.disabled = group.disabled;
     const pendingTitle = !allSelectedAuthoritative
       ? "Wait for the selected items to finish saving."
-      : !allSelectedOwned
-        ? "You can edit only work that you created."
+      : !allSelectedUnlocked
+        ? "This Section is locked. Unlock it before editing its contents."
+        : !allSelectedOwned
+          ? "You can edit only work that you created."
+          : "";
+    copy.title = !allSelectedAuthoritative
+      ? "Wait for the selected items to finish saving."
+      : !allSelectedUnlocked
+        ? "This Section is locked. Unlock it before copying its contents."
         : "";
-    copy.title = allSelectedAuthoritative ? "" : "Wait for the selected items to finish saving.";
+    group.title = pendingTitle;
+    ungroup.title = pendingTitle;
     remove.title = pendingTitle;
 
     const colourWrap = query(this.selectionActions, ".selection-colour-wrap", HTMLElement);
@@ -5735,17 +6119,31 @@ export class BoardApp {
       "[data-selection-font-controls]",
       HTMLElement,
     );
+    const textItems = selectedItems.filter(
+      (item): item is Extract<BoardItem, { kind: "text" | "sticky" | "table" | "zone" }> =>
+        item.kind === "text" ||
+        item.kind === "sticky" ||
+        item.kind === "table" ||
+        item.kind === "zone",
+    );
     const allText =
       selectedItems.length === selectedIds.length &&
       selectedItems.length > 0 &&
-      selectedItems.every((item) => item.kind === "text");
+      textItems.length === selectedItems.length;
     fontControls.hidden = !allText;
     const fontFamily = query(fontControls, "[data-selection-font-family]", HTMLSelectElement);
     const fontSize = query(fontControls, "[data-selection-font-size]", HTMLSelectElement);
+    const formatButtons = [
+      query(fontControls, "[data-selection-font-weight]", HTMLButtonElement),
+      query(fontControls, "[data-selection-font-style]", HTMLButtonElement),
+      query(fontControls, "[data-selection-text-decoration]", HTMLButtonElement),
+    ];
     fontFamily.disabled = !mutationReady || !allSelectedOwned || !allText;
     fontSize.disabled = fontFamily.disabled;
-    const textItems = selectedItems.filter((item) => item.kind === "text");
-    const selectedFontFamilies = new Set(textItems.map((item) => item.style.fontFamily));
+    formatButtons.forEach((button) => {
+      button.disabled = fontFamily.disabled;
+    });
+    const selectedFontFamilies = new Set(textItems.map((item) => item.style.fontFamily ?? "sans"));
     const selectedFontSizes = new Set(textItems.map((item) => item.style.fontSize));
     fontFamily.value = selectedFontFamilies.size === 1 ? ([...selectedFontFamilies][0] ?? "") : "";
     const selectedFontSize = selectedFontSizes.size === 1 ? [...selectedFontSizes][0] : undefined;
@@ -5761,6 +6159,23 @@ export class BoardApp {
       fontSize.append(option);
     }
     fontSize.value = selectedFontSize === undefined ? "" : String(selectedFontSize);
+    formatButtons[0]?.setAttribute(
+      "aria-pressed",
+      String(
+        textItems.length > 0 && textItems.every((item) => effectiveTextFontWeight(item) === "bold"),
+      ),
+    );
+    formatButtons[1]?.setAttribute(
+      "aria-pressed",
+      String(textItems.length > 0 && textItems.every((item) => item.style.fontStyle === "italic")),
+    );
+    formatButtons[2]?.setAttribute(
+      "aria-pressed",
+      String(
+        textItems.length > 0 &&
+          textItems.every((item) => item.style.textDecoration === "underline"),
+      ),
+    );
     query(this.selectionActions, "[data-selection-style-divider]", HTMLElement).hidden =
       colourWrap.hidden && fontControls.hidden;
     const alt = query(this.selectionActions, "[data-selection-alt]", HTMLButtonElement);
@@ -5771,6 +6186,23 @@ export class BoardApp {
     );
     const [selectedId] = ids;
     const selected = selectedId ? this.model.getItem(selectedId) : undefined;
+    const sectionLock = query(
+      this.selectionActions,
+      "[data-selection-section-lock]",
+      HTMLButtonElement,
+    );
+    const selectedSection = ids.size === 1 && selected?.kind === "zone" ? selected : undefined;
+    const sectionLocked = selectedSection?.geometry.locked === true;
+    sectionLock.hidden = this.bootstrap.actor.role !== "owner" || selectedSection === undefined;
+    sectionLock.disabled = !canEdit || !allSelectedAuthoritative || selectedSection === undefined;
+    sectionLock.textContent = sectionLocked ? "Unlock Section" : "Lock Section";
+    sectionLock.setAttribute("aria-label", sectionLocked ? "Unlock Section" : "Lock Section");
+    sectionLock.setAttribute("aria-pressed", String(sectionLocked));
+    sectionLock.title = sectionLock.disabled
+      ? "Wait for the Section to finish saving."
+      : sectionLocked
+        ? "Allow changes within this Section"
+        : "Prevent everyone from changing this Section or its contents";
     alt.hidden = ids.size !== 1 || selected?.kind !== "image";
     alt.disabled =
       !canEdit || selected?.version === 0 || !selected || !this.canModifyItem(selected);

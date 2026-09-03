@@ -19,9 +19,14 @@ import {
   type Point,
   type ProtocolErrorCode,
   ProtocolValidationError,
+  resolveTextFontWeight,
+  type StickyStyle,
+  type TableStyle,
+  type TextStyle,
   textFontStack,
   utf8Bytes,
   validatePlainText,
+  type ZoneStyle,
 } from "@collab/protocol";
 
 export const DEFAULT_SVG_PADDING = 24;
@@ -104,6 +109,20 @@ function number(value: number): string {
 
 function transformAttribute(item: BoardItem): string {
   return `matrix(${item.transform.map(number).join(" ")})`;
+}
+
+type TextBearingStyle = Pick<
+  TextStyle | StickyStyle | TableStyle | ZoneStyle,
+  "fontFamily" | "fontWeight" | "fontStyle" | "textDecoration"
+>;
+
+function typographyAttributes(style: TextBearingStyle, defaultWeight = "normal"): string {
+  return [
+    `font-family="${escapeXmlAttribute(textFontStack(style.fontFamily ?? "sans"))}"`,
+    `font-weight="${resolveTextFontWeight(style.fontWeight, defaultWeight)}"`,
+    `font-style="${style.fontStyle ?? "normal"}"`,
+    `text-decoration="${style.textDecoration ?? "none"}"`,
+  ].join(" ");
 }
 
 function commonStrokeAttributes(item: StrokeBoardItem): string {
@@ -191,6 +210,15 @@ interface StickyWordChunk {
 }
 
 function scanStickyWordChunk(value: string, start: number, maxCharacters: number): StickyWordChunk {
+  let wordEnd = start;
+  let wordCodePoints = 0;
+  while (wordEnd < value.length && !isStickyWhitespaceAt(value, wordEnd)) {
+    wordEnd += codePointWidthAt(value, wordEnd);
+    wordCodePoints += 1;
+  }
+  if (/^https?:\/\/\S+$/iu.test(value.slice(start, wordEnd))) {
+    return { end: wordEnd, codePoints: wordCodePoints, hasMore: false };
+  }
   let end = start;
   let codePoints = 0;
   while (end < value.length && codePoints < maxCharacters && !isStickyWhitespaceAt(value, end)) {
@@ -324,7 +352,7 @@ function renderSticky(item: StickyBoardItem): string {
     )
     .join("");
   const clip = `<defs><clipPath id="${escapeXmlAttribute(clipId)}" clipPathUnits="userSpaceOnUse"><rect x="${number(contentX)}" y="${number(contentY)}" width="${number(contentWidth)}" height="${number(contentHeight)}" /></clipPath></defs>`;
-  const renderedText = `<text x="${number(contentX)}" y="${number(contentY + item.style.fontSize)}" fill="${escapeXmlAttribute(item.style.textColor)}" font-size="${number(item.style.fontSize)}" font-family="Inter, ui-sans-serif, system-ui, sans-serif" xml:space="preserve" clip-path="url(#${escapeXmlAttribute(clipId)})">${spans}</text>`;
+  const renderedText = `<text x="${number(contentX)}" y="${number(contentY + item.style.fontSize)}" fill="${escapeXmlAttribute(item.style.textColor)}" font-size="${number(item.style.fontSize)}" ${typographyAttributes(item.style)} xml:space="preserve" clip-path="url(#${escapeXmlAttribute(clipId)})">${spans}</text>`;
   return `<g ${attributes}>${clip}${rectangle}${renderedText}</g>`;
 }
 
@@ -460,7 +488,7 @@ function renderTable(item: TableBoardItem): string {
               `<tspan x="${number(contentX)}" dy="${index === 0 ? "0" : lineHeight}">${escapeXmlText(line || " ")}</tspan>`,
           )
           .join("");
-        renderedText = `<text x="${number(contentX)}" y="${number(contentY + item.style.fontSize)}" fill="${escapeXmlAttribute(item.style.textColor)}" font-size="${number(item.style.fontSize)}" font-family="Inter, ui-sans-serif, system-ui, sans-serif" xml:space="preserve" clip-path="url(#${escapeXmlAttribute(clipId)})">${spans}</text>`;
+        renderedText = `<text x="${number(contentX)}" y="${number(contentY + item.style.fontSize)}" fill="${escapeXmlAttribute(item.style.textColor)}" font-size="${number(item.style.fontSize)}" ${typographyAttributes(item.style, isHeader ? "700" : "500")} xml:space="preserve" clip-path="url(#${escapeXmlAttribute(clipId)})">${spans}</text>`;
       }
       content.push(
         `<g role="${cellRole}" aria-label="${escapeXmlAttribute(text)}">${rectangle}${renderedText}</g>`,
@@ -490,7 +518,7 @@ function renderZone(item: ZoneBoardItem): string {
   const clip = `<defs><clipPath id="${escapeXmlAttribute(clipId)}" clipPathUnits="userSpaceOnUse"><rect x="${number(contentX)}" y="${number(y)}" width="${number(contentWidth)}" height="${number(contentHeight)}" /></clipPath></defs>`;
   const fill = `<rect x="${number(x)}" y="${number(y)}" width="${number(width)}" height="${number(height)}" rx="12" fill="${escapeXmlAttribute(item.style.fill)}" fill-opacity="${number(item.style.opacity)}" />`;
   const border = `<rect x="${number(x)}" y="${number(y)}" width="${number(width)}" height="${number(height)}" rx="12" fill="none" stroke="${escapeXmlAttribute(item.style.borderColor)}" stroke-width="1.5" vector-effect="non-scaling-stroke" />`;
-  const renderedTitle = `<text x="${number(contentX)}" y="${number(y + ZONE_TITLE_PADDING + item.style.fontSize)}" fill="${escapeXmlAttribute(item.style.textColor)}" font-size="${number(item.style.fontSize)}" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-weight="700" xml:space="preserve" clip-path="url(#${escapeXmlAttribute(clipId)})">${escapeXmlText(visibleTitle)}</text>`;
+  const renderedTitle = `<text x="${number(contentX)}" y="${number(y + ZONE_TITLE_PADDING + item.style.fontSize)}" fill="${escapeXmlAttribute(item.style.textColor)}" font-size="${number(item.style.fontSize)}" ${typographyAttributes(item.style, "700")} xml:space="preserve" clip-path="url(#${escapeXmlAttribute(clipId)})">${escapeXmlText(visibleTitle)}</text>`;
   return `<g ${attributes}><title>${escapeXmlText(title)}</title>${clip}${fill}${border}${renderedTitle}</g>`;
 }
 
@@ -535,7 +563,7 @@ function renderText(item: Extract<BoardItem, { kind: "text" }>): string {
     `opacity="${number(item.style.opacity)}"`,
     `transform="${transformAttribute(item)}"`,
     `data-item-id="${escapeXmlAttribute(item.id)}"`,
-    `font-family="${escapeXmlAttribute(textFontStack(item.style.fontFamily))}"`,
+    typographyAttributes(item.style),
     `xml:space="preserve"`,
   ].join(" ");
   if (lines.length === 1) return `<text ${attributes}>${escapeXmlText(lines[0] ?? "")}</text>`;

@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import {
   canonicalSnapshotByteLengthFromParts,
   canonicalSnapshotItemByteLength,
+  findMoveCopyClosureLimitViolation,
 } from "@collab/board-core";
 import {
   BOARD_FEATURE_KEYS,
@@ -9,12 +10,15 @@ import {
   type ClientFrame,
   canonicalRequestHashInput,
   DEFAULT_BOARD_FEATURES,
+  MAX_BATCH_OPERATIONS,
   MAX_SNAPSHOT_BYTES,
   normalizeBoardFeatures,
   type BoardItem as ProtocolBoardItem,
   ProtocolValidationError,
   parseClientFrame,
 } from "@collab/protocol";
+import { appendSectionExportSummaries, buildSectionExportSummaries } from "./board-export";
+import { normalizePersistedBoardFeatures } from "./board-features";
 import { decodeClassroomBoardImport, MAX_CLASSROOM_IMPORT_ENCODED_CHARS } from "./classroom-import";
 import {
   base64UrlToBytes,
@@ -53,7 +57,13 @@ import {
   parseImageAsset,
   requireImageAssetMimeType,
 } from "./image-assets";
-import { prepareOwnedItemOperation } from "./item-ownership";
+import {
+  assertItemsOutsideLockedSections,
+  assertItemsOwnedByActor,
+  prepareOwnedItemOperation,
+  sectionRecordIdsForItems,
+  sectionRecordIdsForMutation,
+} from "./item-ownership";
 import { safeLog } from "./logging";
 import { applyMigrations } from "./migrations";
 import { OrganisationAuthService } from "./organisation-auth";
@@ -75,6 +85,7 @@ import {
   readBoard,
   readItem,
   readItems,
+  readLiveItems,
   resolveAccess,
   serializeSnapshot,
   snapshotAccountingForItems,
@@ -871,6 +882,7 @@ export class BoardRoom extends DurableObject<Env> {
       boardBeforeLaunch === null && role === "owner" && body.importSnapshot !== undefined
         ? decodeClassroomBoardImport(body.importSnapshot)
         : null;
+    if (importedBoard !== null) this.assertMoveCopyClosureTarget(importedBoard.items);
     const importedAccounting =
       importedBoard === null ? null : snapshotAccountingForItems(importedBoard.items);
     const title = importedBoard?.title ?? launchTitle;
@@ -1625,6 +1637,32 @@ export class BoardRoom extends DurableObject<Env> {
         : null;
       return { itemId: effect.itemId, before, after };
     });
+  }
+
+  private deriveHistoryAttributionEffect(
+    effect: ItemEffect,
+    current: ItemRecord | undefined,
+    targetSide: "before" | "after",
+    actorId: string,
+    seq: number,
+    acceptedAt: number,
+  ): ItemAttributionEffect {
+    const currentItem = current === undefined || current.deleted ? null : current.item;
+    const currentAttribution = currentItem === null ? null : this.readItemAttribution(currentItem);
+    const target = effect[targetSide];
+    const targetAttribution = target.exists
+      ? deriveItemAttribution(
+          currentItem,
+          target.item,
+          currentAttribution,
+          actorId,
+          seq,
+          acceptedAt,
+        )
+      : null;
+    return targetSide === "before"
+      ? { itemId: effect.itemId, before: targetAttribution, after: currentAttribution }
+      : { itemId: effect.itemId, before: currentAttribution, after: targetAttribution };
   }
 
   private applyAttributionEffects(
@@ -3042,6 +3080,7 @@ export class BoardRoom extends DurableObject<Env> {
       throw new HttpError(503, "TEMPORARILY_UNAVAILABLE", "Snapshot recovery data is invalid.");
     }
     const snapshot = parseStoredSnapshot(rawSnapshot, initialBoard.public_id);
+    this.assertMoveCopyClosureTarget(snapshot.items);
     const snapshotAttribution = this.readSnapshotAttribution(snapshotSeq);
     const acceptedAt = Date.now();
     const commandId = crypto.randomUUID();
@@ -3071,6 +3110,10 @@ export class BoardRoom extends DurableObject<Env> {
       const capacityRowsWritten = this.ensureActionCapacity(board);
       const seq = board.latest_seq + 1;
       const current = readAllItemRecords(this.#sql);
+      assertItemsOutsideLockedSections(
+        [...current.values()].flatMap((record) => (record.deleted ? [] : [record.item])),
+        current,
+      );
       const targetItems = snapshot.items.map(
         (item) => ({ ...structuredClone(item), version: seq }) as BoardItem,
       );
@@ -3267,7 +3310,10 @@ export class BoardRoom extends DurableObject<Env> {
     board: BoardRow,
     snapshot: CanonicalSnapshot,
   ): Promise<Response> {
-    const body = serializeSnapshot(snapshot);
+    const body = appendSectionExportSummaries(
+      serializeSnapshot(snapshot),
+      buildSectionExportSummaries(snapshot.items),
+    );
     const etag = `"${await sha256Base64Url(body)}"`;
     return new Response(body, {
       headers: {
@@ -3401,6 +3447,7 @@ export class BoardRoom extends DurableObject<Env> {
         stateCreatedAt: snapshot.createdAt,
       },
       participants,
+      sections: buildSectionExportSummaries(snapshot.items),
       objects,
     };
   }
@@ -3855,6 +3902,8 @@ export class BoardRoom extends DurableObject<Env> {
       this.ensureItemIdentityCapacity(newItemIdentityCount(operation));
       const seq = board.latest_seq + 1;
       const records = readItems(this.#sql, affectedIds(operation));
+      const sectionRecords = readItems(this.#sql, sectionRecordIdsForMutation(operation, records));
+      for (const [itemId, record] of sectionRecords) records.set(itemId, record);
       assertOperationFeaturesEnabled(featuresForBoard(board), operation, records);
       const prepared = prepareOwnedItemOperation(operation, records, {
         seq,
@@ -3869,6 +3918,7 @@ export class BoardRoom extends DurableObject<Env> {
           this.requireCommittedImageAsset(board, item);
         }
       }
+      const topologyRowsRead = this.assertProspectiveMoveCopyClosure(prepared.effects, "after");
       const acceptedAt = Date.now();
       action = {
         v: 1,
@@ -3958,7 +4008,7 @@ export class BoardRoom extends DurableObject<Env> {
         snapshotAccounting.itemBytes,
       ).rowsWritten;
       recordedFrames = this.#pendingFrameCount;
-      const rowsReadEstimate = records.size + 8;
+      const rowsReadEstimate = records.size + topologyRowsRead + 8;
       const rowsWrittenEstimate =
         capacityRowsWritten +
         snapshotScheduleRowsWritten +
@@ -4086,7 +4136,7 @@ export class BoardRoom extends DurableObject<Env> {
         );
       }
       const originalPayload = parseStoredActionPayload(entry.payload_json);
-      const effects = originalPayload.effects;
+      let effects = originalPayload.effects;
       if (effects.length === 0)
         throw new BoardDomainError("INTERNAL_ERROR", "Stored undo effects are unavailable.");
       const currentRecords = new Map<string, ItemRecord>();
@@ -4103,12 +4153,149 @@ export class BoardRoom extends DurableObject<Env> {
         }
         currentRecords.set(effect.itemId, current);
       }
+
+      // Applying this entry may remove a Section (undoing its create, or
+      // redoing its delete). Members that joined after the entry was recorded
+      // are not in its effects, so synthesize a detach for each of them in the
+      // same direction as the entry. The detached side gets a fresh state token
+      // because it is a new logical state: any other participant's history
+      // entry that recorded the member must now conflict instead of replaying
+      // against a Section that no longer exists.
+      let topologyItems: readonly BoardItem[] | undefined;
+      const dependentItemIds = new Set<string>();
+      const deletedSectionIds = deletedSectionIdsForTarget(effects, undo ? "before" : "after");
+      if (deletedSectionIds.size > 0) {
+        topologyItems = readLiveItems(this.#sql);
+        const effectItemIds = new Set(effects.map((effect) => effect.itemId));
+        const dependentEffects: ItemEffect[] = [];
+        for (const item of topologyItems) {
+          if (
+            item.sectionId === undefined ||
+            !deletedSectionIds.has(item.sectionId) ||
+            effectItemIds.has(item.id)
+          ) {
+            continue;
+          }
+          const current = readItem(this.#sql, item.id);
+          if (current === undefined || current.deleted) {
+            throw new BoardDomainError(
+              "INTERNAL_ERROR",
+              "A live Section member record is unavailable.",
+            );
+          }
+          // Membership was assigned by geometry, so removing it is the
+          // Section creator's right even when the member belongs to someone
+          // else. Owners may detach anything.
+          const section = currentRecords.get(item.sectionId)?.item;
+          if (access.role !== "owner" && section?.createdBy !== attachment.actorId) {
+            throw new BoardDomainError("FORBIDDEN", "You can modify only work that you created.", {
+              itemId: item.id,
+            });
+          }
+          const attached = structuredClone(current.item);
+          const detached = structuredClone(current.item);
+          delete detached.sectionId;
+          const detachedToken = crypto.randomUUID();
+          dependentEffects.push(
+            undo
+              ? {
+                  itemId: item.id,
+                  before: { exists: true, item: detached },
+                  after: { exists: true, item: attached },
+                  beforeStateToken: detachedToken,
+                  afterStateToken: current.stateToken,
+                }
+              : {
+                  itemId: item.id,
+                  before: { exists: true, item: attached },
+                  after: { exists: true, item: detached },
+                  beforeStateToken: current.stateToken,
+                  afterStateToken: detachedToken,
+                },
+          );
+          currentRecords.set(item.id, current);
+          dependentItemIds.add(item.id);
+        }
+        if (dependentEffects.length > 0) effects = [...effects, ...dependentEffects];
+      }
+      // Relationship-only changes to the membership of a Section this actor
+      // created are theirs to apply in either direction, whoever authored the
+      // member: membership was assigned by geometry, not by the member's
+      // author. This covers the synthesized detaches above and the recorded
+      // detaches/re-attaches of the actor's own Section delete or create.
+      const membershipExemptItemIds = new Set(dependentItemIds);
+      for (const effect of effects) {
+        if (membershipExemptItemIds.has(effect.itemId)) continue;
+        if (!isPureHistorySectionMembershipChange(effect)) continue;
+        const sectionIds = [effect.before, effect.after].flatMap((state) =>
+          state.exists && state.item.sectionId !== undefined ? [state.item.sectionId] : [],
+        );
+        const ownsEverySection =
+          sectionIds.length > 0 &&
+          sectionIds.every(
+            (sectionId) =>
+              (currentRecords.get(sectionId) ?? readItem(this.#sql, sectionId))?.item.createdBy ===
+              attachment.actorId,
+          );
+        if (access.role === "owner" || ownsEverySection) membershipExemptItemIds.add(effect.itemId);
+      }
+      const currentItems = effects.flatMap((effect) => {
+        const current = currentRecords.get(effect.itemId);
+        return current === undefined || current.deleted ? [] : [current.item];
+      });
+      const targetItems = effects.flatMap((effect) => {
+        const target = undo ? effect.before : effect.after;
+        return target.exists ? [target.item] : [];
+      });
+      const historyItems = [...currentItems, ...targetItems];
+      // Synthesized detaches were authorised above against the Section's
+      // creator, so the member's own author is not required here.
+      assertItemsOwnedByActor(
+        historyItems.filter((item) => !membershipExemptItemIds.has(item.id)),
+        {
+          actorId: attachment.actorId,
+          role: access.role,
+        },
+      );
+      if (access.role !== "owner" && effects.some(isPureHistorySectionLockChange)) {
+        throw new BoardDomainError("FORBIDDEN", "Only an owner can lock or unlock a Section.");
+      }
+      const sectionRecords = readItems(this.#sql, sectionRecordIdsForItems(historyItems));
+      for (const [itemId, record] of sectionRecords) currentRecords.set(itemId, record);
+      const lockCheckedCurrentItems = effects.flatMap((effect) => {
+        if (isPureHistorySectionLockChange(effect)) return [];
+        const current = currentRecords.get(effect.itemId);
+        return current === undefined || current.deleted ? [] : [current.item];
+      });
+      assertItemsOutsideLockedSections(lockCheckedCurrentItems, currentRecords);
+      const prospectiveRecords = new Map(currentRecords);
+      const lockCheckedItems: BoardItem[] = [];
+      for (const effect of effects) {
+        const target = undo ? effect.before : effect.after;
+        if (!target.exists) {
+          prospectiveRecords.delete(effect.itemId);
+          continue;
+        }
+        const current = currentRecords.get(effect.itemId);
+        prospectiveRecords.set(effect.itemId, {
+          item: target.item,
+          deleted: false,
+          stateToken: current?.stateToken ?? "",
+        });
+        if (!isPureHistorySectionLockChange(effect)) lockCheckedItems.push(target.item);
+      }
+      assertItemsOutsideLockedSections(lockCheckedItems, prospectiveRecords);
       if (this.actionIdExists(command.actionId)) {
         throw new BoardDomainError("INVALID_FRAME", "The action ID was already used.");
       }
       const capacityRowsWritten = this.ensureActionCapacity(board);
       const seq = board.latest_seq + 1;
       const acceptedAt = Date.now();
+      const topologyRowsRead = this.assertProspectiveMoveCopyClosure(
+        effects,
+        undo ? "before" : "after",
+        topologyItems,
+      );
       const snapshotAccounting = this.projectSnapshotAccounting(
         board,
         effects.map((effect) => {
@@ -4151,23 +4338,46 @@ export class BoardRoom extends DurableObject<Env> {
         acceptedAt,
       );
       commentsOrphaned = commentRowsWritten > 0;
-      const targetAttributionEffects =
-        originalPayload.attributionEffects ??
-        effects.map((effect) => {
-          const state = undo ? effect.before : effect.after;
-          const attribution = state.exists
-            ? initialItemAttribution(
-                state.item,
-                state.item.createdBy,
-                state.item.version,
-                acceptedAt,
+      const storedAttributionEffects = originalPayload.attributionEffects;
+      const synthesizedAttributionEffects =
+        storedAttributionEffects === undefined
+          ? []
+          : effects
+              .filter(
+                (effect) =>
+                  !storedAttributionEffects.some(
+                    (attributionEffect) => attributionEffect.itemId === effect.itemId,
+                  ),
               )
-            : null;
-          return { itemId: effect.itemId, before: attribution, after: attribution };
-        });
+              .map((effect) =>
+                this.deriveHistoryAttributionEffect(
+                  effect,
+                  currentRecords.get(effect.itemId),
+                  undo ? "before" : "after",
+                  attachment.actorId,
+                  seq,
+                  acceptedAt,
+                ),
+              );
+
+      const targetAttributionEffects =
+        storedAttributionEffects === undefined
+          ? effects.map((effect) => {
+              const state = undo ? effect.before : effect.after;
+              const attribution = state.exists
+                ? initialItemAttribution(
+                    state.item,
+                    state.item.createdBy,
+                    state.item.version,
+                    acceptedAt,
+                  )
+                : null;
+              return { itemId: effect.itemId, before: attribution, after: attribution };
+            })
+          : [...storedAttributionEffects, ...synthesizedAttributionEffects];
       const attributionRowsWritten = this.applyAttributionEffects(
         targetAttributionEffects,
-        originalPayload.attributionEffects === undefined ? "after" : undo ? "before" : "after",
+        storedAttributionEffects === undefined ? "after" : undo ? "before" : "after",
       );
       const creators = this.restoredItemCreators(
         changes.flatMap((change) => (change.kind === "item.replace" ? [change.item] : [])),
@@ -4186,16 +4396,21 @@ export class BoardRoom extends DurableObject<Env> {
       };
       const payload: StoredActionPayload = { publicResult: action, effects: [] };
       const payloadJson = JSON.stringify(payload);
+      const historyEntryPayloadJson = JSON.stringify({ ...originalPayload, effects });
       if (
         utf8(JSON.stringify(action)).byteLength > MAX_PUBLIC_RESULT_BYTES ||
-        utf8(payloadJson).byteLength > MAX_ACTION_PAYLOAD_BYTES
+        utf8(payloadJson).byteLength > MAX_ACTION_PAYLOAD_BYTES ||
+        utf8(historyEntryPayloadJson).byteLength > MAX_ACTION_PAYLOAD_BYTES
       ) {
         throw new BoardDomainError("MESSAGE_TOO_LARGE", "The history action is too large.");
       }
       const historyRowsWritten = this.#sql.exec(
-        "UPDATE history_entries SET state = ?, last_transition_seq = ? WHERE normal_action_seq = ?",
+        `UPDATE history_entries
+         SET state = ?, last_transition_seq = ?, payload_json = ?
+         WHERE normal_action_seq = ?`,
         undo ? "undone" : "active",
         seq,
+        historyEntryPayloadJson,
         entry.normal_action_seq,
       ).rowsWritten;
       const historyVersion = this.incrementHistoryVersion(attachment.actorId, acceptedAt);
@@ -4213,7 +4428,7 @@ export class BoardRoom extends DurableObject<Env> {
         snapshotAccounting.itemBytes,
       ).rowsWritten;
       recordedFrames = this.#pendingFrameCount;
-      const rowsReadEstimate = effects.length + 10;
+      const rowsReadEstimate = effects.length + topologyRowsRead + 10;
       const rowsWrittenEstimate =
         capacityRowsWritten +
         snapshotScheduleRowsWritten +
@@ -4313,6 +4528,13 @@ export class BoardRoom extends DurableObject<Env> {
       if (currentAccess.role !== "owner")
         throw new BoardDomainError("FORBIDDEN", "Only the owner can clear the board.");
       this.requireContentMutationAllowed(board, currentAccess.role);
+      const lockedSectionRows = this.#sql
+        .exec<ItemSqlRow>("SELECT * FROM items WHERE deleted = 0 AND kind = 'zone'")
+        .toArray();
+      assertItemsOutsideLockedSections(
+        lockedSectionRows.map((row) => itemRecordFromRow(row).item),
+        new Map(),
+      );
       if (board.latest_seq !== operation.expectedBoardSeq) {
         throw new BoardDomainError("STALE_BOARD", "The board changed before it could be cleared.", {
           latestSeq: board.latest_seq,
@@ -5335,6 +5557,92 @@ export class BoardRoom extends DurableObject<Env> {
     ).rowsWritten;
   }
 
+  private assertMoveCopyClosureTarget(items: readonly BoardItem[]): void {
+    this.assertSectionRelationshipTargets(items);
+    const violation = findMoveCopyClosureLimitViolation(items);
+    if (violation === null) return;
+    throw new BoardDomainError(
+      "BOARD_LIMIT_REACHED",
+      `A group or Section move/copy closure may contain at most ${MAX_BATCH_OPERATIONS} objects.`,
+      { ...violation, limit: MAX_BATCH_OPERATIONS },
+    );
+  }
+
+  private assertSectionRelationshipTargets(items: Iterable<BoardItem>): void {
+    const itemIndex = new Map<string, BoardItem>();
+    for (const item of items) itemIndex.set(item.id, item);
+    for (const item of itemIndex.values()) {
+      if (item.sectionId === undefined) continue;
+      if (item.kind !== "zone" && itemIndex.get(item.sectionId)?.kind === "zone") continue;
+      throw new BoardDomainError(
+        "INVALID_FRAME",
+        "Every Section relationship must reference a live Section.",
+        { sectionId: item.sectionId, itemId: item.id },
+      );
+    }
+  }
+
+  /**
+   * Scans the whole live topology only when an effect changes a grouping edge
+   * or creates/deletes a Section. The prepared effect overlay is checked in
+   * the same SQLite transaction, before any durable action or item write.
+   */
+  private assertProspectiveMoveCopyClosure(
+    effects: readonly ItemEffect[],
+    target: "before" | "after",
+    knownCurrentItems?: readonly BoardItem[],
+  ): number {
+    if (!effects.some(topologyChanged)) return 0;
+
+    const currentItems = knownCurrentItems ?? readLiveItems(this.#sql);
+    const current = new Map(currentItems.map((item) => [item.id, item]));
+    const deletedSectionIds = deletedSectionIdsForTarget(effects, target);
+
+    const prospective = new Map(current);
+    for (const effect of effects) {
+      const state = effect[target];
+      if (state.exists) prospective.set(effect.itemId, state.item);
+      else prospective.delete(effect.itemId);
+    }
+
+    if (deletedSectionIds.size > 0) {
+      for (const item of prospective.values()) {
+        if (item.sectionId === undefined || !deletedSectionIds.has(item.sectionId)) continue;
+        throw new BoardDomainError(
+          "INVALID_FRAME",
+          "Deleting a Section must clear every surviving member relationship in the same operation.",
+          { sectionId: item.sectionId, itemId: item.id },
+        );
+      }
+    }
+
+    this.assertSectionRelationshipTargets(prospective.values());
+
+    const violation = findMoveCopyClosureLimitViolation(prospective.values());
+    if (violation === null) return currentItems.length;
+
+    // Older workers could persist an oversized closure. Edge and Section
+    // removal cannot enlarge any closure, so permit those monotonic repairs
+    // (and board.clear remains independently available) until the board is
+    // valid again.
+    if (
+      topologyChangesOnlyRemove(effects, target) &&
+      findMoveCopyClosureLimitViolation(currentItems) !== null
+    ) {
+      this.log("warn", "topology.oversize_remediation", {
+        result: violation.itemCount,
+        seedItemId: violation.seedItemId,
+      });
+      return currentItems.length;
+    }
+
+    throw new BoardDomainError(
+      "BOARD_LIMIT_REACHED",
+      `A group or Section move/copy closure may contain at most ${MAX_BATCH_OPERATIONS} objects.`,
+      { ...violation, limit: MAX_BATCH_OPERATIONS },
+    );
+  }
+
   private projectSnapshotAccounting(
     board: BoardRow,
     changes: Iterable<{ before?: ItemRecord; after?: BoardItem }>,
@@ -6234,6 +6542,64 @@ function commentFromRow(row: CommentRow): BoardComment {
   };
 }
 
+function topologyItem(state: ItemEffect["before"]): BoardItem | undefined {
+  return state.exists ? state.item : undefined;
+}
+
+function deletedSectionIdsForTarget(
+  effects: readonly ItemEffect[],
+  target: "before" | "after",
+): Set<string> {
+  const source = target === "after" ? "before" : "after";
+  const deletedSectionIds = new Set<string>();
+  for (const effect of effects) {
+    if (!effect[target].exists && topologyItem(effect[source])?.kind === "zone") {
+      deletedSectionIds.add(effect.itemId);
+    }
+  }
+  return deletedSectionIds;
+}
+
+function topologyChanged(effect: ItemEffect): boolean {
+  const before = topologyItem(effect.before);
+  const after = topologyItem(effect.after);
+  return (
+    (before?.kind === "zone") !== (after?.kind === "zone") ||
+    before?.groupId !== after?.groupId ||
+    before?.sectionId !== after?.sectionId
+  );
+}
+
+function topologyChangesOnlyRemove(
+  effects: readonly ItemEffect[],
+  target: "before" | "after",
+): boolean {
+  const source = target === "after" ? "before" : "after";
+  let changed = false;
+  for (const effect of effects) {
+    const sourceItem = topologyItem(effect[source]);
+    const targetItem = topologyItem(effect[target]);
+    if (
+      (sourceItem?.kind === "zone") === (targetItem?.kind === "zone") &&
+      sourceItem?.groupId === targetItem?.groupId &&
+      sourceItem?.sectionId === targetItem?.sectionId
+    ) {
+      continue;
+    }
+    changed = true;
+    if (sourceItem === undefined) return false;
+    if (targetItem === undefined) continue;
+    if (sourceItem.kind !== "zone" && targetItem.kind === "zone") return false;
+    if (sourceItem.groupId !== targetItem.groupId && targetItem.groupId !== undefined) {
+      return false;
+    }
+    if (sourceItem.sectionId !== targetItem.sectionId && targetItem.sectionId !== undefined) {
+      return false;
+    }
+  }
+  return changed;
+}
+
 function initialBoardFeatures(value: unknown): BoardFeatures {
   if (value === undefined) return { ...DEFAULT_BOARD_FEATURES };
   const patch = requireFeaturePatch(value, true);
@@ -6264,7 +6630,7 @@ function requireFeaturePatch(value: unknown, allowEmpty = false): Partial<BoardF
 
 function featuresForBoard(board: BoardRow): BoardFeatures {
   try {
-    const features = normalizeBoardFeatures(JSON.parse(board.features_json));
+    const features = normalizePersistedBoardFeatures(JSON.parse(board.features_json));
     if (features.images !== (board.images_enabled === 1)) {
       throw new Error("The mirrored image feature setting differs.");
     }
@@ -6289,6 +6655,18 @@ function assertOperationFeaturesEnabled(
   const operations = operation.kind === "items.batch" ? operation.operations : [operation];
   for (const child of operations) {
     if (child.kind === "item.create") {
+      if (
+        !features.objectTransforms &&
+        transformLinearPartChanged([1, 0, 0, 1, 0, 0], child.item.transform)
+      ) {
+        throw new BoardDomainError("FORBIDDEN", "Object transforms are disabled for this board.");
+      }
+      if (
+        !features.grouping &&
+        (child.item.groupId !== undefined || child.item.sectionId !== undefined)
+      ) {
+        throw new BoardDomainError("FORBIDDEN", "Grouping is disabled for this board.");
+      }
       assertItemFeatureEnabled(features, child.item as { kind: string; geometry?: unknown });
       if (
         geometryContainsVisiblePaths(child.item.geometry) &&
@@ -6299,7 +6677,22 @@ function assertOperationFeaturesEnabled(
       continue;
     }
     if (child.kind === "item.update") {
+      if (
+        !features.grouping &&
+        (typeof child.patch.groupId === "string" || typeof child.patch.sectionId === "string")
+      ) {
+        throw new BoardDomainError("FORBIDDEN", "Grouping is disabled for this board.");
+      }
       const source = records.get(child.itemId);
+      if (
+        source !== undefined &&
+        !source.deleted &&
+        child.patch.transform !== undefined &&
+        transformLinearPartChanged(source.item.transform, child.patch.transform) &&
+        !features.objectTransforms
+      ) {
+        throw new BoardDomainError("FORBIDDEN", "Object transforms are disabled for this board.");
+      }
       if (
         source !== undefined &&
         !source.deleted &&
@@ -6322,10 +6715,83 @@ function assertOperationFeaturesEnabled(
     }
     if (child.kind !== "item.copy") continue;
     const source = records.get(child.sourceItemId);
-    if (source !== undefined && !source.deleted) {
-      assertItemFeatureEnabled(features, source.item as { kind: string; geometry?: unknown });
+    const sourceItem = source !== undefined && !source.deleted ? source.item : undefined;
+    if (
+      sourceItem !== undefined &&
+      !features.objectTransforms &&
+      transformLinearPartChanged([1, 0, 0, 1, 0, 0], sourceItem.transform)
+    ) {
+      throw new BoardDomainError("FORBIDDEN", "Object transforms are disabled for this board.");
+    }
+    const effectiveGroupId =
+      child.newGroupId === undefined ? sourceItem?.groupId : child.newGroupId;
+    const effectiveSectionId =
+      child.newSectionId === undefined ? sourceItem?.sectionId : child.newSectionId;
+    if (
+      !features.grouping &&
+      (typeof effectiveGroupId === "string" || typeof effectiveSectionId === "string")
+    ) {
+      throw new BoardDomainError("FORBIDDEN", "Grouping is disabled for this board.");
+    }
+    if (sourceItem !== undefined) {
+      assertItemFeatureEnabled(features, sourceItem as { kind: string; geometry?: unknown });
     }
   }
+}
+
+/**
+ * True when the effect changes nothing about the item except its Section
+ * membership (and the version bump every write carries).
+ */
+function isPureHistorySectionMembershipChange(effect: ItemEffect): boolean {
+  const before = effect.before;
+  const after = effect.after;
+  if (!before.exists || !after.exists) return false;
+  if (before.item.sectionId === after.item.sectionId) return false;
+  return (
+    stableStringify(historyItemWithoutMembership(before.item)) ===
+    stableStringify(historyItemWithoutMembership(after.item))
+  );
+}
+
+function historyItemWithoutMembership(item: BoardItem): Record<string, unknown> {
+  const comparable = structuredClone(item) as unknown as Record<string, unknown>;
+  delete comparable.version;
+  delete comparable.sectionId;
+  return comparable;
+}
+
+function isPureHistorySectionLockChange(effect: ItemEffect): boolean {
+  const before = effect.before;
+  const after = effect.after;
+  if (
+    !before.exists ||
+    !after.exists ||
+    before.item.kind !== "zone" ||
+    after.item.kind !== "zone"
+  ) {
+    return false;
+  }
+  const beforeLocked = (before.item.geometry as { locked?: boolean }).locked === true;
+  const afterLocked = (after.item.geometry as { locked?: boolean }).locked === true;
+  return (
+    beforeLocked !== afterLocked &&
+    stableStringify(historySectionWithoutLock(before.item)) ===
+      stableStringify(historySectionWithoutLock(after.item))
+  );
+}
+
+function historySectionWithoutLock(item: BoardItem): Record<string, unknown> {
+  const comparable = structuredClone(item) as unknown as Record<string, unknown>;
+  delete comparable.version;
+  const geometry = comparable.geometry;
+  if (isRecord(geometry)) delete geometry.locked;
+  return comparable;
+}
+
+function transformLinearPartChanged(current: unknown, next: unknown): boolean {
+  if (!Array.isArray(current) || !Array.isArray(next)) return false;
+  return [0, 1, 2, 3].some((index) => current[index] !== next[index]);
 }
 
 function visiblePathsChanged(currentGeometry: unknown, nextGeometry: unknown): boolean {

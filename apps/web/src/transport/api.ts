@@ -78,6 +78,7 @@ export type AttributedDataExport = {
     seq: number;
     stateCreatedAt: number;
   };
+  sections?: Array<{ id: string; name: string; locked: boolean; memberItemIds: string[] }>;
   participants: Array<{
     id: string;
     displayName: string;

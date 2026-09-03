@@ -1,3 +1,4 @@
+import { unionBounds } from "@collab/geometry";
 import { type Bounds, itemBounds } from "../board/model";
 import type { BatchItemOperation, BoardItem, Matrix } from "../types";
 import { roundBoard } from "../types";
@@ -12,8 +13,15 @@ export type ArrangeKind =
 
 export type ArrangeUpdate = Extract<BatchItemOperation, { kind: "item.update" }>;
 
+type ArrangementUnit = {
+  id: string;
+  items: BoardItem[];
+  bounds: Bounds;
+};
+
 type Participant = {
-  item: BoardItem;
+  id: string;
+  items: BoardItem[];
   bounds: Bounds;
   dx: number;
   dy: number;
@@ -24,23 +32,21 @@ const TIDY_GAP = 24;
 export function buildArrangeUpdates(
   kind: ArrangeKind,
   selectedItems: readonly BoardItem[],
+  groupingEnabled = true,
 ): ArrangeUpdate[] {
-  const source =
-    kind === "tidy-stickies"
-      ? selectedItems.filter((item) => item.kind === "sticky")
-      : [...selectedItems];
+  const units = arrangementUnits(kind, selectedItems, groupingEnabled);
+  const source = units.flatMap((unit) => unit.items);
   const minimum = kind.startsWith("distribute-") ? 3 : 2;
   if (
-    source.length < minimum ||
+    units.length < minimum ||
     source.some((item) => item.version < 1) ||
     new Set(source.map((item) => item.id)).size !== source.length
   ) {
     return [];
   }
 
-  const participants = source.map((item) => ({
-    item,
-    bounds: itemBounds(item),
+  const participants = units.map((unit) => ({
+    ...unit,
     dx: 0,
     dy: 0,
   }));
@@ -73,12 +79,45 @@ export function buildArrangeUpdates(
     participant.dy = roundBoard(participant.dy);
   }
   if (participants.every(({ dx, dy }) => dx === 0 && dy === 0)) return [];
-  return participants.map(({ item, dx, dy }) => ({
-    kind: "item.update",
-    itemId: item.id,
-    expectedVersion: item.version,
-    patch: { transform: translated(item.transform, dx, dy) },
-  }));
+  return participants.flatMap(({ items, dx, dy }) =>
+    items.map((item) => ({
+      kind: "item.update",
+      itemId: item.id,
+      expectedVersion: item.version,
+      patch: { transform: translated(item.transform, dx, dy) },
+    })),
+  );
+}
+
+function arrangementUnits(
+  kind: ArrangeKind,
+  selectedItems: readonly BoardItem[],
+  groupingEnabled: boolean,
+): ArrangementUnit[] {
+  const units: ArrangementUnit[] = [];
+  const explicitGroups = new Map<string, BoardItem[]>();
+  for (const item of selectedItems) {
+    if (groupingEnabled && item.groupId) {
+      const members = explicitGroups.get(item.groupId) ?? [];
+      members.push(item);
+      explicitGroups.set(item.groupId, members);
+      continue;
+    }
+    if (kind === "tidy-stickies" && item.kind !== "sticky") continue;
+    units.push({ id: item.id, items: [item], bounds: itemBounds(item) });
+  }
+  for (const members of explicitGroups.values()) {
+    if (kind === "tidy-stickies" && !members.some((item) => item.kind === "sticky")) continue;
+    members.sort((left, right) => left.id.localeCompare(right.id));
+    const first = members[0];
+    if (!first) continue;
+    units.push({
+      id: first.id,
+      items: members,
+      bounds: members.map(itemBounds).reduce(unionBounds),
+    });
+  }
+  return units;
 }
 
 function alignLeft(participants: Participant[]): void {
@@ -110,7 +149,7 @@ function distribute(participants: Participant[], axis: "horizontal" | "vertical"
     const secondary = horizontal
       ? left.bounds.minY - right.bounds.minY
       : left.bounds.minX - right.bounds.minX;
-    return secondary || left.item.id.localeCompare(right.item.id);
+    return secondary || left.id.localeCompare(right.id);
   });
   const first = participants[0];
   const last = participants.at(-1);
@@ -135,7 +174,7 @@ function tidyStickies(participants: Participant[]): void {
     (left, right) =>
       left.bounds.minY - right.bounds.minY ||
       left.bounds.minX - right.bounds.minX ||
-      left.item.id.localeCompare(right.item.id),
+      left.id.localeCompare(right.id),
   );
   const columns = Math.ceil(Math.sqrt(participants.length));
   const rows = Math.ceil(participants.length / columns);
@@ -181,5 +220,5 @@ function translated(transform: Matrix, dx: number, dy: number): Matrix {
 }
 
 function compareId(left: Participant, right: Participant): number {
-  return left.item.id.localeCompare(right.item.id);
+  return left.id.localeCompare(right.id);
 }

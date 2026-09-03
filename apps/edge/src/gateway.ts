@@ -203,8 +203,12 @@ async function routeRequest(
     );
     const organisationAuth = new OrganisationAuthService(env);
     const launch = await organisationAuth.verifyLaunchToken(body.token);
-    if (launch.role !== "owner") {
-      throw new HttpError(403, "FORBIDDEN", "An Organisation owner assertion is required.");
+    if (launch.role !== "owner" || !launch.organisationAdmin) {
+      throw new HttpError(
+        403,
+        "FORBIDDEN",
+        "An Organisation administration assertion is required.",
+      );
     }
     enforceGatewayRateLimit(`organisation-admin:${launch.organisationId}`, 120, 2);
     const organisationRoom = env.ORGANISATION_ROOMS.getByName(launch.organisationId);
@@ -315,6 +319,13 @@ async function routeRequest(
       throw new HttpError(403, "FORBIDDEN", "An organisation owner assertion is required.");
     }
     if (launch.organisationKey !== organisationApi.organisationKey) throw boardNotFoundError();
+    if (organisationApi.kind === "webhook-settings" && !launch.organisationAdmin) {
+      throw new HttpError(
+        403,
+        "FORBIDDEN",
+        "An Organisation administration assertion is required.",
+      );
+    }
     enforceGatewayRateLimit(`organisation-api:${launch.organisationId}`, 120, 2);
 
     if (organisationApi.kind === "export") {
