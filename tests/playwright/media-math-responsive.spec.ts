@@ -9,6 +9,62 @@ async function setRange(page: import("@playwright/test").Page, selector: string,
   }, value);
 }
 
+test("YouTube embeds move from their surrounding frame without blocking the player", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "Focused video interaction QA runs in Chromium.");
+
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") pageErrors.push(message.text());
+  });
+  await page.context().route("https://www.youtube-nocookie.com/**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      body: "<title>Video preview</title>",
+    }),
+  );
+
+  await createBoard(page, "Video drag frame");
+  await chooseMoreTool(page, "tool-video");
+  const videoDialog = page.getByRole("dialog", { name: "Embed a video" });
+  await videoDialog.getByLabel("Video URL").fill("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+  await videoDialog.getByRole("button", { name: "Embed video" }).click();
+  await expect(videoDialog).toBeHidden();
+
+  const video = page.locator("#drawing-area .video-embed-item");
+  await expect(video).toHaveCount(1);
+  const player = video.locator("iframe");
+  await expect(player).toHaveAttribute("src", "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ");
+  await player.evaluate((node) => {
+    node.dataset.dragTestInstance = "original";
+  });
+
+  await page.getByTestId("tool-select").click();
+  const frame = video.locator("[data-video-drag-frame]");
+  await expect(frame).toHaveCount(1);
+  await expect(frame).toHaveCSS("cursor", "grab");
+  const bounds = await video.boundingBox();
+  if (!bounds) throw new Error("The embedded video has no rendered bounds.");
+  const start = { x: bounds.x + 2, y: bounds.y + bounds.height / 2 };
+  const before = await video.getAttribute("transform");
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(start.x + 64, start.y + 36, { steps: 8 });
+  await expect(page.locator("#local-preview-layer .move-preview")).toHaveCount(1);
+  await page.mouse.up();
+
+  await expect.poll(() => video.getAttribute("transform")).not.toBe(before);
+  await expect(player).toHaveAttribute("data-drag-test-instance", "original");
+  await expect(player).toHaveAttribute("src", "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ");
+  await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+  await page.screenshot({ path: "/tmp/spacescale-video-drag-frame.png" });
+  await expect(page.locator("vite-error-overlay")).toHaveCount(0);
+  expect(pageErrors).toEqual([]);
+});
+
 test("videos, MathJax text surfaces, and compact canvas controls work together", async ({
   page,
 }, testInfo) => {
@@ -277,16 +333,14 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   await expect(page.locator("#drawing-area .video-embed-item")).toHaveCount(1);
   await expect(page.locator("#drawing-area .board-text-link")).toHaveCount(2);
   await page.getByTestId("tool-select").click();
-  const videoDragHandle = video.locator("[data-video-drag-handle]");
-  await expect(videoDragHandle).toHaveCount(1);
-  const handleBox = await videoDragHandle.boundingBox();
-  if (!handleBox) throw new Error("The embedded video drag handle has no rendered bounds.");
-  await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+  const videoDragFrame = video.locator("[data-video-drag-frame]");
+  await expect(videoDragFrame).toHaveCount(1);
+  const frameBox = await videoDragFrame.boundingBox();
+  if (!frameBox) throw new Error("The embedded video drag frame has no rendered bounds.");
+  const dragStart = { x: frameBox.x + 2, y: frameBox.y + frameBox.height / 2 };
+  await page.mouse.move(dragStart.x, dragStart.y);
   await page.mouse.down();
-  await page.mouse.move(
-    handleBox.x + handleBox.width / 2 + 20,
-    handleBox.y + handleBox.height / 2 + 10,
-  );
+  await page.mouse.move(dragStart.x + 20, dragStart.y + 10);
   const videoMovePreview = page.locator(
     "#local-preview-layer .move-preview.video-embed-preview-item",
   );
