@@ -95,10 +95,12 @@ test("a board participant can use headless WebMCP tools with neutral board attri
 
   // The compact header control reports readiness and opens a page-session call history.
   const webMcpStatus = page.getByTestId("webmcp-status");
+  const webMcpStatusTime = page.getByTestId("webmcp-status-time");
   const mcpActivity = page.getByTestId("mcp-activity-menu");
   await expect(webMcpStatus).toHaveAttribute("data-state", "ready");
   await expect(webMcpStatus).toHaveAttribute("data-host", "linked");
-  await expect(webMcpStatus).toHaveText("MCP");
+  await expect(webMcpStatus).toContainText("MCP");
+  await expect(webMcpStatusTime).toHaveText("Ready");
   await expect(page.getByTestId("save-status")).not.toContainText("·");
   await webMcpStatus.click();
   await expect(mcpActivity).toBeVisible();
@@ -241,9 +243,11 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   expect(answered).toMatchObject({ status: "commented", stepAlias, writtenBy: "ai" });
   await expect(page.locator("[data-comments-count]")).toHaveText("1");
   await expect(webMcpStatus).toHaveAttribute("data-state", "watch");
+  await expect(webMcpStatusTime).toHaveText(/^\d{1,2}:\d{2}\s?(?:AM|PM)?$/iu);
   await webMcpStatus.click();
   await expect(mcpActivity).toContainText("insert_comment");
   await expect(mcpActivity).toContainText("Completed");
+  await expect(mcpActivity).not.toContainText("watch_board");
   await webMcpStatus.click();
   await expect(mcpActivity).toBeHidden();
   await openSettingsDrawer(page);

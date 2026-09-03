@@ -299,12 +299,13 @@ button:is(:hover, :focus-visible) .ai-sparkle-spark-late {
 /* Compact site-tool indicator: white at rest, green while watching, blue during a call. */
 .webmcp-status {
   appearance: none;
-  height: 32px;
+  min-width: 58px;
+  height: 38px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 0 9px 0 8px;
+  gap: 5px;
+  padding: 0 8px 0 7px;
   border: 1px solid #d8d5cd;
   border-radius: 999px;
   background: #fff;
@@ -324,6 +325,27 @@ button:is(:hover, :focus-visible) .ai-sparkle-spark-late {
     background 160ms ease,
     box-shadow 160ms ease,
     color 160ms ease;
+}
+
+.webmcp-status-copy {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+  line-height: 1;
+  text-align: left;
+}
+
+.webmcp-status-time {
+  overflow: hidden;
+  max-width: 48px;
+  opacity: 0.76;
+  font-size: 8px;
+  font-weight: 540;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
 }
 
 .webmcp-status:hover {

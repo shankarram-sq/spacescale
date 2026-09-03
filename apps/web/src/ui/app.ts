@@ -1164,6 +1164,7 @@ export class BoardApp {
   private readonly aiWatchIndicatorText: HTMLElement;
   private readonly webMcpStatus: HTMLButtonElement;
   private readonly webMcpStatusText: HTMLElement;
+  private readonly webMcpStatusTime: HTMLElement;
   private readonly mcpActivityMenu: HTMLElement;
   private readonly mcpActivitySummary: HTMLElement;
   private readonly mcpActivityList: HTMLOListElement;
@@ -1272,6 +1273,7 @@ export class BoardApp {
     this.aiWatchIndicatorText = query(this.root, "[data-ai-watch-indicator-text]", HTMLElement);
     this.webMcpStatus = query(this.root, "[data-webmcp-status]", HTMLButtonElement);
     this.webMcpStatusText = query(this.root, "[data-webmcp-status-text]", HTMLElement);
+    this.webMcpStatusTime = query(this.root, "[data-webmcp-status-time]", HTMLElement);
     this.mcpActivityMenu = query(this.root, "[data-testid='mcp-activity-menu']", HTMLElement);
     this.mcpActivitySummary = query(
       this.mcpActivityMenu,
@@ -1680,7 +1682,10 @@ export class BoardApp {
                   <path d="m5 4 14 7.2-6.1 2.1-2.2 6.2L5 4Z"></path>
                   <path d="m12.9 13.3 4.4 4.4"></path>
                 </svg>
-                <span data-webmcp-status-text>MCP</span>
+                <span class="webmcp-status-copy">
+                  <span data-webmcp-status-text>MCP</span>
+                  <small data-webmcp-status-time data-testid="webmcp-status-time">Ready</small>
+                </span>
               </button>
               <section class="floating-menu mcp-activity-menu" data-testid="mcp-activity-menu" id="mcp-activity-menu" role="dialog" aria-label="MCP call activity" hidden>
                 <header class="mcp-activity-heading">
@@ -7171,12 +7176,22 @@ export class BoardApp {
   private renderWebMcpStatus(state: WebMcpRegistryState): void {
     this.webMcpState = state;
     const { activeCallCount, calls, hostPresent, toolCount } = state;
+    const activityCalls = calls.filter((call) => call.toolName !== "watch_board");
     const watching = this.aiWatchState.phase !== "idle";
     const visualState = activeCallCount > 0 ? "active" : watching ? "watch" : "ready";
     this.webMcpStatus.dataset.state = visualState;
     this.webMcpStatus.dataset.host = hostPresent ? "linked" : "unlinked";
     this.mcpActivityMenu.dataset.state = visualState;
     this.webMcpStatusText.textContent = "MCP";
+    const latestActivity = activityCalls[0];
+    this.webMcpStatusTime.textContent = latestActivity
+      ? new Date(latestActivity.startedAt).toLocaleTimeString([], {
+          hour: "numeric",
+          minute: "2-digit",
+        })
+      : watching
+        ? "Watching"
+        : "Ready";
 
     this.mcpActivitySummary.textContent =
       activeCallCount > 0
@@ -7186,9 +7201,13 @@ export class BoardApp {
           : hostPresent
             ? `${toolCount} site ${toolCount === 1 ? "tool" : "tools"} ready`
             : "Waiting for an MCP-capable browser";
-    this.mcpActivityEmpty.hidden = calls.length > 0;
+    this.mcpActivityEmpty.hidden = activityCalls.length > 0;
+    this.mcpActivityEmpty.textContent =
+      calls.length > 0
+        ? "Watch activity is hidden for this session."
+        : "No MCP calls in this tab yet.";
     this.mcpActivityList.replaceChildren(
-      ...calls.map((call) => {
+      ...activityCalls.map((call) => {
         const row = document.createElement("li");
         row.className = "mcp-activity-row";
         row.dataset.state = call.status;
@@ -7240,9 +7259,9 @@ export class BoardApp {
       ? `${toolCount} site ${toolCount === 1 ? "tool is" : "tools are"} available.`
       : "No MCP host is linked to this browser.";
     const callDescription =
-      calls.length === 0
+      activityCalls.length === 0
         ? "No calls in this tab yet."
-        : `${calls.length} ${calls.length === 1 ? "call" : "calls"} in this tab.`;
+        : `${activityCalls.length} ${activityCalls.length === 1 ? "call" : "calls"} in this tab.`;
     const description = `${stateDescription} ${connectionDescription} ${callDescription} Click to view activity.`;
     this.webMcpStatus.title = description;
     this.webMcpStatus.setAttribute("aria-label", description);
