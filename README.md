@@ -12,9 +12,10 @@ canvas where students are working.**
 
 SpaceScale turns classroom AI from a text reply into visible collaboration.
 Students and teachers draw, write, organize, embed videos, react, and vote
-together. A compatible AI host discovers seven WebMCP tools from the open board,
-watches the work as it is saved, catches reasoning errors, and writes comments,
-notes, pictures, and videos that everyone can discuss, revise, and undo.
+together. A compatible AI host discovers twelve WebMCP tools from the open board,
+reads or follows the whole board, a selection, or one person's work, catches
+reasoning errors, and writes comments, notes, pictures, and videos that everyone
+can discuss, revise, and undo.
 
 ![AI feedback correcting a mistaken hand-drawn quadratic](docs/submission-assets/ai-feedback-correction.png)
 
@@ -69,8 +70,10 @@ SpaceScale started from the open-source
 foundation. During the challenge period, it was extended into a classroom
 collaboration product with:
 
-- seven discoverable WebMCP tools: a bounded saved-step board watch, an
-  aggregate vote reader, a template reader, and four generic writes;
+- twelve discoverable WebMCP tools: one reading or a bounded live watch of the
+  whole board, the browser selection, or a named participant's work, a
+  participant list, an aggregate vote reader, a template reader, and four
+  generic writes;
 - permission-aware, acknowledged, realtime, atomic, and undoable writers that
   place one object where the call asks;
 - shared YouTube/Vimeo cards, MathJax learning content, comments, grouping,
@@ -195,20 +198,33 @@ on shapes, sticky notes, tables, image cards, and sections. V1 stores the snappe
 coordinates as ordinary line geometry, so moving the target later does not move
 the connector automatically.
 
-Codex and other compatible browser hosts discover seven WebMCP tools directly from every
-board browser: a 15-minute board watch, an aggregate vote reader, an activity-template
-reader, and four generic writes—`insert_comment`, `insert_sticky`, `insert_image`, and
-`insert_video`. Each write takes a board location and the content it needs, and lands one
-object as a single acknowledged realtime command. Write tools use the board's normal edit
-permission and cannot bypass read-only access, and each refuses an object kind the Space
-owner has switched off. `insert_image` never fetches an external URL: it accepts inline
-PNG, JPEG, WebP, or GIF data and reuses the private board-asset pipeline that a
-participant's own upload goes through. `insert_comment` attaches to whatever saved object
-covers the location it names, or to the one object selected in that browser. Everything the
-agent writes—notes, pictures, embeds, and comments—retains `assistedBy` metadata for MCP
-context and auditing, is attributed to the responsible participant's ordinary author
-initials, and carries a small AI mark so tool and human are always distinguishable. Every
-generated contribution is realtime and undoable in one step.
+Codex and other compatible browser hosts discover twelve WebMCP tools directly from every
+board browser. Six read: `read_board`, `read_selection` and `read_user` each take one reading
+of a scope; `list_users` names the people with saved work and hands back the participant IDs
+the user tools take; `read_live_class_vote` reports aggregate counts; `read_templates` lists
+the board's activity templates. Two follow the same three scopes live: `watch_board`, with
+`scope` board or selection, and `watch_users`. Four write: `insert_comment`, `insert_sticky`,
+`insert_image` and `insert_video`.
+
+A scope is the same question whether you read it once or follow it, so a read and a watch
+never disagree about what is in it. A board watch takes in work saved after it begins; a
+selection watch is the fixed set the participant chose; a participant watch follows those
+people wherever their work sits, including what they save while it runs, and never reports
+anyone else's. `list_users` is derived from saved board content alone — it reports nobody's
+presence, connection state, or join and leave times, and its object counts describe how much
+work exists, never how well anyone is doing.
+
+Each write takes a board location and the content it needs, and lands one object as a single
+acknowledged realtime command. Write tools use the board's normal edit permission and cannot
+bypass read-only access, and each refuses an object kind the Space owner has switched off.
+`insert_image` never fetches an external URL: it accepts inline PNG, JPEG, WebP, or GIF data
+and reuses the private board-asset pipeline that a participant's own upload goes through.
+`insert_comment` attaches to a watched step by `watchToken` and `stepAlias`, to whatever saved
+object covers the location it names, or to the one object selected in that browser. Everything
+the agent writes—notes, pictures, embeds, and comments—retains `assistedBy` metadata for MCP
+context and auditing, is attributed to the responsible participant's ordinary author initials,
+and carries a small AI mark so tool and human are always distinguishable. Every generated
+contribution is realtime and undoable in one step.
 
 The board watcher reports authoritative saved changes to the visiting host in bounded long
 polls, so Codex can respond after each step changes. It follows saved objects of any kind:

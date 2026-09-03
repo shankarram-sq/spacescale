@@ -1,5 +1,11 @@
 import { expect, test } from "@playwright/test";
-import { chooseMoreTool, createBoard, expandToolPermissions, openSettingsDrawer } from "./helpers";
+import {
+  canvasPoint,
+  chooseMoreTool,
+  createBoard,
+  expandToolPermissions,
+  openSettingsDrawer,
+} from "./helpers";
 
 type RegisteredTool = {
   name: string;
@@ -82,9 +88,14 @@ test("a board participant can use headless WebMCP tools with neutral board attri
       "insert_image",
       "insert_sticky",
       "insert_video",
+      "list_users",
+      "read_board",
       "read_live_class_vote",
+      "read_selection",
       "read_templates",
+      "read_user",
       "watch_board",
+      "watch_users",
     ]);
   expect(
     await page.evaluate(
@@ -148,6 +159,91 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   const canvasItems = page.locator("#drawing-area [data-item-id]");
   await expect(canvasItems).toHaveCount(13);
 
+  // One reading of each scope, and the participant ids the user tools take.
+  const reads = await page.evaluate(async () => {
+    const signal = new AbortController().signal;
+    const tools = window.__spaceScaleWebMcpTools;
+    const call = async (name: string, input: unknown) => {
+      const tool = tools[name];
+      if (!tool) throw new Error(`${name} was not registered.`);
+      return tool.execute(input, { signal });
+    };
+    const board = await call("read_board", {});
+    const users = await call("list_users", {});
+    const first = (users.participants as Array<{ participantId: string }>)[0];
+    if (!first) throw new Error("list_users found nobody with saved work.");
+    const user = await call("read_user", { participantIds: [first.participantId] });
+    // Inserting the activity leaves everything it created selected.
+    const selection = await call("read_selection", {});
+    return { board, users, user, selection, participantId: first.participantId };
+  });
+  expect(reads.board).toMatchObject({ status: "read", scope: "entire_board", itemCount: 13 });
+  expect(reads.board.followUp).toMatchObject({ watchTool: "watch_board" });
+  expect(reads.users).toMatchObject({ scope: "participants_with_saved_work" });
+  // The activity was inserted by this participant, so their work is the whole board.
+  expect(reads.user).toMatchObject({ scope: "participants", itemCount: 13 });
+  expect(JSON.stringify(reads.board)).not.toContain("itemId");
+  expect(reads.selection).toMatchObject({ scope: "browser_selection", itemCount: 13 });
+
+  // A selection-scoped watch follows exactly what the browser has selected.
+  const scopedWatch = await page.evaluate(async () => {
+    const tool = window.__spaceScaleWebMcpTools.watch_board;
+    if (!tool) throw new Error("watch_board was not registered.");
+    const started = await tool.execute(
+      { action: "start", scope: "selection" },
+      { signal: new AbortController().signal },
+    );
+    await tool.execute(
+      { action: "stop", watchToken: started.watchToken },
+      { signal: new AbortController().signal },
+    );
+    return started;
+  });
+  expect(scopedWatch).toMatchObject({ status: "started", scope: "browser_selection" });
+  expect((scopedWatch.steps as unknown[]).length).toBe(13);
+
+  // Both selection scopes read the live selection rather than falling back to the board: with
+  // nothing selected they refuse, and say which scope would have worked.
+  await page.getByRole("button", { name: /^Select/u }).click();
+  const empty = await canvasPoint(page, 0.06, 0.92);
+  await page.mouse.click(empty.x, empty.y);
+  await expect(page.getByTestId("selection-actions")).toBeHidden();
+  const emptySelection = await page.evaluate(async () => {
+    const signal = new AbortController().signal;
+    const attempt = async (name: string, input: unknown) => {
+      const tool = window.__spaceScaleWebMcpTools[name];
+      if (!tool) throw new Error(`${name} was not registered.`);
+      try {
+        await tool.execute(input, { signal });
+        return "unexpected success";
+      } catch (error) {
+        return (error as Error).message;
+      }
+    };
+    return {
+      read: await attempt("read_selection", {}),
+      watch: await attempt("watch_board", { action: "start", scope: "selection" }),
+    };
+  });
+  expect(emptySelection.read).toContain("Nothing is selected in this browser");
+  expect(emptySelection.watch).toContain("Nothing is selected in this browser");
+
+  const userWatch = await page.evaluate(async (participantId) => {
+    const tool = window.__spaceScaleWebMcpTools.watch_users;
+    if (!tool) throw new Error("watch_users was not registered.");
+    const started = await tool.execute(
+      { action: "start", participantIds: [participantId] },
+      { signal: new AbortController().signal },
+    );
+    await tool.execute(
+      { action: "stop", watchToken: started.watchToken },
+      { signal: new AbortController().signal },
+    );
+    return started;
+  }, reads.participantId);
+  expect(userWatch).toMatchObject({ status: "started", scope: "participants" });
+  expect(userWatch.nextCall).toMatchObject({ tool: "watch_users" });
+
   const watchStart = await page.evaluate(() => {
     const tool = window.__spaceScaleWebMcpTools.watch_board;
     if (!tool) throw new Error("The problem-step watch was not registered.");
@@ -163,6 +259,12 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   await expect(page.getByTestId("ai-watch-indicator")).toBeVisible();
   await expect(page.getByTestId("ai-watch-indicator")).toContainText("AI watching");
   await expect(webMcpStatus).toHaveAttribute("data-state", "watch");
+
+  // Ask AI acts on the selection, which the scope checks above deliberately emptied.
+  const askBounds = await page.locator("#drawing-area .board-item-sticky").first().boundingBox();
+  if (!askBounds) throw new Error("The sticky has no layout bounds.");
+  await page.mouse.click(askBounds.x + askBounds.width / 2, askBounds.y + askBounds.height / 2);
+  await expect(page.getByTestId("selection-actions")).toBeVisible();
   const askAi = page.getByTestId("selection-ai");
   await expect(askAi).toBeVisible();
   await expect(askAi).toBeEnabled();

@@ -48,14 +48,17 @@ student.
 
 ## Data boundary
 
-Scope is set deliberately, and differs by tool. Of the three reads this build
-exposes, the vote reader sees only the aggregate counts of the selected vote
-table and the template reader sees no board content at all. The watch is the
-deliberate exception: starting it puts the whole board in scope for as long as it
-runs, which is what makes live coaching over handwriting workable. Starting a
-watch is an explicit act by the participant's host, the board shows while one is
-running, and it expires after 15 minutes. Beyond scope, a request carries only the
-minimum instruction needed for the approved task.
+Scope is set deliberately, and differs by tool. The vote reader sees only the
+aggregate counts of the selected vote table and the template reader sees no board
+content at all. Everything else works in one of three scopes, which a tool either
+reads once or follows live: the whole board, the objects selected in that browser,
+or the saved work of named participants. The same scope means the same thing
+either way, so a reading and a watch cannot disagree about what is in it. A watch
+is the deliberate widening: it holds its scope open for as long as it runs, which
+is what makes live coaching over handwriting workable. Starting one is an explicit
+act by the participant's host, the board shows while one is running, and it expires
+after 15 minutes. Beyond scope, a request carries only the minimum instruction
+needed for the approved task.
 
 Watched work may include the creator's board-visible display name and stable
 opaque participant ID so the AI can associate an action with the correct person.
@@ -101,6 +104,36 @@ write to answer with: `insert_comment`, which posts an ordinary object comment
 attributed to the requesting participant and tagged as AI-written, or
 `insert_sticky` for a note beside the work. The caller's WebMCP permission is
 the confirmation, as it is for every generic write.
+
+### Following one person
+
+The participant scope, reached through `list_users`, `read_user` and
+`watch_users`, is the one place this integration is pointed at a person rather
+than at a region of the board, so it is bounded more tightly than the others.
+
+`list_users` exists only to name someone: it reports each participant's
+board-visible display name, the stable opaque participant ID the other two tools
+take, and how many saved objects they have, by kind. All of that is derived from
+saved board content. It does not report who is currently connected, when anyone
+joined or left, what they are looking at, or any attribute of a person beyond the
+name the board already shows, and someone with no saved work does not appear at
+all. Object counts say how much work exists. They are not a measure of effort or
+ability, and the tool says so where a model will read it.
+
+`read_user` and `watch_users` return that person's saved work in exactly the shape
+the board scope returns anyone's: the same text, the same descriptions of drawn
+work, the same picture, the same absence of coordinates and identifiers. Following
+one student is therefore a narrowing of what the assistant sees, not a widening —
+a participant watch reports strictly less than a board watch of the same board,
+and never reports anyone the caller did not name.
+
+What the scope must not become is a file on a child. Every one of these tools
+instructs the model not to grade, rank, profile, or infer ability from what one
+person's work shows, and the prohibition in this document against grading,
+profiling, ranking, discipline and consequential decisions applies with particular
+force here. A classroom rollout should treat "follow this student" as a teacher-
+initiated, visible, time-bounded action, and the 15-minute expiry and the board's
+own watch indicator exist so it cannot quietly become continuous observation.
 
 ### Activity templates
 

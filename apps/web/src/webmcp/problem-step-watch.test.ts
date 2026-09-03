@@ -186,6 +186,44 @@ function setup(board: BoardItem[] = [sticky()]) {
   };
 }
 
+const OTHER_ACTOR_ID = "018f0000-0000-7000-8000-0000000000c1";
+const OTHER_ID = "018f0000-0000-7000-8000-0000000000c2";
+
+/** A note by someone other than Sam, for the participant and selection scopes. */
+function otherPersonSticky(
+  text = "Rae's working",
+  version = 1,
+): Extract<BoardItem, { kind: "sticky" }> {
+  return { ...sticky(text, version), id: OTHER_ID, createdBy: OTHER_ACTOR_ID };
+}
+
+/** A feed whose board holds work by two people, and whose selection the test controls. */
+function scopedFeed(selection: BoardItem[] | null = null) {
+  const items = new Map<string, BoardItem>(
+    [sticky(), canvasText(), otherPersonSticky()].map((item) => [item.id, item]),
+  );
+  let selected = selection;
+  const feed = new ProblemStepWatchFeed({
+    getBoardItems: () => [...items.values()],
+    getSelectedItems: () => selected,
+    getAuthoritativeItem: (itemId) => items.get(itemId),
+    getSequence: () => 7,
+    getParticipantDisplayName: (participantId) => (participantId === ACTOR_ID ? "Sam" : "Rae"),
+  });
+  const signal = new AbortController().signal;
+  return {
+    feed,
+    items,
+    signal,
+    select(next: BoardItem[] | null) {
+      selected = next;
+    },
+    aliasesOf(result: Record<string, unknown>) {
+      return (result.steps as Array<{ text?: string }>).map((step) => step.text);
+    },
+  };
+}
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -215,7 +253,7 @@ describe("problem-step WebMCP watch", () => {
     expect(serialized).not.toContain(STICKY_ID);
     expect(serialized).not.toContain(VIDEO_ID);
     expect(serialized).not.toContain(unselected.geometry.text);
-    expect(result.privacy).toContain("follows the saved objects on this board");
+    expect(result.privacy).toContain("follows the saved objects in its scope");
   });
 
   it("watches handwriting and other drawn work, and reports when it is redrawn", async () => {
@@ -870,7 +908,7 @@ describe("whole-board watching", () => {
   it("says so when the board holds nothing watchable", () => {
     const feed = feedOver([]);
     expect(() => feed.execute({ action: "start" }, new AbortController().signal)).toThrow(
-      "nothing saved to watch",
+      "nothing saved to read",
     );
     feed.destroy();
   });
@@ -882,7 +920,7 @@ describe("whole-board watching", () => {
     }));
     const feed = feedOver(many);
     expect(() => feed.execute({ action: "start" }, new AbortController().signal)).toThrow(
-      `follows up to ${MAX_WATCHED_ITEMS} objects; this board holds ${MAX_WATCHED_ITEMS + 1}`,
+      `reports up to ${MAX_WATCHED_ITEMS} objects; this scope holds ${MAX_WATCHED_ITEMS + 1}`,
     );
     feed.destroy();
   });
@@ -1428,5 +1466,135 @@ describe("a board that outgrows its watch", () => {
       ),
     ).toThrow("missing or expired");
     feed.destroy();
+  });
+});
+
+describe("watch scopes", () => {
+  it("follows only the browser selection, and lets nothing new join it", async () => {
+    const context = scopedFeed([sticky()]);
+    const started = await context.feed.execute(
+      { action: "start", scope: "selection" },
+      context.signal,
+      "board",
+    );
+    expect(started).toMatchObject({ status: "started", scope: "browser_selection" });
+    expect(context.aliasesOf(started)).toEqual(["Let $2x=6$"]);
+
+    // Someone else saves while the watch runs: a selection is a fixed question, so it is silent.
+    const wait = context.feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq, waitMs: 1_000 },
+      context.signal,
+      "board",
+    );
+    const other = otherPersonSticky("Rae added this", 2);
+    context.items.set(other.id, other);
+    context.feed.recordAuthoritativeAction(serverAction(8, other), new Set([other.id]));
+    expect(await wait).toMatchObject({ status: "timeout" });
+    context.feed.destroy();
+  });
+
+  it("refuses a selection watch when nothing is selected or the selection is still saving", () => {
+    // Scope is resolved before any promise, so a bad scope throws rather than rejecting.
+    const empty = scopedFeed([]);
+    expect(() =>
+      empty.feed.execute({ action: "start", scope: "selection" }, empty.signal, "board"),
+    ).toThrow("Nothing is selected in this browser");
+    empty.feed.destroy();
+
+    const saving = scopedFeed(null);
+    expect(() =>
+      saving.feed.execute({ action: "start", scope: "selection" }, saving.signal, "board"),
+    ).toThrow("finish saving");
+    saving.feed.destroy();
+  });
+
+  it("follows one participant's work wherever it sits, including what they save later", async () => {
+    const context = scopedFeed();
+    const started = await context.feed.execute(
+      { action: "start", participantIds: [OTHER_ACTOR_ID] },
+      context.signal,
+      "participants",
+    );
+    expect(started).toMatchObject({
+      status: "started",
+      scope: "participants",
+      watchedParticipantIds: [OTHER_ACTOR_ID],
+    });
+    // Sam's two objects are on the board but belong to someone else.
+    expect(context.aliasesOf(started)).toEqual(["Rae's working"]);
+    // The watch names the tool that continues it, not the board watch.
+    expect(started.nextCall).toMatchObject({ tool: "watch_users" });
+
+    const wait = context.feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq, waitMs: 1_000 },
+      context.signal,
+      "participants",
+    );
+    // Sam edits: not this watch's person, so it stays silent.
+    const samEdit = sticky("Sam edited", 2);
+    context.items.set(samEdit.id, samEdit);
+    context.feed.recordAuthoritativeAction(serverAction(8, samEdit), new Set([samEdit.id]));
+    // Rae edits: reported.
+    const raeEdit = otherPersonSticky("Rae edited", 2);
+    context.items.set(raeEdit.id, raeEdit);
+    context.feed.recordAuthoritativeAction(serverAction(9, raeEdit), new Set([raeEdit.id]));
+
+    const changed = await wait;
+    expect(changed).toMatchObject({
+      status: "changed",
+      changes: [{ steps: [{ change: "updated", text: "Rae edited" }] }],
+    });
+    expect(JSON.stringify(changed)).not.toContain("Sam edited");
+    context.feed.destroy();
+  });
+
+  it("refuses a participant watch for someone with no saved work", () => {
+    const context = scopedFeed();
+    expect(() =>
+      context.feed.execute(
+        { action: "start", participantIds: ["018f0000-0000-7000-8000-00000000dead"] },
+        context.signal,
+        "participants",
+      ),
+    ).toThrow("No saved work on this board belongs to");
+    expect(() => context.feed.execute({ action: "start" }, context.signal, "participants")).toThrow(
+      "participantIds must contain 1-",
+    );
+    context.feed.destroy();
+  });
+});
+
+describe("scope snapshots", () => {
+  it("reads a scope once, in the shape the watch reports, without starting one", async () => {
+    const context = scopedFeed([sticky()]);
+    const board = await context.feed.snapshot({ scope: "board" }, "board");
+    expect(board).toMatchObject({ status: "read", scope: "entire_board", itemCount: 3 });
+    // Aliases label this result only; they are not a watch's step aliases.
+    expect((board.steps as Array<{ alias: string }>).map((step) => step.alias)).toEqual([
+      "item_1",
+      "item_2",
+      "item_3",
+    ]);
+    expect(board.followUp).toMatchObject({ watchTool: "watch_board" });
+    // Reading does not create a session, so the board shows no watch.
+    expect(context.feed.getState().phase).toBe("idle");
+
+    const selection = await context.feed.snapshot({ scope: "selection" }, "board");
+    expect(selection).toMatchObject({ scope: "browser_selection", itemCount: 1 });
+    expect(context.aliasesOf(selection)).toEqual(["Let $2x=6$"]);
+
+    const user = await context.feed.snapshot({ participantIds: [OTHER_ACTOR_ID] }, "participants");
+    expect(user).toMatchObject({ scope: "participants", itemCount: 1 });
+    expect(user.followUp).toMatchObject({ watchTool: "watch_users" });
+    expect(context.aliasesOf(user)).toEqual(["Rae's working"]);
+    context.feed.destroy();
+  });
+
+  it("refuses an empty scope the same way a watch does", async () => {
+    const context = scopedFeed([]);
+    await expect(context.feed.snapshot({ scope: "selection" }, "board")).rejects.toThrow(
+      "Nothing is selected in this browser",
+    );
+    context.feed.destroy();
   });
 });

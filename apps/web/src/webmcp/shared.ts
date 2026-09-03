@@ -35,10 +35,16 @@ export type WebMcpCallRecord = {
  * single entry in this list rather than a rebuild of the module that owns it.
  */
 export const ENABLED_WEBMCP_TOOLS: ReadonlySet<string> = new Set([
-  // Reads
-  "watch_board",
+  // Reads: one reading of a scope
+  "read_board",
+  "read_selection",
+  "read_user",
+  "list_users",
   "read_live_class_vote",
   "read_templates",
+  // Reads: told about changes as they are saved
+  "watch_board",
+  "watch_users",
   // Generic writes
   "insert_comment",
   "insert_sticky",
