@@ -472,7 +472,7 @@ describe("BoardRoom initialization", () => {
         .one(),
     }));
     expect(state).toEqual({
-      migrations: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+      migrations: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
       boards: 1,
       owners: 1,
       classroomMode: 0,
@@ -5213,3 +5213,122 @@ function loggedEvents(
         (value as Record<string, unknown>).event === event,
     );
 }
+
+describe("object comments", () => {
+  afterEach(async () => reset());
+  it("keeps comments attached through moves, orphans them on delete, and resolves them", async () => {
+    const stub = env.BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const owner = await connect(stub, actorId);
+    const itemId = "018f0000-0000-7000-8000-000000000c01";
+
+    owner.socket.send(
+      JSON.stringify(
+        createCommit(
+          "018f0000-0000-7000-8000-000000000c02",
+          "018f0000-0000-7000-8000-000000000c03",
+          itemId,
+        ),
+      ),
+    );
+    await owner.next((frame) => frame.t === "server.action" && frame.seq === 1);
+
+    const createdResponse = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/comments`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ itemId, body: "Please align this with the heading." }),
+      }),
+    );
+    expect(createdResponse.status).toBe(201);
+    const created = (await createdResponse.json()) as Record<string, unknown>;
+    expect(created).toMatchObject({
+      itemId,
+      body: "Please align this with the heading.",
+      state: "open",
+      author: { id: actorId, displayName: "Owner 1" },
+    });
+    const commentId = String(created.id);
+    expect(commentId).toMatch(/^c_[A-Za-z0-9_-]{22}$/u);
+    await owner.next((frame) => frame.t === "server.comments.refresh");
+
+    owner.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000c04",
+        actionId: "018f0000-0000-7000-8000-000000000c05",
+        baseSeq: 1,
+        op: {
+          kind: "item.update",
+          itemId,
+          expectedVersion: 1,
+          patch: { transform: [1, 0, 0, 1, 80, 45] },
+        },
+      }),
+    );
+    await owner.next((frame) => frame.t === "server.action" && frame.seq === 2);
+    const afterMove = await stub.fetch(internalRequest(`/api/v1/boards/${boardId}/comments`));
+    expect(await afterMove.json()).toMatchObject({
+      comments: [{ id: commentId, itemId, state: "open" }],
+    });
+
+    owner.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000c06",
+        actionId: "018f0000-0000-7000-8000-000000000c07",
+        baseSeq: 2,
+        op: { kind: "item.delete", itemId, expectedVersion: 2 },
+      }),
+    );
+    await owner.next((frame) => frame.t === "server.action" && frame.seq === 3);
+    await owner.next((frame) => frame.t === "server.comments.refresh");
+    const afterDelete = await stub.fetch(internalRequest(`/api/v1/boards/${boardId}/comments`));
+    expect(await afterDelete.json()).toMatchObject({
+      comments: [{ id: commentId, itemId, state: "orphaned" }],
+    });
+
+    const resolvedResponse = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/comments/${commentId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ state: "resolved" }),
+      }),
+    );
+    expect(resolvedResponse.status).toBe(200);
+    expect(await resolvedResponse.json()).toMatchObject({
+      id: commentId,
+      itemId,
+      state: "resolved",
+      resolvedBy: { id: actorId, displayName: "Owner 1" },
+    });
+    owner.socket.close(1000, "done");
+  });
+
+  it("rejects comments for missing objects and invalid state transitions", async () => {
+    const stub = env.BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const missing = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/comments`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          itemId: "018f0000-0000-7000-8000-000000000c08",
+          body: "This target is gone.",
+        }),
+      }),
+    );
+    expect(missing.status).toBe(404);
+
+    const invalidTransition = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/comments/c_${"A".repeat(22)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ state: "open" }),
+      }),
+    );
+    expect(invalidTransition.status).toBe(400);
+  });
+});

@@ -68,6 +68,7 @@ import type {
   AccessMode,
   Actor,
   BatchItemOperation,
+  BoardComment,
   BoardItem,
   BoardSnapshot,
   Bootstrap,
@@ -785,7 +786,15 @@ export class BoardApp {
   private readonly pendingZoneTitleDrafts = new Map<string, ZoneTitleDraftRecovery>();
   private readonly rejectedZoneTitleDrafts: ZoneTitleDraftRecovery[] = [];
   private readonly pendingNewZoneTitles = new Set<string>();
+  private readonly comments = new Map<string, BoardComment>();
+  private readonly commentsResolving = new Set<string>();
+  private activeCommentTargetId: string | null = null;
+  private showHiddenComments = false;
+  private commentSubmitting = false;
+  private commentsLoading = false;
+  private commentsLoadVersion = 0;
   private accessMembers: Member[] = [];
+  private readonly participantRoleChangesPending = new Set<string>();
   private managedInvitations: ManagedInvitation[];
   private recoverySnapshots: RecoverySnapshot[] = [];
   private outboxAvailable = true;
@@ -811,6 +820,14 @@ export class BoardApp {
   private readonly participantCount: HTMLElement;
   private readonly participantDrawer: HTMLElement;
   private readonly participantList: HTMLElement;
+  private readonly commentsButton: HTMLButtonElement;
+  private readonly commentsCount: HTMLElement;
+  private readonly commentsDrawer: HTMLElement;
+  private readonly commentsList: HTMLElement;
+  private readonly commentComposer: HTMLElement;
+  private readonly commentTargetLabel: HTMLElement;
+  private readonly commentInput: HTMLTextAreaElement;
+  private readonly showHiddenCommentsInput: HTMLInputElement;
   private readonly spotlightToggle: HTMLButtonElement;
   private readonly spotlightFollowBanner: HTMLElement;
   private readonly spotlightFollowText: HTMLElement;
@@ -871,6 +888,18 @@ export class BoardApp {
     this.participantCount = query(this.root, "[data-participant-count]", HTMLElement);
     this.participantDrawer = query(this.root, "[data-testid='participant-drawer']", HTMLElement);
     this.participantList = query(this.root, "[data-participant-list]", HTMLElement);
+    this.commentsButton = query(this.root, "[data-testid='comments-button']", HTMLButtonElement);
+    this.commentsCount = query(this.commentsButton, "[data-comments-count]", HTMLElement);
+    this.commentsDrawer = query(this.root, "[data-testid='comments-drawer']", HTMLElement);
+    this.commentsList = query(this.commentsDrawer, "[data-comments-list]", HTMLElement);
+    this.commentComposer = query(this.commentsDrawer, "[data-comment-composer]", HTMLElement);
+    this.commentTargetLabel = query(this.commentComposer, "[data-comment-target]", HTMLElement);
+    this.commentInput = query(this.commentComposer, "[data-comment-input]", HTMLTextAreaElement);
+    this.showHiddenCommentsInput = query(
+      this.commentsDrawer,
+      "[data-show-hidden-comments]",
+      HTMLInputElement,
+    );
     this.spotlightToggle = query(this.root, "[data-testid='spotlight-toggle']", HTMLButtonElement);
     this.spotlightFollowBanner = query(
       this.root,
@@ -954,6 +983,7 @@ export class BoardApp {
     this.renderer.viewport.subscribe((zoom) => {
       this.zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
       this.renderer.refreshSelection();
+      this.renderer.refreshComments();
     });
     this.unsubscribeViewport = this.renderer.viewport.subscribeView(() => {
       this.scheduleSpotlightViewportUpdate();
@@ -1024,8 +1054,10 @@ export class BoardApp {
           this.flushOutbox();
           this.socket.sendPresence(null, this.tools.tool);
           this.sendCurrentSpotlight();
+          void this.reloadComments(false);
         },
         onRejected: (frame) => this.handleRejection(frame),
+        onCommentsChanged: () => void this.reloadComments(false),
         onHistory: (state) => {
           this.history = state;
           this.updateHistoryControls();
@@ -1110,6 +1142,7 @@ export class BoardApp {
       this.tools.reconcileSelection();
       this.updateSelectionActions(this.tools.selection);
       this.syncNewZoneTitleEditor();
+      this.reconcileCommentStates();
     });
     this.model.subscribeRebase((error) => this.handleRebaseState(error));
     this.presences.set(bootstrap.actor.id, {
@@ -1123,6 +1156,7 @@ export class BoardApp {
   static async mount(root: HTMLElement, api: ApiClient, bootstrap: Bootstrap): Promise<BoardApp> {
     const app = new BoardApp(root, api, bootstrap);
     await app.restoreOutbox();
+    await app.reloadComments(false);
     app.updateAll();
     if (bootstrap.board.features.organisationTemplates) void app.loadOrganisationTemplates();
     app.socket.connect();
@@ -1212,6 +1246,11 @@ export class BoardApp {
               <span class="spotlight-toggle-mark" aria-hidden="true"></span>
               <span class="spotlight-toggle-label">Follow me</span>
             </button>
+            <button class="topbar-button comments-button" type="button" data-testid="comments-button" aria-controls="comments-drawer" aria-expanded="false">
+              <span class="comments-button-mark" aria-hidden="true">●</span>
+              <span>Comments</span>
+              <span class="comments-count" data-comments-count>0</span>
+            </button>
             <button class="topbar-button people-button" type="button" data-testid="participants-button" aria-controls="participant-drawer" aria-expanded="false">
               <span class="avatar-stack" aria-hidden="true"><i></i><i></i></span>
               <span data-participant-count>1</span>
@@ -1293,6 +1332,7 @@ export class BoardApp {
                 </select>
               </div>
               <span class="selection-actions-divider" data-selection-style-divider aria-hidden="true" hidden></span>
+              <button type="button" data-selection-comment aria-label="Comment on selected object">Comment</button>
               <button type="button" data-selection-copy aria-label="Copy selected items">Copy</button>
               <div class="selection-arrange-wrap">
                 <button type="button" data-selection-arrange aria-label="Arrange selected items" aria-haspopup="menu" aria-controls="arrange-menu" aria-expanded="false">Arrange</button>
@@ -1366,6 +1406,23 @@ export class BoardApp {
             <label class="range-row" data-style-font-row><span>Text</span><output data-font-output>28</output><input type="range" min="8" max="96" value="28" step="1" data-style-font /></label>
           </section>
         </div>
+
+        <aside class="side-drawer comments-drawer" id="comments-drawer" data-testid="comments-drawer" aria-label="Comments" hidden>
+          <div class="drawer-heading"><div><span class="eyebrow">Objects</span><h2>Comments</h2></div><button type="button" data-close-drawer aria-label="Close comments">×</button></div>
+          <label class="comments-filter"><input type="checkbox" data-show-hidden-comments /> <span>Show resolved &amp; orphaned</span></label>
+          <section class="comment-composer" data-comment-composer hidden>
+            <span class="comment-target-label" data-comment-target></span>
+            <form data-comment-form>
+              <label class="sr-only" for="object-comment-input">Comment</label>
+              <textarea id="object-comment-input" data-comment-input rows="3" maxlength="2000" placeholder="Add a comment…" required></textarea>
+              <div class="comment-composer-actions">
+                <button type="button" data-comment-cancel>Cancel</button>
+                <button class="primary-button" type="submit" data-comment-submit>Comment</button>
+              </div>
+            </form>
+          </section>
+          <div class="comments-list" data-comments-list></div>
+        </aside>
 
         <aside class="side-drawer participant-drawer" id="participant-drawer" data-testid="participant-drawer" aria-label="Participants" hidden>
           <div class="drawer-heading"><div><span class="eyebrow">Live Space</span><h2>Participants</h2></div><button type="button" data-close-drawer aria-label="Close participants">×</button></div>
@@ -2223,6 +2280,13 @@ export class BoardApp {
       this.setSelectionColourMenuOpen(false);
       this.selectionColourButton.focus();
     });
+    query(this.root, "[data-selection-comment]", HTMLButtonElement).addEventListener(
+      "click",
+      () => {
+        const [itemId] = this.tools.selection;
+        if (itemId && this.tools.selection.size === 1) this.openCommentsForItem(itemId);
+      },
+    );
     query(this.root, "[data-selection-copy]", HTMLButtonElement).addEventListener(
       "click",
       () => void this.tools.copySelection(),
@@ -2383,11 +2447,42 @@ export class BoardApp {
       () => this.stopFollowingSpotlight(),
     );
 
+    this.commentsButton.addEventListener("click", () => {
+      const opening = this.commentsDrawer.hidden;
+      if (opening) this.activeCommentTargetId = null;
+      this.toggleDrawer(this.commentsDrawer, this.commentsButton);
+      this.renderComments();
+    });
+    this.showHiddenCommentsInput.addEventListener("change", () => {
+      this.showHiddenComments = this.showHiddenCommentsInput.checked;
+      this.renderComments();
+    });
+    query(this.commentsDrawer, "[data-comment-cancel]", HTMLButtonElement).addEventListener(
+      "click",
+      () => {
+        this.activeCommentTargetId = null;
+        this.commentInput.value = "";
+        this.renderComments();
+      },
+    );
+    query(this.commentsDrawer, "[data-comment-form]", HTMLFormElement).addEventListener(
+      "submit",
+      (event) => {
+        event.preventDefault();
+        void this.submitComment();
+      },
+    );
+    this.renderer.svg.addEventListener("board-comment-open", (event) => {
+      const detail = (event as CustomEvent<{ itemId?: unknown }>).detail;
+      if (typeof detail?.itemId === "string") this.openCommentsForItem(detail.itemId);
+    });
+
     query(this.root, "[data-testid='participants-button']", HTMLButtonElement).addEventListener(
       "click",
       (event) => {
         this.toggleDrawer(this.participantDrawer, event.currentTarget as HTMLButtonElement);
         this.renderParticipants();
+        if (!this.participantDrawer.hidden) void this.loadParticipantRoles();
       },
     );
     this.accessButton.addEventListener("click", () => {
@@ -3309,6 +3404,10 @@ export class BoardApp {
       this.tools.setTool("select");
     if (!this.isToolEnabled(this.tools.tool)) this.tools.setTool("select");
     this.updatePermissions();
+    this.renderParticipants();
+    if (this.bootstrap.actor.role === "owner" && !this.participantDrawer.hidden) {
+      void this.loadParticipantRoles();
+    }
     if (!this.settingsDrawer.hidden) this.renderSettingsPanel();
   }
 
@@ -4015,6 +4114,16 @@ export class BoardApp {
     }
   }
 
+  private async loadParticipantRoles(): Promise<void> {
+    if (this.bootstrap.actor.role !== "owner") return;
+    try {
+      this.accessMembers = await this.api.members(this.bootstrap.board.id);
+      if (!this.participantDrawer.hidden) this.renderParticipants();
+    } catch (error) {
+      this.apiError(error);
+    }
+  }
+
   private renderAccessPanel(): void {
     this.accessBody.replaceChildren();
 
@@ -4650,6 +4759,32 @@ export class BoardApp {
     }
   }
 
+  private async changeParticipantRole(member: Member, role: "viewer" | "editor"): Promise<void> {
+    if (member.role === role || this.participantRoleChangesPending.has(member.id)) return;
+    this.participantRoleChangesPending.add(member.id);
+    this.renderParticipants();
+    try {
+      const result = await this.api.updateMember(
+        this.bootstrap.board.id,
+        member.id,
+        role,
+        this.bootstrap.board.aclVersion,
+      );
+      this.adoptAclVersion(result);
+      this.accessMembers = this.accessMembers.map((value) =>
+        value.id === member.id ? { ...value, role } : value,
+      );
+      for (const [key, presence] of this.presences) {
+        if (presence.id === member.id) this.presences.set(key, { ...presence, role });
+      }
+    } catch (error) {
+      this.apiError(error);
+    } finally {
+      this.participantRoleChangesPending.delete(member.id);
+      if (!this.participantDrawer.hidden) this.renderParticipants();
+    }
+  }
+
   private async revokeMember(member: Member): Promise<void> {
     if (!confirm(`Remove ${member.displayName} from this board?`)) return;
     try {
@@ -4844,6 +4979,199 @@ export class BoardApp {
     else this.bootstrap.board.aclVersion += 1;
   }
 
+  private canComment(): boolean {
+    return (
+      this.phase !== "archived" && this.phase !== "reload_required" && this.phase !== "stopped"
+    );
+  }
+
+  private async reloadComments(notifyOnError = true): Promise<void> {
+    const loadVersion = ++this.commentsLoadVersion;
+    this.commentsLoading = true;
+    this.renderComments();
+    try {
+      const comments = await this.api.comments(this.bootstrap.board.id);
+      if (loadVersion !== this.commentsLoadVersion) return;
+      this.comments.clear();
+      for (const comment of comments) this.comments.set(comment.id, comment);
+      this.reconcileCommentStates();
+    } catch (error) {
+      if (notifyOnError) this.apiError(error);
+    } finally {
+      if (loadVersion === this.commentsLoadVersion) {
+        this.commentsLoading = false;
+        this.renderComments();
+      }
+    }
+  }
+
+  private reconcileCommentStates(): void {
+    for (const [commentId, comment] of this.comments) {
+      if (comment.state === "open" && !this.model.getItem(comment.itemId)) {
+        this.comments.set(commentId, { ...comment, state: "orphaned" });
+      }
+    }
+    this.renderer.setComments([...this.comments.values()]);
+    this.renderComments();
+  }
+
+  private openCommentsForItem(itemId: string): void {
+    if (!this.model.getItem(itemId)) return;
+    this.activeCommentTargetId = itemId;
+    this.closeDrawers();
+    this.commentsDrawer.hidden = false;
+    this.commentsButton.setAttribute("aria-expanded", "true");
+    this.renderComments();
+    this.commentInput.focus();
+  }
+
+  private async submitComment(): Promise<void> {
+    const itemId = this.activeCommentTargetId;
+    const body = this.commentInput.value.trim();
+    if (!itemId || !this.model.getItem(itemId) || this.commentSubmitting || !this.canComment())
+      return;
+    if (body.length === 0) {
+      this.commentInput.focus();
+      return;
+    }
+    if ([...body].length > 2_000) {
+      this.notify("Comments can contain at most 2,000 characters.", "error");
+      return;
+    }
+    this.commentSubmitting = true;
+    this.renderComments();
+    try {
+      const comment = await this.api.createComment(this.bootstrap.board.id, itemId, body);
+      this.comments.set(comment.id, comment);
+      this.commentInput.value = "";
+      this.reconcileCommentStates();
+      this.liveRegion.textContent = "Comment added.";
+    } catch (error) {
+      this.apiError(error);
+    } finally {
+      this.commentSubmitting = false;
+      this.renderComments();
+    }
+  }
+
+  private async resolveObjectComment(commentId: string): Promise<void> {
+    if (this.commentsResolving.has(commentId)) return;
+    this.commentsResolving.add(commentId);
+    this.renderComments();
+    try {
+      const comment = await this.api.resolveComment(this.bootstrap.board.id, commentId);
+      this.comments.set(comment.id, comment);
+      this.reconcileCommentStates();
+      this.liveRegion.textContent = "Comment resolved.";
+    } catch (error) {
+      this.apiError(error);
+    } finally {
+      this.commentsResolving.delete(commentId);
+      this.renderComments();
+    }
+  }
+
+  private renderComments(): void {
+    const comments = [...this.comments.values()];
+    const openCount = comments.filter((comment) => comment.state === "open").length;
+    this.commentsCount.textContent = String(openCount);
+    this.commentsCount.hidden = openCount === 0;
+    this.commentsButton.setAttribute(
+      "aria-label",
+      openCount === 0 ? "Comments" : `Comments, ${openCount} open`,
+    );
+    this.showHiddenCommentsInput.checked = this.showHiddenComments;
+
+    const target = this.activeCommentTargetId
+      ? this.model.getItem(this.activeCommentTargetId)
+      : undefined;
+    if (this.activeCommentTargetId && !target) this.activeCommentTargetId = null;
+    this.commentComposer.hidden = target === undefined || !this.canComment();
+    if (target) {
+      this.commentTargetLabel.textContent = `Comment on ${commentObjectLabel(target)}`;
+      this.commentInput.disabled = this.commentSubmitting;
+      query(this.commentComposer, "[data-comment-submit]", HTMLButtonElement).disabled =
+        this.commentSubmitting;
+    }
+
+    const visible = comments
+      .filter((comment) => objectCommentVisible(comment.state, this.showHiddenComments))
+      .sort((left, right) => {
+        const leftTarget = left.itemId === this.activeCommentTargetId ? 0 : 1;
+        const rightTarget = right.itemId === this.activeCommentTargetId ? 0 : 1;
+        if (leftTarget !== rightTarget) return leftTarget - rightTarget;
+        const rank = { open: 0, orphaned: 1, resolved: 2 } as const;
+        return rank[left.state] - rank[right.state] || right.createdAt - left.createdAt;
+      });
+    this.commentsList.replaceChildren();
+    if (visible.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "comments-empty";
+      empty.textContent = this.commentsLoading
+        ? "Loading comments…"
+        : this.showHiddenComments
+          ? "No comments yet."
+          : "No open comments. Select an object to start one.";
+      this.commentsList.append(empty);
+      return;
+    }
+
+    for (const comment of visible) {
+      const card = document.createElement("article");
+      card.className = "comment-card";
+      card.dataset.state = comment.state;
+      if (comment.itemId === this.activeCommentTargetId) card.dataset.activeTarget = "true";
+      const heading = document.createElement("div");
+      heading.className = "comment-card-heading";
+      const identity = document.createElement("span");
+      const author = document.createElement("strong");
+      author.textContent = comment.author.displayName;
+      const time = document.createElement("time");
+      time.dateTime = new Date(comment.createdAt).toISOString();
+      time.textContent = formatCommentTime(comment.createdAt);
+      identity.append(author, time);
+      const state = document.createElement("span");
+      state.className = "comment-state";
+      state.textContent = comment.state;
+      heading.append(identity, state);
+
+      const body = document.createElement("p");
+      body.className = "comment-body";
+      body.textContent = comment.body;
+      const actions = document.createElement("div");
+      actions.className = "comment-card-actions";
+      const item = this.model.getItem(comment.itemId);
+      if (item) {
+        const show = document.createElement("button");
+        show.type = "button";
+        show.textContent = `Show ${commentObjectLabel(item)}`;
+        show.addEventListener("click", () => {
+          this.tools.setTool("select");
+          this.tools.selectOnly([item.id]);
+          const bounds = this.model.getBounds(item.id);
+          if (bounds) this.renderer.viewport.fit(bounds, 180);
+        });
+        actions.append(show);
+      } else {
+        const orphan = document.createElement("span");
+        orphan.className = "comment-orphan-label";
+        orphan.textContent = "Deleted object";
+        actions.append(orphan);
+      }
+      if (comment.state !== "resolved") {
+        const resolve = document.createElement("button");
+        resolve.type = "button";
+        resolve.className = "comment-resolve";
+        resolve.textContent = "Resolve";
+        resolve.disabled = this.commentsResolving.has(comment.id);
+        resolve.addEventListener("click", () => void this.resolveObjectComment(comment.id));
+        actions.append(resolve);
+      }
+      card.append(heading, body, actions);
+      this.commentsList.append(card);
+    }
+  }
+
   private renderParticipants(): void {
     this.participantList.replaceChildren();
     const entries = [...this.presences.values()];
@@ -4858,16 +5186,41 @@ export class BoardApp {
       const name = document.createElement("strong");
       name.textContent = participant.displayName;
       const detail = document.createElement("small");
-      const role =
+      const member = this.accessMembers.find((value) => value.id === participant.id);
+      const participantRole =
         participant.id === this.bootstrap.actor.id
-          ? `${this.bootstrap.actor.role} · you`
-          : (participant.role ?? "participant");
+          ? this.bootstrap.actor.role
+          : (member?.role ?? participant.role ?? "participant");
+      const role =
+        participant.id === this.bootstrap.actor.id ? `${participantRole} · you` : participantRole;
       detail.textContent = participant.activeTool ? `${role} · ${participant.activeTool}` : role;
       identity.append(name, detail);
+      const actions = document.createElement("span");
+      actions.className = "participant-row-actions";
+      if (
+        this.bootstrap.actor.role === "owner" &&
+        participant.id !== this.bootstrap.actor.id &&
+        member !== undefined &&
+        (member.role === "viewer" || member.role === "editor")
+      ) {
+        const select = document.createElement("select");
+        select.setAttribute("aria-label", `Role for ${participant.displayName}`);
+        select.innerHTML =
+          '<option value="editor">Editor</option><option value="viewer">Viewer</option>';
+        select.value = member.role;
+        select.disabled = this.participantRoleChangesPending.has(member.id);
+        select.addEventListener("change", () => {
+          if (select.value === "viewer" || select.value === "editor") {
+            void this.changeParticipantRole(member, select.value);
+          }
+        });
+        actions.append(select);
+      }
       const live = document.createElement("i");
       live.className = "live-dot";
       live.title = "Connected";
-      row.append(avatar, identity, live);
+      actions.append(live);
+      row.append(avatar, identity, actions);
       this.participantList.append(row);
     }
   }
@@ -4962,6 +5315,7 @@ export class BoardApp {
     this.updateHistoryControls();
     this.updateStatus();
     this.renderParticipants();
+    this.renderComments();
     query(this.root, "[data-canvas-hint]", HTMLElement).hidden = this.model.items.size > 0;
     document.title = brandedDocumentTitle(this.bootstrap.board.title);
   }
@@ -5103,6 +5457,7 @@ export class BoardApp {
     if (!canEdit) void this.closeTableCellEditor(false);
     if (!canEdit) void this.closeZoneTitleEditor(true);
     this.updateSelectionActions(this.tools.selection);
+    this.renderComments();
     if (canEdit && !this.textEditor && !this.tableCellEditor) {
       this.scheduleRejectedDraftRestore();
     }
@@ -5319,6 +5674,11 @@ export class BoardApp {
       canEdit && allSelectedAuthoritative && selectedIds.length <= maxBatchItems;
     const copy = query(this.selectionActions, "[data-selection-copy]", HTMLButtonElement);
     const remove = query(this.selectionActions, "[data-selection-delete]", HTMLButtonElement);
+    const comment = query(this.selectionActions, "[data-selection-comment]", HTMLButtonElement);
+    comment.disabled = !this.canComment() || selectedIds.length !== 1 || !allSelectedAuthoritative;
+    comment.title = allSelectedAuthoritative
+      ? ""
+      : "Wait for the selected object to finish saving.";
     copy.disabled = !copyReady;
     remove.disabled = !mutationReady || !allSelectedOwned;
     const pendingTitle = !allSelectedAuthoritative
@@ -5647,9 +6007,11 @@ export class BoardApp {
   }
 
   private closeDrawers(): void {
+    this.commentsDrawer.hidden = true;
     this.participantDrawer.hidden = true;
     this.accessDrawer.hidden = true;
     this.settingsDrawer.hidden = true;
+    this.commentsButton.setAttribute("aria-expanded", "false");
     query(this.root, "[data-testid='participants-button']", HTMLButtonElement).setAttribute(
       "aria-expanded",
       "false",
@@ -6432,6 +6794,36 @@ function parseManagedInvitation(value: unknown): ManagedInvitation[] {
       expiresAt: value.expiresAt as number,
     },
   ];
+}
+
+export function objectCommentVisible(
+  state: BoardComment["state"],
+  showHiddenComments: boolean,
+): boolean {
+  return showHiddenComments || state === "open";
+}
+
+function commentObjectLabel(item: BoardItem): string {
+  switch (item.kind) {
+    case "sticky":
+      return "sticky note";
+    case "text":
+      return "text object";
+    case "image":
+      return "image";
+    case "table":
+      return "table";
+    case "zone":
+      return "section";
+    case "pencil":
+      return "drawing";
+    default:
+      return `${item.kind} object`;
+  }
+}
+
+function formatCommentTime(value: number): string {
+  return formatDateTime(value);
 }
 
 function snapshotKindLabel(kind: RecoverySnapshot["kind"]): string {

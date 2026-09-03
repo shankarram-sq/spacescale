@@ -99,6 +99,48 @@ test("two tabs share history state and a new action invalidates redo everywhere"
   }
 });
 
+test("an owner switches a connected participant role from the Participants drawer", async ({
+  browser,
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "Live role switching runs in Chromium.");
+
+  await createBoard(page, "Participant roles");
+  const inviteUrl = await createInvite(page);
+  const collaboratorContext = await browser.newContext(isolatedContextOptions(testInfo, 25));
+  const collaborator = await collaboratorContext.newPage();
+  try {
+    await openInvite(collaborator, inviteUrl);
+    await closeAccessDrawer(page);
+    await expect(page.getByTestId("participants-button")).toContainText("2");
+
+    await page.getByTestId("participants-button").click();
+    const ownerDrawer = page.getByTestId("participant-drawer");
+    await expect(ownerDrawer).toBeVisible();
+    const roleSelect = ownerDrawer.getByRole("combobox", { name: /^Role for /u });
+    await expect(roleSelect).toHaveCount(1);
+    await expect(roleSelect).toHaveValue("editor");
+
+    await roleSelect.selectOption("viewer");
+    await expect(roleSelect).toHaveValue("viewer");
+    await expect(collaborator.getByTestId("save-status")).toContainText("Read only");
+    await expect(collaborator.getByRole("button", { name: /^Pencil/u })).toBeDisabled();
+
+    await collaborator.getByTestId("participants-button").click();
+    const collaboratorDrawer = collaborator.getByTestId("participant-drawer");
+    await expect(collaboratorDrawer).toBeVisible();
+    await expect(collaboratorDrawer.getByRole("combobox", { name: /^Role for /u })).toHaveCount(0);
+    await expect(collaboratorDrawer).toContainText(/viewer · you/iu);
+
+    await roleSelect.selectOption("editor");
+    await expect(roleSelect).toHaveValue("editor");
+    await expect(collaborator.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+    await expect(collaborator.getByRole("button", { name: /^Pencil/u })).toBeEnabled();
+  } finally {
+    await collaboratorContext.close();
+  }
+});
+
 test("live policy changes and private-board revocation update an active editor", async ({
   browser,
   page,

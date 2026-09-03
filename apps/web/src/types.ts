@@ -319,6 +319,20 @@ export type CommitFrame = {
 
 export type Actor = { id: string; displayName: string };
 
+export type CommentState = "open" | "resolved" | "orphaned";
+
+export type BoardComment = {
+  id: string;
+  itemId: string;
+  body: string;
+  state: CommentState;
+  author: Actor;
+  createdAt: number;
+  updatedAt: number;
+  resolvedBy?: Actor;
+  resolvedAt?: number;
+};
+
 export type CanonicalOperation = DurableOperation & {
   item?: BoardItem;
   items?: BoardItem[];

@@ -37,6 +37,7 @@ export type SocketHooks = {
   onReady: () => void;
   onRejected: (frame: ServerFrame) => void;
   onHistory: (state: HistoryState) => void;
+  onCommentsChanged: () => void;
   onAccessChanged: (frame: ServerFrame) => void;
   onOwnerRecovery: (token: string, aclVersion: number) => void;
   onPreview: (preview: RemotePreview | null, cancelKey?: string) => void;
@@ -315,6 +316,9 @@ export class BoardSocket {
           return;
         }
         this.hooks.onRejected(frame);
+        break;
+      case "server.comments.refresh":
+        this.hooks.onCommentsChanged();
         break;
       case "server.history_state": {
         const historyVersion = number(frame.historyVersion);

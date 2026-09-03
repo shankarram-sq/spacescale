@@ -5,6 +5,7 @@ import { MAX_RENDERED_VOTE_TABLES, VOTE_TABLE_STYLE } from "../activities/voting
 import type { BoardItem, TableItem } from "../types";
 import {
   CanvasViewport,
+  commentMarkerNode,
   creatorBadge,
   creatorInitials,
   lineNode,
@@ -299,6 +300,37 @@ describe("selection resize handle", () => {
   });
 });
 
+describe("object comment markers", () => {
+  beforeEach(() => {
+    vi.stubGlobal("document", {
+      createElementNS: (_namespace: string, name: string) => fakeSvgNode(name),
+    });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("anchors the open-comment badge to the current object bounds", () => {
+    const initial = commentMarkerNode(
+      "018f0000-0000-7000-8000-000000000c01",
+      2,
+      { minX: 10, minY: 20, maxX: 110, maxY: 80 },
+      1,
+    ) as unknown as FakeSvgNode;
+    const moved = commentMarkerNode(
+      "018f0000-0000-7000-8000-000000000c01",
+      2,
+      { minX: 90, minY: 65, maxX: 190, maxY: 125 },
+      1,
+    ) as unknown as FakeSvgNode;
+
+    expect(initial.attributes.get("aria-label")).toBe("2 open comments on this object");
+    expect(initial.children[0]?.attributes.get("cx")).toBe("118");
+    expect(initial.children[0]?.attributes.get("cy")).toBe("12");
+    expect(moved.children[0]?.attributes.get("cx")).toBe("198");
+    expect(moved.children[0]?.attributes.get("cy")).toBe("57");
+  });
+});
+
 describe("table cell text wrapping", () => {
   it("wraps plain text within the cell padding and preserves explicit blank lines", () => {
     expect(wrapTableCellText("one two three four\n\nfive", 120, 120, 16)).toEqual([
@@ -327,6 +359,8 @@ type FakeSvgNode = {
   classList: { values: Set<string>; add: (...names: string[]) => void };
   setAttribute: (name: string, value: string) => void;
   append: (...children: FakeSvgNode[]) => void;
+  addEventListener: (type: string, listener: (event: Event) => void) => void;
+  dispatchEvent: (event: Event) => boolean;
   replaceChildren: (...children: FakeSvgNode[]) => void;
 };
 
@@ -345,6 +379,8 @@ function fakeSvgNode(name: string): FakeSvgNode {
     },
     setAttribute: (attribute, value) => node.attributes.set(attribute, value),
     append: (...children) => node.children.push(...children),
+    addEventListener: () => undefined,
+    dispatchEvent: () => true,
     replaceChildren: (...children) => {
       node.children = [...children];
     },

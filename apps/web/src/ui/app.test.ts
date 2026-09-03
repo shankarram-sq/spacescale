@@ -15,6 +15,7 @@ import {
   localSvg,
   MAX_IMAGE_UPLOAD_BYTES,
   managedInvitationStorageKey,
+  objectCommentVisible,
   operationAllowedForActor,
   organisationTemplateManagementForRole,
   STAMP_CHOICES,
@@ -805,5 +806,15 @@ describe("stamp UI configuration", () => {
     expect(svg).toContain('fill="#8e4ec6"');
     expect(svg).toContain('opacity="0.75"');
     expect(svg).not.toContain("<text");
+  });
+});
+
+describe("object comment visibility", () => {
+  it("shows only open comments by default and reveals hidden states on request", () => {
+    expect(objectCommentVisible("open", false)).toBe(true);
+    expect(objectCommentVisible("resolved", false)).toBe(false);
+    expect(objectCommentVisible("orphaned", false)).toBe(false);
+    expect(objectCommentVisible("resolved", true)).toBe(true);
+    expect(objectCommentVisible("orphaned", true)).toBe(true);
   });
 });

@@ -10,6 +10,7 @@ import { textFontStack } from "@collab/protocol";
 import { STAMP_SVG_PATHS } from "@collab/svg-export";
 import { summarizeBoardVotes, type VoteSummary } from "../activities/voting";
 import type {
+  BoardComment,
   BoardItem,
   BoxGeometry,
   ImageGeometry,
@@ -252,6 +253,7 @@ export class BoardRenderer {
   readonly viewport: CanvasViewport;
 
   private readonly drawingArea: SVGGElement;
+  private readonly commentLayer: SVGGElement;
   private readonly voteCountLayer: SVGGElement;
   private readonly remoteLayer: SVGGElement;
   private readonly localLayer: SVGGElement;
@@ -262,6 +264,7 @@ export class BoardRenderer {
   private selectedIds = new Set<string>();
   private resizeHandlesEnabled = true;
   private votingEnabled = true;
+  private comments: readonly BoardComment[] = [];
 
   constructor(
     container: HTMLElement,
@@ -303,6 +306,7 @@ export class BoardRenderer {
 
     this.drawingArea = layer("drawing-area", "Authoritative board content");
     this.voteCountLayer = layer("vote-count-layer", "Live voting counts");
+    this.commentLayer = layer("comment-layer", "Open object comments");
     this.voteCountLayer.setAttribute("pointer-events", "none");
     this.remoteLayer = layer("remote-preview-layer", "Collaborator previews");
     this.localLayer = layer("local-preview-layer", "Your current gesture");
@@ -313,6 +317,7 @@ export class BoardRenderer {
       background,
       this.drawingArea,
       this.voteCountLayer,
+      this.commentLayer,
       this.remoteLayer,
       this.localLayer,
       this.selectionLayer,
@@ -343,6 +348,15 @@ export class BoardRenderer {
     if (this.votingEnabled === enabled) return;
     this.votingEnabled = enabled;
     this.renderVoteCounts();
+  }
+
+  setComments(comments: readonly BoardComment[]): void {
+    this.comments = comments.map((comment) => structuredClone(comment));
+    this.renderCommentMarkers();
+  }
+
+  refreshComments(): void {
+    this.renderCommentMarkers();
   }
 
   setSelection(ids: Iterable<string>, translated?: { x: number; y: number }): void {
@@ -719,6 +733,7 @@ export class BoardRenderer {
       this.insertInPaintOrder(replacement, item.z);
     }
     this.renderVoteCounts();
+    this.renderCommentMarkers();
     this.imageAssets.retain(
       new Set(
         [...this.model.items.values()].flatMap((item) =>
@@ -727,6 +742,19 @@ export class BoardRenderer {
       ),
     );
     this.setSelection([...this.selectedIds].filter((id) => this.model.getItem(id)));
+  }
+
+  private renderCommentMarkers(): void {
+    const counts = new Map<string, number>();
+    for (const comment of this.comments) {
+      if (comment.state !== "open" || !this.model.getItem(comment.itemId)) continue;
+      counts.set(comment.itemId, (counts.get(comment.itemId) ?? 0) + 1);
+    }
+    const nodes = [...counts.entries()].flatMap(([itemId, count]) => {
+      const bounds = this.model.getBounds(itemId);
+      return bounds ? [commentMarkerNode(itemId, count, bounds, this.viewport.zoom)] : [];
+    });
+    this.commentLayer.replaceChildren(...nodes);
   }
 
   private renderVoteCounts(): void {
@@ -749,6 +777,59 @@ export class BoardRenderer {
     }
     this.drawingArea.insertBefore(node, before);
   }
+}
+
+export function commentMarkerNode(
+  itemId: string,
+  count: number,
+  bounds: Bounds,
+  zoom: number,
+): SVGGElement {
+  const safeZoom = Math.max(0.1, zoom);
+  const radius = 13 / safeZoom;
+  const centerX = bounds.maxX + 8 / safeZoom;
+  const centerY = bounds.minY - 8 / safeZoom;
+  const marker = svgElement("g");
+  marker.classList.add("comment-marker");
+  marker.dataset.commentItemId = itemId;
+  marker.setAttribute("role", "button");
+  marker.setAttribute("tabindex", "0");
+  marker.setAttribute(
+    "aria-label",
+    `${count} open ${count === 1 ? "comment" : "comments"} on this object`,
+  );
+
+  const bubble = svgElement("circle");
+  bubble.setAttribute("cx", String(centerX));
+  bubble.setAttribute("cy", String(centerY));
+  bubble.setAttribute("r", String(radius));
+  bubble.setAttribute("vector-effect", "non-scaling-stroke");
+
+  const label = svgElement("text");
+  label.setAttribute("x", String(centerX));
+  label.setAttribute("y", String(centerY + 4 / safeZoom));
+  label.setAttribute("text-anchor", "middle");
+  label.setAttribute("font-size", String(11 / safeZoom));
+  label.setAttribute("font-weight", "750");
+  label.setAttribute("pointer-events", "none");
+  label.textContent = String(count);
+  marker.append(bubble, label);
+
+  marker.addEventListener("pointerdown", (event) => event.stopPropagation());
+  marker.addEventListener("click", (event) => {
+    event.stopPropagation();
+    marker.dispatchEvent(
+      new CustomEvent("board-comment-open", { bubbles: true, detail: { itemId } }),
+    );
+  });
+  marker.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    marker.dispatchEvent(
+      new CustomEvent("board-comment-open", { bubbles: true, detail: { itemId } }),
+    );
+  });
+  return marker;
 }
 
 export function renderVoteCounts(layer: SVGGElement, items: Iterable<BoardItem>): void {

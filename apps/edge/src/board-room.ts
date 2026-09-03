@@ -126,6 +126,8 @@ const LIMITS = {
   maxStrokePoints: 10_000,
   previewHz: 12,
 } as const;
+const MAX_COMMENTS = 10_000;
+const MAX_COMMENT_CODE_POINTS = 2_000;
 const MAX_CONNECTIONS_PER_ACTOR = 5;
 const MAX_REPLAY_ACTIONS = 100;
 const SNAPSHOT_ACTION_INTERVAL = 250;
@@ -171,6 +173,35 @@ const PREVIEW_SHED_TRIGGER_PER_SECOND = 100;
 // from every actor while reserving the event loop for durable commands. The
 // normal five-drawer workload never enters this shedding path.
 const OVERLOADED_PREVIEW_HZ_PER_ACTOR = 1;
+
+type CommentState = "open" | "resolved" | "orphaned";
+
+type CommentRow = {
+  [key: string]: SqlStorageValue;
+  comment_id: string;
+  target_item_id: string;
+  body: string;
+  state: CommentState;
+  created_by: string;
+  created_at_ms: number;
+  resolved_by: string | null;
+  resolved_at_ms: number | null;
+  updated_at_ms: number;
+  author_name: string;
+  resolver_name: string | null;
+};
+
+type BoardComment = {
+  id: string;
+  itemId: string;
+  body: string;
+  state: CommentState;
+  author: { id: string; displayName: string };
+  createdAt: number;
+  updatedAt: number;
+  resolvedBy?: { id: string; displayName: string };
+  resolvedAt?: number;
+};
 
 type ActionRow = {
   [key: string]: SqlStorageValue;
@@ -393,6 +424,18 @@ export class BoardRoom extends DurableObject<Env> {
       requireMethod(request, "POST");
       return this.claim(request, actor);
     }
+    if (suffix === "/comments") {
+      if (request.method === "GET") return this.listComments(actor, board);
+      if (request.method === "POST") return this.createComment(request, actor, board);
+      return methodNotAllowed("GET, POST");
+    }
+    const commentMatch = /^\/comments\/(c_[A-Za-z0-9_-]{22})$/u.exec(suffix);
+    if (commentMatch !== null) {
+      const commentId = commentMatch[1];
+      if (commentId === undefined) throw new HttpError(404, "NOT_FOUND", "Comment not found.");
+      if (request.method === "PATCH") return this.resolveComment(request, actor, board, commentId);
+      return methodNotAllowed("PATCH");
+    }
     if (suffix === "/members") {
       requireMethod(request, "GET");
       return this.listMembers(actor, board);
@@ -515,6 +558,151 @@ export class BoardRoom extends DurableObject<Env> {
       return this.upgradeWebSocket(request, actor, board);
     }
     throw new HttpError(404, "NOT_FOUND", "The requested endpoint does not exist.");
+  }
+
+  private listComments(actor: InternalActorContext, capturedBoard: BoardRow): Response {
+    const board = readBoard(this.#sql) ?? capturedBoard;
+    this.requireView(board, actor.actorId);
+    return Response.json(
+      { comments: this.readComments() },
+      { headers: { "Cache-Control": "no-store" } },
+    );
+  }
+
+  private async createComment(
+    request: Request,
+    actor: InternalActorContext,
+    capturedBoard: BoardRow,
+  ): Promise<Response> {
+    const body = await readJsonBody(request, 16 * 1_024);
+    assertExactKeys(body, ["itemId", "body"], ["itemId", "body"]);
+    const itemId = requireOpaqueId(body.itemId, "comment target");
+    const text = requireCommentBody(body.body);
+    const commentId = randomOpaqueId("c_");
+    const now = Date.now();
+    let comment!: BoardComment;
+    this.ctx.storage.transactionSync(() => {
+      const board = readBoard(this.#sql) ?? capturedBoard;
+      this.requireView(board, actor.actorId);
+      const target = readItem(this.#sql, itemId);
+      if (target === undefined || target.deleted) {
+        throw new HttpError(404, "NOT_FOUND", "The comment target no longer exists.");
+      }
+      const count = this.#sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM comments")
+        .one().count;
+      if (count >= MAX_COMMENTS) {
+        throw new HttpError(
+          409,
+          "BOARD_LIMIT_REACHED",
+          "This Space has reached its comment limit.",
+        );
+      }
+      this.#sql.exec(
+        `INSERT INTO comments(
+          comment_id, target_item_id, body, state, created_by,
+          created_at_ms, resolved_by, resolved_at_ms, updated_at_ms
+        ) VALUES (?, ?, ?, 'open', ?, ?, NULL, NULL, ?)`,
+        commentId,
+        itemId,
+        text,
+        actor.actorId,
+        now,
+        now,
+      );
+      comment = this.readComment(commentId) as BoardComment;
+    });
+    this.broadcastCommentsRefresh();
+    return Response.json(comment, {
+      status: 201,
+      headers: { "Cache-Control": "no-store" },
+    });
+  }
+
+  private async resolveComment(
+    request: Request,
+    actor: InternalActorContext,
+    capturedBoard: BoardRow,
+    commentId: string,
+  ): Promise<Response> {
+    const body = await readJsonBody(request, 4 * 1_024);
+    assertExactKeys(body, ["state"], ["state"]);
+    if (body.state !== "resolved") {
+      throw new HttpError(400, "BAD_REQUEST", "A comment can only transition to resolved.");
+    }
+    const now = Date.now();
+    let comment!: BoardComment;
+    let changed = false;
+    this.ctx.storage.transactionSync(() => {
+      const board = readBoard(this.#sql) ?? capturedBoard;
+      this.requireView(board, actor.actorId);
+      const existing = this.readComment(commentId);
+      if (existing === null) throw new HttpError(404, "NOT_FOUND", "Comment not found.");
+      if (existing.state !== "resolved") {
+        this.#sql.exec(
+          `UPDATE comments
+           SET state = 'resolved', resolved_by = ?, resolved_at_ms = ?, updated_at_ms = ?
+           WHERE comment_id = ? AND state != 'resolved'`,
+          actor.actorId,
+          now,
+          now,
+          commentId,
+        );
+        changed = true;
+      }
+      comment = this.readComment(commentId) as BoardComment;
+    });
+    if (changed) this.broadcastCommentsRefresh();
+    return Response.json(comment, { headers: { "Cache-Control": "no-store" } });
+  }
+
+  private readComments(): BoardComment[] {
+    return this.#sql
+      .exec<CommentRow>(
+        `SELECT c.comment_id, c.target_item_id, c.body, c.state, c.created_by,
+          c.created_at_ms, c.resolved_by, c.resolved_at_ms, c.updated_at_ms,
+          author.display_name AS author_name, resolver.display_name AS resolver_name
+         FROM comments c
+         LEFT JOIN members author ON author.actor_id = c.created_by
+         LEFT JOIN members resolver ON resolver.actor_id = c.resolved_by
+         ORDER BY c.created_at_ms ASC, c.comment_id ASC`,
+      )
+      .toArray()
+      .map(commentFromRow);
+  }
+
+  private readComment(commentId: string): BoardComment | null {
+    const row = this.#sql
+      .exec<CommentRow>(
+        `SELECT c.comment_id, c.target_item_id, c.body, c.state, c.created_by,
+          c.created_at_ms, c.resolved_by, c.resolved_at_ms, c.updated_at_ms,
+          author.display_name AS author_name, resolver.display_name AS resolver_name
+         FROM comments c
+         LEFT JOIN members author ON author.actor_id = c.created_by
+         LEFT JOIN members resolver ON resolver.actor_id = c.resolved_by
+         WHERE c.comment_id = ?`,
+        commentId,
+      )
+      .toArray()[0];
+    return row === undefined ? null : commentFromRow(row);
+  }
+
+  private orphanOpenComments(itemIds: Iterable<string>, updatedAt: number): number {
+    let rowsWritten = 0;
+    for (const itemId of new Set(itemIds)) {
+      rowsWritten += this.#sql.exec(
+        `UPDATE comments
+         SET state = 'orphaned', updated_at_ms = ?
+         WHERE target_item_id = ? AND state = 'open'`,
+        updatedAt,
+        itemId,
+      ).rowsWritten;
+    }
+    return rowsWritten;
+  }
+
+  private broadcastCommentsRefresh(): void {
+    this.broadcastFrame({ v: 1, t: "server.comments.refresh" }, undefined, true);
   }
 
   private async initialize(request: Request, actor: InternalActorContext): Promise<Response> {
@@ -2863,6 +3051,7 @@ export class BoardRoom extends DurableObject<Env> {
     let requiresResync = false;
     let snapshotScheduleRowsWritten = 0;
     let recordedFrames = 0;
+    let commentsOrphaned = false;
 
     this.ctx.storage.transactionSync(() => {
       const board = this.requireBoard();
@@ -2925,6 +3114,8 @@ export class BoardRoom extends DurableObject<Env> {
           item,
         });
       }
+      const commentRowsWritten = this.orphanOpenComments(removals, acceptedAt);
+      commentsOrphaned = commentRowsWritten > 0;
       const attributionRowsWritten = this.replaceCurrentAttribution(
         targetItems,
         snapshotAttribution,
@@ -2998,6 +3189,7 @@ export class BoardRoom extends DurableObject<Env> {
         capacityRowsWritten +
         itemRowsWritten +
         attributionRowsWritten +
+        commentRowsWritten +
         invalidatedHistoryRows +
         receiptRowsWritten +
         boardRowsWritten +
@@ -3029,6 +3221,7 @@ export class BoardRoom extends DurableObject<Env> {
 
     if (action !== undefined) {
       this.#pendingFrameCount = Math.max(0, this.#pendingFrameCount - recordedFrames);
+      if (commentsOrphaned) this.broadcastCommentsRefresh();
       if (requiresResync)
         this.broadcastResyncRequired("Snapshot restore requires a fresh bootstrap.");
       else this.broadcastAction(action);
@@ -3643,6 +3836,7 @@ export class BoardRoom extends DurableObject<Env> {
     let recordedFrames = 0;
     let sqliteRowsRead = 0;
     let sqliteRowsWritten = 0;
+    let commentsOrphaned = false;
     const transactionStartedAt = performance.now();
     execution.transactionStarted = true;
     this.ctx.storage.transactionSync(() => {
@@ -3725,6 +3919,13 @@ export class BoardRoom extends DurableObject<Env> {
       for (const write of prepared.writes.values()) {
         itemRowsWritten += writeItem(this.#sql, write);
       }
+      const commentRowsWritten = this.orphanOpenComments(
+        [...prepared.writes.values()]
+          .filter((write) => write.deleted)
+          .map((write) => write.item.id),
+        acceptedAt,
+      );
+      commentsOrphaned = commentRowsWritten > 0;
       const attributionRowsWritten = this.applyAttributionEffects(attributionEffects, "after");
       const invalidatedHistory = this.#sql.exec(
         "UPDATE history_entries SET state = 'invalidated', last_transition_seq = ? WHERE actor_id = ? AND state = 'undone'",
@@ -3764,6 +3965,7 @@ export class BoardRoom extends DurableObject<Env> {
         (snapshotScheduleRowsWritten > 0 ? 1 : 0) +
         itemRowsWritten +
         attributionRowsWritten +
+        commentRowsWritten +
         invalidatedHistory.rowsWritten +
         historyRowsWritten +
         historyVersion.rowsWritten +
@@ -3805,6 +4007,7 @@ export class BoardRoom extends DurableObject<Env> {
     }
     this.#pendingFrameCount = Math.max(0, this.#pendingFrameCount - recordedFrames);
     this.broadcastAction(action);
+    if (commentsOrphaned) this.broadcastCommentsRefresh();
     this.broadcastHistoryState(attachment.actorId, history);
     if (snapshotScheduleRowsWritten > 0) this.scheduleNextAlarmAfterCommit();
     return {
@@ -3832,6 +4035,7 @@ export class BoardRoom extends DurableObject<Env> {
     let recordedFrames = 0;
     let sqliteRowsRead = 0;
     let sqliteRowsWritten = 0;
+    let commentsOrphaned = false;
     const transactionStartedAt = performance.now();
     execution.transactionStarted = true;
     this.ctx.storage.transactionSync(() => {
@@ -3942,6 +4146,11 @@ export class BoardRoom extends DurableObject<Env> {
             : { kind: "item.replace", item: write.item },
         );
       }
+      const commentRowsWritten = this.orphanOpenComments(
+        changes.flatMap((change) => (change.kind === "item.remove" ? [change.itemId] : [])),
+        acceptedAt,
+      );
+      commentsOrphaned = commentRowsWritten > 0;
       const targetAttributionEffects =
         originalPayload.attributionEffects ??
         effects.map((effect) => {
@@ -4011,6 +4220,7 @@ export class BoardRoom extends DurableObject<Env> {
         (snapshotScheduleRowsWritten > 0 ? 1 : 0) +
         itemRowsWritten +
         attributionRowsWritten +
+        commentRowsWritten +
         historyRowsWritten +
         historyVersion.rowsWritten +
         boardRowsWritten +
@@ -4048,6 +4258,7 @@ export class BoardRoom extends DurableObject<Env> {
     }
     this.#pendingFrameCount = Math.max(0, this.#pendingFrameCount - recordedFrames);
     this.broadcastAction(action);
+    if (commentsOrphaned) this.broadcastCommentsRefresh();
     this.broadcastHistoryState(attachment.actorId, history);
     if (snapshotScheduleRowsWritten > 0) this.scheduleNextAlarmAfterCommit();
     return {
@@ -4088,6 +4299,7 @@ export class BoardRoom extends DurableObject<Env> {
     let recordedFrames = 0;
     let sqliteRowsRead = 0;
     let sqliteRowsWritten = 0;
+    let commentsOrphaned = false;
     const transactionStartedAt = performance.now();
     execution.transactionStarted = true;
     this.ctx.storage.transactionSync(() => {
@@ -4130,6 +4342,8 @@ export class BoardRoom extends DurableObject<Env> {
         );
         removals.push(record.item.id);
       }
+      const commentRowsWritten = this.orphanOpenComments(removals, acceptedAt);
+      commentsOrphaned = commentRowsWritten > 0;
       const attributionRowsWritten = this.#sql.exec("DELETE FROM item_attribution").rowsWritten;
       const expanded = {
         kind: "board.clear",
@@ -4201,6 +4415,7 @@ export class BoardRoom extends DurableObject<Env> {
         capacityRowsWritten +
         itemRowsWritten +
         attributionRowsWritten +
+        commentRowsWritten +
         snapshotRowsWritten +
         snapshotAttributionRowsWritten +
         invalidatedHistoryRows +
@@ -4248,6 +4463,7 @@ export class BoardRoom extends DurableObject<Env> {
     } else {
       this.broadcastAction(action);
     }
+    if (commentsOrphaned) this.broadcastCommentsRefresh();
     this.broadcastAllHistoryStates();
     if (snapshotScheduleRowsWritten > 0) this.scheduleNextAlarmAfterCommit();
     return {
@@ -5966,6 +6182,58 @@ export class BoardRoom extends DurableObject<Env> {
   }
 }
 
+function requireCommentBody(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new HttpError(400, "BAD_REQUEST", "Comment text is required.");
+  }
+  const normalized = value.replace(/\r\n?/gu, "\n").trim();
+  const hasDisallowedControl = [...normalized].some(
+    (character) => /\p{Cc}/u.test(character) && character !== "\n" && character !== "\t",
+  );
+  if (
+    normalized.length === 0 ||
+    [...normalized].length > MAX_COMMENT_CODE_POINTS ||
+    hasDisallowedControl
+  ) {
+    throw new HttpError(
+      400,
+      "BAD_REQUEST",
+      `Comments must be 1 to ${MAX_COMMENT_CODE_POINTS} visible characters.`,
+    );
+  }
+  return normalized;
+}
+function commentFromRow(row: CommentRow): BoardComment {
+  const resolved = row.state === "resolved";
+  if (
+    (resolved && (row.resolved_by === null || row.resolved_at_ms === null)) ||
+    (!resolved && (row.resolved_by !== null || row.resolved_at_ms !== null))
+  ) {
+    throw new HttpError(500, "INTERNAL_ERROR", "Stored comment data is invalid.");
+  }
+  return {
+    id: row.comment_id,
+    itemId: row.target_item_id,
+    body: row.body,
+    state: row.state,
+    author: {
+      id: row.created_by,
+      displayName: row.author_name || fallbackDisplayName(row.created_by),
+    },
+    createdAt: row.created_at_ms,
+    updatedAt: row.updated_at_ms,
+    ...(resolved && row.resolved_by !== null && row.resolved_at_ms !== null
+      ? {
+          resolvedBy: {
+            id: row.resolved_by,
+            displayName: row.resolver_name || fallbackDisplayName(row.resolved_by),
+          },
+          resolvedAt: row.resolved_at_ms,
+        }
+      : {}),
+  };
+}
+
 function initialBoardFeatures(value: unknown): BoardFeatures {
   if (value === undefined) return { ...DEFAULT_BOARD_FEATURES };
   const patch = requireFeaturePatch(value, true);
@@ -6260,7 +6528,9 @@ function optionalExternalParticipantId(value: unknown): string | null {
   if (
     [...normalized].length < 1 ||
     [...normalized].length > 320 ||
-    /[\p{Cc}\p{Cs}]/u.test(normalized)
+    [...normalized].some(
+      (character) => /\p{Cc}/u.test(character) && character !== "\n" && character !== "\t",
+    )
   ) {
     throw new HttpError(400, "BAD_REQUEST", "The organisation participant ID is invalid.");
   }
