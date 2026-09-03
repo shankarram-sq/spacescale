@@ -45,6 +45,8 @@ import {
 import {
   buildCapturedStructuredResizeOperation,
   type CapturedStructuredResize,
+  MIN_RESIZED_ZONE_HEIGHT,
+  MIN_RESIZED_ZONE_WIDTH,
   resizedStructuredGeometry,
   type StructuredResizeHandle,
   structuredResizeGrabOffset,
@@ -788,11 +790,7 @@ type ZoneCreateOperation = Extract<BatchItemOperation, { kind: "item.create" }> 
   item: Extract<NewBoardItem, { kind: "zone" }>;
 };
 
-export function buildZoneCreateOperation(
-  itemId: string,
-  center: Point,
-  title = "Section",
-): ZoneCreateOperation {
+function zoneCreateOperation(itemId: string, geometry: ZoneGeometry): ZoneCreateOperation {
   return {
     kind: "item.create",
     item: {
@@ -807,15 +805,54 @@ export function buildZoneCreateOperation(
         opacity: 0.18,
       },
       transform: identityMatrix(),
-      geometry: {
-        x: roundBoard(center[0] - DEFAULT_ZONE_WIDTH / 2),
-        y: roundBoard(center[1] - DEFAULT_ZONE_HEIGHT / 2),
-        width: DEFAULT_ZONE_WIDTH,
-        height: DEFAULT_ZONE_HEIGHT,
-        title,
-      },
+      geometry,
     },
   };
+}
+
+export function buildZoneCreateOperation(
+  itemId: string,
+  center: Point,
+  title = "Section",
+): ZoneCreateOperation {
+  return zoneCreateOperation(itemId, defaultZoneGeometry(center, title));
+}
+
+function defaultZoneGeometry(center: Point, title: string): ZoneGeometry {
+  return {
+    x: roundBoard(center[0] - DEFAULT_ZONE_WIDTH / 2),
+    y: roundBoard(center[1] - DEFAULT_ZONE_HEIGHT / 2),
+    width: DEFAULT_ZONE_WIDTH,
+    height: DEFAULT_ZONE_HEIGHT,
+    title,
+  };
+}
+
+// A Section drag covers the rectangle the participant swept out, in either
+// direction. Anything smaller than a resized Section is read as a tap so a
+// stray flick still lands the familiar default-sized Section.
+export function draggedZoneGeometry(start: Point, end: Point, title = "Section"): ZoneGeometry {
+  const width = Math.abs(end[0] - start[0]);
+  const height = Math.abs(end[1] - start[1]);
+  if (width < MIN_RESIZED_ZONE_WIDTH || height < MIN_RESIZED_ZONE_HEIGHT) {
+    return defaultZoneGeometry(start, title);
+  }
+  return {
+    x: roundBoard(Math.min(start[0], end[0])),
+    y: roundBoard(Math.min(start[1], end[1])),
+    width: roundBoard(width),
+    height: roundBoard(height),
+    title,
+  };
+}
+
+export function buildDraggedZoneCreateOperation(
+  itemId: string,
+  start: Point,
+  end: Point,
+  title = "Section",
+): ZoneCreateOperation {
+  return zoneCreateOperation(itemId, draggedZoneGeometry(start, end, title));
 }
 
 export function buildSectionCreateMembershipOperation(
@@ -1081,9 +1118,9 @@ type Gesture =
       kind: "zone";
       pointerId: number;
       pointerType: string;
+      itemId: string;
       start: Point;
       current: Point;
-      operation: ZoneCreateOperation;
     };
 
 type PinchState = {
@@ -1595,20 +1632,16 @@ export class ToolController {
     }
 
     if (this.toolValue === "zone") {
-      const operation = buildZoneCreateOperation(createId(), point);
-      if (event.pointerType === "touch") {
-        this.gesture = {
-          kind: "zone",
-          pointerId: event.pointerId,
-          pointerType: event.pointerType,
-          start: point,
-          current: point,
-          operation,
-        };
-        this.options.renderer.showLocalZone(operation.item.geometry, operation.item.style);
-      } else {
-        void this.commitZone(operation);
-      }
+      const gesture: Extract<Gesture, { kind: "zone" }> = {
+        kind: "zone",
+        pointerId: event.pointerId,
+        pointerType: event.pointerType,
+        itemId: createId(),
+        start: point,
+        current: point,
+      };
+      this.gesture = gesture;
+      this.renderZoneGesture(gesture);
       event.preventDefault();
       return;
     }
@@ -1783,12 +1816,10 @@ export class ToolController {
         typeof event.getCoalescedEvents === "function" ? event.getCoalescedEvents() : [event];
       for (const sample of events)
         this.collectEraser(boardPoint(sample, this.options.renderer), gesture);
-    } else if (
-      gesture.kind === "sticky" ||
-      gesture.kind === "stamp" ||
-      gesture.kind === "table" ||
-      gesture.kind === "zone"
-    ) {
+    } else if (gesture.kind === "zone") {
+      gesture.current = boardPoint(event, this.options.renderer);
+      this.renderZoneGesture(gesture);
+    } else if (gesture.kind === "sticky" || gesture.kind === "stamp" || gesture.kind === "table") {
       gesture.current = boardPoint(event, this.options.renderer);
     }
     event.preventDefault();
@@ -1852,6 +1883,8 @@ export class ToolController {
       );
     } else if (gesture.kind === "eraser") {
       this.collectEraser(tapPoint, gesture);
+    } else if (gesture.kind === "zone") {
+      gesture.current = tapPoint;
     }
     if (
       gesture.kind === "shape" &&
@@ -2378,14 +2411,8 @@ export class ToolController {
       return;
     }
     if (gesture.kind === "zone") {
-      const point = tapAdjustedMovePoint(
-        gesture.start,
-        gesture.current,
-        gesture.pointerType,
-        this.options.renderer.viewport.zoom,
-      );
       this.options.renderer.clearLocalPreview();
-      if (point === gesture.start) await this.commitZone(gesture.operation);
+      await this.commitZone(this.zoneGestureOperation(gesture));
       return;
     }
     if (gesture.kind === "pan") return;
@@ -2757,6 +2784,24 @@ export class ToolController {
       return;
     }
     this.options.editZoneTitle(item);
+  }
+
+  private renderZoneGesture(gesture: Extract<Gesture, { kind: "zone" }>): void {
+    const operation = this.zoneGestureOperation(gesture);
+    this.options.renderer.showLocalZone(operation.item.geometry, operation.item.style);
+  }
+
+  private zoneGestureOperation(gesture: Extract<Gesture, { kind: "zone" }>): ZoneCreateOperation {
+    return buildDraggedZoneCreateOperation(
+      gesture.itemId,
+      gesture.start,
+      tapAdjustedMovePoint(
+        gesture.start,
+        gesture.current,
+        gesture.pointerType,
+        this.options.renderer.viewport.zoom,
+      ),
+    );
   }
 
   private async commitZone(operation: ZoneCreateOperation): Promise<void> {
