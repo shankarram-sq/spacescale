@@ -5623,6 +5623,176 @@ describe("BoardRoom move/copy closure admission", () => {
     expect(state).toEqual({ latestSeq: 0, liveItems: 0, actions: 0 });
     connected.socket.close(1000, "done");
   });
+
+  it("rejects a Section relationship whose member lies outside the Section", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    const owner = await connect(stub, actorId);
+    const editor = await connect(stub, editorId);
+    const sectionId = topologyId(960);
+    const createSection = {
+      v: 1,
+      t: "client.commit",
+      commandId: topologyId(961),
+      actionId: topologyId(962),
+      baseSeq: 0,
+      op: {
+        kind: "item.create",
+        item: {
+          id: sectionId,
+          kind: "zone",
+          style: {
+            kind: "zone",
+            borderColor: "#60a5fa",
+            fill: "#eff6ff",
+            textColor: "#1e3a8a",
+            fontSize: 20,
+            opacity: 0.8,
+          },
+          transform: [1, 0, 0, 1, 0, 0],
+          geometry: { x: 20, y: 30, width: 600, height: 400, title: "Bounded" },
+        },
+      },
+    };
+    owner.socket.send(JSON.stringify(createSection));
+    await owner.next(
+      (frame) => frame.t === "server.action" && frame.commandId === createSection.commandId,
+    );
+    await editor.next(
+      (frame) => frame.t === "server.action" && frame.commandId === createSection.commandId,
+    );
+
+    const memberCommit = (index: number, x: number) => ({
+      v: 1,
+      t: "client.commit",
+      commandId: topologyId(index + 1),
+      actionId: topologyId(index + 2),
+      baseSeq: 1,
+      op: {
+        kind: "item.create",
+        item: {
+          id: topologyId(index),
+          sectionId,
+          kind: "rectangle",
+          style: { kind: "stroke", color: "#112233", width: 2, opacity: 1 },
+          transform: [1, 0, 0, 1, 0, 0],
+          geometry: { x, y: 50, width: 120, height: 80 },
+        },
+      },
+    });
+
+    const outside = memberCommit(963, 900);
+    editor.socket.send(JSON.stringify(outside));
+    expect(
+      await editor.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === outside.commandId,
+      ),
+    ).toMatchObject({ code: "INVALID_FRAME", latestSeq: 1, sectionId, itemId: topologyId(963) });
+
+    const inside = memberCommit(966, 40);
+    editor.socket.send(JSON.stringify(inside));
+    expect(
+      await editor.next(
+        (frame) => frame.t === "server.action" && frame.commandId === inside.commandId,
+      ),
+    ).toMatchObject({ seq: 2 });
+
+    const state = await runInDurableObject(stub, (_instance, durableState) => ({
+      latestSeq: durableState.storage.sql
+        .exec<{ latest_seq: number }>("SELECT latest_seq FROM board")
+        .one().latest_seq,
+      liveItems: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM items WHERE deleted = 0")
+        .one().count,
+    }));
+    expect(state).toEqual({ latestSeq: 2, liveItems: 2 });
+    owner.socket.close(1000, "done");
+    editor.socket.close(1000, "done");
+  });
+
+  it("rejects an editor joining a group made of another actor's items", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    const owner = await connect(stub, actorId);
+    const editor = await connect(stub, editorId);
+    const groupId = topologyId(970);
+    const rectangle = (index: number, x: number, withGroup: boolean) => ({
+      id: topologyId(index),
+      ...(withGroup ? { groupId } : {}),
+      kind: "rectangle",
+      style: { kind: "stroke", color: "#112233", width: 2, opacity: 1 },
+      transform: [1, 0, 0, 1, 0, 0],
+      geometry: { x, y: 50, width: 120, height: 80 },
+    });
+    const ownerGroup = {
+      v: 1,
+      t: "client.commit",
+      commandId: topologyId(971),
+      actionId: topologyId(972),
+      baseSeq: 0,
+      op: {
+        kind: "items.batch",
+        operations: [
+          { kind: "item.create", item: rectangle(973, 40, true) },
+          { kind: "item.create", item: rectangle(974, 200, true) },
+        ],
+      },
+    };
+    owner.socket.send(JSON.stringify(ownerGroup));
+    await owner.next(
+      (frame) => frame.t === "server.action" && frame.commandId === ownerGroup.commandId,
+    );
+    await editor.next(
+      (frame) => frame.t === "server.action" && frame.commandId === ownerGroup.commandId,
+    );
+
+    const joinForeignGroup = {
+      v: 1,
+      t: "client.commit",
+      commandId: topologyId(975),
+      actionId: topologyId(976),
+      baseSeq: 1,
+      op: { kind: "item.create", item: rectangle(977, 400, true) },
+    };
+    editor.socket.send(JSON.stringify(joinForeignGroup));
+    expect(
+      await editor.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === joinForeignGroup.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 1, groupId, itemId: topologyId(977) });
+
+    const ownGroup = {
+      v: 1,
+      t: "client.commit",
+      commandId: topologyId(978),
+      actionId: topologyId(979),
+      baseSeq: 1,
+      op: {
+        kind: "items.batch",
+        operations: [
+          {
+            kind: "item.create",
+            item: { ...rectangle(980, 400, false), groupId: topologyId(981) },
+          },
+          {
+            kind: "item.create",
+            item: { ...rectangle(982, 560, false), groupId: topologyId(981) },
+          },
+        ],
+      },
+    };
+    editor.socket.send(JSON.stringify(ownGroup));
+    expect(
+      await editor.next(
+        (frame) => frame.t === "server.action" && frame.commandId === ownGroup.commandId,
+      ),
+    ).toMatchObject({ seq: 2 });
+    owner.socket.close(1000, "done");
+    editor.socket.close(1000, "done");
+  });
+
   it("detaches later members when history removes their Section and restores them on redo", async () => {
     const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
     await initializeBoard(stub);
@@ -6044,7 +6214,7 @@ describe("BoardRoom move/copy closure admission", () => {
             kind: "rectangle",
             style: { kind: "stroke", color: "#112233", width: 2, opacity: 1 },
             transform: [1, 0, 0, 1, 0, 0],
-            geometry: { x: 1, y: 2, width: 3, height: 4 },
+            geometry: { x: 40, y: 50, width: 3, height: 4 },
           },
         },
       }),

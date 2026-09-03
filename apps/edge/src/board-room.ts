@@ -58,8 +58,10 @@ import {
   requireImageAssetMimeType,
 } from "./image-assets";
 import {
+  assertGroupMembershipOwnership,
   assertItemsOutsideLockedSections,
   assertItemsOwnedByActor,
+  type ItemOwnershipContext,
   prepareOwnedItemOperation,
   sectionRecordIdsForItems,
   sectionRecordIdsForMutation,
@@ -3953,7 +3955,12 @@ export class BoardRoom extends DurableObject<Env> {
           this.requireCommittedImageAsset(board, item);
         }
       }
-      const topologyRowsRead = this.assertProspectiveMoveCopyClosure(prepared.effects, "after");
+      const topologyRowsRead = this.assertProspectiveMoveCopyClosure(
+        prepared.effects,
+        "after",
+        undefined,
+        { actorId: attachment.actorId, role: access.role },
+      );
       const acceptedAt = Date.now();
       action = {
         v: 1,
@@ -5635,10 +5642,14 @@ export class BoardRoom extends DurableObject<Env> {
     effects: readonly ItemEffect[],
     target: "before" | "after",
     knownCurrentItems?: readonly BoardItem[],
+    ownership?: ItemOwnershipContext,
   ): number {
     if (!effects.some(topologyChanged)) return 0;
 
     const currentItems = knownCurrentItems ?? readLiveItems(this.#sql);
+    if (ownership !== undefined) {
+      assertGroupMembershipOwnership(effects, target, currentItems, ownership);
+    }
     const current = new Map(currentItems.map((item) => [item.id, item]));
     const deletedSectionIds = deletedSectionIdsForTarget(effects, target);
 
