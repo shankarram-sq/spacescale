@@ -752,7 +752,7 @@ describe("board-side assist requests", () => {
             { alias: "step_1", text: "Let $2x=6$, so $x=3$" },
             { alias: "step_2", kind: "text", deleted: true },
           ],
-          reply: { via: "board", call: { tool: "insert_sticky" } },
+          reply: { via: "comment", call: { tool: "insert_comment" } },
         },
       ],
     });
@@ -760,7 +760,7 @@ describe("board-side assist requests", () => {
     expect(minted.at(-1)).toMatchObject([{ alias: "idea_1", itemId: STICKY_ID, version: 2 }]);
   });
 
-  it("keeps queued requests when a wait is aborted and prefers cards for generative actions", async () => {
+  it("keeps queued requests when a wait is aborted, and answers every action in a comment", async () => {
     const { feed } = watching();
     const started = await feed.execute({ action: "start" }, new AbortController().signal);
     const controller = new AbortController();
@@ -780,29 +780,30 @@ describe("board-side assist requests", () => {
       requests: [
         {
           action: "ideate",
+          // Generative actions answer on the step too, so the reply sits with the work.
           reply: {
-            via: "board",
-            call: { tool: "insert_sticky", input: { text: expect.any(String) } },
+            via: "comment",
+            call: { tool: "insert_comment", input: { action: "ideate", stepAlias: "step_1" } },
           },
         },
       ],
     });
   });
 
-  it("falls back to a comment on a read-only board, and to the conversation when commenting is off", async () => {
+  it("answers every action in a comment, and falls back to the conversation when commenting is off", async () => {
     const { feed, setCanComment, setCanWrite } = watching();
     const started = await feed.execute({ action: "start" }, new AbortController().signal);
-    // A note can sit beside any step, so a generative action on a text step still writes a card.
+    // Every action answers in a comment on the step, whatever the step is.
     feed.requestAssistance({ itemIds: [TEXT_ID], action: "examples" });
     const textStep = await feed.execute(
       { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
       new AbortController().signal,
     );
     expect(textStep.requests).toMatchObject([
-      { reply: { via: "board", call: { tool: "insert_sticky" } } },
+      { reply: { via: "comment", call: { tool: "insert_comment" } } },
     ]);
 
-    // A browser that cannot add items must not be sent to a writer.
+    // A board this browser cannot write to changes nothing: the reply was a comment anyway.
     setCanWrite(false);
     feed.requestAssistance({ itemIds: [STICKY_ID], action: "ideate" });
     const readOnlyFallback = await feed.execute(

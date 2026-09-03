@@ -286,6 +286,11 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   await askAi.click();
   const aiMenu = page.getByTestId("ai-assist-menu");
   await expect(aiMenu).toBeVisible();
+  // The menu is the actions and one instruction field: no scope label, no explainer.
+  await expect(aiMenu.locator("[data-ai-assist-scope]")).toHaveCount(0);
+  await expect(aiMenu.locator(".ai-assist-menu-note")).toHaveCount(0);
+  await expect(aiMenu.locator(".ai-assist-note span")).toHaveText("Other instruction");
+  await expect(aiMenu).toBeVisible();
   await expect(aiMenu.getByRole("menuitem")).toHaveCount(6);
   await expect(aiMenu.getByRole("menuitem", { name: "Grade" })).toHaveCount(0);
   await aiMenu.locator("[data-ai-assist-note]").fill("Not sure about the second step");
