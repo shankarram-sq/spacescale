@@ -112,8 +112,14 @@ From then on, without the teacher prompting again:
   their last answer.
 - A student stuck on question three gets a hint on that exact step. A hint, not
   the answer, because the teacher's skill says so.
-- A student who is struggling across every problem gets a two-minute video
-  placed next to their work, chosen from the resources the teacher provided.
+- A student who is struggling across every problem gets a two-minute video,
+  chosen from the resources the teacher provided, attached to a comment on
+  their work.
+
+When one student needs more of the teacher's attention, the teacher can point
+the watch at that one student's work instead of the whole board. Following a
+student is something the teacher starts, everyone can see, and that expires on
+its own.
 
 Each of these lands as an ordinary canvas object, marked as AI-written,
 attributed to the teacher, visible to whoever should see it, and undoable in one
@@ -130,9 +136,11 @@ Two more scenes, same machinery, different skill:
 
 ## Built for education, open to any room
 
-The seven tools are deliberately generic. A watch, a vote reader, a template
-reader, and four writes: comment, sticky note, image, video. Nothing in the
-protocol knows what a lesson is. The education behaviour lives in the skill.
+The twelve tools are deliberately generic. Read once or follow live, over
+three scopes: the whole board, the current selection, or one named person's
+work. A participant list, a vote reader, and a template reader. Four writes:
+comment, sticky note, image, video. Nothing in the protocol knows what a lesson
+is. The education behaviour lives in the skill.
 
 Swap the skill and the same board becomes:
 
@@ -153,6 +161,9 @@ Swap the skill and the same board becomes:
   undoes in one step.
 - The watch never sees unsaved keystrokes, stable IDs, presence, or history,
   and expires after fifteen minutes.
+- Following one student reports strictly less than watching the board, and
+  the participant list counts how much work exists, never how well anyone is
+  doing. The safety gate forbids grading, ranking, or profiling from it.
 
 ## Try it in three minutes
 

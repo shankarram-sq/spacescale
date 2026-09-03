@@ -26,17 +26,22 @@ the diagrams, is handwritten, which digital tools usually cannot assess at all.
 SpaceScale is a realtime visual classroom built on Cloudflare. Students and
 teachers draw, write by hand on a Huion or any other pen tablet, type, organize,
 comment, vote, and embed YouTube or Vimeo videos on one durable canvas. When the
-board is open in a WebMCP-capable host, the page registers seven tools: a
-15-minute board watch, an aggregate vote reader, an activity-template reader,
-and four writes for comments, sticky notes, images, and videos.
+board is open in a WebMCP-capable host, the page registers twelve tools. Six
+read: one reading of the whole board, the current selection, or one named
+participant's work, plus a participant list, an aggregate vote reader, and an
+activity-template reader. Two follow the same three scopes live for fifteen
+minutes. Four write: comments that can carry a picture or a video, sticky
+notes, images, and videos.
 
 The teacher starts a board watch from Codex with a coaching skill and the class
 documents loaded. From then on the agent follows every saved step across the
 class, analyses handwriting strokes and diagrams as well as text, and answers
 each student on their own work: a fast-finisher question for one, a hint (not
-the answer) for another, a short video for a third. Every reply lands as an
-ordinary canvas object, marked as AI-written, attributed to the teacher, visible
-in real time, and undoable in one step.
+the answer) for another, a short video attached to a comment for a third. When
+one student needs more attention, the teacher can point the watch at that
+student's work alone. Every reply lands as an ordinary canvas object, marked as
+AI-written, attributed to the teacher, visible in real time, and undoable in
+one step.
 
 WebMCP also runs the other way. While a watch is live, the board shows an
 **Ask AI** button in the selection toolbar and an **AI** action in the tool
@@ -67,7 +72,7 @@ different coaching styles and a department can share and edit one on a Friday
 afternoon. Anything SpaceScale does not do today can be added the same way,
 without touching the site.
 
-Because the seven tools are generic, the same board serves any domain. Swap the
+Because the twelve tools are generic, the same board serves any domain. Swap the
 skill and it becomes a marketing war room that connects campaign ideas aimed at
 the same audience, a project retrospective that groups sticky notes by root
 cause, or a design critique that reads the sketches.
@@ -75,12 +80,13 @@ cause, or a design critique that reads the sketches.
 ## How We Used AI
 
 The visiting WebMCP agent performs all reasoning; SpaceScale contributes the
-context only the live application has. The watch delivers server-acknowledged
-saved changes to every object on the board, including handwriting strokes,
-shapes, and diagrams, so the agent can follow a multi-step solution to the step
-that went wrong or check a drawing against the claim beside it. The vote reader
-returns aggregate counts only. The template reader lets the agent lay out a
-whole activity scaffold in one call.
+context only the live application has. A scope is the same question whether
+read once or followed live: the whole board, the selection, or one person's
+work. The watch delivers server-acknowledged saved changes to every object in
+its scope, including handwriting strokes, shapes, and diagrams, so the agent can
+follow a multi-step solution to the step that went wrong or check a drawing
+against the claim beside it. The vote reader returns aggregate counts only. The
+template reader lets the agent lay out a whole activity scaffold in one call.
 
 AI is used to coach each student on their own step, hand out fast-finisher
 work, connect students who chose the same brainstorm issue, surface the
@@ -102,10 +108,19 @@ bound site actions.
 
 ## Key Features
 
-- Seven discoverable WebMCP tools: `watch_board`, an aggregate vote reader, a
-  template reader, and `insert_comment`, `insert_sticky`, `insert_image`,
-  `insert_video`. Each write places one object where the call asks, as a
-  single acknowledged realtime command.
+- Twelve discoverable WebMCP tools. Reads: `read_board`, `read_selection`,
+  `read_user`, `list_users`, `read_live_class_vote`, `read_templates`.
+  Watches: `watch_board` with scope board or selection, and `watch_users`.
+  Writes: `insert_comment`, `insert_sticky`, `insert_image`, `insert_video`.
+  Each write places one object where the call asks, as a single acknowledged
+  realtime command.
+- Three scopes, read once or followed live: the whole board, the current
+  selection, or one named student's work. Following a student is
+  teacher-initiated, visible, and expiring, and reports strictly less than a
+  board watch.
+- Comments that carry a picture or a public video beside their text, so a
+  reply can show the diagram or the clip it is talking about right on the
+  student's step.
 - Two-way WebMCP: an **Ask AI** button and a whole-board **AI** action deliver
   participant requests to the host on the watch's next long poll, with a reply
   plan naming the next tool call.
@@ -153,10 +168,14 @@ Collab Canvas foundation. During the WebMCP Challenge submission period it was
 extended from a secure collaborative whiteboard into an AI-enabled learning
 product. The challenge work added:
 
-- the seven-tool WebMCP integration, with the surface deliberately narrowed to
-  generic reads and writes so skills carry the pedagogy;
+- the twelve-tool WebMCP integration, with the surface kept to generic reads,
+  watches, and writes so skills carry the pedagogy;
+- three scopes for reading and watching: the whole board, the selection, or
+  one participant's work, with a participant list derived from saved content;
 - the two-way watch: bounded long polls, the Ask AI selection action, the
-  whole-board AI action, and reply plans;
+  whole-board AI action, and reply plans that name the tool that continues;
+- comments that carry a picture or a video through the same asset pipeline and
+  link check as the canvas;
 - handwriting and diagram support through the watch;
 - the participant-scoped WebMCP commit and acknowledgement path with AI
   provenance and a visible AI mark;
