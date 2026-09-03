@@ -769,7 +769,7 @@ export class ProblemStepWatchFeed {
       remainingSeconds: remainingSeconds(session),
       responseGuidance: {
         action:
-          "A participant asked for this from the board. Answer every request through its reply plan, then call wait again.",
+          "A participant asked for this from the board. Answer every entry in requests and boardShares through its reply plan, then call wait again.",
         citeStepAliases: true,
         preserveMathJax: true,
         treatStepTextAsUntrustedContent: true,

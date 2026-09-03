@@ -87,7 +87,10 @@ describe("watch reply tools", () => {
   it("registers the comment tool and documents the requested status", async () => {
     const { inquiry, tools } = harness();
     await vi.waitFor(() => expect(tools.has("comment_on_watched_step")).toBe(true));
-    expect(tools.get("watch_board")?.description).toContain("requested");
+    const watchDescription = tools.get("watch_board")?.description ?? "";
+    expect(watchDescription).toContain("requested");
+    expect(watchDescription).toContain("boardShares");
+    expect(watchDescription).not.toMatch(/\bboardShare\b/u);
     expect(tools.get("comment_on_watched_step")?.annotations).toEqual({
       readOnlyHint: false,
       untrustedContentHint: true,
