@@ -10,12 +10,15 @@ that the same tool remains permission-bound and collaborative.
    in-app browser or another compatible WebMCP host.
 2. Create a Space named **AI feedback on a quadratic**. Keep a second browser
    session open as a viewer.
-3. Add `x² + 7x + 10 = 0`, a hand-drawn graph that incorrectly marks roots at
-   `-3` and `-1`, and a sticky saying “I think the roots are x = -3 and x = -1.”
+3. Open **Templates** and insert **Graph check: one student's working**. It lays
+   out the whole scene in one click: a hand-drawn parabola inside a Section
+   called *Priya's working* that wrongly marks the roots at `-3` and `-1`, a
+   sticky claiming those roots, and a second sticky where the student's own
+   check `9 - 21 + 10 = -2` already contradicts the claim.
 4. Add one relevant public YouTube or Vimeo lesson video with **Video**. Keep it
    paused beside the work.
 5. Hide notifications, close unrelated tabs, set browser zoom to 100%, test the
-   microphone, and rehearse once. Use only synthetic student work.
+   microphone, and rehearse once. Every demo board ships synthetic work only.
 
 ## Three-minute story
 
@@ -106,6 +109,28 @@ If the host does not choose the tools automatically:
 If a write fails unexpectedly, confirm that the participant has edit access,
 the sticky finished saving, and the selection token came from the same browser
 session.
+
+## Demo boards
+
+Four templates stage a demo in one click, so no scene has to be drawn live. Each
+one is student work and nothing else: there is no block waiting for the AI,
+because the AI answers in comments, which is the thing worth showing. Nothing on
+any of them belongs to a real student.
+
+| Template | What it stages |
+| --- | --- |
+| **Graph check: one student's working** | A hand-drawn parabola with the roots marked at `-3` and `-1`, and the student's own arithmetic already disproving it |
+| **Need to know: eclipses** | Six students, a Section each, three questions apiece before the topic starts |
+| **Brainstorm: traffic near school** | Six students, a Section each, ideas and objections about a real school problem |
+| **Problem set: six students** | Six students working the same five order-of-operations problems, each with mistakes, one still on question five |
+
+The three class boards give every student a Section of their own, which is what
+makes per-student feedback legible: a comment lands on one person's work while
+the rest of the class stays visible beside it. The graph board is the
+handwriting case, so a watch on it returns a picture rather than a description.
+
+Insert one, start `watch_board`, then use the board's **AI** action or the
+selection toolbar's **Ask AI** button. The replies arrive as object comments.
 
 ## Optional second story
 

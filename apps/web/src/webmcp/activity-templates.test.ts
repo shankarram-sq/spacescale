@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ACTIVITY_TEMPLATES, type ActivityTemplate } from "../activities/templates";
-import type { DurableOperation, NewBoardItem } from "../types";
+import type { BoardItem, DurableOperation, NewBoardItem } from "../types";
 import {
   ActivityTemplateWebMcp,
   MAX_CATALOGUE_PREVIEW_CHARACTERS,
   templateSlots,
 } from "./activity-templates";
+import { hasVisualContent } from "./board-image";
 import type { WebMcpRegisterToolOptions, WebMcpToolDefinition } from "./types";
 
 type CreatedItem = NewBoardItem & { assistedBy?: "ai" };
@@ -103,6 +104,16 @@ async function ready() {
   return context;
 }
 
+/**
+ * The templates read_templates should render, in catalogue order. Asks the same predicate the
+ * tool does, so the expectation cannot drift from what counts as drawn work.
+ */
+function drawingTemplateIds(): string[] {
+  return ACTIVITY_TEMPLATES.filter((template) =>
+    hasVisualContent(template.items as unknown as BoardItem[]),
+  ).map(({ id }) => id);
+}
+
 describe("templateSlots", () => {
   it("aliases every text place in template order, including each table cell", () => {
     const kwl = ACTIVITY_TEMPLATES.find(({ id }) => id === "kwl");
@@ -189,14 +200,11 @@ describe("read_templates", () => {
     const catalogue = await context.call("read_templates", {});
     const listed = catalogue.templates as Array<Record<string, unknown>>;
     const withPreview = listed.filter((entry) => entry.preview !== undefined);
-    // The exit ticket, sort, pair share and stamp vote draw; K-W-L and the demo are text only.
-    expect(withPreview.map(({ templateId }) => templateId)).toEqual([
-      "exit-ticket",
-      "sort-it",
-      "pair-share",
-      "vote-with-stamps",
-    ]);
+
+    // Exactly the templates that draw shapes, stamps or strokes get a picture.
+    expect(withPreview.map(({ templateId }) => templateId)).toEqual(drawingTemplateIds());
     expect(catalogue.previewsOmitted).toBeUndefined();
+    // K-W-L is a title and a table, so it is fully described by its slots.
     expect(listed.find((entry) => entry.templateId === "kwl")?.preview).toBeUndefined();
 
     // Naming a text-only template still renders it, so a host can see the layout.
@@ -219,7 +227,7 @@ describe("read_templates", () => {
     const listed = catalogue.templates as Array<Record<string, unknown>>;
     expect(listed.filter((entry) => entry.preview !== undefined)).toHaveLength(0);
     // Every template that draws is named instead of shown.
-    expect(catalogue).toMatchObject({ previewsOmitted: 4 });
+    expect(catalogue).toMatchObject({ previewsOmitted: drawingTemplateIds().length });
 
     // Reading one template by name still shows it, however large.
     const single = await context.call("read_templates", { templateId: "exit-ticket" });
@@ -239,9 +247,10 @@ describe("read_templates", () => {
     const listed = catalogue.templates as Array<Record<string, unknown>>;
     const withPreview = listed.filter((entry) => entry.preview !== undefined);
 
-    // Two pictures spend the budget; the two remaining drawn templates are named instead.
-    expect(withPreview.map(({ templateId }) => templateId)).toEqual(["exit-ticket", "sort-it"]);
-    expect(catalogue).toMatchObject({ previewsOmitted: 2 });
+    // Two pictures spend the budget; every later drawn template is named instead.
+    const drawing = drawingTemplateIds();
+    expect(withPreview.map(({ templateId }) => templateId)).toEqual(drawing.slice(0, 2));
+    expect(catalogue).toMatchObject({ previewsOmitted: drawing.length - 2 });
     expect(String(catalogue.previewNote)).toContain("Read one by templateId");
 
     // A single-template read is never held back by the catalogue budget.

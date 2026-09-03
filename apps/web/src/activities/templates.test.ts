@@ -16,7 +16,7 @@ function deterministicIds(): () => string {
 }
 
 describe("classroom templates", () => {
-  it("builds all six templates as small valid ordinary-item batches", () => {
+  it("builds every template as a small valid ordinary-item batch", () => {
     const expectedCounts: Record<ActivityTemplateId, number> = {
       "collective-inquiry-demo": 13,
       "exit-ticket": 7,
@@ -24,6 +24,10 @@ describe("classroom templates", () => {
       "sort-it": 12,
       "pair-share": 7,
       "vote-with-stamps": 4,
+      "graph-check": 13,
+      "student-questions": 26,
+      "brainstorm-school-traffic": 26,
+      "problem-set-six-students": 14,
     };
 
     expect(ACTIVITY_TEMPLATES.map(({ id }) => id)).toEqual(Object.keys(expectedCounts));
@@ -89,5 +93,70 @@ describe("classroom templates", () => {
       createdBy: "teacher",
     };
     expect(isVoteTable(voteTable)).toBe(true);
+  });
+
+  it("gives each demo board student Sections and no AI scaffolding", () => {
+    const byId = new Map(ACTIVITY_TEMPLATES.map((template) => [template.id, template]));
+    const demos = [
+      "graph-check",
+      "student-questions",
+      "brainstorm-school-traffic",
+      "problem-set-six-students",
+    ] as const;
+
+    for (const id of demos) {
+      const template = byId.get(id);
+      if (!template) throw new Error(`${id} is missing.`);
+      // The AI answers in comments, so no board may carry a block waiting for it.
+      for (const item of template.items) {
+        const text =
+          item.kind === "text" || item.kind === "sticky"
+            ? item.geometry.text
+            : item.kind === "zone"
+              ? item.geometry.title
+              : "";
+        expect(text).not.toMatch(/\bAI\b/u);
+        // A lone $ is a dollar sign, so no board may lean on it for math.
+        expect(text.replace(/\$\$/gu, "")).not.toContain("$");
+      }
+      // Every stroke must be drawable.
+      for (const item of template.items) {
+        if (item.kind !== "pencil") continue;
+        expect(item.geometry.points.length).toBeGreaterThanOrEqual(2);
+      }
+    }
+
+    // The handwriting board is what makes a watch send a picture rather than a description.
+    const graph = byId.get("graph-check");
+    expect(graph?.items.filter(({ kind }) => kind === "pencil").length).toBeGreaterThanOrEqual(5);
+    expect(
+      graph?.items.some(
+        (item) => item.kind === "sticky" && item.geometry.text.includes("\\(x=-3\\)"),
+      ),
+    ).toBe(true);
+
+    // The three class boards each give six students a Section of their own.
+    for (const id of [
+      "student-questions",
+      "brainstorm-school-traffic",
+      "problem-set-six-students",
+    ] as const) {
+      const sections = byId.get(id)?.items.filter((item) => item.kind === "zone") ?? [];
+      expect(sections, id).toHaveLength(6);
+      const names = sections.map((item) => (item.kind === "zone" ? item.geometry.title : ""));
+      expect(new Set(names).size, id).toBe(6);
+      // Every Section holds work, or there would be nothing to comment on.
+      expect(
+        names.every((name) => name.length > 0),
+        id,
+      ).toBe(true);
+    }
+
+    // One student is still short of the full set, so a reader can see who is mid-way.
+    const problems = byId.get("problem-set-six-students");
+    const answers = (problems?.items ?? []).filter((item) => item.kind === "text");
+    expect(
+      answers.some((item) => item.kind === "text" && /not started/u.test(item.geometry.text)),
+    ).toBe(true);
   });
 });
