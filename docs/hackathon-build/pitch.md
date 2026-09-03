@@ -54,7 +54,7 @@ today can be added the same way, as a skill or a file, without touching the
 site.
 
 The site does what only the site can do: hold the live state, show who wrote
-what, render handwriting to an image, collect a vote, and put the agent's
+what, capture handwriting strokes, collect a vote, and put the agent's
 answer in front of the right person in real time. The client does what only
 the teacher can do: decide the mode, the rules, and the background material.
 
