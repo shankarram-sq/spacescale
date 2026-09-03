@@ -1,12 +1,19 @@
-# SpaceScale WebMCP Collective Inquiry — implementation spec
+# SpaceScale WebMCP visual collaboration — implementation spec
 
 ## Outcome
 
-SpaceScale turns an AI agent into a shared thinking partner in a live classroom conversation. Every browser that can open the board discovers the WebMCP tools, and the agent reads only that browser's saved selection—exact typed content, a bounded 15-minute stream of saved problem-step changes, or an isolated visual rendering for handwriting and sketches. It can expand, connect, challenge, structure decisions, turn thinking into action through 27 live non-section education modes, or turn the discussion into a playful source-linked image or meme. Cross-Group Jigsaw is reserved for the separately tested section-context integration, bringing the complete catalog to 28 after that push lands. Every canvas mutation still requires normal board edit permission and is atomic, realtime, source-linked, attributed to the responsible participant, and undoable. Internal origin metadata is retained without AI-specific board labels.
+SpaceScale gives an AI agent a visible, permission-aware place in a live
+classroom canvas. The agent can work with selected typed ideas, handwriting,
+sketches, saved problem steps, and aggregate votes; it can return source-linked
+visual structures that every participant can inspect, edit, challenge, and
+undo. Shared YouTube/Vimeo cards keep lesson media in the same collaborative
+space. Crucially, the agent has no service identity: each WebMCP action runs as
+the participant who authorized it and remains subject to that participant's
+role, item ownership, section locks, and the authoritative server reducer.
 
 One-line pitch:
 
-> SpaceScale uses WebMCP to make AI a shared classroom thinking partner—helping students connect, challenge, and build on one another’s ideas while the group stays in control.
+> SpaceScale lets a class and an AI think together on one visual canvas, while every agent action inherits the permissions of the participant who invited it.
 
 ## Why this is a strong WebMCP use case
 
@@ -16,6 +23,29 @@ One-line pitch:
 - A bounded watch converts authoritative saved changes to selected problem steps into cancelable WebMCP long polls, letting the agent respond in the conversation as the reasoning develops.
 - The AI is not a private tutor for each student. Its output becomes a shared object that students can challenge, vote on, revise, and undo.
 - Human control is part of the product experience: selected-content consent is visible in SpaceScale, every write is teacher-requested through WebMCP, and the headline inquiry/decision flows add a second in-app preview.
+
+## Authorization and authorship model
+
+WebMCP registration happens inside the signed-in board page. Every writer gets
+`canWrite` from the current participant session and submits its compiled
+operation through the same `commitAndWait` function used by first-party canvas
+edits. That function applies the local role/ownership check, writes the command
+to the participant's durable outbox under their actor ID, queues the optimistic
+model update, and sends the normal WebSocket commit. The tool reports success
+only after the matching authoritative server action is received.
+
+The Worker independently applies the same security boundary before reduction:
+
+| Session role | Allowed mutation |
+| --- | --- |
+| Owner/co-owner | Any unlocked board content, including administrative canvas actions. |
+| Editor | New editor-authored items, copies, and updates/deletes to that editor's own items only. |
+| Viewer | No canvas mutation. |
+
+No tool accepts an actor ID or role as input, so the model cannot select a more
+powerful identity. Atomic batches fail before reduction if any child operation
+is forbidden. Accepted objects use the authorizing participant's normal
+attribution and keep an internal `assistedBy` marker for provenance.
 
 ## Implemented tool contract
 
@@ -41,6 +71,15 @@ Reads saved sticky-note text from the current browser selection.
 - Deliberately does not inspect sections or infer group membership; the incoming section push owns that context.
 - Does not return coordinates, sections, unselected content, presence, history, contact details, or authentication data.
 - Returns an opaque selection token used by the next tool.
+
+### Focused explanation and inspiration readers
+
+`inspire_from_selected_ideas` and `explain_selected_ideas` expose
+the same bounded selected-sticky snapshot with task-specific host guidance.
+They are read-only and untrusted-content annotated, return no board positions or
+unselected objects, and neither can mutate the canvas. Keeping these intents as
+semantic tools gives the host a reliable contract instead of prompting against
+the DOM.
 
 ### `inspect_selected_board_visual`
 
@@ -89,6 +128,21 @@ Adds one to three playful visual responses to the approved class discussion with
 - Before upload, the browser decodes, bounds-checks, and re-encodes the raster through the existing privacy-safe image path. The existing private per-board R2 asset endpoint validates it again and addresses it by content hash.
 - The request must explicitly confirm that the visual is classroom-safe, contains no real-student likeness, and targets no individual. The Images feature must be enabled by the Space owner.
 - The stored image, caption, discussion prompt, and source connectors are AI-attributed and committed as one acknowledged, undoable realtime board batch.
+
+### Shared lesson video
+
+Video is a first-class collaborative canvas object rather than a link hidden in
+chat. Participants add public YouTube or Vimeo URLs through the **Video** tool;
+SpaceScale normalizes them to privacy-conscious player URLs and rejects other
+hosts. The resulting card is persisted, selected, moved, copied, deleted,
+exported, and synchronized under the same participant permissions as other
+items. A pasted URL remains ordinary linked text unless the participant
+explicitly chooses the video tool.
+
+Video frames are intentionally excluded from the selected problem-step watch,
+and the visual inspection boundary never sends private image pixels or an
+unselected frame to the agent. This makes lesson media useful context on the
+shared canvas without turning it into an implicit data-extraction surface.
 
 ### Section integration boundary
 
@@ -153,8 +207,7 @@ elapse or the participant asks it to stop.
 ## Architecture
 
 - Registration uses the top-level JavaScript `document.modelContext.registerTool` API. The app remains fully functional when WebMCP is absent.
-- No OpenAI API key or model call is embedded in SpaceScale. The visiting ChatGPT/Codex agent performs the reasoning.
-- Existing SpaceScale authentication, owner role, item validation, Durable Outbox, WebSocket commit path, history, and undo remain authoritative.
+- Existing SpaceScale authentication, participant role and actor identity, item-ownership enforcement, Section locks, Durable Outbox, WebSocket commit path, history, and undo remain authoritative for UI and WebMCP actions alike.
 - Text-selection, visual-inspection, vote receipts, and problem-step watch sessions live only in page memory. Snapshots are bounded to ten recent receipts; watches are bounded to five active sessions, 30 exact selected items, 100 retained relevant changes, and 15 minutes.
 - Read tools expose bounded semantic data or one selected-only canonical SVG review surface. Mutation tools accept structured intent—not coordinates, raw board operations, or arbitrary HTML.
 - Five generic education tools compile model-authored semantic cards, source aliases, roles, and relationships into deterministic layouts to the right of all current board content, so consecutive moves do not overlap. A complete mode-contract registry is shared by capability discovery and runtime validation, preventing the catalog and accepted inputs from drifting apart. The visual writer applies the same alias, freshness, placement, attribution, acknowledgement, and undo boundaries to private raster assets.
@@ -177,7 +230,7 @@ elapse or the participant asks it to stop.
 
 - **Usefulness:** supports the full classroom arc from divergent thinking through mutual understanding, collective reasoning, explicit decisions, experiments, and reflection.
 - **Originality:** a capability-aware agent joins one shared class conversation, then leaves source-linked structures that students can challenge together instead of opening private AI chats.
-- **Execution:** strict schemas, 27 live non-section modes plus one reserved section mode, a discoverable and runtime-enforced contract for every live mode, a bounded source-linked visual writer, selected-only handwriting inspection, visible consent, deterministic non-overlapping layout, private raster sanitation/storage, atomic commits, server acknowledgement, realtime sync, AI attribution, and undo.
+- **Execution:** strict schemas, participant-scoped authorization, 27 live non-section modes plus one reserved section mode, selected-only handwriting inspection, shared video objects, deterministic non-overlapping layout, private raster sanitation/storage, atomic commits, server acknowledgement, realtime sync, provenance, and undo.
 - **Thoughtful WebMCP:** uses live selection, authoritative saved-change cursors, canonical board rendering, and live vote state that an open page uniquely owns; it avoids whole-board screenshot guessing and needs no separate MCP installation.
 - **Human-agent experience:** two genuine loops in which student response changes the agent’s second contribution and the teacher remains in control.
 

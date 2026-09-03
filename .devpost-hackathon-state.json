@@ -9,18 +9,18 @@
     "source": "known"
   },
   "participant": {
-    "name": "",
-    "display_name": ""
+    "name": "Shankar Ram Akshayakumar",
+    "display_name": "Shankar"
   },
   "project": {
     "name": "SpaceScale",
-    "summary": "A shared classroom canvas where AI collaborates visibly with the whole class by connecting ideas, surfacing tensions, and preserving dissent.",
-    "ai_usage": "",
-    "codex_usage": ""
+    "summary": "A shared visual classroom where WebMCP agents work with handwriting, video, and live ideas under the exact permissions of the people who invite them.",
+    "ai_usage": "The visiting WebMCP agent connects and challenges selected class ideas, interprets selected handwriting, follows bounded saved problem steps, and creates source-linked shared learning structures without a separate SpaceScale model backend.",
+    "codex_usage": "Codex supported product scoping, WebMCP tool and permission architecture, implementation, automated tests, debugging, review, demo preparation, and submission documentation."
   },
-  "current_stage": "review-hackathon-rules",
-  "completed_stages": ["start-hackathon"],
-  "rules_acknowledged": false,
+  "current_stage": "prepare-submission",
+  "completed_stages": ["start-hackathon", "review", "prepare-submission"],
+  "rules_acknowledged": true,
   "learning": {
     "status": "not-started",
     "current_step": "",
@@ -30,7 +30,7 @@
   },
   "submission": {
     "draft_file": "devpost-submission.md",
-    "status": "not-started"
+    "status": "drafting"
   },
-  "next_command": "review-hackathon-rules"
+  "next_command": "submit-project"
 }

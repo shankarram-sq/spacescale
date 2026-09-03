@@ -1,9 +1,9 @@
 {
-  "name": "cloudflare-collab-canvas",
+  "name": "spacescale",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "A secure, durable collaborative SVG whiteboard for Cloudflare Workers",
+  "description": "A WebMCP-enabled visual classroom where people and AI think together under participant-scoped permissions",
   "workspaces": [
     "apps/*",
     "packages/*"
