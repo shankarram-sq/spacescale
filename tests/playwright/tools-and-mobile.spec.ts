@@ -15,6 +15,11 @@ test("line, text, styles, constrained shapes, eraser, and pen input commit canon
   test.skip(testInfo.project.name !== "chromium", "Pointer-tool acceptance runs in Chromium.");
 
   await createBoard(page, "Tool acceptance");
+  // A fresh board lands on the pencil, ready to draw, with the empty-canvas hint showing.
+  await expect(page.getByTestId("tool-pencil")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("[data-canvas-hint]")).toHaveText(
+    "Draw or add an element to get started",
+  );
   await page.getByTestId("style-button").click();
   const style = page.getByTestId("style-popover");
   await expect(style).toBeVisible();

@@ -45,8 +45,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   await createBoard(page, "Collective inquiry demo");
   await page.getByTestId("settings-button").click();
   const settingsDrawer = page.getByTestId("settings-drawer");
-  await settingsDrawer.getByRole("checkbox", { name: "Enable Images" }).check();
-  await expect(page.getByTestId("toast-region")).toContainText("Images enabled.");
+  await expect(settingsDrawer.getByRole("checkbox", { name: "Enable Images" })).toBeChecked();
   await page.getByTestId("settings-button").click();
   await expect
     .poll(() => page.evaluate(() => Object.keys(window.__spaceScaleWebMcpTools).sort()))

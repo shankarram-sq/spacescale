@@ -172,7 +172,7 @@ export const DEFAULT_BOARD_FEATURES: BoardFeatures = {
   text: true,
   stickyNotes: true,
   stamps: true,
-  images: false,
+  images: true,
   tables: true,
   sections: true,
   protractor: true,
