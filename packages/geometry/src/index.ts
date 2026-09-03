@@ -77,6 +77,9 @@ export interface TextGeometry {
   embed?: "video";
 }
 
+export const VIDEO_EMBED_WIDTH = 360;
+export const VIDEO_EMBED_HEIGHT = 232;
+
 export interface StickyGeometry extends BoxGeometry {
   text: string;
 }
@@ -1215,6 +1218,14 @@ export function geometryBounds(
     }
     case "text": {
       const text = geometry as TextGeometry;
+      if (text.embed === "video") {
+        return {
+          minX: text.x,
+          minY: text.y - textFontSize,
+          maxX: text.x + VIDEO_EMBED_WIDTH,
+          maxY: text.y - textFontSize + VIDEO_EMBED_HEIGHT,
+        };
+      }
       const lines = text.text.split(/\r\n?|\n/u);
       const lineHeight = textFontSize * 1.2;
       const width = Math.max(...lines.map((line) => codePointLength(line) * textFontSize * 0.6));

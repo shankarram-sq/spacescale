@@ -79,6 +79,7 @@ export type ResizableStructuredItem = Extract<BoardItem, { kind: "table" | "zone
 type ResizableItem = ResizableCardItem | ResizableStructuredItem;
 type AttributedItem = Extract<BoardItem, { kind: "sticky" | "image" | "stamp" }>;
 export type CreatorNameResolver = (actorId: string) => string | undefined;
+export type RenderedTextBoundsChangeHandler = (itemId: string, expectedVersion: number) => void;
 
 export function selectionResizeHandle(
   item: ResizableItem,
@@ -336,6 +337,7 @@ export class BoardRenderer {
     private readonly model: BoardModel,
     loadImageAsset: ImageAssetLoader,
     private readonly resolveCreatorName: CreatorNameResolver = () => undefined,
+    private readonly onRenderedTextBoundsChange: RenderedTextBoundsChangeHandler = () => undefined,
   ) {
     this.imageAssets = new ImageAssetCache(loadImageAsset);
     this.svg = svgElement("svg");
@@ -853,9 +855,14 @@ export class BoardRenderer {
         (assetId) => this.imageAssets.load(assetId),
         this.resolveCreatorName(item.createdBy),
         (width, height) => {
-          if (!this.model.setRenderedTextSize(id, item.version, width, height)) return;
-          this.refreshSelection();
-          this.refreshComments();
+          if (this.model.setRenderedTextSize(id, item.version, width, height)) {
+            this.refreshSelection();
+            this.refreshComments();
+          }
+          const measured = this.model.getItem(id);
+          if (measured?.kind === "text" && measured.version === item.version) {
+            this.onRenderedTextBoundsChange(id, item.version);
+          }
         },
       );
       if (current) {

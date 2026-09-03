@@ -4,6 +4,8 @@ import {
   type OutlineGeometry,
   type OutlineGeometryKind,
   protractorSnapPoints,
+  VIDEO_EMBED_HEIGHT,
+  VIDEO_EMBED_WIDTH,
   visibleOutlinePaths,
   zoneGeometryContainsPoint,
 } from "@collab/geometry";
@@ -30,7 +32,6 @@ import type {
   TextGeometry,
 } from "../types";
 import { isBoardItem } from "../types";
-import { VIDEO_EMBED_HEIGHT, VIDEO_EMBED_WIDTH, videoEmbedFromText } from "./links";
 
 export type Bounds = { minX: number; minY: number; maxX: number; maxY: number };
 
@@ -189,6 +190,37 @@ export class BoardModel {
     });
     this.bounds.delete(id);
     return true;
+  }
+
+  renderedTextSectionDetachOperation(
+    id: string,
+    expectedVersion: number,
+  ): Extract<BatchItemOperation, { kind: "item.update" }> | null {
+    const item = this.rendered.get(id);
+    const authoritative = this.authoritative.get(id);
+    if (
+      item?.kind !== "text" ||
+      item.version <= 0 ||
+      item.version !== expectedVersion ||
+      item.sectionId === undefined ||
+      renderedTextMeasurement(item) === undefined ||
+      authoritative?.kind !== "text" ||
+      authoritative.version !== expectedVersion ||
+      authoritative.sectionId !== item.sectionId ||
+      [...this.optimistic.values()].some((command) => operationIds(command.op).has(id))
+    ) {
+      return null;
+    }
+    const section = this.rendered.get(item.sectionId);
+    if (section?.kind !== "zone" || boundsContains(itemBounds(section), itemBounds(item))) {
+      return null;
+    }
+    return {
+      kind: "item.update",
+      itemId: item.id,
+      expectedVersion: item.version,
+      patch: { sectionId: null },
+    };
   }
 
   queue(command: CommitFrame, actorId: string): void {
@@ -966,7 +998,7 @@ function geometryBounds(item: BoardItem): Bounds {
     case "stamp":
       return stampBounds(item.geometry);
     case "text": {
-      if (item.geometry.embed === "video" && videoEmbedFromText(item.geometry.text)) {
+      if (item.geometry.embed === "video") {
         return {
           minX: item.geometry.x,
           minY: item.geometry.y - item.style.fontSize,

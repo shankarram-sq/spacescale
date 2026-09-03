@@ -95,7 +95,7 @@ function image(version = 1): BoardItem {
   };
 }
 
-function zone(version = 1): BoardItem {
+function zone(version = 1): Extract<BoardItem, { kind: "zone" }> {
   return {
     id: "018f47a1-7a2b-7c3d-8e4f-123456789ac1",
     kind: "zone",
@@ -263,6 +263,55 @@ describe("BoardModel", () => {
     });
     expect(model.hitTest([200, 180], 0)?.id).toBe(ITEM_ID);
     expect(model.setRenderedTextSize(ITEM_ID, 0, 500, 500)).toBe(false);
+  });
+
+  it("builds a durable detach when measured MathJax bounds leave a Section", () => {
+    const section = zone();
+    section.geometry.width = 260;
+    section.geometry.height = 100;
+    const item = textItem();
+    item.sectionId = section.id;
+    const model = new BoardModel();
+    model.load(snapshot([section]));
+    const command: CommitFrame = {
+      v: 1,
+      t: "client.commit",
+      commandId: ACTION_ID,
+      actionId: ACTION_ID,
+      baseSeq: 0,
+      op: {
+        kind: "item.create",
+        item: {
+          id: item.id,
+          kind: item.kind,
+          sectionId: item.sectionId,
+          style: item.style,
+          transform: item.transform,
+          geometry: item.geometry,
+        },
+      },
+    };
+    model.queue(command, ACTOR_ID);
+
+    expect(model.setRenderedTextSize(ITEM_ID, 0, 240, 180)).toBe(true);
+    expect(model.renderedTextSectionDetachOperation(ITEM_ID, 0)).toBeNull();
+    model.applyAction({
+      v: 1,
+      t: "server.action",
+      seq: 1,
+      acceptedAt: 1,
+      actor: { id: ACTOR_ID, displayName: "Sam" },
+      commandId: ACTION_ID,
+      actionId: ACTION_ID,
+      op: { kind: "item.create", item },
+    } as unknown as ServerAction);
+
+    expect(model.renderedTextSectionDetachOperation(ITEM_ID, 1)).toEqual({
+      kind: "item.update",
+      itemId: ITEM_ID,
+      expectedVersion: 1,
+      patch: { sectionId: null },
+    });
   });
 
   it("finds connector anchors on transformed local edges", () => {

@@ -939,6 +939,7 @@ export class BoardApp {
   private classDecisionWebMcp: ClassDecisionWebMcp | null = null;
   private educationPartnerWebMcp: EducationPartnerWebMcp | null = null;
   private readonly pendingWebMcpCommits = new PendingCommitTracker();
+  private readonly pendingRenderedTextSectionDetaches = new Set<string>();
   private bootstrap: Bootstrap;
   private phase: ConnectionPhase = "idle";
   private history: HistoryState;
@@ -1196,6 +1197,8 @@ export class BoardApp {
       this.model,
       (assetId) => this.api.boardImage(this.bootstrap.board.id, assetId),
       (actorId) => this.creatorNames.get(actorId),
+      (itemId, expectedVersion) =>
+        this.detachRenderedTextFromInvalidSection(itemId, expectedVersion),
     );
     this.renderer.setVotingEnabled(this.bootstrap.board.features.voting);
     this.renderer.setObjectTransformsEnabled(this.bootstrap.board.features.objectTransforms);
@@ -3605,6 +3608,16 @@ export class BoardApp {
   private assignCreatedItemsToSections(operation: DurableOperation): DurableOperation {
     if (!this.bootstrap.board.features.grouping) return operation;
     return decorateCreatedItemsWithSections(operation, this.model.items.values());
+  }
+
+  private detachRenderedTextFromInvalidSection(itemId: string, expectedVersion: number): void {
+    if (!this.canCommit() || this.pendingRenderedTextSectionDetaches.has(itemId)) return;
+    const operation = this.model.renderedTextSectionDetachOperation(itemId, expectedVersion);
+    if (operation === null) return;
+    this.pendingRenderedTextSectionDetaches.add(itemId);
+    void this.commit(operation).finally(() => {
+      this.pendingRenderedTextSectionDetaches.delete(itemId);
+    });
   }
 
   private async commit(

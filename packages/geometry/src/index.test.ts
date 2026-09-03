@@ -599,6 +599,22 @@ describe("bounds and transforms", () => {
     ).toEqual({ minX: 76, minY: 6, maxX: 84, maxY: 14 });
   });
 
+  it("uses the canonical video-card size for explicitly embedded text", () => {
+    expect(
+      itemBounds({
+        kind: "text",
+        geometry: {
+          x: 100,
+          y: 40,
+          text: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+          embed: "video",
+        },
+        transform: [1, 0, 0, 1, 0, 0],
+        style: { kind: "text", fontSize: 20 },
+      }),
+    ).toEqual({ minX: 100, minY: 20, maxX: 460, maxY: 252 });
+  });
+
   it("rejects transformed sticky bounds outside the finite world envelope", () => {
     expect(() =>
       itemBounds({

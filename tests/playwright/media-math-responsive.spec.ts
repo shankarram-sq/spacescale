@@ -1,6 +1,14 @@
 import { expect, test } from "@playwright/test";
 import { canvasPoint, createBoard } from "./helpers";
 
+async function setRange(page: import("@playwright/test").Page, selector: string, value: number) {
+  await page.locator(selector).evaluate((node, nextValue) => {
+    const input = node as HTMLInputElement;
+    input.value = String(nextValue);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }, value);
+}
+
 test("videos, MathJax text surfaces, and compact canvas controls work together", async ({
   page,
 }, testInfo) => {
@@ -22,7 +30,7 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
     }),
   );
 
-  await createBoard(page, "Math and media canvas");
+  const boardUrl = await createBoard(page, "Math and media canvas");
   const stickyPoint = await canvasPoint(page, 0.3, 0.32);
   await page.getByTestId("tool-sticky").click();
   await page.mouse.click(stickyPoint.x, stickyPoint.y);
@@ -91,6 +99,52 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   await expect(page.locator(".zone-math-content")).toHaveAttribute("data-math-state", "ready");
   expect(await page.locator(".zone-math-content").evaluate((node) => node.style.opacity)).toBe("");
 
+  const section = page.locator("#drawing-area .board-item-zone");
+  await expect(section).toHaveCount(1);
+  const sectionBounds = await section.boundingBox();
+  if (!sectionBounds) throw new Error("The MathJax Section has no rendered bounds.");
+  await page.getByTestId("tool-text").click();
+  await page.getByTestId("style-button").click();
+  await setRange(page, "[data-style-font]", 8);
+  await page.getByTestId("style-button").click();
+  await page.mouse.click(sectionBounds.x + 20, sectionBounds.y + sectionBounds.height - 5);
+  const boundaryEditor = page.getByTestId("canvas-text-editor");
+  const boundaryFormula = "$$\\begin{matrix}x\\\\x\\\\x\\\\x\\\\x\\\\x\\end{matrix}$$";
+  await boundaryEditor.fill(boundaryFormula);
+  await boundaryEditor.press("Control+Enter");
+  const boundaryMath = page.locator(".board-math-content").last();
+  await expect(boundaryMath).toHaveAttribute("data-math-state", "ready");
+  const boundaryItem = boundaryMath.locator("xpath=ancestor::*[@data-item-id][1]");
+  const boundaryItemId = await boundaryItem.getAttribute("data-item-id");
+  if (!boundaryItemId) throw new Error("The boundary formula has no item ID.");
+  const boundaryBox = await boundaryMath.evaluate((node) => {
+    const bounds = node.closest("foreignObject")?.getBoundingClientRect();
+    return bounds ? { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height } : null;
+  });
+  expect(boundaryBox).not.toBeNull();
+  expect((boundaryBox?.y ?? 0) + (boundaryBox?.height ?? 0)).toBeGreaterThan(
+    sectionBounds.y + sectionBounds.height,
+  );
+  await expect
+    .poll(async () =>
+      page.evaluate(
+        async ({ url, itemId }) => {
+          const boardId = new URL(url).pathname.split("/").at(-1);
+          const response = await fetch(`/api/v1/boards/${boardId}/export.json`, {
+            credentials: "same-origin",
+            cache: "no-store",
+          });
+          const body = (await response.json()) as {
+            items: Array<{ id: string; sectionId?: string }>;
+          };
+          const item = body.items.find((candidate) => candidate.id === itemId);
+          return item === undefined ? "missing" : (item.sectionId ?? null);
+        },
+        { url: boardUrl, itemId: boundaryItemId },
+      ),
+    )
+    .toBeNull();
+
   await page.getByTestId("tool-table").click();
   const picker = page.getByTestId("table-picker");
   await picker.getByLabel("Table columns").selectOption("2");
@@ -135,7 +189,7 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   );
 
   await page.reload();
-  await expect(page.locator("#drawing-area [data-math-state='ready']")).toHaveCount(4);
+  await expect(page.locator("#drawing-area [data-math-state='ready']")).toHaveCount(5);
   await expect(page.locator("#drawing-area .video-embed-item")).toHaveCount(1);
   await expect(page.locator("#drawing-area .board-text-link")).toHaveCount(2);
 

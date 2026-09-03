@@ -9,8 +9,7 @@ export type VideoEmbed = {
   title: string;
 };
 
-export const VIDEO_EMBED_WIDTH = 360;
-export const VIDEO_EMBED_HEIGHT = 232;
+export { VIDEO_EMBED_HEIGHT, VIDEO_EMBED_WIDTH } from "@collab/geometry";
 
 const HTTP_URL_CANDIDATE = /https?:\/\/[^\s<>"']+/giu;
 
