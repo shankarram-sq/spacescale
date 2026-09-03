@@ -17,6 +17,7 @@ import {
   clampStickyText,
   deriveCommentStates,
   effectiveTextFontWeight,
+  elementColour,
   globalShortcutFor,
   imageUploadIssue,
   localSvg,
@@ -704,6 +705,15 @@ describe("sticky note UI configuration", () => {
       },
       geometry: { x: 10, y: 20, text: "Question" },
     };
+    const video: Extract<BoardItem, { kind: "text" }> = {
+      ...text,
+      id: "video-a",
+      geometry: {
+        ...text.geometry,
+        text: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        embed: "video",
+      },
+    };
 
     expect(buildElementColourOperations([text], "#874fff")).toEqual([
       {
@@ -713,6 +723,9 @@ describe("sticky note UI configuration", () => {
         patch: { style: { ...text.style, color: "#874fff" } },
       },
     ]);
+    expect(elementColour(video)).toBeNull();
+    expect(buildElementColourOperations([video], "#874fff")).toEqual([]);
+    expect(buildElementColourOperations([text, video], "#874fff")).toEqual([]);
     expect(buildTextStyleOperations([text], { fontFamily: "handwritten", fontSize: 52 })).toEqual([
       {
         kind: "item.update",
@@ -723,6 +736,7 @@ describe("sticky note UI configuration", () => {
         },
       },
     ]);
+    expect(buildTextStyleOperations([video], { fontFamily: "serif", fontSize: 72 })).toEqual([]);
 
     const sticky: Extract<BoardItem, { kind: "sticky" }> = {
       id: "sticky-a",
@@ -877,6 +891,37 @@ describe("sticky note UI configuration", () => {
     };
 
     expect(localSvg(snapshot, "Rotated sticky")).toContain('viewBox="118 -22 114 164"');
+  });
+
+  it("keeps literal TeX source inside the local recovery SVG viewBox", () => {
+    const source = "$$\\displaystyle x$$";
+    const fontSize = 20;
+    const snapshot: BoardSnapshot = {
+      format: "cf-whiteboard-json",
+      version: 1,
+      seq: 1,
+      items: [
+        {
+          id: "018f47a1-7a2b-7c3d-8e4f-123456789abf",
+          kind: "text",
+          z: 1,
+          version: 1,
+          createdBy: "018f47a1-7a2b-7c3d-8e4f-123456789abc",
+          transform: [1, 0, 0, 1, 0, 0],
+          style: {
+            kind: "text",
+            color: "#112233",
+            fontSize,
+            fontFamily: "sans",
+            opacity: 1,
+          },
+          geometry: { x: 100, y: 40, text: source },
+        },
+      ],
+    };
+    const maxX = 100 + Array.from(source).length * fontSize * 0.6;
+
+    expect(localSvg(snapshot, "Math recovery")).toContain(`viewBox="68 -12 ${maxX - 100 + 64} 88"`);
   });
 });
 

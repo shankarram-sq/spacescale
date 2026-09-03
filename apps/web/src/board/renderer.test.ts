@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAX_RENDERED_VOTE_TABLES, VOTE_TABLE_STYLE } from "../activities/voting";
 import type { BoardItem, TableItem } from "../types";
 import {
+  BoardRenderer,
   CanvasViewport,
   commentMarkerNode,
   creatorBadge,
@@ -79,6 +80,346 @@ describe("canvas text rendering", () => {
     expect(link?.children[0]?.textContent).toBe("https://example.com/docs");
     expect(node.children.filter((child) => child.name === "a")).toHaveLength(1);
     expect(node.children.at(-1)?.textContent).toContain("javascript:alert(1)");
+  });
+});
+
+describe("lightweight movement previews", () => {
+  beforeEach(() => {
+    vi.stubGlobal("document", {
+      createElement: (name: string) => fakeSvgNode(name),
+      createElementNS: (_namespace: string, name: string) => fakeSvgNode(name),
+    });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("renders a lightweight card without creating another video iframe", () => {
+    const item: Extract<BoardItem, { kind: "text" }> = {
+      id: "video-item",
+      kind: "text",
+      z: 1,
+      version: 1,
+      createdBy: "owner",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "text",
+        color: "#111827",
+        fontSize: 20,
+        fontFamily: "sans",
+        opacity: 0.4,
+      },
+      geometry: {
+        x: 20,
+        y: 40,
+        text: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        embed: "video",
+      },
+    };
+    const localLayer = fakeSvgNode("g");
+    const setSelection = vi.fn();
+    const renderer = {
+      clearLocalLayer: () => localLayer.replaceChildren(),
+      imageAssets: { load: vi.fn() },
+      localLayer,
+      model: { getItem: (id: string) => (id === item.id ? item : undefined) },
+      setSelection,
+    } as unknown as BoardRenderer;
+
+    BoardRenderer.prototype.showMovePreview.call(renderer, [item.id], 24, 12);
+
+    const preview = localLayer.children[0];
+    expect(preview?.classList.values.has("move-preview")).toBe(true);
+    expect(preview?.classList.values.has("video-embed-preview-item")).toBe(true);
+    expect(preview?.attributes.get("opacity")).toBe("0.4");
+    const foreign = preview?.children.find((child) => child.name === "foreignObject");
+    const card = foreign?.children[0];
+    expect(card?.children.some((child) => child.name === "iframe")).toBe(false);
+    expect(card?.children[1]?.className).toBe("video-embed-preview");
+    expect(card?.children[1]?.textContent).toBe("Video preview");
+    expect(setSelection).toHaveBeenCalledWith([item.id], { x: 24, y: 12 });
+  });
+
+  it("repositions a rendered video card in place so its player is not reloaded", () => {
+    const iframes: FakeSvgNode[] = [];
+    vi.stubGlobal("document", {
+      createElement: (name: string) => {
+        const node = fakeSvgNode(name);
+        if (name === "iframe") iframes.push(node);
+        return node;
+      },
+      createElementNS: (_namespace: string, name: string) => fakeSvgNode(name),
+    });
+
+    const item: Extract<BoardItem, { kind: "text" }> = {
+      id: "video-item",
+      kind: "text",
+      z: 1,
+      version: 1,
+      createdBy: "owner",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "text",
+        color: "#111827",
+        fontSize: 20,
+        fontFamily: "sans",
+        opacity: 1,
+      },
+      geometry: {
+        x: 20,
+        y: 40,
+        text: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        embed: "video",
+      },
+    };
+    const drawingArea = fakeSvgNode("g");
+    const itemNodes = new Map<string, FakeSvgNode>();
+    const insertInPaintOrder = vi.fn((node: FakeSvgNode) => drawingArea.append(node));
+    const renderer = {
+      drawingArea,
+      imageAssets: { load: vi.fn(), retain: vi.fn() },
+      insertInPaintOrder,
+      itemNodes,
+      model: {
+        getItem: (id: string) => (id === item.id ? item : undefined),
+        items: new Map([[item.id, item]]),
+      },
+      renderCommentMarkers: vi.fn(),
+      renderVoteCounts: vi.fn(),
+      resolveCreatorName: () => "",
+      selectedIds: new Set<string>(),
+      setSelection: vi.fn(),
+    } as unknown as BoardRenderer;
+    const render = (
+      BoardRenderer.prototype as unknown as {
+        render: (this: BoardRenderer, changedIds: ReadonlySet<string> | null) => void;
+      }
+    ).render;
+
+    render.call(renderer, new Set([item.id]));
+    const created = itemNodes.get(item.id);
+    expect(iframes).toHaveLength(1);
+    expect(insertInPaintOrder).toHaveBeenCalledTimes(1);
+
+    item.geometry.x = 120;
+    render.call(renderer, new Set([item.id]));
+
+    // Rebuilding or re-inserting the node would detach the iframe and restart playback.
+    expect(itemNodes.get(item.id)).toBe(created);
+    expect(iframes).toHaveLength(1);
+    expect(insertInPaintOrder).toHaveBeenCalledTimes(1);
+    const foreign = created?.children.find((child) => child.name === "foreignObject");
+    const border = created?.children.find((child) =>
+      child.classList.values.has("video-embed-border"),
+    );
+    expect(foreign?.attributes.get("x")).toBe("120");
+    expect(border?.attributes.get("x")).toBe("120");
+  });
+
+  it("rebuilds a video card when the item points at a different video", () => {
+    const iframes: FakeSvgNode[] = [];
+    vi.stubGlobal("document", {
+      createElement: (name: string) => {
+        const node = fakeSvgNode(name);
+        if (name === "iframe") iframes.push(node);
+        return node;
+      },
+      createElementNS: (_namespace: string, name: string) => fakeSvgNode(name),
+    });
+
+    const item: Extract<BoardItem, { kind: "text" }> = {
+      id: "video-item",
+      kind: "text",
+      z: 1,
+      version: 1,
+      createdBy: "owner",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "text",
+        color: "#111827",
+        fontSize: 20,
+        fontFamily: "sans",
+        opacity: 1,
+      },
+      geometry: {
+        x: 20,
+        y: 40,
+        text: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        embed: "video",
+      },
+    };
+    const drawingArea = fakeSvgNode("g");
+    const itemNodes = new Map<string, FakeSvgNode>();
+    const renderer = {
+      drawingArea,
+      imageAssets: { load: vi.fn(), retain: vi.fn() },
+      insertInPaintOrder: vi.fn((node: FakeSvgNode) => drawingArea.append(node)),
+      itemNodes,
+      model: {
+        getItem: (id: string) => (id === item.id ? item : undefined),
+        items: new Map([[item.id, item]]),
+      },
+      renderCommentMarkers: vi.fn(),
+      renderVoteCounts: vi.fn(),
+      resolveCreatorName: () => "",
+      selectedIds: new Set<string>(),
+      setSelection: vi.fn(),
+    } as unknown as BoardRenderer;
+    const render = (
+      BoardRenderer.prototype as unknown as {
+        render: (this: BoardRenderer, changedIds: ReadonlySet<string> | null) => void;
+      }
+    ).render;
+
+    render.call(renderer, new Set([item.id]));
+    const created = itemNodes.get(item.id);
+
+    item.geometry.text = "https://vimeo.com/76979871";
+    render.call(renderer, new Set([item.id]));
+
+    expect(itemNodes.get(item.id)).not.toBe(created);
+    expect(iframes).toHaveLength(2);
+  });
+
+  it("renders formula source without queueing MathJax work", () => {
+    const item: Extract<BoardItem, { kind: "text" }> = {
+      id: "math-item",
+      kind: "text",
+      z: 1,
+      version: 1,
+      createdBy: "owner",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "text",
+        color: "#111827",
+        fontSize: 20,
+        fontFamily: "sans",
+        opacity: 1,
+      },
+      geometry: { x: 20, y: 40, text: "$x^2$" },
+    };
+    const localLayer = fakeSvgNode("g");
+    const renderer = {
+      clearLocalLayer: () => localLayer.replaceChildren(),
+      imageAssets: { load: vi.fn() },
+      localLayer,
+      model: { getItem: (id: string) => (id === item.id ? item : undefined) },
+      setSelection: vi.fn(),
+    } as unknown as BoardRenderer;
+
+    BoardRenderer.prototype.showMovePreview.call(renderer, [item.id], 24, 12);
+
+    const preview = localLayer.children[0];
+    expect(preview?.classList.values.has("move-preview")).toBe(true);
+    expect(preview?.classList.values.has("board-math-preview")).toBe(true);
+    expect(preview?.attributes.get("aria-hidden")).toBe("true");
+    expect(preview?.dataset.mathState).toBeUndefined();
+    expect(preview?.children[0]?.textContent).toBe("$x^2$");
+  });
+
+  it("keeps sticky, table, and Section formula previews free of MathJax work", () => {
+    const items: BoardItem[] = [
+      {
+        id: "math-sticky",
+        kind: "sticky",
+        z: 1,
+        version: 1,
+        createdBy: "owner",
+        transform: [1, 0, 0, 1, 0, 0],
+        style: {
+          kind: "sticky",
+          fill: "#fde68a",
+          textColor: "#292524",
+          fontSize: 20,
+          opacity: 1,
+        },
+        geometry: { x: 10, y: 20, width: 180, height: 140, text: "$x^2$" },
+      },
+      {
+        id: "math-table",
+        kind: "table",
+        z: 2,
+        version: 1,
+        createdBy: "owner",
+        transform: [1, 0, 0, 1, 0, 0],
+        style: {
+          kind: "table",
+          borderColor: "#64748b",
+          fill: "#ffffff",
+          headerFill: "#dbeafe",
+          textColor: "#0f172a",
+          fontSize: 16,
+          opacity: 1,
+        },
+        geometry: {
+          x: 10,
+          y: 20,
+          columnWidths: [180],
+          rowHeights: [60],
+          cells: [["$x^2$"]],
+          headerRow: false,
+        },
+      },
+      {
+        id: "math-zone",
+        kind: "zone",
+        z: 3,
+        version: 1,
+        createdBy: "owner",
+        transform: [1, 0, 0, 1, 0, 0],
+        style: {
+          kind: "zone",
+          borderColor: "#a8a59d",
+          fill: "#e8edff",
+          textColor: "#4f5b75",
+          fontSize: 18,
+          opacity: 0.18,
+        },
+        geometry: { x: 20, y: 30, width: 520, height: 320, title: "$x^2$" },
+      },
+    ];
+    const localLayer = fakeSvgNode("g");
+    let current = items[0];
+    const renderer = {
+      clearLocalLayer: () => localLayer.replaceChildren(),
+      imageAssets: { load: vi.fn() },
+      localLayer,
+      model: { getItem: () => current },
+      setSelection: vi.fn(),
+    } as unknown as BoardRenderer;
+
+    for (const item of items) {
+      current = item;
+      BoardRenderer.prototype.showMovePreview.call(renderer, [item.id], 24, 12);
+      const preview = localLayer.children[0];
+      expect(preview).toBeDefined();
+      if (!preview) continue;
+      const descendants = fakeDescendants(preview);
+      expect(
+        descendants.some((node) => node.name === "foreignObject"),
+        item.kind,
+      ).toBe(false);
+      expect(
+        descendants.some((node) =>
+          [...node.classList.values].some((name) => name.endsWith("-math-preview")),
+        ),
+        item.kind,
+      ).toBe(true);
+      expect(
+        descendants.some((node) => node.textContent?.includes("$x^2$")),
+        item.kind,
+      ).toBe(true);
+    }
+
+    const sticky = items[0];
+    if (sticky?.kind !== "sticky") throw new Error("Expected sticky fixture.");
+    BoardRenderer.prototype.showLocalSticky.call(renderer, sticky.geometry, sticky.style);
+    const draft = localLayer.children[0];
+    expect(draft).toBeDefined();
+    if (!draft) return;
+    expect(fakeDescendants(draft).some((node) => node.name === "foreignObject")).toBe(false);
+    expect(
+      fakeDescendants(draft).some((node) => node.classList.values.has("sticky-math-preview")),
+    ).toBe(true);
   });
 });
 
@@ -415,8 +756,10 @@ describe("table cell text wrapping", () => {
 
 type FakeSvgNode = {
   name: string;
+  className?: string;
   attributes: Map<string, string>;
   children: FakeSvgNode[];
+  parent?: FakeSvgNode;
   dataset: Record<string, string>;
   textContent: string | null;
   classList: { values: Set<string>; add: (...names: string[]) => void };
@@ -425,7 +768,14 @@ type FakeSvgNode = {
   addEventListener: (type: string, listener: (event: Event) => void) => void;
   dispatchEvent: (event: Event) => boolean;
   replaceChildren: (...children: FakeSvgNode[]) => void;
+  replaceWith: (next: FakeSvgNode) => void;
+  remove: () => void;
+  querySelectorAll: () => FakeSvgNode[];
 };
+
+function fakeDescendants(node: FakeSvgNode): FakeSvgNode[] {
+  return [node, ...node.children.flatMap(fakeDescendants)];
+}
 
 function fakeSvgNode(name: string): FakeSvgNode {
   const node: FakeSvgNode = {
@@ -441,12 +791,33 @@ function fakeSvgNode(name: string): FakeSvgNode {
       },
     },
     setAttribute: (attribute, value) => node.attributes.set(attribute, value),
-    append: (...children) => node.children.push(...children),
+    append: (...children) => {
+      for (const child of children) child.parent = node;
+      node.children.push(...children);
+    },
     addEventListener: () => undefined,
     dispatchEvent: () => true,
     replaceChildren: (...children) => {
+      for (const child of children) child.parent = node;
       node.children = [...children];
     },
+    replaceWith: (next) => {
+      const parent = node.parent;
+      if (!parent) return;
+      const index = parent.children.indexOf(node);
+      if (index === -1) return;
+      next.parent = parent;
+      parent.children.splice(index, 1, next);
+      node.parent = undefined;
+    },
+    remove: () => {
+      const parent = node.parent;
+      if (!parent) return;
+      const index = parent.children.indexOf(node);
+      if (index !== -1) parent.children.splice(index, 1);
+      node.parent = undefined;
+    },
+    querySelectorAll: () => [],
   };
   return node;
 }

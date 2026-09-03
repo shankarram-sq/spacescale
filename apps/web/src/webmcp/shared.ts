@@ -40,6 +40,17 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+export const WEBMCP_MATHJAX_GUIDANCE =
+  "SpaceScale renders TeX with MathJax in canvas text, sticky notes, table cells, Section titles, and comments. Preserve or create math with $...$ or \\(...\\) for inline expressions and $$...$$ or \\[...\\] for display expressions.";
+
+export const WEBMCP_TEXT_RENDERING_CAPABILITY = {
+  engine: "MathJax 4",
+  syntax: "TeX",
+  inlineDelimiters: ["$...$", "\\(...\\)"],
+  displayDelimiters: ["$$...$$", "\\[...\\]"],
+  surfaces: ["canvas_text", "sticky_notes", "table_cells", "section_titles", "comments"],
+} as const;
+
 /** Drops the oldest entries (insertion order) until the map holds at most `limit`. */
 export function trimSnapshots<T>(snapshots: Map<string, T>, limit: number): void {
   while (snapshots.size > limit) {

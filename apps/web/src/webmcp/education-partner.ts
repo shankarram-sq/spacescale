@@ -23,7 +23,20 @@ import {
 import type { Bounds } from "../board/model";
 import type { DurableOperation } from "../types";
 import type { CollectiveInquirySnapshot } from "./collective-inquiry";
-import { enumValue, isRecord, optionalText, requiredText, textArray } from "./shared";
+import {
+  PROBLEM_STEP_WATCH_DURATION_MS,
+  PROBLEM_STEP_WATCH_MAX_WAIT_MS,
+  PROBLEM_STEP_WATCH_TOOL,
+} from "./problem-step-watch";
+import {
+  enumValue,
+  isRecord,
+  optionalText,
+  requiredText,
+  textArray,
+  WEBMCP_MATHJAX_GUIDANCE,
+  WEBMCP_TEXT_RENDERING_CAPABILITY,
+} from "./shared";
 
 type CardToolConfiguration = {
   name: string;
@@ -583,8 +596,7 @@ export class EducationPartnerWebMcp {
       await modelContext.registerTool(
         {
           name: "list_class_collaboration_modes",
-          description:
-            "List the live SpaceScale education collaboration modes, their matching write tools, output limits, and human-control rules. Call this when choosing how to help a class before reading or changing the canvas.",
+          description: `List the live SpaceScale education collaboration modes, their matching write tools, output limits, human-control rules, and supported text rendering. Call this when choosing how to help a class before reading or changing the canvas. ${WEBMCP_MATHJAX_GUIDANCE}`,
           inputSchema: { type: "object", properties: {}, additionalProperties: false },
           annotations: { readOnlyHint: true },
           execute: async (_input, { signal }) => this.listCapabilities(signal),
@@ -595,7 +607,7 @@ export class EducationPartnerWebMcp {
         await modelContext.registerTool(
           {
             name: configuration.name,
-            description: `${configuration.description} First call read_selected_class_ideas and pass its selectionToken. The caller's WebMCP permission is the approval; this tool adds one normal realtime batch directly, with ordinary undo and internal origin metadata.`,
+            description: `${configuration.description} First call read_selected_class_ideas and pass its selectionToken. The caller's WebMCP permission is the approval; this tool adds one normal realtime batch directly, with ordinary undo and internal origin metadata. ${WEBMCP_MATHJAX_GUIDANCE}`,
             inputSchema: cardToolSchema(configuration),
             annotations: { readOnlyHint: false },
             execute: async (input, { signal }) => this.addCardMove(input, configuration, signal),
@@ -606,8 +618,7 @@ export class EducationPartnerWebMcp {
       await modelContext.registerTool(
         {
           name: "add_content_visuals",
-          description:
-            "Add one to three playful, content-grounded visuals beside browser-selected class ideas. Use meme_card for a reliable locally rendered classroom meme, or inline_image for an LLM-generated PNG, JPEG, WebP, or GIF supplied as a data URL. Every visual must cite selected idea aliases, include accessible alt text and a discussion question, avoid real student likenesses or targeting individuals, and help the class discuss rather than merely decorate. First call read_selected_class_ideas and pass its selectionToken. External image URLs are never fetched or embedded; SpaceScale sanitizes and privately stores every image in the board bucket.",
+          description: `Add one to three playful, content-grounded visuals beside browser-selected class ideas. Use meme_card for a reliable locally rendered classroom meme, or inline_image for an LLM-generated PNG, JPEG, WebP, or GIF supplied as a data URL. Every visual must cite selected idea aliases, include accessible alt text and a discussion question, avoid real student likenesses or targeting individuals, and help the class discuss rather than merely decorate. First call read_selected_class_ideas and pass its selectionToken. External image URLs are never fetched or embedded; SpaceScale sanitizes and privately stores every image in the board bucket. ${WEBMCP_MATHJAX_GUIDANCE}`,
           inputSchema: contentVisualsToolSchema(),
           annotations: { readOnlyHint: false },
           execute: async (input, { signal }) => this.addContentVisuals(input, signal),
@@ -633,8 +644,7 @@ export class EducationPartnerWebMcp {
       await modelContext.registerTool(
         {
           name: "add_group_decision_scaffold",
-          description:
-            "Add a source-linked scaffold that students complete for criteria_co_designer, tradeoff_visualizer, assumption_auction, consensus_with_dissent, minority_report, or decision_record. The tool may structure criteria, options, expressed concerns, and questions, but every weight, rating, response count, vote, and final class choice stays blank for students. Never infer consensus from silence or note similarity. First call read_selected_class_ideas and pass its selectionToken.",
+          description: `Add a source-linked scaffold that students complete for criteria_co_designer, tradeoff_visualizer, assumption_auction, consensus_with_dissent, minority_report, or decision_record. The tool may structure criteria, options, expressed concerns, and questions, but every weight, rating, response count, vote, and final class choice stays blank for students. Never infer consensus from silence or note similarity. First call read_selected_class_ideas and pass its selectionToken. ${WEBMCP_MATHJAX_GUIDANCE}`,
           inputSchema: decisionToolSchema(),
           annotations: { readOnlyHint: false },
           execute: async (input, { signal }) => this.addDecisionScaffold(input, signal),
@@ -728,6 +738,17 @@ export class EducationPartnerWebMcp {
         requiresAltText: true,
         requiresDiscussionPrompt: true,
       },
+      problemStepWatch: {
+        tool: PROBLEM_STEP_WATCH_TOOL,
+        scope: "exact_saved_browser_selection",
+        durationSeconds: PROBLEM_STEP_WATCH_DURATION_MS / 1_000,
+        maximumWaitMs: PROBLEM_STEP_WATCH_MAX_WAIT_MS,
+        reports: "authoritative_saved_changes",
+        unsavedKeystrokesIncluded: false,
+        sectionContentsExpanded: false,
+        stableItemIdentifiersReturned: false,
+      },
+      textRendering: WEBMCP_TEXT_RENDERING_CAPABILITY,
       guardrails: {
         boundedAdditions: true,
         sourceLinked: true,

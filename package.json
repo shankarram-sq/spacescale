@@ -52,5 +52,8 @@
     "vite": "8.2.0",
     "vitest": "4.1.10",
     "wrangler": "4.118.0"
+  },
+  "dependencies": {
+    "mathjax": "4.1.3"
   }
 }

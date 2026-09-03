@@ -108,6 +108,7 @@ test("an owner switches a connected participant role from the Participants drawe
   test.skip(testInfo.project.name !== "chromium", "Live role switching runs in Chromium.");
 
   await createBoard(page, "Participant roles");
+  await expect(page.getByTestId("participants-button")).toHaveAccessibleName("1 person here");
   const inviteUrl = await createInvite(page);
   const collaboratorContext = await browser.newContext(isolatedContextOptions(testInfo, 25));
   const collaborator = await collaboratorContext.newPage();
@@ -115,6 +116,7 @@ test("an owner switches a connected participant role from the Participants drawe
     await openInvite(collaborator, inviteUrl);
     await closeAccessDrawer(page);
     await expect(page.getByTestId("participants-button")).toContainText("2");
+    await expect(page.getByTestId("participants-button")).toHaveAccessibleName("2 people here");
 
     await page.getByTestId("participants-button").click();
     const ownerDrawer = page.getByTestId("participant-drawer");

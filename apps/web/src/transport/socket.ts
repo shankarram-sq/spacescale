@@ -51,6 +51,8 @@ export type SocketHooks = {
 const BACKOFF_MS = [0, 250, 500, 1_000, 2_000, 5_000];
 const ACTOR_ID_PATTERN = /^a_[A-Za-z0-9_-]{22}$/u;
 const MAX_ACTION_CREATORS = 10_000;
+/** Largest millisecond value the Date type can represent, so acceptedAt always formats. */
+const MAX_ACCEPTED_AT_MS = 8.64e15;
 export const PROTOCOL_RELOAD_NOTICE =
   "This board was updated and this tab is no longer compatible. Reload the page to continue.";
 
@@ -586,6 +588,7 @@ function asServerAction(value: unknown): ServerAction | null {
     (value.seq as number) < 1 ||
     !Number.isSafeInteger(value.acceptedAt) ||
     (value.acceptedAt as number) < 0 ||
+    (value.acceptedAt as number) > MAX_ACCEPTED_AT_MS ||
     !isCanonicalUuid(value.commandId) ||
     !isCanonicalUuid(value.actionId) ||
     actor === null ||

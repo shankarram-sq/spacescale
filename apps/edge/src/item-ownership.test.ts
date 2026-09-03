@@ -525,6 +525,34 @@ describe("classroom item ownership", () => {
     expect(() =>
       prepareOwnedItemOperation(sticky(copyItemId, 10), new Map([[sectionId, section]]), context),
     ).not.toThrow();
+    expect(() =>
+      prepareOwnedItemOperation(
+        {
+          kind: "item.create",
+          item: {
+            id: copyItemId,
+            sectionId,
+            kind: "text",
+            style: {
+              kind: "text",
+              color: "#20201e",
+              fontSize: 20,
+              fontFamily: "sans",
+              opacity: 1,
+            },
+            transform: [1, 0, 0, 1, 0, 0],
+            geometry: {
+              x: 100,
+              y: 40,
+              text: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+              embed: "video",
+            },
+          },
+        },
+        new Map([[sectionId, section]]),
+        context,
+      ),
+    ).not.toThrow();
     expectOutside(
       () =>
         prepareOwnedItemOperation(

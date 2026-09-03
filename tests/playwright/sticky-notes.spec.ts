@@ -100,6 +100,10 @@ test("sticky notes focus, converge, persist, export safely, and remain editable"
     await expect(createEditor).toHaveValue(`${coachText}\u000b`);
     await createEditor.fill(coachText);
     await createEditor.press("Control+Enter");
+    await expect(collaborator.getByTestId("tool-select")).toHaveAttribute("aria-pressed", "true");
+    await expect(createEditor).toHaveCount(0);
+    await collaborator.mouse.click(point.x + 230, point.y + 160);
+    await expect(collaborator.getByTestId("canvas-text-editor")).toHaveCount(0);
 
     const ownerSticky = page.locator("#drawing-area .board-item-sticky");
     const collaboratorSticky = collaborator.locator("#drawing-area .board-item-sticky");

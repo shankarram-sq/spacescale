@@ -162,7 +162,7 @@ export type BoxGeometry = {
   width: number;
   height: number;
 };
-export type TextGeometry = { x: number; y: number; text: string };
+export type TextGeometry = { x: number; y: number; text: string; embed?: "video" };
 export type StickyGeometry = BoxGeometry & { text: string };
 export type StampKind = "star" | "check" | "heart" | "question" | "smile" | "sparkle";
 export type StampGeometry = {

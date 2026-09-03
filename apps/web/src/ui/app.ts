@@ -1,4 +1,4 @@
-import { boundsForItems, ZONE_TITLE_PADDING, zoneTitleBandHeight } from "@collab/geometry";
+import { ZONE_TITLE_PADDING, zoneTitleBandHeight } from "@collab/geometry";
 import {
   BOARD_FEATURE_KEYS,
   type BoardFeatureKey,
@@ -15,7 +15,7 @@ import {
   validateClientFrame,
   validateDurableOperation,
 } from "@collab/protocol";
-import { renderSvgItem } from "@collab/svg-export";
+import { boundsForSvgItems, renderSvgItem } from "@collab/svg-export";
 import {
   buildOrganisationTemplateBatch,
   OrganisationTemplateError,
@@ -27,6 +27,7 @@ import {
   buildActivityBatch,
 } from "../activities/templates";
 import { buildClearVoteDeletes, isVoteTable, summarizeVotes } from "../activities/voting";
+import { VIDEO_EMBED_HEIGHT, VIDEO_EMBED_WIDTH, videoEmbedFromText } from "../board/links";
 import { BoardModel, SequenceError } from "../board/model";
 import { BoardRenderer, STICKY_PADDING } from "../board/renderer";
 import {
@@ -35,6 +36,7 @@ import {
   PRODUCT_HOME_LABEL,
   PRODUCT_NAME,
 } from "../branding";
+import { clearTypesetMath, typesetMath } from "../mathjax";
 import { DRAWING_COLOR_VALUES, DRAWING_COLORS, STICKY_COLORS, UI_COLORS } from "../palette";
 import {
   DurableOutbox,
@@ -572,6 +574,8 @@ export function elementColour(item: BoardItem): string | null {
       return item.style.fill;
     case "image":
       return null;
+    case "text":
+      return item.geometry.embed === "video" ? null : item.style.color;
     default:
       return item.style.color;
   }
@@ -581,11 +585,16 @@ export function buildElementColourOperations(
   items: readonly BoardItem[],
   color: string,
 ): BatchItemOperation[] {
-  if (items.length === 0 || items.some((item) => item.version <= 0 || item.kind === "image")) {
+  if (
+    items.length === 0 ||
+    items.some((item) => item.version <= 0 || elementColour(item) === null)
+  ) {
     return [];
   }
   return items.flatMap((item) => {
-    if (item.kind === "image") return [];
+    if (item.kind === "image" || (item.kind === "text" && item.geometry.embed === "video")) {
+      return [];
+    }
     const nextStyle =
       item.kind === "sticky" || item.kind === "table" || item.kind === "zone"
         ? item.style.fill === color
@@ -620,6 +629,17 @@ type TextWeightItem = {
   style: { fontWeight?: TextFontWeight };
 };
 
+type TextStyleItem = Extract<BoardItem, { kind: "text" | "sticky" | "table" | "zone" }>;
+
+function supportsTextStyling(item: BoardItem): item is TextStyleItem {
+  return (
+    (item.kind === "text" && item.geometry.embed !== "video") ||
+    item.kind === "sticky" ||
+    item.kind === "table" ||
+    item.kind === "zone"
+  );
+}
+
 export function effectiveTextFontWeight(item: TextWeightItem): TextFontWeight {
   return item.style.fontWeight ?? (item.kind === "zone" ? "bold" : "normal");
 }
@@ -630,13 +650,7 @@ export function buildTextStyleOperations(
   allItems: Iterable<BoardItem> = items,
   assignNewMembership = true,
 ): BatchItemOperation[] {
-  const textItems = items.filter(
-    (item) =>
-      item.kind === "text" ||
-      item.kind === "sticky" ||
-      item.kind === "table" ||
-      item.kind === "zone",
-  );
+  const textItems = items.filter(supportsTextStyling);
   if (
     textItems.length !== items.length ||
     textItems.length === 0 ||
@@ -937,6 +951,7 @@ export class BoardApp {
   private classDecisionWebMcp: ClassDecisionWebMcp | null = null;
   private educationPartnerWebMcp: EducationPartnerWebMcp | null = null;
   private readonly pendingWebMcpCommits = new PendingCommitTracker();
+  private readonly pendingRenderedTextSectionUpdates = new Set<string>();
   private bootstrap: Bootstrap;
   private phase: ConnectionPhase = "idle";
   private history: HistoryState;
@@ -979,6 +994,7 @@ export class BoardApp {
   private textEditorClosing = false;
   private textEditorCloseAttempt = 0;
   private imageUploadInFlight = false;
+  private videoEmbedPending = false;
   private imageAltEdit: ImageAltEdit | null = null;
   private tableCellEditor: HTMLTextAreaElement | null = null;
   private tableCellEdit: TableCellEdit | null = null;
@@ -1024,6 +1040,7 @@ export class BoardApp {
   private readonly titleInput: HTMLInputElement;
   private readonly saveStatus: HTMLElement;
   private readonly saveStatusText: HTMLElement;
+  private readonly participantsButton: HTMLButtonElement;
   private readonly participantCount: HTMLElement;
   private readonly participantDrawer: HTMLElement;
   private readonly participantList: HTMLElement;
@@ -1056,6 +1073,8 @@ export class BoardApp {
   private readonly arrangeButton: HTMLButtonElement;
   private readonly arrangeMenu: HTMLElement;
   private readonly imageInput: HTMLInputElement;
+  private readonly videoEmbedDialog: HTMLDialogElement;
+  private readonly videoEmbedUrl: HTMLInputElement;
   private readonly tablePickerDialog: HTMLDialogElement;
   private readonly imageAltDialog: HTMLDialogElement;
   private readonly imageAltInput: HTMLTextAreaElement;
@@ -1092,6 +1111,11 @@ export class BoardApp {
     this.titleInput = query(this.root, "[data-testid='board-title']", HTMLInputElement);
     this.saveStatus = query(this.root, "[data-testid='save-status']", HTMLElement);
     this.saveStatusText = query(this.root, "[data-save-status-text]", HTMLElement);
+    this.participantsButton = query(
+      this.root,
+      "[data-testid='participants-button']",
+      HTMLButtonElement,
+    );
     this.participantCount = query(this.root, "[data-participant-count]", HTMLElement);
     this.participantDrawer = query(this.root, "[data-testid='participant-drawer']", HTMLElement);
     this.participantList = query(this.root, "[data-participant-list]", HTMLElement);
@@ -1153,6 +1177,12 @@ export class BoardApp {
     );
     this.arrangeMenu = query(this.selectionActions, "[data-testid='arrange-menu']", HTMLElement);
     this.imageInput = query(this.root, "[data-image-input]", HTMLInputElement);
+    this.videoEmbedDialog = query(
+      this.root,
+      "[data-testid='video-embed-dialog']",
+      HTMLDialogElement,
+    );
+    this.videoEmbedUrl = query(this.videoEmbedDialog, "[data-video-url]", HTMLInputElement);
     this.tablePickerDialog = query(this.root, "[data-testid='table-picker']", HTMLDialogElement);
     this.imageAltDialog = query(this.root, "[data-testid='image-alt-dialog']", HTMLDialogElement);
     this.imageAltInput = query(this.imageAltDialog, "[data-image-alt-input]", HTMLTextAreaElement);
@@ -1185,6 +1215,8 @@ export class BoardApp {
       this.model,
       (assetId) => this.api.boardImage(this.bootstrap.board.id, assetId),
       (actorId) => this.creatorNames.get(actorId),
+      (itemId, expectedVersion) =>
+        this.reconcileRenderedTextSectionMembership(itemId, expectedVersion),
     );
     this.renderer.setVotingEnabled(this.bootstrap.board.features.voting);
     this.renderer.setObjectTransformsEnabled(this.bootstrap.board.features.objectTransforms);
@@ -1292,6 +1324,8 @@ export class BoardApp {
           this.model.items,
           this.model.authoritativeItems,
         ),
+      getAuthoritativeItem: (itemId) => this.model.authoritativeItems.get(itemId),
+      getSequence: () => this.model.lastAppliedSeq,
       getParticipantDisplayName: (participantId) => this.creatorNames.get(participantId) ?? null,
       notify: (message, kind) => this.notify(message, kind),
     });
@@ -1385,10 +1419,12 @@ export class BoardApp {
     this.pendingZoneTitleDrafts.clear();
     this.rejectedZoneTitleDrafts.length = 0;
     this.pendingNewZoneTitles.clear();
+    clearTypesetMath(this.commentsList);
     document.removeEventListener("paste", this.onImagePaste);
     this.renderer.svg.removeEventListener("dragover", this.onImageDragOver);
     this.renderer.svg.removeEventListener("drop", this.onImageDrop);
     this.tablePickerDialog.close();
+    this.videoEmbedDialog.close();
     this.closeImageAltEditor();
     this.organisationTemplateDialog.close();
     void this.closeTableCellEditor(false);
@@ -1453,17 +1489,17 @@ export class BoardApp {
               <span class="spotlight-toggle-mark" aria-hidden="true"></span>
               <span class="spotlight-toggle-label">Follow me</span>
             </button>
-            <button class="topbar-button comments-button" type="button" data-testid="comments-button" aria-controls="comments-drawer" aria-expanded="false">
+            <button class="topbar-button comments-button" type="button" data-testid="comments-button" aria-label="Comments" aria-controls="comments-drawer" aria-expanded="false" title="Comments">
               <span class="comments-button-mark" aria-hidden="true">●</span>
-              <span>Comments</span>
+              <span class="comments-button-label">Comments</span>
               <span class="comments-count" data-comments-count>0</span>
             </button>
-            <button class="topbar-button people-button" type="button" data-testid="participants-button" aria-controls="participant-drawer" aria-expanded="false">
+            <button class="topbar-button people-button" type="button" data-testid="participants-button" aria-label="1 person here" aria-controls="participant-drawer" aria-expanded="false" title="1 person here">
               <span class="avatar-stack" aria-hidden="true"><i></i><i></i></span>
               <span data-participant-count>1</span>
               <span class="wide-label">here</span>
             </button>
-            <button class="topbar-button" type="button" data-testid="access-button" aria-controls="access-drawer" aria-expanded="false">Share</button>
+            <button class="topbar-button access-button" type="button" data-testid="access-button" aria-label="Share Space" aria-controls="access-drawer" aria-expanded="false" title="Share Space"><span class="access-button-mark" aria-hidden="true">↗</span><span class="access-button-label">Share</span></button>
             <button class="icon-button settings-button" type="button" data-testid="settings-button" aria-label="Space settings" aria-controls="settings-drawer" aria-expanded="false" title="Settings">⚙</button>
             <div class="menu-wrap">
               <button class="icon-button" type="button" data-testid="export-button" aria-label="Export board" aria-controls="export-menu" aria-expanded="false" title="Export">↓</button>
@@ -1511,6 +1547,19 @@ export class BoardApp {
                 <div class="dialog-actions">
                   <button type="button" data-table-picker-cancel>Cancel</button>
                   <button class="primary-button" type="submit">Choose placement</button>
+                </div>
+              </form>
+            </dialog>
+            <dialog class="claim-dialog video-embed-dialog" data-testid="video-embed-dialog" aria-labelledby="video-embed-title" aria-describedby="video-embed-note">
+              <form data-video-embed-form>
+                <span class="eyebrow">Video</span>
+                <h2 id="video-embed-title">Embed a video</h2>
+                <p id="video-embed-note">Paste a public YouTube or Vimeo link. SpaceScale uses privacy-conscious player URLs.</p>
+                <label><span>Video URL</span><input type="url" inputmode="url" autocomplete="url" placeholder="https://www.youtube.com/watch?v=…" data-video-url required /></label>
+                <p class="dialog-field-error" data-video-error role="alert"></p>
+                <div class="dialog-actions">
+                  <button type="button" data-video-cancel>Cancel</button>
+                  <button class="primary-button" type="submit" data-video-submit>Embed video</button>
                 </div>
               </form>
             </dialog>
@@ -1724,6 +1773,17 @@ export class BoardApp {
       label.textContent = definition.dockLabel;
       button.append(glyph, label);
       rail.append(button);
+      if (definition.name === "image") {
+        const video = document.createElement("button");
+        video.type = "button";
+        video.dataset.videoEmbed = "true";
+        video.dataset.testid = "tool-video";
+        video.setAttribute("aria-label", "Embed video");
+        video.title = "Embed a YouTube or Vimeo video";
+        video.innerHTML =
+          '<span class="tool-glyph tool-glyph-video" aria-hidden="true">▶</span><span class="tool-label">Video</span>';
+        rail.append(video);
+      }
     }
     const divider = document.createElement("span");
     divider.className = "tool-divider";
@@ -2541,13 +2601,7 @@ export class BoardApp {
     ): void => {
       const items = [...this.tools.selection].flatMap((id) => {
         const item = this.model.getItem(id);
-        return item &&
-          (item.kind === "text" ||
-            item.kind === "sticky" ||
-            item.kind === "table" ||
-            item.kind === "zone")
-          ? [item]
-          : [];
+        return item && supportsTextStyling(item) ? [item] : [];
       });
       const allActive =
         items.length > 0 &&
@@ -2656,6 +2710,24 @@ export class BoardApp {
       const image = this.imageInput.files?.[0];
       this.imageInput.value = "";
       if (image) void this.uploadImage(image, this.imagePlacementCenter());
+    });
+    query(this.root, "[data-video-embed]", HTMLButtonElement).addEventListener("click", () =>
+      this.openVideoEmbedDialog(),
+    );
+    query(this.videoEmbedDialog, "[data-video-embed-form]", HTMLFormElement).addEventListener(
+      "submit",
+      (event) => {
+        event.preventDefault();
+        void this.addVideoEmbed();
+      },
+    );
+    query(this.videoEmbedDialog, "[data-video-cancel]", HTMLButtonElement).addEventListener(
+      "click",
+      () => this.videoEmbedDialog.close(),
+    );
+    this.videoEmbedDialog.addEventListener("close", () => {
+      this.videoEmbedUrl.value = "";
+      query(this.videoEmbedDialog, "[data-video-error]", HTMLElement).textContent = "";
     });
     query(this.imageAltDialog, "[data-image-alt-form]", HTMLFormElement).addEventListener(
       "submit",
@@ -2971,6 +3043,64 @@ export class BoardApp {
   private imagePlacementCenter(): Point {
     const bounds = this.renderer.viewport.viewBounds;
     return [(bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2];
+  }
+
+  private openVideoEmbedDialog(): void {
+    if (!this.canCommit()) {
+      this.notify("Drawing is read only.", "warning");
+      return;
+    }
+    query(this.videoEmbedDialog, "[data-video-error]", HTMLElement).textContent = "";
+    if (!this.videoEmbedDialog.open) this.videoEmbedDialog.showModal();
+    this.videoEmbedUrl.focus();
+  }
+
+  private async addVideoEmbed(): Promise<void> {
+    if (this.videoEmbedPending || !this.canCommit()) return;
+    const video = videoEmbedFromText(this.videoEmbedUrl.value);
+    const error = query(this.videoEmbedDialog, "[data-video-error]", HTMLElement);
+    if (!video) {
+      error.textContent = "Use a complete HTTPS YouTube or Vimeo video link.";
+      this.videoEmbedUrl.focus();
+      return;
+    }
+    error.textContent = "";
+    const submit = query(this.videoEmbedDialog, "[data-video-submit]", HTMLButtonElement);
+    this.videoEmbedPending = true;
+    submit.disabled = true;
+    try {
+      const center = this.imagePlacementCenter();
+      const itemId = createId();
+      const accepted = await this.commit({
+        kind: "item.create",
+        item: {
+          id: itemId,
+          kind: "text",
+          style: {
+            kind: "text",
+            color: this.style.color,
+            fontSize: this.style.fontSize,
+            fontFamily: this.style.fontFamily,
+            opacity: this.style.opacity,
+          },
+          transform: [1, 0, 0, 1, 0, 0],
+          geometry: {
+            x: center[0] - VIDEO_EMBED_WIDTH / 2,
+            y: center[1] - VIDEO_EMBED_HEIGHT / 2 + this.style.fontSize,
+            text: video.sourceUrl,
+            embed: "video",
+          },
+        },
+      });
+      if (!accepted) return;
+      this.videoEmbedDialog.close();
+      this.tools.setTool("select");
+      this.tools.selectOnly([itemId]);
+      this.notify("Video embedded.", "info");
+    } finally {
+      this.videoEmbedPending = false;
+      submit.disabled = false;
+    }
   }
 
   private async uploadImage(image: File, center: Point): Promise<void> {
@@ -3494,6 +3624,32 @@ export class BoardApp {
     return decorateCreatedItemsWithSections(operation, this.model.items.values());
   }
 
+  private reconcileRenderedTextSectionMembership(itemId: string, expectedVersion: number): void {
+    if (
+      !this.bootstrap.board.features.grouping ||
+      !this.canCommit() ||
+      this.pendingRenderedTextSectionUpdates.has(itemId)
+    ) {
+      return;
+    }
+    const operation = this.model.renderedTextSectionMembershipOperation(itemId, expectedVersion);
+    if (operation === null) return;
+    if (
+      !operationAllowedForActor(
+        operation,
+        this.bootstrap.actor.role,
+        this.bootstrap.actor.id,
+        this.model.authoritativeItems,
+      )
+    ) {
+      return;
+    }
+    this.pendingRenderedTextSectionUpdates.add(itemId);
+    void this.commit(operation).finally(() => {
+      this.pendingRenderedTextSectionUpdates.delete(itemId);
+    });
+  }
+
   private async commit(
     operation: DurableOperation,
     actionId = createId(),
@@ -3611,6 +3767,11 @@ export class BoardApp {
     try {
       this.rememberCreators([action.actor, ...(action.creators ?? [])]);
       const result = this.model.applyAction(action);
+      try {
+        this.webMcp?.recordAuthoritativeAction(action, result.changedIds);
+      } catch {
+        this.notify("The problem-step watch could not process this saved change.", "warning");
+      }
       this.bootstrap.board.latestSeq = action.seq;
       if (result.acknowledged) {
         this.finishWebMcpCommit(action.commandId, true);
@@ -3978,6 +4139,13 @@ export class BoardApp {
       this.creatorNames.set(actorId, displayName);
     }
     this.model.load(next.snapshot as BoardSnapshot, true);
+    try {
+      // A replacement cannot be expressed as individual changes, so active watches
+      // re-snapshot and report a resync instead of retaining stale text and sequences.
+      this.webMcp?.recordAuthoritativeReload(this.model.lastAppliedSeq);
+    } catch {
+      this.notify("The problem-step watch could not follow the refreshed board.", "warning");
+    }
     for (const entry of activeEntries) {
       this.model.restoreQueued(entry.command, next.actor.id);
       this.hydrateOutboxRecovery(entry.command.commandId, entry.recovery);
@@ -4299,6 +4467,10 @@ export class BoardApp {
     if (this.textEditor !== editor || attempt !== this.textEditorCloseAttempt) return;
     this.textEditorClosing = false;
     if (accepted) {
+      if (mode === "sticky" && context === null) {
+        this.tools.setTool("select");
+        this.tools.selectOnly([draftItemId]);
+      }
       this.discardTextEditor(editor);
       return;
     }
@@ -5457,6 +5629,7 @@ export class BoardApp {
         const rank = { open: 0, orphaned: 1, resolved: 2 } as const;
         return rank[left.state] - rank[right.state] || right.createdAt - left.createdAt;
       });
+    clearTypesetMath(this.commentsList);
     this.commentsList.replaceChildren();
     if (visible.length === 0) {
       const empty = document.createElement("p");
@@ -5492,6 +5665,7 @@ export class BoardApp {
       const body = document.createElement("p");
       body.className = "comment-body";
       body.textContent = comment.body;
+      typesetMath(body);
       const actions = document.createElement("div");
       actions.className = "comment-card-actions";
       const item = this.model.getItem(comment.itemId);
@@ -5539,7 +5713,11 @@ export class BoardApp {
     this.participantRenderPending = false;
     this.participantList.replaceChildren();
     const entries = [...this.presences.values()];
-    this.participantCount.textContent = String(Math.max(1, entries.length));
+    const participantTotal = Math.max(1, entries.length);
+    const participantLabel = `${participantTotal} ${participantTotal === 1 ? "person" : "people"} here`;
+    this.participantCount.textContent = String(participantTotal);
+    this.participantsButton.setAttribute("aria-label", participantLabel);
+    this.participantsButton.title = participantLabel;
     for (const participant of entries) {
       const row = document.createElement("div");
       row.className = "participant-row";
@@ -5790,6 +5968,11 @@ export class BoardApp {
         DRAW_TOOLS.has(name) &&
         (!canEdit || !enabled || (name === "image" && this.imageUploadInFlight));
     }
+    const videoButton = query(this.root, "[data-video-embed]", HTMLButtonElement);
+    const videoEnabled = this.bootstrap.board.features.text;
+    videoButton.hidden = !videoEnabled;
+    videoButton.disabled = !canEdit || !videoEnabled;
+    if (videoButton.disabled && this.videoEmbedDialog.open) this.videoEmbedDialog.close();
     this.setShapeMenuOpen(!this.shapeMenu.hidden);
     this.setToolsMenuOpen(!this.toolsMenu.hidden);
     this.accessButton.hidden = this.bootstrap.actor.role !== "owner" || archived;
@@ -6137,13 +6320,7 @@ export class BoardApp {
       "[data-selection-font-controls]",
       HTMLElement,
     );
-    const textItems = selectedItems.filter(
-      (item): item is Extract<BoardItem, { kind: "text" | "sticky" | "table" | "zone" }> =>
-        item.kind === "text" ||
-        item.kind === "sticky" ||
-        item.kind === "table" ||
-        item.kind === "zone",
-    );
+    const textItems = selectedItems.filter(supportsTextStyling);
     const allText =
       selectedItems.length === selectedIds.length &&
       selectedItems.length > 0 &&
@@ -6978,7 +7155,7 @@ export function localSvg(snapshot: BoardSnapshot, title: string): string {
   const items = [...snapshot.items]
     .map((item) => normalizeBoardItem(item))
     .sort((a, b) => a.z - b.z);
-  const bounds = aggregateItemBounds(items);
+  const bounds = boundsForSvgItems(items);
   const pad = 32;
   const viewBox = bounds
     ? `${bounds.minX - pad} ${bounds.minY - pad} ${Math.max(1, bounds.maxX - bounds.minX + pad * 2)} ${Math.max(1, bounds.maxY - bounds.minY + pad * 2)}`
@@ -7022,10 +7199,6 @@ function transformPoint(point: Point, matrix: Matrix): Point {
     matrix[0] * point[0] + matrix[2] * point[1] + matrix[4],
     matrix[1] * point[0] + matrix[3] * point[1] + matrix[5],
   ];
-}
-
-function aggregateItemBounds(items: Parameters<typeof boundsForItems>[0]) {
-  return boundsForItems(items);
 }
 
 function stickyDraftFromOperation(operation: DurableOperation): StickyDraftRecovery | undefined {

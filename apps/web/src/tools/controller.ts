@@ -1,6 +1,7 @@
 import { findMoveCopyClosureLimitViolation } from "@collab/board-core";
 import { boundsContain, transformPoint } from "@collab/geometry";
 import { MAX_BATCH_OPERATIONS } from "@collab/protocol";
+import { videoEmbedFromText } from "../board/links";
 import type { BoardModel, Bounds, ConnectorAnchor } from "../board/model";
 import { itemBounds, translateMatrix } from "../board/model";
 import type { BoardRenderer } from "../board/renderer";
@@ -619,6 +620,9 @@ export function buildCapturedTextUpdate(
   assignNewMembership = true,
 ): BatchItemOperation {
   const geometry = { ...edit.geometry, text };
+  if ("embed" in geometry && geometry.embed === "video" && videoEmbedFromText(text) === null) {
+    delete geometry.embed;
+  }
   const update: BatchItemOperation = {
     kind: "item.update",
     itemId: edit.itemId,

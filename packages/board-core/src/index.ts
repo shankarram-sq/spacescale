@@ -1218,6 +1218,9 @@ function canonicalItem(item: BoardItem): BoardItem {
                   x: normalized.geometry.x,
                   y: normalized.geometry.y,
                   text: normalized.geometry.text,
+                  ...(normalized.geometry.embed === undefined
+                    ? {}
+                    : { embed: normalized.geometry.embed }),
                 }
               : normalized.kind === "sticky"
                 ? {
