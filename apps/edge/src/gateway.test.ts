@@ -66,7 +66,17 @@ describe("gateway board routing", () => {
     );
     expect(contentSecurityPolicy).toContain("font-src 'self' data:");
     expect(contentSecurityPolicy).toContain("style-src 'self' 'sha256-");
-    expect(contentSecurityPolicy).not.toContain("'unsafe-inline'");
+    // Inline style attributes are allowed on their own, for MathLive's field and keyboard. They
+    // cannot run anything; stylesheets and <style> blocks stay bound by style-src and its hashes.
+    expect(contentSecurityPolicy).toContain("style-src-attr 'unsafe-inline'");
+    // Every other directive must still refuse inline content, which is the point of the policy.
+    const relaxed = (contentSecurityPolicy ?? "")
+      .split(";")
+      .map((directive) => directive.trim())
+      .filter((directive) => directive.includes("'unsafe-inline'"))
+      .map((directive) => directive.split(/\s+/u)[0]);
+    expect(relaxed).toEqual(["style-src-attr"]);
+    expect(contentSecurityPolicy).not.toContain("'unsafe-eval'");
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     expect(response.headers.get("x-frame-options")).toBe("DENY");
     expect(response.headers.get("cross-origin-opener-policy")).toBe("same-origin");

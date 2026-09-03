@@ -125,6 +125,13 @@ import {
   type WebMcpRegistryState,
   webMcpRegistryState,
 } from "../webmcp/shared";
+import { MathFieldPanel } from "./math-field";
+import {
+  type MathRegion,
+  mathRegionAtCaret,
+  replaceMathRegion,
+  unclosedOpeningAt,
+} from "./math-region";
 
 const TOOL_DEFINITIONS: Array<{
   name: ToolName;
@@ -1001,6 +1008,12 @@ export class BoardApp {
   private landingToolPending = true;
   private aiWatchState: WatchState = { phase: "idle", expiresAt: null, watchedItemIds: new Set() };
   private stopObservingWebMcp: (() => void) | null = null;
+  private mathFieldPanel: MathFieldPanel | null = null;
+  private mathFieldTarget: {
+    editor: HTMLTextAreaElement | HTMLInputElement;
+    region: MathRegion;
+    onValueChanged: () => void;
+  } | null = null;
   private aiWatchCountdown: number | null = null;
   private aiAssistSelectionKey = "";
   private readonly pendingRenderedTextSectionUpdates = new Set<string>();
@@ -1395,6 +1408,12 @@ export class BoardApp {
     this.renderWebMcpStatus(webMcpRegistryState());
     this.stopObservingWebMcp = observeWebMcpRegistry((state) => this.renderWebMcpStatus(state));
 
+    this.mathFieldPanel = new MathFieldPanel({
+      root: this.root,
+      onChange: this.applyMathField,
+      onDone: this.finishMathField,
+    });
+
     this.webMcp = new CollectiveInquiryWebMcp({
       root: this.root,
       getSelectedItems: () =>
@@ -1545,6 +1564,9 @@ export class BoardApp {
     this.webMcp = null;
     this.stopObservingWebMcp?.();
     this.stopObservingWebMcp = null;
+    this.mathFieldPanel?.destroy();
+    this.mathFieldPanel = null;
+    this.mathFieldTarget = null;
     this.setAiWatchState({ phase: "idle", expiresAt: null, watchedItemIds: new Set() });
     this.tools.destroy();
     this.renderer.destroy();
@@ -3548,7 +3570,12 @@ export class BoardApp {
       editor.value = value;
       editor.setSelectionRange(cursor, cursor);
     });
-    editor.addEventListener("blur", () => void this.closeTableCellEditor(true));
+    this.bindMathField(editor);
+    editor.addEventListener("blur", (event) => {
+      // Reaching for the maths keyboard is not leaving the editor.
+      if (this.mathFieldPanel?.contains((event as FocusEvent).relatedTarget as Node | null)) return;
+      void this.closeTableCellEditor(true);
+    });
     editor.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -3680,7 +3707,12 @@ export class BoardApp {
       editor.value = value;
       editor.setSelectionRange(cursor, cursor);
     });
-    editor.addEventListener("blur", () => void this.closeZoneTitleEditor(true));
+    this.bindMathField(editor);
+    editor.addEventListener("blur", (event) => {
+      // Reaching for the maths keyboard is not leaving the editor.
+      if (this.mathFieldPanel?.contains((event as FocusEvent).relatedTarget as Node | null)) return;
+      void this.closeZoneTitleEditor(true);
+    });
     editor.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -4581,7 +4613,12 @@ export class BoardApp {
       preview();
     };
     editor.addEventListener("input", schedule);
-    editor.addEventListener("blur", () => void this.closeTextEditor(true));
+    this.bindMathField(editor, schedule);
+    editor.addEventListener("blur", (event) => {
+      // Reaching for the maths keyboard is not leaving the editor.
+      if (this.mathFieldPanel?.contains((event as FocusEvent).relatedTarget as Node | null)) return;
+      void this.closeTextEditor(true);
+    });
     editor.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -7109,6 +7146,81 @@ export class BoardApp {
       button.disabled = false;
     }
   }
+
+  /**
+   * Gives one text editor a maths keyboard. Typing an opening delimiter closes the pair and brings
+   * up MathLive's field over the editor, so a participant can build a formula without knowing TeX;
+   * the board still stores ordinary delimited TeX, which is what everything else here reads.
+   */
+  private bindMathField(
+    editor: HTMLTextAreaElement | HTMLInputElement,
+    onValueChanged: () => void = () => undefined,
+  ): void {
+    const sync = (): void => this.syncMathField(editor, onValueChanged);
+    editor.addEventListener("input", () => {
+      this.closeMathDelimiter(editor, onValueChanged);
+      sync();
+    });
+    // The caret can move without the value changing, and that moves in and out of a formula.
+    editor.addEventListener("keyup", sync);
+    editor.addEventListener("click", sync);
+    sync();
+  }
+
+  /** Completes a delimiter pair the participant just opened, leaving the caret between the two. */
+  private closeMathDelimiter(
+    editor: HTMLTextAreaElement | HTMLInputElement,
+    onValueChanged: () => void,
+  ): void {
+    const caret = editor.selectionStart ?? editor.value.length;
+    const opening = unclosedOpeningAt(editor.value, caret);
+    if (!opening) return;
+    editor.value = `${editor.value.slice(0, caret)}${opening.close}${editor.value.slice(caret)}`;
+    editor.setSelectionRange(caret, caret);
+    onValueChanged();
+  }
+
+  private syncMathField(
+    editor: HTMLTextAreaElement | HTMLInputElement,
+    onValueChanged: () => void,
+  ): void {
+    const panel = this.mathFieldPanel;
+    if (!panel) return;
+    const caret = editor.selectionStart ?? editor.value.length;
+    const region = mathRegionAtCaret(editor.value, caret);
+    if (!region) {
+      this.mathFieldTarget = null;
+      panel.close();
+      return;
+    }
+    this.mathFieldTarget = { editor, region, onValueChanged };
+    void panel.open(
+      `${region.delimiter.open}@${region.start}`,
+      region,
+      editor.value.slice(region.start, region.end),
+      editor.getBoundingClientRect(),
+    );
+  }
+
+  /** Writes the maths field's TeX back into the formula it was opened on. */
+  private readonly applyMathField = (tex: string): void => {
+    const target = this.mathFieldTarget;
+    if (!target) return;
+    const next = replaceMathRegion(target.editor.value, target.region, tex);
+    target.editor.value = next.value;
+    target.region = next.region;
+    const caret = next.region.end + next.region.delimiter.close.length;
+    target.editor.setSelectionRange(caret, caret);
+    target.onValueChanged();
+  };
+
+  /** Returns the participant to the text once the formula is written. */
+  private readonly finishMathField = (): void => {
+    const target = this.mathFieldTarget;
+    this.mathFieldPanel?.close();
+    this.mathFieldTarget = null;
+    target?.editor.focus();
+  };
 
   private async downloadLocalSvg(): Promise<void> {
     const snapshot = this.model.toSnapshot(this.bootstrap.board.id);

@@ -166,6 +166,33 @@ Adds one to three playful visual responses to the approved class discussion with
 - The request must explicitly confirm that the visual is classroom-safe, contains no real-student likeness, and targets no individual. The Images feature must be enabled by the Space owner.
 - The stored image, caption, discussion prompt, and source connectors are AI-attributed and committed as one acknowledged, undoable realtime board batch.
 
+### Writing maths
+
+The board's delimiters are MathJax's own: `\(…\)` for inline maths, `\[…\]` or
+`$$…$$` for display maths. A single `$` is a dollar sign. A classroom board
+carries prices far more often than inline maths, and nothing can tell "$5 to $12"
+apart from an expression, so it is never a delimiter. The renderer, the canonical
+geometry that measures text for Section membership, and the picture exporter all
+read maths through one shared splitter, so they cannot disagree about where a
+formula begins.
+
+Typing an opening delimiter in any text surface, canvas text, a sticky note, a
+table cell, or a Section title, completes the pair and opens a
+[MathLive](https://mathlive.io/) field over the editor, with its own on-screen
+maths keyboard. A participant can build a formula without knowing TeX; the board
+still stores ordinary delimited TeX, which is what every reader here already
+understands. The field loads only when a formula is first edited, as MathJax
+does, and its styles and fonts are bundled and served from this origin. The
+content security policy relaxes `style-src-attr` alone, because MathLive lays its
+field and keyboard out with inline style attributes; stylesheets and `<style>`
+blocks stay bound by `style-src` and its hashes.
+
+Pictures of a board draw formulas rather than writing their source. That matters
+most for the reader who cannot fall back to the text: an assistant handed a PNG
+of a board. The exporter takes an optional typesetter and lays the prose around
+each expression out by hand, since SVG has no inline layout; without one it
+writes the source exactly as before, which is what the edge exporter does.
+
 ### Shared lesson video
 
 Video is a first-class collaborative canvas object rather than a link hidden in
