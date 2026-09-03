@@ -12,9 +12,9 @@ canvas where students are working.**
 
 SpaceScale turns classroom AI from a text reply into visible collaboration.
 Students and teachers draw, write, organize, embed videos, react, and vote
-together. A compatible AI host discovers fifteen WebMCP tools from the open
-board, inspects selected handwriting and spatial work, catches reasoning errors,
-and adds source-linked feedback that everyone can discuss, revise, and undo.
+together. A compatible AI host discovers seven WebMCP tools from the open board,
+watches the work as it is saved, catches reasoning errors, and writes comments,
+notes, pictures, and videos that everyone can discuss, revise, and undo.
 
 ![AI feedback correcting a mistaken hand-drawn quadratic](docs/submission-assets/ai-feedback-correction.png)
 
@@ -30,15 +30,15 @@ The result is collaborative rather than conversational-only:
 
 - **Visual collaboration:** AI contributions become ordinary, source-linked
   canvas objects that appear to every participant in real time.
-- **Handwriting and sketch support:** the agent can inspect selected saved strokes
-  and spatial context, identify a possible reasoning error, and return a
-  source-linked feedback prompt the whole class can act on.
+- **Handwriting and sketch support:** the board watch carries a PNG of the board
+  whenever it holds drawn work, so the agent can read strokes and spatial context,
+  identify a possible reasoning error, and comment on it where the class can act.
 - **Video support:** participants can place public YouTube and Vimeo material on
   the shared canvas, then discuss it beside notes, drawings, formulas, comments,
   and AI-generated structures.
-- **Live learning loops:** the agent can watch only explicitly selected saved
-  problem steps for up to 15 minutes, or help a class move from ideas to a
-  visible inquiry map, aggregate vote, and dissent-preserving decision.
+- **Live learning loops:** the agent can watch the board's saved work for up to
+  15 minutes, answer a participant's request on the step they asked about, and
+  read an aggregate class vote without ever seeing who voted for what.
 - **Participant-scoped permissions:** a WebMCP write enters the same
   `commitAndWait` path as the authorizing participant's own edit. The agent gets
   no service account and no elevated identity.
@@ -69,15 +69,12 @@ SpaceScale started from the open-source
 foundation. During the challenge period, it was extended into a classroom
 collaboration product with:
 
-- fifteen discoverable WebMCP tools and 27 schema-enforced learning modes;
-- selected-only typed, visual, explanatory, inspiration, vote, and bounded
-  saved-step read surfaces;
-- permission-aware, source-linked, acknowledged, realtime, atomic, and undoable
-  writers;
-- isolated handwriting/sketch inspection with unselected-board masking;
+- seven discoverable WebMCP tools: a bounded saved-step board watch, an
+  aggregate vote reader, a template reader, and four generic writes;
+- permission-aware, acknowledged, realtime, atomic, and undoable writers that
+  place one object where the call asks;
 - shared YouTube/Vimeo cards, MathJax learning content, comments, grouping,
   sections, templates, and live participant roles;
-- inquiry-map and class-decision previews that make participant approval visible;
 - contract, unit, edge, and Chromium coverage for the permission and WebMCP
   boundaries.
 
@@ -198,46 +195,36 @@ on shapes, sticky notes, tables, image cards, and sections. V1 stores the snappe
 coordinates as ordinary line geometry, so moving the target later does not move
 the connector automatically.
 
-Codex and other compatible browser hosts discover sixteen WebMCP tools directly from every
-board browser: a capability catalog, browser-selection text and visual readers, a 15-minute
-selected problem-step watcher with a watched-step comment writer, five
-education collaboration writers spanning 27 non-section modes, a source-linked class
-visual/meme writer, a collective-inquiry mapper, an aggregate vote reader, and a
-dissent-preserving class decision tool. Read tools operate on that browser's saved
-selection. Write tools use the board's normal edit permission and cannot bypass read-only
-access. The visual writer renders safe meme cards locally or accepts inline generated
-raster data, then reuses the private board-asset pipeline. Generated PNG is preferred;
-inline JPEG, WebP, and GIF are also accepted, while raw SVG and external image URLs are
-rejected. Selected contribution and visual metadata includes the creator's board-visible
-display name and stable participant ID for action attribution. The visual inspector opens
-a selected-only SVG review surface in the live page, masks the rest of the board, aliases
-item IDs, and leaves private board images as placeholders. Cross-Group Jigsaw is reserved for the tested
-section-context integration arriving separately; its writer adapter remains dormant
-unless an authoritative section snapshot provider is configured. The capability catalog publishes an
-exact contract for every live mode—including entry bounds, source-link cardinality,
-semantic roles, visible connections, and student-owned decision fields—and the write
-tools enforce the same registry at runtime. The two headline write flows add a proposal
-preview. Everything the agent writes—cards, visuals, and comments—retains `assistedBy`
-metadata for MCP context and auditing, is attributed to the responsible participant's
-ordinary author initials, and carries a small AI mark so tool and human are always
-distinguishable. Every generated contribution remains source-linked, realtime, and undoable. The
-problem-step watcher reports authoritative saved changes to the visiting host in bounded
-long polls, so Codex can respond after each selected step changes. It follows saved objects of
-any kind: written work carries its text, and handwriting, shapes, images and embeds carry a
-short description plus their saved version, and every result about a board holding drawn work
-also carries a PNG of the board so handwriting can be read directly.
-Starting a watch with nothing selected follows the whole board, and while a watch is live the tool rail offers an
-**AI** action that hands the whole board over with a task prompt. The board header reports
-whether a WebMCP host is linked and how many tools it can see. The watcher
-never captures unsaved keystrokes, expands a selected section into its contents, or returns
-stable board/item IDs. While a watch is live the board shows an **Ask AI** button in the
-selection toolbar: the participant picks a watched step and an action (Explain, Ideate,
-Critique, Check my work, Examples, Explain with a video) and the request reaches the host
-through the watch's next long poll with a reply plan. The host answers as an object comment
-on the step or as cards through the existing education tools; generated visuals no longer
-require alt text (the title is the fallback). The
-public deployment is a hackathon demo for synthetic or otherwise non-sensitive content;
-real classroom rollout remains subject to the [classroom AI safety and implementation
+Codex and other compatible browser hosts discover seven WebMCP tools directly from every
+board browser: a 15-minute board watch, an aggregate vote reader, an activity-template
+reader, and four generic writes—`insert_comment`, `insert_sticky`, `insert_image`, and
+`insert_video`. Each write takes a board location and the content it needs, and lands one
+object as a single acknowledged realtime command. Write tools use the board's normal edit
+permission and cannot bypass read-only access, and each refuses an object kind the Space
+owner has switched off. `insert_image` never fetches an external URL: it accepts inline
+PNG, JPEG, WebP, or GIF data and reuses the private board-asset pipeline that a
+participant's own upload goes through. `insert_comment` attaches to whatever saved object
+covers the location it names, or to the one object selected in that browser. Everything the
+agent writes—notes, pictures, embeds, and comments—retains `assistedBy` metadata for MCP
+context and auditing, is attributed to the responsible participant's ordinary author
+initials, and carries a small AI mark so tool and human are always distinguishable. Every
+generated contribution is realtime and undoable in one step.
+
+The board watcher reports authoritative saved changes to the visiting host in bounded long
+polls, so Codex can respond after each step changes. It follows saved objects of any kind:
+written work carries its text, and handwriting, shapes, images and embeds carry a short
+description plus their saved version, and every result about a board holding drawn work
+also carries a PNG of the board so handwriting can be read directly. Starting a watch
+follows the whole board, and while a watch is live the tool rail offers an **AI** action
+that hands the whole board over with a task prompt. The board header reports whether a
+WebMCP host is linked and how many tools it can see. The watcher never captures unsaved
+keystrokes, expands a selected section into its contents, or returns stable board/item IDs.
+While a watch is live the board shows an **Ask AI** button in the selection toolbar: the
+participant picks a watched step and an action (Explain, Ideate, Critique, Check my work,
+Examples, Explain with a video) and the request reaches the host through the watch's next
+long poll with a reply plan naming the write to answer with. The public deployment is a
+hackathon demo for synthetic or otherwise non-sensitive content; real classroom rollout
+remains subject to the [classroom AI safety and implementation
 gate](docs/classroom-ai-safety.md).
 
 ## Local development

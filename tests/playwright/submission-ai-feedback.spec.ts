@@ -85,62 +85,59 @@ test("captures AI feedback on a mistaken hand-drawn quadratic", async ({ page },
     sourceBounds.y + sourceBounds.height / 2,
   );
 
-  const readResult = await page.evaluate(() => {
-    const tool = window.__submissionWebMcpTools.read_selected_class_ideas;
-    if (!tool) throw new Error("The selection reader was not registered.");
-    return tool.execute({}, { signal: new AbortController().signal });
+  // The assistant answers on the student's own note, then leaves the counterexample beside it.
+  const commentResult = await page.evaluate(() => {
+    const tool = window.__submissionWebMcpTools.insert_comment;
+    if (!tool) throw new Error("The comment write was not registered.");
+    return tool.execute(
+      {
+        body: "Do the intercepts at -3 and -1 make the original equation equal zero? Try x = -4.",
+      },
+      { signal: new AbortController().signal },
+    );
   });
-  const feedbackResult = await page.evaluate(
-    ({ selectionToken }) => {
-      const tool = window.__submissionWebMcpTools.add_collective_reasoning;
-      if (!tool) throw new Error("The reasoning writer was not registered.");
-      return tool.execute(
-        {
-          selectionToken,
-          mode: "counterexample_challenge",
-          title: "AI feedback on the plotted quadratic",
-          cards: [
-            {
-              id: "student_plot",
-              heading: "Student plot",
-              body: "The sketch places the x-intercepts at -3 and -1.",
-              sourceAliases: ["idea_1"],
-              question: "Do those intercepts make the original equation equal zero?",
-              role: "claim",
-            },
-            {
-              id: "check_negative_four",
-              heading: "AI feedback · Check x = -4",
-              body: "At x = -4, y = 16 - 28 + 10 = -2, so the plotted point should be below the x-axis.",
-              sourceAliases: ["idea_1"],
-              question: "Can you plot (-4, -2) and use it to correct the curve?",
-              role: "counterexample",
-            },
-          ],
-          connections: [
-            { fromCardId: "check_negative_four", toCardId: "student_plot", label: "checks" },
-          ],
-        },
-        { signal: new AbortController().signal },
-      );
-    },
-    { selectionToken: String(readResult.selectionToken) },
-  );
-  expect(feedbackResult).toMatchObject({ changedCanvas: true, additionCount: 2 });
-  await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
-  await expect(page.locator("#drawing-area")).toContainText("AI feedback · Check x = -4");
-  await expect(page.locator("#drawing-area")).toContainText("Can you plot (-4, -2)");
+  expect(commentResult).toMatchObject({ status: "commented", writtenBy: "ai" });
 
-  const aiItemCount = await page.evaluate(async (url) => {
+  const feedbackResult = await page.evaluate(() => {
+    const tool = window.__submissionWebMcpTools.insert_sticky;
+    if (!tool) throw new Error("The sticky write was not registered.");
+    return tool.execute(
+      {
+        // No location: the note lands at the centre of this participant's view, beside the work.
+        text: "AI feedback · Check x = -4\nAt x = -4, y = 16 - 28 + 10 = -2, so the plotted point should be below the x-axis. Can you plot (-4, -2) and use it to correct the curve?",
+        fill: "coral",
+      },
+      { signal: new AbortController().signal },
+    );
+  });
+  expect(feedbackResult).toMatchObject({
+    status: "inserted",
+    objectKind: "sticky",
+    changedCanvas: true,
+    aiAttributed: true,
+  });
+  await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+  await expect(page.locator('#drawing-area [data-assisted-by="ai"]')).toHaveCount(1);
+
+  // Sticky text wraps into separate tspans, so read what was saved rather than what was drawn.
+  const saved = await page.evaluate(async (url) => {
     const boardId = new URL(url).pathname.split("/").at(-1);
     const response = await fetch(`/api/v1/boards/${boardId}/export.json`, {
       credentials: "same-origin",
       cache: "no-store",
     });
-    const body = (await response.json()) as { items: Array<{ assistedBy?: string }> };
-    return body.items.filter((item) => item.assistedBy === "ai").length;
+    const body = (await response.json()) as {
+      items: Array<{ kind: string; assistedBy?: string; geometry: { text?: string } }>;
+    };
+    const aiItems = body.items.filter((item) => item.assistedBy === "ai");
+    return {
+      aiItemCount: aiItems.length,
+      feedbackText: aiItems.find((item) => item.kind === "sticky")?.geometry.text ?? "",
+    };
   }, boardUrl);
-  expect(aiItemCount).toBeGreaterThan(0);
+  expect(saved.aiItemCount).toBeGreaterThan(0);
+  expect(saved.feedbackText).toContain("AI feedback · Check x = -4");
+  expect(saved.feedbackText).toContain("Can you plot (-4, -2)");
 
   await page.getByRole("button", { name: "Fit drawing to view" }).click();
   await page.waitForTimeout(350);

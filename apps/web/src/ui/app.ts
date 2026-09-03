@@ -59,6 +59,7 @@ import {
   DEFAULT_STICKY_HEIGHT,
   DEFAULT_STICKY_WIDTH,
   assignCreatedItemsToSections as decorateCreatedItemsWithSections,
+  type ImageAssetMetadata,
   type ShapeVariant,
   sectionIdAfterBoundsChange,
   ToolController,
@@ -109,6 +110,7 @@ import type {
 } from "../types";
 import { canRoleComment, canRoleDraw, createId, PROTOCOL_VERSION } from "../types";
 import { ActivityTemplateWebMcp } from "../webmcp/activity-templates";
+import { BoardWriteWebMcp } from "../webmcp/board-writes";
 import { ClassDecisionWebMcp } from "../webmcp/class-decision";
 import { CollectiveInquiryWebMcp } from "../webmcp/collective-inquiry";
 import { EducationPartnerWebMcp, type EducationVisualSource } from "../webmcp/education-partner";
@@ -242,6 +244,21 @@ export function templateHiddenByVoting(
     (templateId === "vote-with-stamps" || templateId === "collective-inquiry-demo") &&
     !features.voting
   );
+}
+
+/** Why this Space cannot take a WebMCP-written object of this kind, or null when it can. */
+export function webMcpWriteFeatureIssue(
+  kind: "sticky" | "image" | "video",
+  features: BoardFeatures,
+): string | null {
+  if (kind === "sticky") {
+    return features.stickyNotes ? null : "Enable sticky notes to add one to this Space.";
+  }
+  if (kind === "image") {
+    return features.images ? null : "Enable images to add an image card to this Space.";
+  }
+  // A video embed is a canvas text object carrying a video link, so it follows the text feature.
+  return features.text ? null : "Enable text to embed a video in this Space.";
 }
 
 /** Why this board cannot insert the template, or null when it can. */
@@ -995,6 +1012,7 @@ export class BoardApp {
   private classDecisionWebMcp: ClassDecisionWebMcp | null = null;
   private educationPartnerWebMcp: EducationPartnerWebMcp | null = null;
   private activityTemplateWebMcp: ActivityTemplateWebMcp | null = null;
+  private boardWriteWebMcp: BoardWriteWebMcp | null = null;
   private readonly pendingWebMcpCommits = new PendingCommitTracker();
   /** True until the board first becomes editable, when the landing tool is chosen. */
   private landingToolPending = true;
@@ -1446,6 +1464,39 @@ export class BoardApp {
       notify: (message, kind) => this.notify(message, kind),
     });
 
+    this.boardWriteWebMcp = new BoardWriteWebMcp({
+      canWrite: () => this.canCommit(),
+      canComment: () => this.canComment(),
+      imagesEnabled: () => this.bootstrap.board.imagesEnabled,
+      featureIssue: (kind) => webMcpWriteFeatureIssue(kind, this.bootstrap.board.features),
+      getStyle: () => ({
+        stickyFill: this.style.stickyFill,
+        stickyTextColor: this.style.stickyTextColor,
+        stickyFontSize: this.style.stickyFontSize,
+        stickyOpacity: this.style.stickyOpacity,
+        textColor: this.style.color,
+        textFontSize: this.style.fontSize,
+        textFontFamily: this.style.fontFamily,
+        textOpacity: this.style.opacity,
+      }),
+      getPlacementCenter: () => this.imagePlacementCenter(),
+      itemAt: (point) => this.savedItemAt(point),
+      getSelectedItem: () => this.singleSavedSelection(),
+      resolveWatchedStep: (watchToken, stepAlias, action) => {
+        const inquiry = this.webMcp;
+        if (!inquiry) throw new Error("The board watch is not available in this browser.");
+        return inquiry.watchedStepCommentTarget(watchToken, stepAlias, action);
+      },
+      commit: (operation) => this.commitAndWait(operation),
+      createComment: (itemId, body, assistance) => this.commentFromWebMcp(itemId, body, assistance),
+      storeImage: (imageDataUrl, signal) => this.storeWebMcpImage(imageDataUrl, signal),
+      revealItems: (itemIds) => {
+        this.tools.setTool("select");
+        this.tools.selectOnly(itemIds);
+      },
+      notify: (message, kind) => this.notify(message, kind),
+    });
+
     this.inquiryMapWebMcp = new InquiryMapWebMcp({
       root: this.root,
       canWrite: () => this.canCommit(),
@@ -1534,6 +1585,8 @@ export class BoardApp {
     this.socket.destroy();
     this.activityTemplateWebMcp?.destroy();
     this.activityTemplateWebMcp = null;
+    this.boardWriteWebMcp?.destroy();
+    this.boardWriteWebMcp = null;
     this.educationPartnerWebMcp?.destroy();
     this.educationPartnerWebMcp = null;
     this.classDecisionWebMcp?.destroy();
@@ -3369,6 +3422,44 @@ export class BoardApp {
       this.imageUploadInFlight = false;
       this.updatePermissions();
     }
+  }
+
+  /**
+   * Stores one inline image for a WebMCP write. Reuses the board's own upload path, so the same
+   * sanitizing, size limits, and private board bucket apply to an AI-supplied picture as to one
+   * a participant drops on the canvas.
+   */
+  private async storeWebMcpImage(
+    imageDataUrl: string,
+    signal: AbortSignal,
+  ): Promise<ImageAssetMetadata> {
+    const [asset] = await this.storeEducationVisualImages(
+      [{ format: "inline_image", imageDataUrl }],
+      signal,
+    );
+    if (!asset) throw new Error("The image could not be stored.");
+    return asset;
+  }
+
+  /** The topmost saved object covering a board point, or undefined when none is saved there. */
+  private savedItemAt(point: Point): BoardItem | undefined {
+    const hit = this.model.hitTest(point, 0);
+    if (!hit) return undefined;
+    const [saved] =
+      savedAuthoritativeItems([hit.id], this.model.items, this.model.authoritativeItems) ?? [];
+    return saved;
+  }
+
+  /** The one saved object selected in this browser, or null when the selection is not exactly one. */
+  private singleSavedSelection(): BoardItem | null {
+    const selection = [...this.tools.selection];
+    if (selection.length !== 1) return null;
+    const saved = savedAuthoritativeItems(
+      selection,
+      this.model.items,
+      this.model.authoritativeItems,
+    );
+    return saved?.[0] ?? null;
   }
 
   private async storeEducationVisualImages(

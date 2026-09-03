@@ -5,11 +5,11 @@
 SpaceScale now exposes a constrained WebMCP integration for the hackathon. The
 application still embeds no AI provider, model binding, AI request route, or
 provider credential: the visiting WebMCP host performs the reasoning. The
-integration is discoverable in every browser that can open the board. It reads
-only that browser's saved selection, including each creator's board-visible
-display name and stable participant ID for attribution. Writes submit validated
-ordinary board operations only when the current participant has normal board
-edit permission.
+integration is discoverable in every browser that can open the board. Its reads
+cover a bounded board watch the participant's host starts and stops, the
+aggregate result of a selected vote table, and the board's own template
+definitions. Writes submit validated ordinary board operations only when the
+current participant has normal board edit permission.
 
 The public hackathon deployment is an isolated demonstration for synthetic or
 otherwise non-sensitive test content. It is not approval for use with real
@@ -48,21 +48,21 @@ student.
 
 ## Data boundary
 
-Scope is set deliberately, and differs by tool. Every read tool except the watch
-reads only the participant's browser selection, and selecting a Section still
-shares that Section rather than its contents. The watch is the deliberate
-exception: starting it puts the whole board in scope for as long as it runs, which
-is what makes live coaching over handwriting workable. Starting a watch is an
-explicit act by the participant's host, the board shows while one is running, and
-it expires after 15 minutes. Beyond scope, a request carries only the minimum
-instruction needed for the approved task.
+Scope is set deliberately, and differs by tool. Of the three reads this build
+exposes, the vote reader sees only the aggregate counts of the selected vote
+table and the template reader sees no board content at all. The watch is the
+deliberate exception: starting it puts the whole board in scope for as long as it
+runs, which is what makes live coaching over handwriting workable. Starting a
+watch is an explicit act by the participant's host, the board shows while one is
+running, and it expires after 15 minutes. Beyond scope, a request carries only the
+minimum instruction needed for the approved task.
 
-Selected contributions may include the creator's board-visible display name and
-stable opaque participant ID so the AI can associate an action with the correct
-person. This permission does not extend to email addresses, contact details,
-board or item IDs, access tokens, session data, presence data, activity history,
-or unselected item content. Images and file metadata are excluded unless a
-separately reviewed image use case is approved and visibly selected.
+Watched work may include the creator's board-visible display name and stable
+opaque participant ID so the AI can associate an action with the correct person.
+This permission does not extend to email addresses, contact details, board or item
+IDs, access tokens, session data, presence data, activity history, or unsaved
+keystrokes. Image pixels and file metadata are excluded: a private image card
+appears in a watch picture as a placeholder, not as itself.
 
 ### Whole-board watch
 
@@ -96,68 +96,52 @@ an AI action for the whole board. A participant's request
 carries only step aliases and their content, the chosen action, and an optional
 280-character note, and it reaches the host only through the watch's next long
 poll. The action list deliberately offers "Check my work" (formative
-verification, no score) instead of grading. The host replies through
-`comment_on_watched_step`, which posts an ordinary object comment on the step
-attributed to the requesting participant and tagged as AI-written, or through
-the existing card tools; the caller's WebMCP permission is the confirmation, as
-it is for the headless card tools.
+verification, no score) instead of grading. The reply plan the watch returns names the
+write to answer with: `insert_comment`, which posts an ordinary object comment
+attributed to the requesting participant and tagged as AI-written, or
+`insert_sticky` for a note beside the work. The caller's WebMCP permission is
+the confirmation, as it is for every generic write.
 
 ### Activity templates
 
-`read_templates` and `insert_filled_template` work on the board's own template
-definitions, not on anyone's work. The read returns only what a template ships
-with: its label, description, object kinds, and the text slots it holds, plus a
-rendered picture of templates that draw. No board content, participant, or
-identifier is involved, so the read carries nothing about a class at all.
+`read_templates` works on the board's own template definitions, not on anyone's
+work. It returns only what a template ships with: its label, description, object
+kinds, and the text slots it holds, plus a rendered picture of templates that
+draw. No board content, participant, or identifier is involved, so the read
+carries nothing about a class at all.
 
-The write inserts one template with text already in its slots. It refuses
-without edit access and refuses any template this board's features disable, so
-the AI cannot reach past what the Space owner turned on. It also refuses a fill
-the board itself would reject, such as emptying a canvas text object or a Section
-title, rather than letting a batch fail partway. Every object it creates
-carries the same AI-assistance metadata as any other AI-written object, lands as
-one acknowledged batch, and undoes in one step. The tool is instructed to fill
-the framing of an activity, the prompts, questions, headings and category
-labels, and to leave the students' own answers, votes, ratings, and conclusions
-blank, for the same reason the decision scaffolds keep those fields empty:
-filling them in would put the AI in the class's chair.
+### Generic board writes
 
-### Selected handwritten visual inspection
+`insert_comment`, `insert_sticky`, `insert_image`, and `insert_video` each add
+one thing to the board where the call asks. There is no separate authorization:
+every one refuses without the participant's own edit access, refuses an object
+kind the Space owner has switched off, and enters the same acknowledged realtime
+path as that participant's own edit, so it inherits the board's locks, limits,
+validation, history, and undo. Each returns what it wrote and where, and no board,
+item, or participant identifier.
 
-`inspect_selected_board_visual` is a separately bounded visual-input use case for
-browser-selected pencil strokes, sketches, shapes, arrows, and nearby selected
-context. It sends no request through a new SpaceScale AI backend. The browser
-renders the current saved selection into an isolated SVG review surface for the
-visiting WebMCP host to inspect. An opaque backdrop covers the unselected board.
+`insert_comment` attaches to a saved object rather than to empty canvas: either
+the object covering the board coordinate the call names, or the one object
+selected in that browser. It refuses when it can find neither, rather than
+guessing a target. The comment is capped at 2,000 characters, is attributed to
+the requesting participant with a visible AI tag, and can be resolved by the class
+like any other comment.
 
-The renderer replaces stable item IDs with ephemeral aliases. Result metadata
-includes the board-visible creator name and stable participant ID for each item,
-but no board ID, item ID, coordinate, presence, or history fields. Private board
-image pixels and file metadata are not exposed; selected image cards render as
-labeled placeholders. The tool instructs the model to preserve uncertainty rather
-than guess unclear handwriting and prohibits grading, ranking, profiling, or
-inferences about a person from attribution. Closing the review removes the
-temporary surface and never mutates the board. This remains synthetic-demo
-functionality until the governance and provider requirements below are satisfied
-for real student content.
+`insert_image` is an output-only image use case. It does not send existing board
+images or file metadata to a model, and it never fetches an external URL: the
+model supplies an inline PNG, JPEG, WebP, or GIF, which SpaceScale decodes and
+re-encodes to strip metadata, holds to the existing type, byte, dimension, and
+pixel limits, and stores only in the board's private asset bucket. It fails if
+Images are disabled or the participant lacks edit access, and it requires alt text
+so a card is never added that some participants cannot read. The tool is
+instructed to depict no real student and not to ridicule or target an individual.
 
-### Generated visual responses
+`insert_video` accepts only a complete HTTPS YouTube or Vimeo link, which the
+board plays through its existing privacy-conscious embed.
 
-`add_content_visuals` is an output-only, participant-requested image use case. It
-does not send existing board images or file metadata to a model. The model may
-provide a classroom meme specification that is rendered locally, or an inline
-PNG, JPEG, WebP, or GIF. SpaceScale rejects external URLs and SVG, decodes and
-re-encodes the raster to remove metadata, applies the existing type, byte,
-dimension, and pixel limits, and stores it only in the board's private asset
-bucket. The tool fails if Images are disabled or the participant lacks edit access.
-
-Every visual must cite the selected text aliases and include a discussion
-question (alt text is optional; the title is the accessible fallback), and explicitly confirm that it depicts no real student
-and does not ridicule or target an individual. The image, caption, and source
-connectors retain internal origin metadata and are added as one participant-permitted,
-undoable board batch. This control is suitable for the synthetic hackathon
-demo; a real classroom rollout still requires the provider, age-appropriateness,
-school approval, and incident-response gates in this document.
+This control set is suitable for the synthetic hackathon demo; a real classroom
+rollout still requires the provider, age-appropriateness, school approval, and
+incident-response gates in this document.
 
 The chosen provider and contract must require:
 
@@ -183,13 +167,12 @@ leave the board unchanged. The WebMCP host surfaces tool calls and their
 permissions; SpaceScale keeps `assistedBy` metadata on every AI-written item
 and comment and shows a small AI mark beside the participant attribution.
 
-Model output remains a proposal until the participant confirms its write. For
-the five headless education tools, the caller's WebMCP host permission shows the
-semantic tool invocation—including the proposed cards and selected source
-aliases—and serves as confirmation when normal board edit permission also
-allows it. The headline inquiry and class decision flows add an in-app “no
-changes yet” preview. No tool may create, update, delete, group, move, or
-otherwise mutate board items without this confirmation. Confirmed actions pass
+Model output remains a proposal until the participant confirms its write. The
+caller's WebMCP host permission shows the semantic tool invocation—including the
+text, picture, or link proposed and where it would land—and serves as
+confirmation when normal board edit permission also allows it. No tool may
+create, update, delete, group, move, or otherwise mutate board items without this
+confirmation. Confirmed actions pass
 through the existing authorization, lock, limits, validation, history, undo,
 snapshot, and export paths and are attributed to the confirming participant,
 not to a synthetic AI participant.

@@ -26,6 +26,7 @@ const MAX_LIVE_SESSIONS = 5;
 /** Requests retained between waits; the oldest are dropped and the drop count is reported. */
 const MAX_QUEUED_REQUESTS = 10;
 const COMMENT_BODY_PLACEHOLDER = "<your reply, at most 2000 characters>";
+const CARD_TEXT_PLACEHOLDER = "<the note's text, at most 1000 characters>";
 /** Largest millisecond value the Date type can represent. */
 const MAX_TIMESTAMP_MS = 8.64e15;
 
@@ -737,7 +738,7 @@ export class ProblemStepWatchFeed {
         const request = this.refreshRequest(session, queued);
         return {
           ...request,
-          reply: replyPlan(session.token, request, selection, { canComment, canWrite }),
+          reply: replyPlan(session.token, request, { canComment, canWrite }),
         };
       }),
       ...(droppedRequests > 0 ? { droppedRequests } : {}),
@@ -1063,35 +1064,18 @@ export function assistActionLabel(action: AssistAction): string {
 }
 
 /**
- * Picks the reply channel: comments for explanatory actions, inserted cards for generative
- * ones when a sticky-note source exists, and the conversation when this browser cannot
- * comment. Every plan names the exact next tool call so the host has nothing to infer.
+ * Picks the reply channel: comments for explanatory actions, an inserted card for generative
+ * ones on a writable board, and the conversation when this browser can do neither. Every plan
+ * names the exact next tool call so the host has nothing to infer.
  */
 function replyPlan(
   watchToken: string,
   request: DeliveredAssistRequest,
-  selection: SelectionTokenFields | Record<never, never>,
   permissions: { canComment: boolean; canWrite: boolean },
 ): Record<string, unknown> {
   const guidance = ASSIST_GUIDANCE[request.action];
-  const selectionToken = "selectionToken" in selection ? selection.selectionToken : undefined;
-  const sourceAliasByStep = new Map(
-    "selectionSources" in selection
-      ? selection.selectionSources.map((source) => [source.stepAlias, source.sourceAlias])
-      : [],
-  );
-  const sourceAliases = request.steps.flatMap((step) => {
-    const sourceAlias = step.deleted ? undefined : sourceAliasByStep.get(step.alias);
-    return sourceAlias === undefined ? [] : [sourceAlias];
-  });
   let via: ReplyChannel = guidance.replyVia;
-  // Cards need a writable board and a sticky-note source the writers can cite.
-  if (
-    via === "board" &&
-    (!permissions.canWrite || selectionToken === undefined || sourceAliases.length === 0)
-  ) {
-    via = "comment";
-  }
+  if (via === "board" && !permissions.canWrite) via = "comment";
   if (via === "comment" && !permissions.canComment) via = "conversation";
   const firstAlias = request.steps[0]?.alias ?? "step_1";
   return {
@@ -1100,21 +1084,22 @@ function replyPlan(
     ...(via === "comment"
       ? {
           call: {
-            tool: WATCHED_STEP_COMMENT_TOOL,
+            tool: "insert_comment",
             input: {
               watchToken,
               stepAlias: firstAlias,
               action: request.action,
               body: COMMENT_BODY_PLACEHOLDER,
             },
+            note: "The watchToken and stepAlias name the step being answered, so the reply lands on it whatever the participant has selected now. Copy the action back so this comment is tagged with the request it answers, even if another request has queued on the step since.",
           },
         }
       : via === "board"
         ? {
             call: {
-              tool: "add_thinking_expansion",
-              input: { selectionToken, sourceAliases },
-              note: "Any add_* education tool accepting this selectionToken may be used instead. Cite the idea_N source aliases, not the step_N watch aliases.",
+              tool: "insert_sticky",
+              input: { text: CARD_TEXT_PLACEHOLDER },
+              note: "Place the note beside the participant's work with a location, or leave it out to land at the centre of their view.",
             },
           }
         : {

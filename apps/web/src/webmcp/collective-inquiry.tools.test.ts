@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BoardItem } from "../types";
 import { CollectiveInquiryWebMcp } from "./collective-inquiry";
 import { MAX_WATCHED_ITEMS } from "./problem-step-watch";
-import { webMcpRegistryState } from "./shared";
-import type { WebMcpRegisterToolOptions, WebMcpToolDefinition } from "./types";
+import { webMcpRegistryState, webMcpToolDefinitions } from "./shared";
+import type { RegisteredWebMcpTool, WebMcpRegisterToolOptions } from "./types";
 
 const ACTOR_ID = "018f0000-0000-7000-8000-0000000000a1";
 const STICKY_ID = "018f0000-0000-7000-8000-0000000000b1";
@@ -41,14 +41,17 @@ function fakeDialog(): HTMLDialogElement {
 }
 
 function harness(options: { canComment?: boolean; canWrite?: boolean; board?: BoardItem[] } = {}) {
-  const tools = new Map<string, WebMcpToolDefinition>();
+  /** What a linked host is actually offered. */
+  const exposed = new Map<string, RegisteredWebMcpTool>();
+  /** Every definition the module builds, including the ones this build withholds. */
+  const tools = webMcpToolDefinitions();
   const board = options.board ?? [sticky()];
   vi.stubGlobal("document", {
     createElement: () => fakeDialog(),
     modelContext: {
-      registerTool(tool: WebMcpToolDefinition, registration?: WebMcpRegisterToolOptions) {
-        tools.set(tool.name, tool);
-        registration?.signal?.addEventListener("abort", () => tools.delete(tool.name), {
+      registerTool(tool: RegisteredWebMcpTool, registration?: WebMcpRegisterToolOptions) {
+        exposed.set(tool.name, tool);
+        registration?.signal?.addEventListener("abort", () => exposed.delete(tool.name), {
           once: true,
         });
       },
@@ -78,7 +81,7 @@ function harness(options: { canComment?: boolean; canWrite?: boolean; board?: Bo
       unknown
     >;
   };
-  return { inquiry, tools, created, notices, call };
+  return { inquiry, tools, exposed, created, notices, call };
 }
 
 describe("watch reply tools", () => {
@@ -96,7 +99,7 @@ describe("watch reply tools", () => {
       untrustedContentHint: true,
     });
     inquiry.destroy();
-    expect(tools.size).toBe(0);
+    expect(tools.has("comment_on_watched_step")).toBe(false);
   });
 
   it("accepts the highest generated watch alias in the schema and runtime", async () => {
@@ -184,14 +187,71 @@ describe("watch reply tools", () => {
 describe("registered tool surface", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("counts the tools a linked host can see and drops them when the page tears down", async () => {
+  it("starts a watch for a host that hands execute no AbortSignal", async () => {
+    // Codex's WebMCP shim passes an options object carrying only requestUserInteraction, so
+    // reaching for signal.throwIfAborted() threw a TypeError before the watch ever started.
+    const { inquiry, exposed } = harness();
+    await vi.waitFor(() => expect(exposed.has("watch_board")).toBe(true));
+    const watch = exposed.get("watch_board");
+    if (!watch) throw new Error("watch_board was not offered to the host.");
+
+    const started = (await watch.execute({ action: "start" }, {
+      requestUserInteraction: () => undefined,
+    } as never)) as Record<string, unknown>;
+    expect(started).toMatchObject({ status: "started", watchToken: expect.any(String) });
+
+    // And for a host that omits the options argument altogether.
+    const stopped = (await watch.execute({
+      action: "stop",
+      watchToken: started.watchToken,
+    })) as Record<string, unknown>;
+    expect(stopped).toMatchObject({ status: "stopped" });
+    inquiry.destroy();
+  });
+
+  it("never names a withheld tool in the contract it advertises to a host", async () => {
+    // A description is the contract a host reads at discovery. Naming a tool the allowlist
+    // withholds sends it to a call that cannot succeed, which is what the reply plan already
+    // avoids at runtime.
+    const { inquiry, exposed } = harness();
+    await vi.waitFor(() => expect(exposed.has("watch_board")).toBe(true));
+    const watch = exposed.get("watch_board");
+    if (!watch) throw new Error("watch_board was not offered to the host.");
+    for (const withheld of [
+      "comment_on_watched_step",
+      "add_thinking_expansion",
+      "read_selected_class_ideas",
+      "inspect_selected_board_visual",
+    ]) {
+      expect(watch.description).not.toContain(withheld);
+    }
+    expect(watch.description).toContain("insert_comment");
+    expect(watch.description).toContain("insert_sticky");
+    inquiry.destroy();
+  });
+
+  it("offers a host only the watch and drops it when the page tears down", async () => {
     const before = webMcpRegistryState().toolCount;
-    const { inquiry, tools } = harness();
-    await vi.waitFor(() => expect(tools.has("comment_on_watched_step")).toBe(true));
+    const { inquiry, tools, exposed } = harness();
+    await vi.waitFor(() => expect(exposed.has("watch_board")).toBe(true));
+
+    // The selection reads and the watch's own comment channel keep their definitions but are
+    // withheld from every host by ENABLED_WEBMCP_TOOLS.
+    expect([...exposed.keys()]).toEqual(["watch_board"]);
+    for (const withheld of [
+      "read_selected_class_ideas",
+      "inspire_from_selected_ideas",
+      "explain_selected_ideas",
+      "inspect_selected_board_visual",
+      "comment_on_watched_step",
+    ]) {
+      expect(tools.has(withheld)).toBe(true);
+      expect(exposed.has(withheld)).toBe(false);
+    }
 
     const linked = webMcpRegistryState();
     expect(linked.hostPresent).toBe(true);
-    expect(linked.toolCount).toBe(before + tools.size);
+    expect(linked.toolCount).toBe(before + exposed.size);
 
     inquiry.destroy();
     await vi.waitFor(() => expect(webMcpRegistryState().toolCount).toBe(before));

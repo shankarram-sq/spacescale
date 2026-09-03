@@ -635,8 +635,15 @@ describe("board-side assist requests", () => {
           reply: {
             via: "comment",
             call: {
-              tool: "comment_on_watched_step",
-              input: { watchToken: started.watchToken, stepAlias: "step_1", action: "critique" },
+              tool: "insert_comment",
+              // The alias, not the live selection, is what the reply is aimed at.
+              input: {
+                watchToken: started.watchToken,
+                stepAlias: "step_1",
+                // Carried back so a second request queued on the step cannot retag this reply.
+                action: "critique",
+                body: expect.any(String),
+              },
             },
           },
         },
@@ -707,7 +714,7 @@ describe("board-side assist requests", () => {
             { alias: "step_1", text: "Let $2x=6$, so $x=3$" },
             { alias: "step_2", kind: "text", deleted: true },
           ],
-          reply: { via: "board", call: { input: { sourceAliases: ["idea_1"] } } },
+          reply: { via: "board", call: { tool: "insert_sticky" } },
         },
       ],
     });
@@ -737,27 +744,27 @@ describe("board-side assist requests", () => {
           action: "ideate",
           reply: {
             via: "board",
-            call: {
-              tool: "add_thinking_expansion",
-              input: { selectionToken: expect.any(String), sourceAliases: ["idea_1"] },
-            },
+            call: { tool: "insert_sticky", input: { text: expect.any(String) } },
           },
         },
       ],
     });
   });
 
-  it("falls back to a comment for text steps, read-only boards, and to the conversation when commenting is off", async () => {
+  it("falls back to a comment on a read-only board, and to the conversation when commenting is off", async () => {
     const { feed, setCanComment, setCanWrite } = watching();
     const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    // A note can sit beside any step, so a generative action on a text step still writes a card.
     feed.requestAssistance({ itemIds: [TEXT_ID], action: "examples" });
-    const commentFallback = await feed.execute(
+    const textStep = await feed.execute(
       { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
       new AbortController().signal,
     );
-    expect(commentFallback.requests).toMatchObject([{ reply: { via: "comment" } }]);
+    expect(textStep.requests).toMatchObject([
+      { reply: { via: "board", call: { tool: "insert_sticky" } } },
+    ]);
 
-    // A sticky source exists, but a browser that cannot add items must not be sent to a writer.
+    // A browser that cannot add items must not be sent to a writer.
     setCanWrite(false);
     feed.requestAssistance({ itemIds: [STICKY_ID], action: "ideate" });
     const readOnlyFallback = await feed.execute(
@@ -766,7 +773,7 @@ describe("board-side assist requests", () => {
     );
     expect(readOnlyFallback).toMatchObject({ canWrite: false });
     expect(readOnlyFallback.requests).toMatchObject([
-      { reply: { via: "comment", call: { tool: "comment_on_watched_step" } } },
+      { reply: { via: "comment", call: { tool: "insert_comment" } } },
     ]);
     setCanWrite(true);
 

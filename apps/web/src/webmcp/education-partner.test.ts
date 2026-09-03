@@ -9,6 +9,7 @@ import {
 } from "../activities/education-partner";
 import type { DurableOperation } from "../types";
 import { EducationPartnerWebMcp } from "./education-partner";
+import { webMcpToolDefinitions } from "./shared";
 import type { WebMcpRegisterToolOptions, WebMcpToolDefinition } from "./types";
 
 const storedVisualAssets = async (sources: readonly unknown[]) =>
@@ -19,25 +20,46 @@ const storedVisualAssets = async (sources: readonly unknown[]) =>
     intrinsicHeight: 675,
   }));
 
+/**
+ * Every tool this module defines. None of them is in ENABLED_WEBMCP_TOOLS, so a host never sees
+ * one; the definitions stay reachable through the catalogue so the code behind them keeps its
+ * coverage while it is withheld.
+ */
+const EDUCATION_TOOLS = [
+  "list_class_collaboration_modes",
+  "add_thinking_expansion",
+  "add_idea_sensemaking",
+  "add_collective_reasoning",
+  "add_learning_action_plan",
+  "add_content_visuals",
+  "add_group_decision_scaffold",
+] as const;
+
+const JIGSAW_TOOL = "add_cross_group_jigsaw";
+
+/** Stubs a linked host that would accept tools, and hands back the definition catalogue. */
+function educationHarness(): ReadonlyMap<string, WebMcpToolDefinition> {
+  vi.stubGlobal("document", {
+    modelContext: {
+      registerTool: (_tool: WebMcpToolDefinition, _options?: WebMcpRegisterToolOptions) =>
+        undefined,
+    },
+  });
+  return webMcpToolDefinitions();
+}
+
+function allDefined(
+  tools: ReadonlyMap<string, WebMcpToolDefinition>,
+  names: readonly string[],
+): boolean {
+  return names.every((name) => tools.has(name));
+}
+
 describe("education partner WebMCP contract", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("describes and adds a source-linked non-section sensemaking move", async () => {
-    const tools = new Map<string, WebMcpToolDefinition>();
-    vi.stubGlobal("document", {
-      modelContext: {
-        registerTool(tool: WebMcpToolDefinition, options?: WebMcpRegisterToolOptions) {
-          tools.set(tool.name, tool);
-          options?.signal?.addEventListener(
-            "abort",
-            () => {
-              tools.delete(tool.name);
-            },
-            { once: true },
-          );
-        },
-      },
-    });
+    const tools = educationHarness();
     const committed: DurableOperation[] = [];
     let selected: readonly string[] = [];
     const storeVisualImages = vi.fn(storedVisualAssets);
@@ -84,7 +106,7 @@ describe("education partner WebMCP contract", () => {
       notify: vi.fn(),
     });
 
-    await vi.waitFor(() => expect(tools.size).toBe(7));
+    await vi.waitFor(() => expect(allDefined(tools, EDUCATION_TOOLS)).toBe(true));
     const capabilityTool = tools.get("list_class_collaboration_modes");
     if (!capabilityTool) throw new Error("Capability tool did not register.");
     const capabilities = (await capabilityTool.execute(
@@ -266,25 +288,11 @@ describe("education partner WebMCP contract", () => {
     expect(committed).toHaveLength(3);
 
     partner.destroy();
-    expect(tools.size).toBe(0);
+    expect(EDUCATION_TOOLS.some((name) => tools.has(name))).toBe(false);
   });
 
   it("publishes and accepts a complete structural contract for every live mode", async () => {
-    const tools = new Map<string, WebMcpToolDefinition>();
-    vi.stubGlobal("document", {
-      modelContext: {
-        registerTool(tool: WebMcpToolDefinition, options?: WebMcpRegisterToolOptions) {
-          tools.set(tool.name, tool);
-          options?.signal?.addEventListener(
-            "abort",
-            () => {
-              tools.delete(tool.name);
-            },
-            { once: true },
-          );
-        },
-      },
-    });
+    const tools = educationHarness();
     const committed: DurableOperation[] = [];
     const partner = new EducationPartnerWebMcp({
       canWrite: () => true,
@@ -327,7 +335,7 @@ describe("education partner WebMCP contract", () => {
       notify: vi.fn(),
     });
 
-    await vi.waitFor(() => expect(tools.size).toBe(7));
+    await vi.waitFor(() => expect(allDefined(tools, EDUCATION_TOOLS)).toBe(true));
     const capabilityTool = tools.get("list_class_collaboration_modes");
     if (!capabilityTool) throw new Error("Capability tool did not register.");
     const capabilities = (await capabilityTool.execute(
@@ -534,18 +542,11 @@ describe("education partner WebMCP contract", () => {
     expect(committed.every((operation) => operation.kind === "items.batch")).toBe(true);
 
     partner.destroy();
-    expect(tools.size).toBe(0);
+    expect(EDUCATION_TOOLS.some((name) => tools.has(name))).toBe(false);
   });
 
   it("rejects duplicate trade-off criteria even when they differ only by whitespace", async () => {
-    const tools = new Map<string, WebMcpToolDefinition>();
-    vi.stubGlobal("document", {
-      modelContext: {
-        registerTool(tool: WebMcpToolDefinition) {
-          tools.set(tool.name, tool);
-        },
-      },
-    });
+    const tools = educationHarness();
     const committed: DurableOperation[] = [];
     const partner = new EducationPartnerWebMcp({
       canWrite: () => true,
@@ -573,7 +574,7 @@ describe("education partner WebMCP contract", () => {
       notify: vi.fn(),
     });
 
-    await vi.waitFor(() => expect(tools.size).toBe(7));
+    await vi.waitFor(() => expect(allDefined(tools, EDUCATION_TOOLS)).toBe(true));
     const decisionTool = tools.get("add_group_decision_scaffold");
     if (!decisionTool) throw new Error("Decision tool did not register.");
     const scaffold = (criteria: string[]) => ({
@@ -617,21 +618,7 @@ describe("education partner WebMCP contract", () => {
   });
 
   it("enables Cross-Group Jigsaw only with authoritative section context", async () => {
-    const tools = new Map<string, WebMcpToolDefinition>();
-    vi.stubGlobal("document", {
-      modelContext: {
-        registerTool(tool: WebMcpToolDefinition, options?: WebMcpRegisterToolOptions) {
-          tools.set(tool.name, tool);
-          options?.signal?.addEventListener(
-            "abort",
-            () => {
-              tools.delete(tool.name);
-            },
-            { once: true },
-          );
-        },
-      },
-    });
+    const tools = educationHarness();
     const versions = new Map([
       ["source-one", 1],
       ["source-two", 2],
@@ -706,7 +693,7 @@ describe("education partner WebMCP contract", () => {
       notify: vi.fn(),
     });
 
-    await vi.waitFor(() => expect(tools.size).toBe(8));
+    await vi.waitFor(() => expect(allDefined(tools, [...EDUCATION_TOOLS, JIGSAW_TOOL])).toBe(true));
     const capabilityTool = tools.get("list_class_collaboration_modes");
     if (!capabilityTool) throw new Error("Capability tool did not register.");
     const capabilities = (await capabilityTool.execute(
@@ -796,21 +783,11 @@ describe("education partner WebMCP contract", () => {
     expect(committed).toHaveLength(1);
 
     partner.destroy();
-    expect(tools.size).toBe(0);
+    expect(EDUCATION_TOOLS.some((name) => tools.has(name))).toBe(false);
   });
 
   it("registers tools for every board browser while preserving write permissions", async () => {
-    const tools = new Map<string, WebMcpToolDefinition>();
-    vi.stubGlobal("document", {
-      modelContext: {
-        registerTool(tool: WebMcpToolDefinition, options?: WebMcpRegisterToolOptions) {
-          tools.set(tool.name, tool);
-          options?.signal?.addEventListener("abort", () => tools.delete(tool.name), {
-            once: true,
-          });
-        },
-      },
-    });
+    const tools = educationHarness();
     const commit = vi.fn(async () => true);
     const partner = new EducationPartnerWebMcp({
       canWrite: () => false,
@@ -825,7 +802,7 @@ describe("education partner WebMCP contract", () => {
       notify: vi.fn(),
     });
 
-    await vi.waitFor(() => expect(tools.size).toBe(7));
+    await vi.waitFor(() => expect(allDefined(tools, EDUCATION_TOOLS)).toBe(true));
     const capabilityTool = tools.get("list_class_collaboration_modes");
     if (!capabilityTool) throw new Error("Capability tool did not register.");
     await expect(
@@ -840,6 +817,6 @@ describe("education partner WebMCP contract", () => {
     expect(commit).not.toHaveBeenCalled();
 
     partner.destroy();
-    expect(tools.size).toBe(0);
+    expect(EDUCATION_TOOLS.some((name) => tools.has(name))).toBe(false);
   });
 });

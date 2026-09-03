@@ -8,6 +8,7 @@ import {
   templateSlots,
 } from "./activity-templates";
 import { hasVisualContent } from "./board-image";
+import { webMcpToolDefinitions } from "./shared";
 import type { WebMcpRegisterToolOptions, WebMcpToolDefinition } from "./types";
 
 type CreatedItem = NewBoardItem & { assistedBy?: "ai" };
@@ -52,15 +53,16 @@ function harness(
     templateIssue?: (template: ActivityTemplate) => string | null;
   } = {},
 ) {
-  const tools = new Map<string, WebMcpToolDefinition>();
+  const exposed = new Map<string, WebMcpToolDefinition>();
+  const tools = webMcpToolDefinitions();
   if (options.canvas) stubCanvas();
   const dataUrl = `data:image/png;base64,${"r".repeat(Math.max(1, options.pngCharacters ?? 8))}`;
   vi.stubGlobal("document", {
     createElement: () => fakeCanvas(dataUrl),
     modelContext: {
       registerTool(tool: WebMcpToolDefinition, registration?: WebMcpRegisterToolOptions) {
-        tools.set(tool.name, tool);
-        registration?.signal?.addEventListener("abort", () => tools.delete(tool.name), {
+        exposed.set(tool.name, tool);
+        registration?.signal?.addEventListener("abort", () => exposed.delete(tool.name), {
           once: true,
         });
       },
@@ -88,7 +90,7 @@ function harness(
       unknown
     >;
   };
-  return { templates, tools, committed, revealed, notices, call };
+  return { templates, tools, exposed, committed, revealed, notices, call };
 }
 
 function createdItems(operation: DurableOperation | undefined): CreatedItem[] {
@@ -165,8 +167,11 @@ describe("read_templates", () => {
     expect(result).toMatchObject({
       scope: "board_activity_templates",
       templateCount: ACTIVITY_TEMPLATES.length,
-      writeTool: "insert_filled_template",
+      // The writer is withheld by ENABLED_WEBMCP_TOOLS, so the read must not send a host to it.
+      writeTool: null,
     });
+    expect(result).not.toHaveProperty("fillGuidance");
+    expect(JSON.stringify(result)).not.toContain("insert_filled_template");
     const listed = result.templates as Array<Record<string, unknown>>;
     const kwl = listed.find((entry) => entry.templateId === "kwl");
     expect(kwl).toMatchObject({ label: "K-W-L", objectCount: 2 });
@@ -257,6 +262,15 @@ describe("read_templates", () => {
     const single = await context.call("read_templates", { templateId: "pair-share" });
     expect((single.templates as Array<Record<string, unknown>>)[0]?.preview).toBeDefined();
     context.templates.destroy();
+  });
+
+  it("never names the withheld writer in the contract a host reads", async () => {
+    const { templates, exposed } = await ready();
+    const read = exposed.get("read_templates");
+    if (!read) throw new Error("read_templates was not offered to the host.");
+    expect(read.description).not.toContain("insert_filled_template");
+    expect(read.description).toContain("no template writer");
+    templates.destroy();
   });
 
   it("rejects a template id it does not know", async () => {
@@ -401,16 +415,9 @@ describe("insert_filled_template", () => {
   });
 
   it("reports a commit the board would not queue", async () => {
-    const tools = new Map<string, WebMcpToolDefinition>();
+    const tools = webMcpToolDefinitions();
     vi.stubGlobal("document", {
-      modelContext: {
-        registerTool(tool: WebMcpToolDefinition, registration?: WebMcpRegisterToolOptions) {
-          tools.set(tool.name, tool);
-          registration?.signal?.addEventListener("abort", () => tools.delete(tool.name), {
-            once: true,
-          });
-        },
-      },
+      modelContext: { registerTool: () => undefined },
     });
     const templates = new ActivityTemplateWebMcp({
       canWrite: () => true,
@@ -429,10 +436,15 @@ describe("insert_filled_template", () => {
     templates.destroy();
   });
 
-  it("withdraws both tools when the page tears down", async () => {
-    const { templates, tools } = await ready();
+  it("exposes only the read to a host and withdraws both definitions on teardown", async () => {
+    const { templates, tools, exposed } = await ready();
     expect(tools.has("read_templates")).toBe(true);
+    // The write keeps its definition, but ENABLED_WEBMCP_TOOLS withholds it from every host.
+    expect(exposed.has("read_templates")).toBe(true);
+    expect(exposed.has("insert_filled_template")).toBe(false);
     templates.destroy();
-    expect(tools.size).toBe(0);
+    expect(tools.has("read_templates")).toBe(false);
+    expect(tools.has("insert_filled_template")).toBe(false);
+    expect(exposed.size).toBe(0);
   });
 });
