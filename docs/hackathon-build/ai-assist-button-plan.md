@@ -1,5 +1,8 @@
 # Board-side AI assist while a WebMCP watch is live — implementation plan
 
+> Status: implemented. Steps 1–2d, 3–7 landed together; `grade` shipped as
+> `check_work` per decision 2. Remaining items are listed under Step 8.
+
 ## Outcome
 
 Today the only way a participant reaches the visiting agent is by typing in the
@@ -229,7 +232,7 @@ from the AI boundary.
 - A request received while a wait is pending resolves that wait immediately.
 - Requests are rejected (throw, surfaced as a toast) when there is no live
   session, when any referenced id is not watched, or when the session expired.
-- Every `requested` result (and `start`) carries a fresh `selectionToken`
+- Every `requested`, `changed`, `resync`, and `start` result carries a fresh `selectionToken`
   covering the sticky-note steps in the session, minted through the same
   `snapshots` map that `read_selected_class_ideas` uses, so the existing
   version check in the `add_*` tools keeps protecting against stale inserts.
