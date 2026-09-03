@@ -17,6 +17,29 @@ declare global {
   }
 }
 
+/** A 1×1 opaque PNG: the smallest picture the board's upload path will accept. */
+const TINY_PNG =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+/** Definitions the build keeps but withholds from every host; none may reach a linked page. */
+const WITHHELD_TOOLS = [
+  "add_collective_reasoning",
+  "add_content_visuals",
+  "add_group_decision_scaffold",
+  "add_idea_sensemaking",
+  "add_learning_action_plan",
+  "add_thinking_expansion",
+  "comment_on_watched_step",
+  "explain_selected_ideas",
+  "insert_filled_template",
+  "inspect_selected_board_visual",
+  "inspire_from_selected_ideas",
+  "list_class_collaboration_modes",
+  "read_selected_class_ideas",
+  "stage_class_decision",
+  "stage_collective_inquiry",
+];
+
 test("a board participant can use headless WebMCP tools with neutral board attribution", async ({
   page,
 }, testInfo) => {
@@ -47,26 +70,26 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   const settingsDrawer = page.getByTestId("settings-drawer");
   await expect(settingsDrawer.getByRole("checkbox", { name: "Enable Images" })).toBeChecked();
   await page.getByTestId("settings-button").click();
+
+  // The shipped surface: three reads and the four generic writes, and nothing else.
   await expect
     .poll(() => page.evaluate(() => Object.keys(window.__spaceScaleWebMcpTools).sort()))
     .toEqual([
-      "add_collective_reasoning",
-      "add_content_visuals",
-      "add_group_decision_scaffold",
-      "add_idea_sensemaking",
-      "add_learning_action_plan",
-      "add_thinking_expansion",
-      "comment_on_watched_step",
-      "explain_selected_ideas",
-      "inspect_selected_board_visual",
-      "inspire_from_selected_ideas",
-      "list_class_collaboration_modes",
+      "insert_comment",
+      "insert_image",
+      "insert_sticky",
+      "insert_video",
       "read_live_class_vote",
-      "read_selected_class_ideas",
-      "stage_class_decision",
-      "stage_collective_inquiry",
+      "read_templates",
       "watch_board",
     ]);
+  expect(
+    await page.evaluate(
+      (withheld) => withheld.filter((name) => name in window.__spaceScaleWebMcpTools),
+      WITHHELD_TOOLS,
+    ),
+  ).toEqual([]);
+
   // The header reports the tool surface a visiting host can see, and that a host is linked.
   const webMcpStatus = page.getByTestId("webmcp-status");
   await expect(webMcpStatus).toHaveAttribute("data-state", "linked");
@@ -77,95 +100,20 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   await expect(page.getByTestId("ai-watch-indicator")).toBeHidden();
   await expect(page.getByTestId("tool-ai")).toBeHidden();
   expect(
-    await page.evaluate(
-      () => window.__spaceScaleWebMcpTools.read_selected_class_ideas?.annotations,
-    ),
-  ).toEqual({ readOnlyHint: true, untrustedContentHint: true });
-  const capabilities = await page.evaluate(async () => {
-    const tool = window.__spaceScaleWebMcpTools.list_class_collaboration_modes;
-    if (!tool) throw new Error("The collaboration capability tool was not registered.");
-    return tool.execute({}, { signal: new AbortController().signal });
-  });
-  expect(capabilities).toMatchObject({
-    availableModeCount: 27,
-    textRendering: {
-      engine: "MathJax 4",
-      syntax: "TeX",
-      surfaces: ["canvas_text", "sticky_notes", "table_cells", "section_titles", "comments"],
-    },
-    visualReader: {
-      tool: "inspect_selected_board_visual",
-      purpose: "handwriting_sketch_and_spatial_analysis",
-      maximumItems: 1_000,
-      result: "isolated_live_page_preview",
-      unselectedBoardMasked: true,
-      stableItemIdentifiersReturned: false,
-      participantIdentifiersReturned: true,
-      privateImages: "placeholder_only",
-    },
-    visualTool: {
-      tool: "add_content_visuals",
-      additions: { minimum: 1, maximum: 3 },
-      formats: ["meme_card", "inline_image"],
-      acceptedInlineImageMimeTypes: ["image/png", "image/jpeg", "image/webp", "image/gif"],
-      preferredGeneratedImageMimeType: "image/png",
-      svgAccepted: false,
-      externalImageUrlsAccepted: false,
-    },
-    problemStepWatch: {
-      tool: "watch_board",
-      scope: "entire_board",
-      durationSeconds: 900,
-      maximumWaitMs: 20_000,
-      reports: "authoritative_saved_changes",
-      unsavedKeystrokesIncluded: false,
-      watchesEveryObjectKind: true,
-      drawnWorkReportedAs: "description_and_board_png",
-      stableItemIdentifiersReturned: false,
-    },
-    guardrails: {
-      boundedAdditions: true,
-      studentDecisionsRemainBlank: true,
-      inferredConsensus: false,
-    },
-    sectionIntegration: {
-      live: false,
-      reservedMode: "cross_group_jigsaw",
-    },
-  });
-  expect(
     await page.evaluate(() => window.__spaceScaleWebMcpTools.watch_board?.annotations),
   ).toEqual({ readOnlyHint: true, untrustedContentHint: true });
-  const capabilityModes = (
-    capabilities.families as Array<{
-      modes: Array<{ requirements: string[]; inputContract: Record<string, unknown> }>;
-    }>
-  ).flatMap((family) => family.modes);
-  expect(capabilityModes).toHaveLength(27);
   expect(
-    capabilityModes.every(
-      (mode) => mode.requirements.length >= 2 && mode.inputContract.entryCount !== undefined,
-    ),
-  ).toBe(true);
-  expect(
-    await page.evaluate(() => {
-      const schema = window.__spaceScaleWebMcpTools.add_thinking_expansion?.inputSchema;
-      const properties = schema?.properties as Record<string, Record<string, unknown>> | undefined;
-      return {
-        maxCards: properties?.cards?.maxItems,
-        modes: properties?.mode?.enum,
-      };
-    }),
-  ).toEqual({
-    maxCards: 3,
-    modes: [
-      "gap_finder",
-      "perspective_carousel",
-      "idea_mashup",
-      "constraint_shaker",
-      "analogy_broker",
-    ],
+    await page.evaluate(() => window.__spaceScaleWebMcpTools.insert_comment?.annotations),
+  ).toEqual({ readOnlyHint: false, untrustedContentHint: true });
+
+  const templates = await page.evaluate(() => {
+    const tool = window.__spaceScaleWebMcpTools.read_templates;
+    if (!tool) throw new Error("The template reader was not registered.");
+    return tool.execute({}, { signal: new AbortController().signal });
   });
+  expect(templates).toMatchObject({ scope: "board_activity_templates" });
+  expect(Number(templates.templateCount)).toBeGreaterThan(0);
+  expect(JSON.stringify(templates)).not.toContain("itemId");
 
   await page.getByTestId("activities-button").click();
   await page.getByTestId("activity-collective-inquiry-demo").click();
@@ -183,16 +131,17 @@ test("a board participant can use headless WebMCP tools with neutral board attri
     durationSeconds: 900,
     nextSeq: expect.any(Number),
     canComment: true,
-    selectionToken: expect.any(String),
     steps: expect.arrayContaining([expect.objectContaining({ kind: "sticky" })]),
   });
   await expect(page.getByTestId("ai-watch-indicator")).toBeVisible();
   await expect(page.getByTestId("ai-watch-indicator")).toContainText("AI watching");
+
   const askAi = page.getByTestId("selection-ai");
   await expect(askAi).toBeVisible();
   await expect(askAi).toBeEnabled();
 
-  // A request from the board resolves the host's pending wait with a reply plan.
+  // A request from the board resolves the host's pending wait with a reply plan that names
+  // the generic comment write.
   const requestedResult = page.evaluate(
     ({ watchToken, afterSeq }) => {
       const tool = window.__spaceScaleWebMcpTools.watch_board;
@@ -224,49 +173,10 @@ test("a board participant can use headless WebMCP tools with neutral board attri
       {
         action: "critique",
         note: "Not sure about the second step",
-        reply: {
-          via: "comment",
-          call: { tool: "comment_on_watched_step", input: { action: "critique" } },
-        },
+        reply: { via: "comment", call: { tool: "insert_comment" } },
       },
     ],
   });
-  const requestedSteps = (
-    requested.requests as Array<{ steps: Array<{ alias: string; kind: string }> }>
-  )[0]?.steps;
-  expect(requestedSteps?.length).toBeGreaterThan(0);
-  // The minted selection token covers sticky-note steps only, so reply on one of those.
-  const repliedAlias = requestedSteps?.find((step) => step.kind === "sticky")?.alias ?? "step_1";
-
-  // The reply lands as a comment on the step, attributed to the participant and tagged AI.
-  const commented = await page.evaluate(
-    ({ watchToken, stepAlias }) => {
-      const tool = window.__spaceScaleWebMcpTools.comment_on_watched_step;
-      if (!tool) throw new Error("The comment tool was not registered.");
-      return tool.execute(
-        {
-          watchToken,
-          stepAlias,
-          action: "critique",
-          body: "Check the division step: $6/2=3$, so $x=3$.",
-        },
-        { signal: new AbortController().signal },
-      );
-    },
-    { watchToken: String(watchStart.watchToken), stepAlias: repliedAlias },
-  );
-  expect(commented).toMatchObject({
-    status: "commented",
-    stepAlias: repliedAlias,
-    writtenBy: "ai",
-  });
-  await expect(page.locator("[data-comments-count]")).toHaveText("1");
-  await page.getByTestId("comments-button").click();
-  const commentsDrawer = page.getByTestId("comments-drawer");
-  await expect(commentsDrawer.locator(".comment-card")).toHaveCount(1);
-  await expect(commentsDrawer.locator(".comment-card .assistance-tag")).toHaveText("AI · Critique");
-  await expect(commentsDrawer.locator(".comment-card strong").first()).not.toHaveText("AI");
-  await page.getByTestId("comments-button").click();
 
   const watchResult = page.evaluate(
     ({ watchToken, afterSeq }) => {
@@ -281,7 +191,6 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   );
   const firstSticky = page.locator("#drawing-area .board-item-sticky").first();
   const firstStickyBounds = await firstSticky.boundingBox();
-  expect(firstStickyBounds).not.toBeNull();
   if (!firstStickyBounds) throw new Error("The watched sticky has no layout bounds.");
   await page.getByRole("button", { name: /^Select/u }).click();
   await page.mouse.dblclick(
@@ -293,13 +202,8 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   await stickyEditor.fill(`${await stickyEditor.inputValue()}\nA newly saved problem step.`);
   await stickyEditor.press("Control+Enter");
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
-  const changedResult = await watchResult;
-  expect(changedResult).toMatchObject({
+  expect(await watchResult).toMatchObject({
     status: "changed",
-    selectionToken: expect.any(String),
-    selectionSources: expect.arrayContaining([
-      { stepAlias: repliedAlias, sourceAlias: expect.stringMatching(/^idea_[1-9]/u) },
-    ]),
     changes: [
       {
         steps: [
@@ -322,448 +226,102 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   await expect(page.getByTestId("ai-watch-indicator")).toBeHidden();
   await expect(page.getByTestId("tool-ai")).toBeHidden();
 
-  const readResult = await page.evaluate(() => {
-    const tool = window.__spaceScaleWebMcpTools.read_selected_class_ideas;
-    if (!tool) throw new Error("The selected-ideas tool was not registered.");
-    return tool.execute({}, { signal: new AbortController().signal });
-  });
-  expect(readResult.contributions).toHaveLength(8);
-  const contributions = readResult.contributions as Array<{
-    action: { type: string; objectKind: string };
-    createdBy: { participantId: string; displayName: string };
-  }>;
-  expect(
-    contributions.every(
-      (contribution) =>
-        contribution.action.type === "created" &&
-        contribution.action.objectKind === "sticky" &&
-        contribution.createdBy.participantId.length > 0 &&
-        contribution.createdBy.displayName !== "Unknown participant",
-    ),
-  ).toBe(true);
-  expect(JSON.stringify(readResult)).not.toContain("itemId");
-
-  const guidedReads = await page.evaluate(async () => {
-    const signal = new AbortController().signal;
-    const inspire = window.__spaceScaleWebMcpTools.inspire_from_selected_ideas;
-    const explain = window.__spaceScaleWebMcpTools.explain_selected_ideas;
-    if (!inspire || !explain) throw new Error("The inspire/explain tools were not registered.");
-    return Promise.all([inspire.execute({}, { signal }), explain.execute({}, { signal })]);
-  });
-  expect(guidedReads[0]).toMatchObject({
-    purpose: "inspire",
-    responseGuidance: {
-      distinguishSourceFromSuggestion: true,
-      preserveOriginalContributions: true,
-    },
-    textRendering: { engine: "MathJax 4" },
-  });
-  expect(guidedReads[1]).toMatchObject({
-    purpose: "explain",
-    responseGuidance: { citeSourceAliases: true, surfaceAmbiguity: true },
-    textRendering: { engine: "MathJax 4" },
-  });
-
-  const rejectedSafeguards = await page.evaluate(
-    async ({ selectionToken }) => {
-      const card = (id: string) => ({
-        id,
-        heading: "Question",
-        body: "Grounded in one selected contribution.",
-        sourceAliases: ["idea_1"],
-        question: "What evidence would change our mind?",
-      });
-      const attempts: Array<{ tool: string; input: Record<string, unknown> }> = [
-        {
-          tool: "add_thinking_expansion",
-          input: {
-            selectionToken,
-            mode: "gap_finder",
-            title: "Too many prompts",
-            cards: [card("one"), card("two"), card("three"), card("four")],
-            connections: [],
-          },
-        },
-        {
-          tool: "add_idea_sensemaking",
-          input: {
-            selectionToken,
-            mode: "bridge_builder",
-            title: "Not actually a bridge",
-            cards: [card("one"), card("two")],
-            connections: [],
-          },
-        },
-        {
-          tool: "add_group_decision_scaffold",
-          input: {
-            selectionToken,
-            mode: "tradeoff_visualizer",
-            title: "Not enough criteria",
-            entries: [card("one"), card("two")],
-            criteria: ["Impact"],
-          },
-        },
-      ];
-      const messages: string[] = [];
-      for (const attempt of attempts) {
-        const tool = window.__spaceScaleWebMcpTools[attempt.tool];
-        if (!tool) throw new Error(`${attempt.tool} was not registered.`);
-        try {
-          await tool.execute(attempt.input, { signal: new AbortController().signal });
-          messages.push("unexpected success");
-        } catch (error) {
-          messages.push(error instanceof Error ? error.message : String(error));
-        }
+  // Each generic write lands one object where the call asks, tagged as written by AI.
+  const written = await page.evaluate(
+    async ({ png }) => {
+      const signal = new AbortController().signal;
+      const tools = window.__spaceScaleWebMcpTools;
+      for (const name of ["insert_sticky", "insert_image", "insert_video"]) {
+        if (!tools[name]) throw new Error(`${name} was not registered.`);
       }
-      return messages;
+      const sticky = await tools.insert_sticky?.execute(
+        {
+          location: { x: 640, y: 60 },
+          text: "What would change your mind about $x=3$?",
+          fill: "mint",
+        },
+        { signal },
+      );
+      const video = await tools.insert_video?.execute(
+        { location: { x: 640, y: 320 }, url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" },
+        { signal },
+      );
+      const image = await tools.insert_image?.execute(
+        { location: { x: 640, y: 620 }, imageDataUrl: png, alt: "A single grey pixel" },
+        { signal },
+      );
+      return { sticky, video, image };
     },
-    { selectionToken: readResult.selectionToken as string },
+    { png: TINY_PNG },
   );
-  expect(rejectedSafeguards[0]).toContain("cards must contain 2-3 entries");
-  expect(rejectedSafeguards[1]).toContain("connect at least 2 selected sources");
-  expect(rejectedSafeguards[2]).toContain("criteria must contain 2-4 entries");
-
-  const educationResults = await page.evaluate(
-    async ({ selectionToken }) => {
-      const moves: Array<{ name: string; input: Record<string, unknown> }> = [
-        {
-          name: "add_thinking_expansion",
-          input: {
-            selectionToken,
-            mode: "gap_finder",
-            title: "What the class has not asked yet",
-            cards: [
-              {
-                id: "missing_voice",
-                heading: "Whose lunch experience is missing?",
-                body: "The ideas discuss waste and speed but not who may find a new routine harder.",
-                sourceAliases: ["idea_1", "idea_2"],
-                question: "Which students or staff could be affected differently by these changes?",
-                role: "missing perspective",
-              },
-              {
-                id: "missing_evidence",
-                heading: "What baseline do we need?",
-                body: "Several proposals assume where most waste happens without a shared observation yet.",
-                sourceAliases: ["idea_3", "idea_4"],
-                question: "What could the class measure before choosing a solution?",
-                role: "evidence gap",
-              },
-            ],
-            connections: [],
-          },
-        },
-        {
-          name: "add_idea_sensemaking",
-          input: {
-            selectionToken,
-            mode: "alternative_clusterer",
-            title: "Two ways to organize our ideas",
-            cards: [
-              {
-                id: "people_systems",
-                heading: "People choices and school systems",
-                body: "One organization separates daily student choices from purchasing and collection systems.",
-                sourceAliases: ["idea_1", "idea_2", "idea_5"],
-                question: "Which ideas become easier or harder to understand in this organization?",
-              },
-              {
-                id: "before_after_lunch",
-                heading: "Before lunch and after lunch",
-                body: "Another organization follows when waste is prevented, reused, or recovered.",
-                sourceAliases: ["idea_3", "idea_4", "idea_6"],
-                question: "What does this timeline reveal that the first organization hides?",
-              },
-            ],
-            connections: [],
-          },
-        },
-        {
-          name: "add_collective_reasoning",
-          input: {
-            selectionToken,
-            mode: "counterexample_challenge",
-            title: "Test our strongest claims",
-            cards: [
-              {
-                id: "claim",
-                heading: "More choice reduces waste",
-                body: "This claim connects portion choice with less uneaten food.",
-                sourceAliases: ["idea_1"],
-                question: "What evidence would show that more choice actually reduces total waste?",
-                role: "claim",
-              },
-              {
-                id: "counterexample",
-                heading: "Choice could add packaging",
-                body: "A choice system might reduce food waste while creating more packaging or a slower queue.",
-                sourceAliases: ["idea_1", "idea_4"],
-                question: "When could the proposed benefit create a different kind of cost?",
-                role: "counterexample",
-              },
-            ],
-            connections: [{ fromCardId: "counterexample", toCardId: "claim", label: "tests" }],
-          },
-        },
-        {
-          name: "add_content_visuals",
-          input: {
-            selectionToken,
-            title: "A visual joke the class can challenge",
-            safetyConfirmation: "classroom_safe_no_student_likeness_or_targeting",
-            visuals: [
-              {
-                id: "lunch_plot_twist",
-                format: "meme_card",
-                title: "The lunch-line plot twist",
-                caption:
-                  "The meme connects less packaging with a faster lunch line, then asks the class to inspect that connection.",
-                sourceAliases: ["idea_1", "idea_4"],
-                discussionPrompt:
-                  "What does this joke help us notice, and what does it oversimplify?",
-                headline: "Less packaging enters",
-                punchline: "Faster lunch line appears",
-                emoji: "♻️",
-                palette: "confetti",
-              },
-            ],
-          },
-        },
-        {
-          name: "add_group_decision_scaffold",
-          input: {
-            selectionToken,
-            mode: "criteria_co_designer",
-            title: "Criteria the class can edit and weight",
-            entries: [
-              {
-                id: "access",
-                heading: "Accessible to everyone",
-                body: "The solution should work for different lunch routines and support needs.",
-                sourceAliases: ["idea_2", "idea_4"],
-                question: "How should the class define and observe accessibility?",
-              },
-              {
-                id: "impact",
-                heading: "Reduces total waste",
-                body: "The class may want to consider food, packaging, and recovery together.",
-                sourceAliases: ["idea_1", "idea_5"],
-                question: "Which waste measures should count most to the class?",
-              },
-            ],
-            criteria: [],
-          },
-        },
-        {
-          name: "add_learning_action_plan",
-          input: {
-            selectionToken,
-            mode: "idea_to_experiment",
-            title: "Turn an idea into a class experiment",
-            cards: [
-              {
-                id: "prediction",
-                heading: "Prediction",
-                body: "Offering a smaller default portion may reduce uneaten food without reducing satisfaction.",
-                sourceAliases: ["idea_1"],
-                question:
-                  "What change would the class predict in food waste and student experience?",
-                role: "prediction",
-              },
-              {
-                id: "evidence",
-                heading: "Evidence to collect",
-                body: "Observe leftover food, queue time, and whether students request more food.",
-                sourceAliases: ["idea_1", "idea_4"],
-                question: "Which evidence would distinguish success from a hidden trade-off?",
-                role: "evidence need",
-              },
-              {
-                id: "test",
-                heading: "Small reversible test",
-                body: "Try one lunch station for one week while keeping an easy path to request more.",
-                sourceAliases: ["idea_1", "idea_4"],
-                question: "What would make this test fair, safe, and easy to stop?",
-                role: "proposed test",
-              },
-            ],
-            connections: [
-              { fromCardId: "prediction", toCardId: "evidence", label: "checked by" },
-              { fromCardId: "evidence", toCardId: "test", label: "collected during" },
-            ],
-          },
-        },
-      ];
-      const results: Record<string, unknown>[] = [];
-      for (const move of moves) {
-        const tool = window.__spaceScaleWebMcpTools[move.name];
-        if (!tool) throw new Error(`${move.name} was not registered.`);
-        results.push(await tool.execute(move.input, { signal: new AbortController().signal }));
-      }
-      return results;
-    },
-    { selectionToken: readResult.selectionToken as string },
-  );
-  expect(educationResults).toHaveLength(6);
-  expect(educationResults.every((result) => result.changedCanvas === true)).toBe(true);
-  expect(educationResults[0]?.additionCount).toBe(2);
-  expect(educationResults[3]).toMatchObject({
-    visualCount: 1,
-    formats: ["meme_card"],
-    privatelyStored: true,
-    sourceLinkCount: 2,
+  expect(written.sticky).toMatchObject({
+    status: "inserted",
+    objectKind: "sticky",
+    location: { x: 640, y: 60 },
+    aiAttributed: true,
+    undoable: true,
   });
-  expect(educationResults[4]?.consensusInferred).toBe(false);
-  const educationItemCount = educationResults.reduce(
-    (total, result) => total + (result.createdItemCount as number),
-    0,
-  );
-  await expect(canvasItems).toHaveCount(13 + educationItemCount);
-  await expect(page.locator('#drawing-area [data-assisted-by="ai"]')).toHaveCount(
-    educationItemCount,
-  );
+  expect(written.video).toMatchObject({ status: "inserted", objectKind: "video" });
+  expect(written.image).toMatchObject({ status: "inserted", objectKind: "image" });
+  expect(JSON.stringify(written)).not.toContain("itemId");
+
+  await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+  await expect(canvasItems).toHaveCount(16);
+  await expect(page.locator('#drawing-area [data-assisted-by="ai"]')).toHaveCount(3);
   await expect(page.locator("#drawing-area .creator-badge-ai").first()).toBeVisible();
-  await expect(page.locator("#drawing-area .creator-badge").first()).toBeVisible();
   await expect(page.locator("#drawing-area")).not.toContainText("AI-assisted");
-  let remainingEducationItems = 13 + educationItemCount;
-  for (let index = educationResults.length - 1; index >= 0; index -= 1) {
-    remainingEducationItems -= educationResults[index]?.createdItemCount as number;
+
+  // A comment attaches to whatever saved object covers the location it names, so the note the
+  // assistant just wrote is a target like any other.
+  const commented = await page.evaluate(() => {
+    const tool = window.__spaceScaleWebMcpTools.insert_comment;
+    if (!tool) throw new Error("The comment write was not registered.");
+    return tool.execute(
+      // The centre of the 180x140 note written at 640, 60.
+      { location: { x: 730, y: 130 }, body: "Check the division step: $6/2=3$, so $x=3$." },
+      { signal: new AbortController().signal },
+    );
+  });
+  expect(commented).toMatchObject({ status: "commented", objectKind: "sticky", writtenBy: "ai" });
+  await expect(page.locator("[data-comments-count]")).toHaveText("1");
+  await page.getByTestId("comments-button").click();
+  const commentsDrawer = page.getByTestId("comments-drawer");
+  await expect(commentsDrawer.locator(".comment-card")).toHaveCount(1);
+  await expect(commentsDrawer.locator(".comment-card .assistance-tag")).toHaveText("AI");
+  await expect(commentsDrawer.locator(".comment-card strong").first()).not.toHaveText("AI");
+  await page.getByTestId("comments-button").click();
+
+  // Every write is one ordinary command, so each undoes on its own.
+  for (const remaining of [15, 14, 13]) {
     await page.waitForTimeout(300);
     await page.getByTestId("undo-button").click();
-    await expect(canvasItems).toHaveCount(remainingEducationItems);
+    await expect(canvasItems).toHaveCount(remaining);
     await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
   }
+
+  // A write the board cannot place refuses rather than guessing.
+  const refusals = await page.evaluate(async () => {
+    const signal = new AbortController().signal;
+    const attempts: Array<[string, Record<string, unknown>]> = [
+      ["insert_sticky", { text: "a", fill: "neon" }],
+      ["insert_video", { url: "https://example.com/clip.mp4" }],
+      ["insert_image", { imageDataUrl: "https://example.com/cat.png", alt: "A cat" }],
+    ];
+    const messages: string[] = [];
+    for (const [name, input] of attempts) {
+      const tool = window.__spaceScaleWebMcpTools[name];
+      if (!tool) throw new Error(`${name} was not registered.`);
+      try {
+        await tool.execute(input, { signal });
+        messages.push("unexpected success");
+      } catch (error) {
+        messages.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    return messages;
+  });
+  expect(refusals[0]).toContain("fill must be");
+  expect(refusals[1]).toContain("YouTube or Vimeo");
+  expect(refusals[2]).toContain("never fetches an external image");
   await expect(canvasItems).toHaveCount(13);
-
-  const stageResultPromise = page.evaluate(
-    ({ selectionToken }) => {
-      const tool = window.__spaceScaleWebMcpTools.stage_collective_inquiry;
-      if (!tool) throw new Error("The inquiry-staging tool was not registered.");
-      return tool.execute(
-        {
-          selectionToken,
-          mapTitle: "From isolated fixes to a school-wide learning loop",
-          themes: [
-            {
-              id: "choice_and_demand",
-              label: "Choice and demand",
-              summary:
-                "Reduce waste by matching portions and meals to what students will actually eat.",
-              ideaAliases: ["idea_1", "idea_3", "idea_7"],
-            },
-            {
-              id: "reuse_and_recovery",
-              label: "Reuse and recovery",
-              summary:
-                "Keep food and materials in useful cycles instead of treating everything as rubbish.",
-              ideaAliases: ["idea_2", "idea_5", "idea_6"],
-            },
-            {
-              id: "feedback_and_flow",
-              label: "Feedback and flow",
-              summary:
-                "Make waste and lunch-line friction visible so the class can improve the system together.",
-              ideaAliases: ["idea_4", "idea_8"],
-            },
-          ],
-          bridges: [
-            {
-              fromThemeId: "choice_and_demand",
-              toThemeId: "feedback_and_flow",
-              insight:
-                "Daily feedback can help the kitchen predict demand while students see the effect of their choices.",
-            },
-            {
-              fromThemeId: "reuse_and_recovery",
-              toThemeId: "feedback_and_flow",
-              insight:
-                "A visible return and recovery system makes collective responsibility concrete and measurable.",
-            },
-          ],
-          tension: {
-            statement:
-              "Convenient individual choice may reduce food waste while increasing packaging or slowing lunch service.",
-            nextQuestion:
-              "What small pilot would reduce total waste without making lunch less accessible or enjoyable?",
-          },
-        },
-        { signal: new AbortController().signal },
-      );
-    },
-    { selectionToken: readResult.selectionToken as string },
-  );
-
-  const preview = page.getByTestId("inquiry-preview-dialog");
-  await expect(preview).toBeVisible();
-  await expect(preview).toContainText("Proposal · no changes yet");
-  await expect(preview.locator(".inquiry-preview-theme")).toHaveCount(3);
-  await preview.getByRole("button", { name: "Add map for the class" }).click();
-
-  const stageResult = await stageResultPromise;
-  expect(stageResult.status).toBe("participant_approved_and_added");
-  const createdItemCount = stageResult.createdItemCount as number;
-  expect(createdItemCount).toBeGreaterThan(0);
-  await expect(canvasItems).toHaveCount(13 + createdItemCount);
-  await expect(page.locator('#drawing-area [data-assisted-by="ai"]')).toHaveCount(createdItemCount);
-  await expect(page.locator("#drawing-area")).not.toContainText("AI-assisted");
-  await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
-
-  await page.getByTestId("undo-button").click();
-  await expect(canvasItems).toHaveCount(13);
-  await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
-
-  // Generative actions can use the minted selection token with the existing card tools.
-  // Runs last: inserting cards selects them and moves the viewport, and the earlier reads
-  // depend on the template selection and the 13-item baseline.
-  const expansion = await page.evaluate(
-    ({ selectionToken, sourceAliases }) => {
-      const tool = window.__spaceScaleWebMcpTools.add_thinking_expansion;
-      if (!tool) throw new Error("The thinking-expansion tool was not registered.");
-      return tool.execute(
-        {
-          selectionToken,
-          mode: "gap_finder",
-          title: "Gaps to test",
-          cards: [
-            {
-              id: "divide_by_three",
-              heading: "What if we divided by 3?",
-              body: "The step divides both sides by 2; a different divisor would change the result.",
-              sourceAliases,
-              question: "What happens to the equation if both sides are divided by 3 instead?",
-              role: "missing perspective",
-            },
-            {
-              id: "negative_x",
-              heading: "Does the step survive a negative value?",
-              body: "The work assumes a positive answer without checking the sign.",
-              sourceAliases,
-              question: "Which step would fail if $x$ were negative?",
-              role: "evidence gap",
-            },
-          ],
-          connections: [],
-        },
-        { signal: new AbortController().signal },
-      );
-    },
-    {
-      // The edit above bumped a version, so use the token the changed result re-minted, and
-      // cite the idea_N alias the writers accept rather than the step_N watch alias.
-      selectionToken: String(changedResult.selectionToken),
-      sourceAliases: [
-        (changedResult.selectionSources as Array<{ stepAlias: string; sourceAlias: string }>).find(
-          (source) => source.stepAlias === repliedAlias,
-        )?.sourceAlias ?? "idea_1",
-      ],
-    },
-  );
-  expect(expansion).toMatchObject({ status: expect.any(String) });
-  await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
-  await expect(page.locator("#drawing-area [data-item-id][data-assisted-by='ai']")).not.toHaveCount(
-    0,
-  );
-  await expect(page.locator("#drawing-area .creator-badge-ai")).not.toHaveCount(0);
-  await expect(canvasItems).toHaveCount(13 + Number(expansion.createdItemCount));
 });

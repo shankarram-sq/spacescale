@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BoardItem } from "../types";
 import { CollectiveInquiryWebMcp } from "./collective-inquiry";
 import { MAX_WATCHED_ITEMS } from "./problem-step-watch";
-import { webMcpRegistryState } from "./shared";
+import { webMcpRegistryState, webMcpToolDefinitions } from "./shared";
 import type { WebMcpRegisterToolOptions, WebMcpToolDefinition } from "./types";
 
 const ACTOR_ID = "018f0000-0000-7000-8000-0000000000a1";
@@ -41,14 +41,17 @@ function fakeDialog(): HTMLDialogElement {
 }
 
 function harness(options: { canComment?: boolean; canWrite?: boolean; board?: BoardItem[] } = {}) {
-  const tools = new Map<string, WebMcpToolDefinition>();
+  /** What a linked host is actually offered. */
+  const exposed = new Map<string, WebMcpToolDefinition>();
+  /** Every definition the module builds, including the ones this build withholds. */
+  const tools = webMcpToolDefinitions();
   const board = options.board ?? [sticky()];
   vi.stubGlobal("document", {
     createElement: () => fakeDialog(),
     modelContext: {
       registerTool(tool: WebMcpToolDefinition, registration?: WebMcpRegisterToolOptions) {
-        tools.set(tool.name, tool);
-        registration?.signal?.addEventListener("abort", () => tools.delete(tool.name), {
+        exposed.set(tool.name, tool);
+        registration?.signal?.addEventListener("abort", () => exposed.delete(tool.name), {
           once: true,
         });
       },
@@ -78,7 +81,7 @@ function harness(options: { canComment?: boolean; canWrite?: boolean; board?: Bo
       unknown
     >;
   };
-  return { inquiry, tools, created, notices, call };
+  return { inquiry, tools, exposed, created, notices, call };
 }
 
 describe("watch reply tools", () => {
@@ -96,7 +99,7 @@ describe("watch reply tools", () => {
       untrustedContentHint: true,
     });
     inquiry.destroy();
-    expect(tools.size).toBe(0);
+    expect(tools.has("comment_on_watched_step")).toBe(false);
   });
 
   it("accepts the highest generated watch alias in the schema and runtime", async () => {
@@ -184,14 +187,28 @@ describe("watch reply tools", () => {
 describe("registered tool surface", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("counts the tools a linked host can see and drops them when the page tears down", async () => {
+  it("offers a host only the watch and drops it when the page tears down", async () => {
     const before = webMcpRegistryState().toolCount;
-    const { inquiry, tools } = harness();
-    await vi.waitFor(() => expect(tools.has("comment_on_watched_step")).toBe(true));
+    const { inquiry, tools, exposed } = harness();
+    await vi.waitFor(() => expect(exposed.has("watch_board")).toBe(true));
+
+    // The selection reads and the watch's own comment channel keep their definitions but are
+    // withheld from every host by ENABLED_WEBMCP_TOOLS.
+    expect([...exposed.keys()]).toEqual(["watch_board"]);
+    for (const withheld of [
+      "read_selected_class_ideas",
+      "inspire_from_selected_ideas",
+      "explain_selected_ideas",
+      "inspect_selected_board_visual",
+      "comment_on_watched_step",
+    ]) {
+      expect(tools.has(withheld)).toBe(true);
+      expect(exposed.has(withheld)).toBe(false);
+    }
 
     const linked = webMcpRegistryState();
     expect(linked.hostPresent).toBe(true);
-    expect(linked.toolCount).toBe(before + tools.size);
+    expect(linked.toolCount).toBe(before + exposed.size);
 
     inquiry.destroy();
     await vi.waitFor(() => expect(webMcpRegistryState().toolCount).toBe(before));
