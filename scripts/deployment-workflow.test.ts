@@ -13,8 +13,12 @@ describe("deployment and CI workflows", () => {
     expect(ci).toContain("workflow_dispatch:");
     expect(ci).toContain("pull_request:\n    branches: [main]");
     expect(ci).toContain("push:\n    branches: [main]");
-    expect(ci).toContain("group: ci-$" + "{{ github.workflow }}-$" + "{{ github.ref }}");
-    expect(ci).toContain("cancel-in-progress: true");
+    expect(ci).toContain(
+      "group: ci-$" + "{{ github.workflow }}-$" + "{{ github.event_name }}-$" + "{{ github.ref }}",
+    );
+    expect(ci).toContain(
+      "cancel-in-progress: $" + "{{ github.event_name != 'workflow_dispatch' }}",
+    );
     expect(ci).toContain("npm run check");
     expect(ci).toContain("npm run cf:types -- --check");
     expect(ci).toContain("browser:\n    if: github.event_name == 'workflow_dispatch'");

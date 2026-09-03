@@ -9,7 +9,9 @@ changes while retaining a lightweight direct deployment after merge.
 and manual `workflow_dispatch` requests. The automatic runs execute the full
 repository check and verify generated Worker binding types. Playwright runs only
 when the workflow is dispatched manually. Only the `validate` job is required
-before a pull request can merge into `main`.
+before a pull request can merge into `main`. Concurrency is grouped per event and
+ref, so a new pull-request or `main` push run supersedes the outstanding run for
+that same ref while manually dispatched browser runs are never cancelled by it.
 
 `.github/workflows/deploy.yml` runs directly on pushes to `staging` and `main`.
 Each job reads its target hostname and resource names from that GitHub

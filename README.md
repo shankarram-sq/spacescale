@@ -160,11 +160,14 @@ npm run check
 ```
 
 Run the focused checks relevant to a change during normal development. The full
-`npm run check` and Playwright suites are available on demand and are not release
-gates. `npm run build` verifies the production bundle with `wrangler deploy --dry-run`;
-on a checkout without deployment details it substitutes non-deployable `dry-run`
-placeholders for `DEPLOYMENT_NAME`, `APP_HOSTNAME`, and `TURNSTILE_SITE_KEY`, while
-`deployment:init` keeps strict validation.
+`npm run check` runs automatically in CI and is the required gate for pull
+requests into `main`; running it locally before opening one avoids a failed
+check. The Playwright suite stays manual-only and is not a release gate: CI runs
+it only on an explicit workflow dispatch. `npm run build` verifies the production
+bundle with `wrangler deploy --dry-run`; on a checkout without deployment details
+it substitutes non-deployable `dry-run` placeholders for `DEPLOYMENT_NAME`,
+`APP_HOSTNAME`, and `TURNSTILE_SITE_KEY`, while `deployment:init` keeps strict
+validation.
 
 ## Cloudflare setup
 
