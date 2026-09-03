@@ -537,7 +537,7 @@ describe("BoardRoom initialization", () => {
         .one(),
     }));
     expect(state).toEqual({
-      migrations: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
+      migrations: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
       boards: 1,
       owners: 1,
       classroomMode: 0,
