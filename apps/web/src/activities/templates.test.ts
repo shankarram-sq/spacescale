@@ -25,10 +25,12 @@ describe("classroom templates", () => {
       "pair-share": 7,
       "vote-with-stamps": 4,
       "graph-check": 13,
-      "student-questions": 26,
-      "brainstorm-school-traffic": 26,
-      "problem-set-six-students": 14,
-      "debate-school-start": 10,
+      "student-questions": 27,
+      "brainstorm-school-traffic": 29,
+      "problem-set-six-students": 95,
+      "debate-school-start": 14,
+      "tasks-four-projects": 29,
+      "marketing-ad-ideas": 36,
     };
 
     expect(ACTIVITY_TEMPLATES.map(({ id }) => id)).toEqual(Object.keys(expectedCounts));
@@ -104,6 +106,8 @@ describe("classroom templates", () => {
       "brainstorm-school-traffic",
       "problem-set-six-students",
       "debate-school-start",
+      "tasks-four-projects",
+      "marketing-ad-ideas",
     ] as const;
 
     for (const id of demos) {
@@ -158,13 +162,20 @@ describe("classroom templates", () => {
     const debate = byId.get("debate-school-start");
     const sides = debate?.items.filter((item) => item.kind === "zone") ?? [];
     expect(sides).toHaveLength(2);
-    expect(debate?.items.filter(({ kind }) => kind === "sticky")).toHaveLength(6);
+    expect(debate?.items.filter(({ kind }) => kind === "sticky")).toHaveLength(8);
 
-    // One student is still short of the full set, so a reader can see who is mid-way.
+    // The problem set shows working: some drawn stroke by stroke, some in a handwriting face,
+    // and every student has the same five questions in front of them.
     const problems = byId.get("problem-set-six-students");
-    const answers = (problems?.items ?? []).filter((item) => item.kind === "text");
-    expect(
-      answers.some((item) => item.kind === "text" && /not started/u.test(item.geometry.text)),
-    ).toBe(true);
+    const strokes = (problems?.items ?? []).filter((item) => item.kind === "pencil");
+    expect(strokes.length).toBeGreaterThanOrEqual(30);
+    const handwritten = (problems?.items ?? []).filter(
+      (item) => item.kind === "text" && item.style.fontFamily === "handwritten",
+    );
+    expect(handwritten.length).toBeGreaterThanOrEqual(15);
+    const questionSheets = (problems?.items ?? []).filter(
+      (item) => item.kind === "text" && item.geometry.text.includes("20 ÷ 4 × 5"),
+    );
+    expect(questionSheets).toHaveLength(6);
   });
 });

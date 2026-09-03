@@ -101,10 +101,10 @@ where they got to, and the one thing to pick up next time. No scores.
 
 ## Demo scenario
 
-Board: insert the template **Problem set: six students**. Isha has
-questions 1, 3 and 4 right, question 2 wrong (\(12 - 5 + 3 = 4\)), and
-question 5 not started. If the working folder has no files, keep every
-comment to one line and one question.
+Board: insert the template **Problem set: six students**. Isha has written
+questions 1 and 2 by hand, both right, and questions 3 to 5 are blank. If
+the working folder has no files, keep every comment to one line and one
+question.
 
 Teacher's opening prompt:
 
@@ -114,23 +114,22 @@ Call `list_users`, match "Isha" to the participant with that display name,
 and say: "I will follow Isha's Section only. Start?" Wait for "yes", then
 `watch_users` with her participant ID.
 
-First comment, on Isha's text: "Questions 1, 3 and 4 are right. In
-\(12 - 5 + 3\), what is \(12 - 5\) first?"
+First comment, on Isha's Q2 working: "Both right so far. Question 3 has a
+bracket and a power. Which comes first?"
 
-Live moments, in this order. The teacher edits Isha's text between each:
+Live moments, in this order. The teacher writes in Isha's Section between
+each:
 
-1. Question 2 becomes 10. Comment: "That is it. Question 5 uses the same
-   left-to-right idea. What is \(20 \div 4\)?"
-2. Question 5 becomes \(20 \div 4 \times 5 = 1\). Comment: "You did
-   \(4 \times 5\) first. Try \(20 \div 4\) first, then times 5."
-3. Question 5 is saved again, still 1. Two saves stuck, so switch mode.
-   Comment: "Smaller one: \(16 \div 2 \times 4\). \(16 \div 2 = 8\),
-   then \(8 \times 4 = 32\). Now yours?"
-4. Question 5 is saved again, still 1. Three saves stuck. Comment with
-   `videoUrl` `https://www.youtube.com/watch?v=piIcRV2dx7E`: "Watch from
-   2:00: the left-to-right part. Then try question 5 once more." In chat,
-   tell the teacher: "Isha may need you in person on question 5."
-5. Question 5 becomes 25. Comment: "All five. Nice."
-6. The teacher types "stop". Stop the watch and give three lines: started
-   with question 2 wrong and 5 blank; got to all five right; pick up
-   left-to-right with one more mixed example next time.
+1. Q3 appears as \((8 - 3) = 5\), \(5 \times 2 = 10\). Comment: "Bracket
+   first, good. Does \(5^2\) mean \(5 \times 2\) or \(5 \times 5\)?"
+2. Q3 is saved again, still 10. Two saves stuck, so switch mode. Comment:
+   "Smaller one: \(3^2 = 3 \times 3 = 9\). Now \(5^2\)?"
+3. Q3 is saved again, still 10. Three saves stuck. Comment with `videoUrl`
+   `https://www.youtube.com/watch?v=eoYThjIAhOc`: "Watch from 1:00, the part
+   about powers. Then try question 3 once more." In chat, tell the teacher:
+   "Isha may need you in person on question 3."
+4. Q3 becomes 25. Comment: "That is it. Question 4 next: start at \(-4\)
+   and move 9 to the right."
+5. The teacher types "stop". Stop the watch and give three lines: started
+   with two right and three blank; got question 3 after a stall on powers;
+   pick up powers with one more example next time.

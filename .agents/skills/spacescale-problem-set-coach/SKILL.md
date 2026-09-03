@@ -115,36 +115,48 @@ three-line summary: who finished, who got hints, who got a video. No scores.
 ## Demo scenario
 
 Board: insert the template **Problem set: six students**. Six students,
-Aarav to Isha, five order-of-operations problems each. Correct answers are
-11, 10, 25, 5, 25. If the working folder has no files, use the values below.
+Aarav to Isha, five order-of-operations problems each, with their working
+shown: some typed in a handwriting face, some drawn stroke by stroke. Correct
+answers are 11, 10, 25, 5, 25. If the working folder has no files, use the
+values below.
+
+Where each student is when the board opens:
+
+| Student | Done | Right | Wrong | Note |
+| --- | --- | --- | --- | --- |
+| Aarav | 5 | 1, 3, 4 | Q2 (\(5 + 3\) first, gets 4), Q5 (\(4 \times 5\) first, gets 1) | Same mistake twice |
+| Meera | 5 | all | none | Sticky: "done ✓ what now?" |
+| Rohan | 4 | 1, 2, 3 | Q4 (\(-4 + 9 = -5\), drawn by hand) | Q5 blank |
+| Zoya | 2 | 2 | Q1 (\(3 + 4\) first, gets 14) | Sticky: "stuck on 3 ??" |
+| Kabir | 5 | 1, 2, 4, 5 | Q3 (\(5 \times 2\) for \(5^2\), gets 10) | |
+| Isha | 2 | 1, 2 (drawn by hand) | none | Q3 to Q5 blank |
 
 Teacher's opening prompt:
 
-> Watch the class on this problem set. Start by giving each student one hint
-> on their first wrong answer.
+> Watch the class on this problem set. Start by giving everyone one thing:
+> a hint on their first wrong answer, or the fast-finisher if they are done.
 
-First pass, one `insert_comment` per student, on their text:
+First pass, one write per student:
 
-| Student | First error | Comment to post |
-| --- | --- | --- |
-| Aarav | Q2 \(12 - 5 + 3 = 4\) | Questions 1, 3 and 4 are right. In \(12 - 5 + 3\), subtraction and addition go left to right. What is \(12 - 5\) on its own? |
-| Meera | Q1 \(3 + 4 \times 2 = 14\) | Questions 2 to 5 are all right. In \(3 + 4 \times 2\), which happens first, the plus or the times? |
-| Rohan | Q4 \(-4 + 9 = -5\) | Questions 1, 2, 3 and 5 are right. Start at \(-4\) on the number line and move 9 to the right. Where do you land? |
-| Zoya | Q1 \(3 + 4 \times 2 = 14\) | Questions 3, 4 and 5 are right. In \(3 + 4 \times 2\), which happens first, the plus or the times? |
-| Kabir | Q3 \((8 - 3)^2 = 10\) | Questions 1, 2 and 4 are right. \((8 - 3)^2\) means \(5 \times 5\), not \(5 \times 2\). What is \(5^2\)? |
-| Isha | Q2 \(12 - 5 + 3 = 4\) | Questions 1, 3 and 4 are right. In \(12 - 5 + 3\), work left to right. What is \(12 - 5\) first? |
+| Student | Post |
+| --- | --- |
+| Aarav | Comment on Q2: "Questions 1, 3 and 4 are right. In \(12 - 5 + 3\), subtraction and addition go left to right. What is \(12 - 5\) on its own?" |
+| Meera | `insert_sticky` beside her Section: "Meera: put one pair of brackets into \(3 + 4 \times 2 - 1\) to make it equal 13." |
+| Rohan | Comment on the drawn Q4: "Questions 1 to 3 are right. Start at \(-4\) on the number line and move 9 to the right. Where do you land?" |
+| Zoya | Comment on Q1: "Question 2 is right. In \(3 + 4 \times 2\), which happens first, the plus or the times?" |
+| Kabir | Comment on Q3: "Four out of five. \((8 - 3)^2\) means \(5 \times 5\), not \(5 \times 2\). What is \(5^2\)?" |
+| Isha | Nothing yet. Both done so far are right and she is still writing. |
 
 Live moments, in this order:
 
-1. The teacher edits Meera's first answer to 11 and saves. All five are now
-   right. Post `insert_sticky` beside Meera's Section: "Meera: put one pair
-   of brackets into \(3 + 4 \times 2 - 1\) to make it equal 13."
-2. The teacher edits Aarav's second answer to 10, then his fifth to 5, and
-   saves. Q5 is still wrong. Comment: "Question 2 is right now. Question 5
-   is the same idea: \(\div\) and \(\times\) go left to right. What is
-   \(20 \div 4\) first?"
-3. Kabir presses Ask AI on his text and chooses **Explain with a video**.
-   Reply on that step with `videoUrl`
+1. The teacher edits Aarav's Q5 working to \(20 \div 4 = 5\), \(5 \times 5 = 25\)
+   and saves. Comment: "That is it, and question 2 is the same idea. What is
+   \(12 - 5\) first?"
+2. The teacher writes Isha's Q3 by hand as \((8-3)=5\), \(5 \times 2 = 10\)
+   and saves. Comment on that step: "The bracket is right. \(5^2\) means
+   \(5 \times 5\). What does that give?"
+3. Kabir presses Ask AI on his Q3 and chooses **Explain with a video**. Reply
+   on that step with `videoUrl`
    `https://www.youtube.com/watch?v=eoYThjIAhOc` and the body: "Watch the
    first three minutes and notice what happens to the power before anything
    is multiplied. Then look at question 3 again."

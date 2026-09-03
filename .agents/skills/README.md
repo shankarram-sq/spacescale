@@ -78,7 +78,12 @@ work, and the live moments to act out. Each skill folder also carries a
 | `spacescale-working-checker` | Graph check: one student's working | `spacescale-working-checker/demo` |
 | `spacescale-follow-one-student` | Problem set: six students | `spacescale-follow-one-student/demo` |
 
-All five boards ship in the **Templates** menu. Every student on them is
+Two more boards ship for domains outside school and need no skill: **Tasks:
+four projects, scattered** and **Ad ideas: spring launch**. Start a watch and
+ask the host to group the cards, find the chain of blocked tasks, spot the
+duplicate, or sort the ad ideas by audience and by who proposed them.
+
+All seven boards ship in the **Templates** menu. Every student on them is
 synthetic. The videos in the `video-list.md` files are public Khan Academy
 and FuseSchool links; open each once before a demo to confirm it still
 plays.

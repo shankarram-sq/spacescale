@@ -115,7 +115,7 @@ A comment needs a target: pass the watch's `watchToken` and `stepAlias`, or a
 
 ## Demo boards
 
-Five templates stage a demo in one click, so no scene has to be drawn live. Each
+Seven templates stage a demo in one click, so no scene has to be drawn live. Each
 one is student work and nothing else: there is no block waiting for the AI,
 because the AI answers in comments, which is the thing worth showing. Nothing on
 any of them belongs to a real student.
@@ -125,10 +125,15 @@ any of them belongs to a real student.
 | **Graph check: one student's working** | A hand-drawn parabola with the roots marked at `-3` and `-1`, and the student's own arithmetic already disproving it |
 | **Need to know: eclipses** | Six students, a Section each, three questions apiece before the topic starts |
 | **Brainstorm: traffic near school** | Six students, a Section each, ideas and objections about a real school problem |
-| **Problem set: six students** | Six students working the same five order-of-operations problems, each with mistakes, one still on question five |
-| **Debate: a 9 am start** | Two sides, one Section each, three claims apiece on whether school should start an hour later |
+| **Problem set: six students** | Six students on the same five problems with their working shown, typed and handwritten. One has every answer right, one has two wrong, two stopped at question two |
+| **Debate: a 9 am start** | Five claims for, two against, and one that takes neither side |
+| **Tasks: four projects, scattered** | Twenty-six Linear-style tasks from four projects on one board with no grouping, some blocked on each other, one duplicate, one overdue |
+| **Ad ideas: spring launch** | Five people's ad ideas and reactions with very different instincts, dropped wherever they landed |
 
-The debate board gives each side a Section instead. The three class boards give every student a Section of their own, which is what
+The debate board gives each side a Section instead. The tasks and ad-ideas
+boards have no Sections at all: the mess is the point, and the first thing to
+ask the host is to group what it sees (by project, by blocker chain, by
+audience) and say what a person would miss. The three class boards give every student a Section of their own, which is what
 makes per-student feedback legible: a comment lands on one person's work while
 the rest of the class stays visible beside it. The graph board is the
 handwriting case, so a watch on it returns a picture rather than a description.
