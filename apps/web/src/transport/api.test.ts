@@ -696,4 +696,99 @@ describe("comment API responses", () => {
       }),
     ).toThrow("invalid comment data");
   });
+
+  it("passes writer metadata through only when the pair is present and valid", () => {
+    const base = {
+      id: `c_${"A".repeat(22)}`,
+      itemId: "018f0000-0000-7000-8000-000000000c01",
+      body: "Review this object",
+      state: "open",
+      author: { id: `a_${"B".repeat(22)}`, displayName: "Asha" },
+      createdAt: 100,
+      updatedAt: 120,
+    };
+    const typed = parseBoardComment(base);
+    expect(typed).not.toHaveProperty("assistedBy");
+    expect(typed).not.toHaveProperty("assistance");
+
+    expect(
+      parseBoardComment({
+        ...base,
+        assistedBy: "ai",
+        assistance: { tool: "comment_on_watched_step", action: "critique" },
+      }),
+    ).toMatchObject({
+      assistedBy: "ai",
+      assistance: { tool: "comment_on_watched_step", action: "critique" },
+    });
+    expect(
+      parseBoardComment({
+        ...base,
+        assistedBy: "ai",
+        assistance: { tool: "comment_on_watched_step" },
+      }).assistance,
+    ).toEqual({ tool: "comment_on_watched_step" });
+
+    expect(() => parseBoardComment({ ...base, assistedBy: "ai" })).toThrow(
+      expect.objectContaining({ code: "INVALID_RESPONSE" }),
+    );
+    expect(() => parseBoardComment({ ...base, assistance: { tool: "x" } })).toThrow(
+      expect.objectContaining({ code: "INVALID_RESPONSE" }),
+    );
+    expect(() =>
+      parseBoardComment({ ...base, assistedBy: "ai", assistance: { tool: "x", action: "grade" } }),
+    ).toThrow(expect.objectContaining({ code: "INVALID_RESPONSE" }));
+    expect(() =>
+      parseBoardComment({ ...base, assistedBy: "human", assistance: { tool: "x" } }),
+    ).toThrow(expect.objectContaining({ code: "INVALID_RESPONSE" }));
+  });
+
+  it("sends assistedBy and assistance only when createComment is given assistance", async () => {
+    const requests: CapturedRequest[] = [];
+    const comment = {
+      id: `c_${"A".repeat(22)}`,
+      itemId: "018f0000-0000-7000-8000-000000000c01",
+      body: "Check the second step",
+      state: "open",
+      author: { id: `a_${"B".repeat(22)}`, displayName: "Asha" },
+      createdAt: 100,
+      updatedAt: 100,
+    };
+    const responses: unknown[] = [
+      { csrfToken: "csrf-token" },
+      comment,
+      { ...comment, assistedBy: "ai", assistance: { tool: "comment_on_watched_step" } },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+        requests.push({ path: String(input), init });
+        return Response.json(responses.shift());
+      }),
+    );
+
+    const api = new ApiClient();
+    await api.ensureSession();
+    const boardId = "b_1234567890123456789012";
+    await api.createComment(boardId, comment.itemId, comment.body);
+    const assisted = await api.createComment(boardId, comment.itemId, comment.body, {
+      tool: "comment_on_watched_step",
+    });
+
+    expect(requests[1]?.init.body).toBe(
+      JSON.stringify({ itemId: comment.itemId, body: comment.body }),
+    );
+    expect(requests[2]?.init.body).toBe(
+      JSON.stringify({
+        itemId: comment.itemId,
+        body: comment.body,
+        assistedBy: "ai",
+        assistance: { tool: "comment_on_watched_step" },
+      }),
+    );
+    expect(assisted).toMatchObject({
+      assistedBy: "ai",
+      assistance: { tool: "comment_on_watched_step" },
+    });
+  });
 });

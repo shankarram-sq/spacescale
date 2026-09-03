@@ -1,5 +1,6 @@
 import {
   PROTOCOL_VERSION as SHARED_PROTOCOL_VERSION,
+  type Assistance as SharedAssistance,
   type BoardFeatures as SharedBoardFeatures,
   type TextDecoration as SharedTextDecoration,
   type TextFontFamily as SharedTextFontFamily,
@@ -358,6 +359,9 @@ export type BoardComment = {
   updatedAt: number;
   resolvedBy?: Actor;
   resolvedAt?: number;
+  assistedBy?: "ai";
+  /** Present iff `assistedBy === "ai"`: which WebMCP tool wrote it and the action it answered. */
+  assistance?: SharedAssistance;
 };
 
 export type CanonicalOperation = DurableOperation & {

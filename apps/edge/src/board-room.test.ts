@@ -7903,6 +7903,132 @@ describe("object comments", () => {
     expect(invalidTransition.status).toBe(400);
   });
 
+  it("stores writer metadata on assisted comments and keeps it through resolve", async () => {
+    const stub = env.BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const owner = await connect(stub, actorId);
+    const itemId = "018f0000-0000-7000-8000-000000000c30";
+    owner.socket.send(
+      JSON.stringify(
+        createCommit(
+          "018f0000-0000-7000-8000-000000000c31",
+          "018f0000-0000-7000-8000-000000000c32",
+          itemId,
+        ),
+      ),
+    );
+    await owner.next((frame) => frame.t === "server.action" && frame.seq === 1);
+
+    const assistedResponse = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/comments`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          itemId,
+          body: "Step 2 drops the negative sign.",
+          assistedBy: "ai",
+          assistance: { tool: "comment_on_watched_step", action: "critique" },
+        }),
+      }),
+    );
+    expect(assistedResponse.status).toBe(201);
+    const assisted = (await assistedResponse.json()) as Record<string, unknown>;
+    expect(assisted).toMatchObject({
+      itemId,
+      state: "open",
+      author: { id: actorId, displayName: "Owner 1" },
+      assistedBy: "ai",
+      assistance: { tool: "comment_on_watched_step", action: "critique" },
+    });
+    await owner.next((frame) => frame.t === "server.comments.refresh");
+
+    const typedResponse = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/comments`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ itemId, body: "I typed this one myself." }),
+      }),
+    );
+    expect(typedResponse.status).toBe(201);
+    const typed = (await typedResponse.json()) as Record<string, unknown>;
+    expect(typed).not.toHaveProperty("assistedBy");
+    expect(typed).not.toHaveProperty("assistance");
+    await owner.next((frame) => frame.t === "server.comments.refresh");
+
+    const listed = (await (
+      await stub.fetch(internalRequest(`/api/v1/boards/${boardId}/comments`))
+    ).json()) as { comments: Record<string, unknown>[] };
+    expect(listed.comments).toHaveLength(2);
+    expect(listed.comments[0]).toMatchObject({
+      id: assisted.id,
+      assistedBy: "ai",
+      assistance: { tool: "comment_on_watched_step", action: "critique" },
+    });
+    expect(listed.comments[1]).not.toHaveProperty("assistedBy");
+    expect(listed.comments[1]).not.toHaveProperty("assistance");
+
+    const resolvedResponse = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/comments/${String(assisted.id)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ state: "resolved" }),
+      }),
+    );
+    expect(resolvedResponse.status).toBe(200);
+    expect(await resolvedResponse.json()).toMatchObject({
+      id: assisted.id,
+      state: "resolved",
+      resolvedBy: { id: actorId, displayName: "Owner 1" },
+      assistedBy: "ai",
+      assistance: { tool: "comment_on_watched_step", action: "critique" },
+    });
+    owner.socket.close(1000, "done");
+  });
+
+  it("rejects malformed comment writer metadata", async () => {
+    const stub = env.BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const owner = await connect(stub, actorId);
+    const itemId = "018f0000-0000-7000-8000-000000000c40";
+    owner.socket.send(
+      JSON.stringify(
+        createCommit(
+          "018f0000-0000-7000-8000-000000000c41",
+          "018f0000-0000-7000-8000-000000000c42",
+          itemId,
+        ),
+      ),
+    );
+    await owner.next((frame) => frame.t === "server.action" && frame.seq === 1);
+
+    const post = (extra: Record<string, unknown>) =>
+      stub.fetch(
+        internalRequest(`/api/v1/boards/${boardId}/comments`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ itemId, body: "Looks fine to me.", ...extra }),
+        }),
+      );
+    const cases: Record<string, unknown>[] = [
+      { assistance: { tool: "comment_on_watched_step" } },
+      { assistedBy: "ai" },
+      { assistedBy: "human", assistance: { tool: "comment_on_watched_step" } },
+      { assistedBy: "ai", assistance: "comment_on_watched_step" },
+      { assistedBy: "ai", assistance: {} },
+      { assistedBy: "ai", assistance: { tool: "Comment-On-Watched-Step" } },
+      { assistedBy: "ai", assistance: { tool: `t${"o".repeat(64)}` } },
+      { assistedBy: "ai", assistance: { tool: "comment_on_watched_step", action: "grade" } },
+      { assistedBy: "ai", assistance: { tool: "comment_on_watched_step", stepAlias: "step_1" } },
+    ];
+    for (const extra of cases) {
+      const response = await post(extra);
+      expect(response.status, JSON.stringify(extra)).toBe(400);
+    }
+    const listed = await stub.fetch(internalRequest(`/api/v1/boards/${boardId}/comments`));
+    expect(await listed.json()).toEqual({ comments: [] });
+    owner.socket.close(1000, "done");
+  });
+
   it("rejects comment bodies containing unpaired surrogates", async () => {
     const stub = env.BOARD_ROOMS.getByName(boardId);
     await initializeBoard(stub);
