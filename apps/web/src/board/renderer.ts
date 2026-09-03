@@ -1464,6 +1464,7 @@ function videoEmbedNode(
   node.classList.add("video-embed-item");
   if (preview) node.classList.add("video-embed-preview-item");
   node.dataset.videoProvider = video.provider;
+  node.setAttribute("opacity", String(style.opacity));
   node.setAttribute("role", "group");
   node.setAttribute("aria-label", video.title);
 

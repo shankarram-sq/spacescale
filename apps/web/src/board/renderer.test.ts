@@ -106,7 +106,7 @@ describe("lightweight movement previews", () => {
         color: "#111827",
         fontSize: 20,
         fontFamily: "sans",
-        opacity: 1,
+        opacity: 0.4,
       },
       geometry: {
         x: 20,
@@ -130,6 +130,7 @@ describe("lightweight movement previews", () => {
     const preview = localLayer.children[0];
     expect(preview?.classList.values.has("move-preview")).toBe(true);
     expect(preview?.classList.values.has("video-embed-preview-item")).toBe(true);
+    expect(preview?.attributes.get("opacity")).toBe("0.4");
     const foreign = preview?.children.find((child) => child.name === "foreignObject");
     const card = foreign?.children[0];
     expect(card?.children.some((child) => child.name === "iframe")).toBe(false);
