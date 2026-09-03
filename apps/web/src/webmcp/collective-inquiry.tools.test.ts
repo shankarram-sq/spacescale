@@ -184,6 +184,46 @@ describe("watch reply tools", () => {
   });
 });
 
+describe("list_users", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("lists who has saved work, with the ids the user and read tools take", async () => {
+    const other: BoardItem = {
+      ...sticky(),
+      id: "018f0000-0000-7000-8000-0000000000c2",
+      createdBy: "018f0000-0000-7000-8000-0000000000c1",
+    };
+    const { inquiry, exposed, call } = harness({ board: [sticky(), sticky(), other] });
+    await vi.waitFor(() => expect(exposed.has("list_users")).toBe(true));
+    const result = await call("list_users", {});
+
+    expect(result).toMatchObject({
+      scope: "participants_with_saved_work",
+      participantCount: 2,
+      watchTool: "watch_users",
+      readTool: "read_user",
+    });
+    const participants = result.participants as Array<Record<string, unknown>>;
+    // Ordered by how much work each has, so the ids a caller needs are easy to pick out.
+    expect(participants[0]).toMatchObject({
+      participantId: ACTOR_ID,
+      displayName: "Sam",
+      objectCount: 2,
+      objectKinds: { sticky: 2 },
+    });
+    expect(participants[1]).toMatchObject({ objectCount: 1 });
+    // Pinned so the shape a caller depends on cannot drift without a decision.
+    expect(Object.keys(participants[0] ?? {}).sort()).toEqual([
+      "displayName",
+      "objectCount",
+      "objectKinds",
+      "participantId",
+    ]);
+    expect(result.note).toContain("no saved work does not appear");
+    inquiry.destroy();
+  });
+});
+
 describe("registered tool surface", () => {
   afterEach(() => vi.unstubAllGlobals());
 
@@ -237,7 +277,14 @@ describe("registered tool surface", () => {
 
     // The selection reads and the watch's own comment channel keep their definitions but are
     // withheld from every host by ENABLED_WEBMCP_TOOLS.
-    expect([...exposed.keys()]).toEqual(["watch_board"]);
+    expect([...exposed.keys()].sort()).toEqual([
+      "list_users",
+      "read_board",
+      "read_selection",
+      "read_user",
+      "watch_board",
+      "watch_users",
+    ]);
     for (const withheld of [
       "read_selected_class_ideas",
       "inspire_from_selected_ideas",
