@@ -224,7 +224,9 @@ from the AI boundary.
   `timeout`, `resync`, `stopped`, `expired`, `replaced`. It is non-terminal:
   `continueWatching: true`.
 - Requests live in `session.requests`, capped at 10 (oldest dropped, count
-  reported as `droppedRequests`). They are consumed when a result carrying
+  reported as `droppedRequests`). Their steps are re-read at delivery so a
+  request queued before an edit carries the current text, matching the
+  selection token minted in the same result; deleted steps are flagged. They are consumed when a result carrying
   them resolves; a wait rejected by abort before resolution leaves them queued.
 - Precedence in `wait`: resync → requests → changes → long poll. Requests are
   self-contained (they embed the current text of the referenced steps), so

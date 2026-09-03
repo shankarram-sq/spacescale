@@ -101,6 +101,11 @@ type AssistRequest = {
   steps: WatchedStep[];
 };
 
+/** A queued request as delivered: steps re-read at delivery, deleted ones flagged. */
+type DeliveredAssistRequest = Omit<AssistRequest, "steps"> & {
+  steps: Array<WatchedStep & { deleted?: true }>;
+};
+
 type PendingWait = {
   afterSeq: number;
   signal: AbortSignal;
@@ -533,10 +538,13 @@ export class ProblemStepWatchFeed {
       status: "requested",
       watchToken: session.token,
       changes: [],
-      requests: requests.map((request) => ({
-        ...request,
-        reply: replyPlan(session.token, request, selection, { canComment, canWrite }),
-      })),
+      requests: requests.map((queued) => {
+        const request = this.refreshRequest(session, queued);
+        return {
+          ...request,
+          reply: replyPlan(session.token, request, selection, { canComment, canWrite }),
+        };
+      }),
       ...(droppedRequests > 0 ? { droppedRequests } : {}),
       ...selection,
       canComment,
@@ -553,6 +561,25 @@ export class ProblemStepWatchFeed {
         avoid: "Do not grade, profile, rank, or infer ability from the work or its author.",
       },
       ...watchGuidance(session.token, session.lastReportedSeq),
+    };
+  }
+
+  /**
+   * A request queued between polls carries the text captured at click time, while the
+   * selection token minted at delivery reflects the latest saved versions. Re-reading the
+   * steps at delivery keeps the two on one snapshot, so the host never generates from text
+   * the writers' version check would then silently link to newer content.
+   */
+  private refreshRequest(session: WatchSession, request: AssistRequest): DeliveredAssistRequest {
+    const itemIdByAlias = new Map<string, string>();
+    for (const [itemId, alias] of session.aliases) itemIdByAlias.set(alias, itemId);
+    return {
+      ...request,
+      steps: request.steps.map((step) => {
+        const itemId = itemIdByAlias.get(step.alias);
+        const current = itemId === undefined ? undefined : session.steps.get(itemId);
+        return current ?? { ...step, deleted: true as const };
+      }),
     };
   }
 
@@ -798,7 +825,7 @@ export function assistActionLabel(action: AssistAction): string {
  */
 function replyPlan(
   watchToken: string,
-  request: AssistRequest,
+  request: DeliveredAssistRequest,
   selection: SelectionTokenFields | Record<never, never>,
   permissions: { canComment: boolean; canWrite: boolean },
 ): Record<string, unknown> {
@@ -810,7 +837,7 @@ function replyPlan(
       : [],
   );
   const sourceAliases = request.steps.flatMap((step) => {
-    const sourceAlias = sourceAliasByStep.get(step.alias);
+    const sourceAlias = step.deleted ? undefined : sourceAliasByStep.get(step.alias);
     return sourceAlias === undefined ? [] : [sourceAlias];
   });
   let via: ReplyChannel = guidance.replyVia;

@@ -579,6 +579,38 @@ describe("board-side assist requests", () => {
     expect(second).not.toHaveProperty("droppedRequests");
   });
 
+  it("delivers queued requests with the step text current at delivery, flagging deleted steps", async () => {
+    const { feed, items, minted } = watching();
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    feed.requestAssistance({ itemIds: [STICKY_ID, TEXT_ID], action: "ideate" });
+
+    const edited = sticky("Let $2x=6$, so $x=3$", 2);
+    items.set(STICKY_ID, edited);
+    feed.recordAuthoritativeAction(serverAction(8, edited), new Set([STICKY_ID]));
+    items.delete(TEXT_ID);
+    feed.recordAuthoritativeAction(serverAction(9, canvasText()), new Set([TEXT_ID]));
+
+    const result = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(result).toMatchObject({
+      status: "requested",
+      requests: [
+        {
+          action: "ideate",
+          steps: [
+            { alias: "step_1", text: "Let $2x=6$, so $x=3$" },
+            { alias: "step_2", kind: "text", deleted: true },
+          ],
+          reply: { via: "board", call: { input: { sourceAliases: ["idea_1"] } } },
+        },
+      ],
+    });
+    // The token minted at delivery and the delivered text describe the same version.
+    expect(minted.at(-1)).toMatchObject([{ alias: "idea_1", itemId: STICKY_ID, version: 2 }]);
+  });
+
   it("keeps queued requests when a wait is aborted and prefers cards for generative actions", async () => {
     const { feed } = watching();
     const started = await feed.execute({ action: "start" }, new AbortController().signal);
