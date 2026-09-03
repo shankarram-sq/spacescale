@@ -1358,6 +1358,7 @@ export class BoardApp {
       getParticipantDisplayName: (participantId) => this.creatorNames.get(participantId) ?? null,
       notify: (message, kind) => this.notify(message, kind),
       canComment: () => this.canComment(),
+      canWrite: () => this.canCommit(),
       createComment: (itemId, body, assistance) => this.commentFromWebMcp(itemId, body, assistance),
       onWatchStateChanged: (state) => this.setAiWatchState(state),
     });

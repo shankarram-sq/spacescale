@@ -236,6 +236,13 @@ from the AI boundary.
   covering the sticky-note steps in the session, minted through the same
   `snapshots` map that `read_selected_class_ideas` uses, so the existing
   version check in the `add_*` tools keeps protecting against stale inserts.
+  The snapshot uses `idea_N` aliases because that is the only pattern the
+  writers' schemas accept; `selectionSources` reports the `step_N` → `idea_N`
+  mapping and each reply plan carries the exact `sourceAliases`.
+- Generative replies (`board`) also require `canWrite`; otherwise they fall
+  back to a comment, then to the conversation.
+- `comment_on_watched_step` accepts the `action` it answers (the reply plan
+  fills it in), so queued requests on one step keep their own metadata.
 - The reply is addressed by `watchToken` + `stepAlias`, never by item id:
   `comment_on_watched_step` resolves the alias inside the page.
 

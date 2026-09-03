@@ -38,7 +38,7 @@ function fakeDialog(): HTMLDialogElement {
   } as unknown as HTMLDialogElement;
 }
 
-function harness(options: { canComment?: boolean } = {}) {
+function harness(options: { canComment?: boolean; canWrite?: boolean } = {}) {
   const tools = new Map<string, WebMcpToolDefinition>();
   vi.stubGlobal("document", {
     createElement: () => fakeDialog(),
@@ -61,6 +61,7 @@ function harness(options: { canComment?: boolean } = {}) {
     getParticipantDisplayName: () => "Sam",
     notify: (message) => notices.push(message),
     canComment: () => options.canComment ?? true,
+    canWrite: () => options.canWrite ?? true,
     createComment: async (itemId, body, assistance) => {
       created.push({ itemId, body, assistance });
     },
@@ -96,15 +97,21 @@ describe("watch reply tools", () => {
     await vi.waitFor(() => expect(tools.has("comment_on_watched_step")).toBe(true));
     const started = await call("watch_selected_problem_steps", { action: "start" });
     const token = String(started.selectionToken);
+    expect(started).toMatchObject({
+      selectionSources: [{ stepAlias: "step_1", sourceAlias: "idea_1" }],
+      canWrite: true,
+    });
     expect(inquiry.getSnapshot(token)).toMatchObject({
-      sources: [{ alias: "step_1", itemId: STICKY_ID, version: 4, kind: "sticky" }],
+      sources: [{ alias: "idea_1", itemId: STICKY_ID, version: 4, kind: "sticky" }],
     });
     expect(inquiry.getWatchState().phase).toBe("watching");
 
+    inquiry.requestAssistance({ itemIds: [STICKY_ID], action: "explain" });
     inquiry.requestAssistance({ itemIds: [STICKY_ID], action: "critique" });
     const commented = await call("comment_on_watched_step", {
       watchToken: started.watchToken,
       stepAlias: "step_1",
+      action: "critique",
       body: "  Check the division: $6/2=3$.  ",
     });
     expect(commented).toMatchObject({ status: "commented", stepAlias: "step_1", writtenBy: "ai" });
@@ -128,6 +135,9 @@ describe("watch reply tools", () => {
     const base = { watchToken: started.watchToken, stepAlias: "step_1", body: "Hello" };
     await expect(call("comment_on_watched_step", { ...base, stepAlias: "idea_1" })).rejects.toThrow(
       "stepAlias must look like step_1",
+    );
+    await expect(call("comment_on_watched_step", { ...base, action: "grade" })).rejects.toThrow(
+      "action must be one of",
     );
     await expect(
       call("comment_on_watched_step", { ...base, body: "x".repeat(2_001) }),

@@ -79,6 +79,13 @@ export type WatchSelectionSource = {
   text: string;
 };
 
+/** A minted token plus the writer alias (`idea_N`) each sticky step maps to. */
+type SelectionTokenFields = {
+  selectionToken: string;
+  /** Pass these aliases as sourceAliases to the add_* tools; watch aliases are not accepted. */
+  selectionSources: Array<{ stepAlias: string; sourceAlias: string }>;
+};
+
 export type WatchedStepCommentTarget = {
   itemId: string;
   action?: AssistAction;
@@ -140,6 +147,8 @@ export type ProblemStepWatchOptions = {
   onStateChanged?: (state: WatchState) => void;
   /** Whether this browser's participant may post comments; false downgrades replies to chat. */
   canComment?: () => boolean;
+  /** Whether this browser may add board items; false routes generative replies to a comment. */
+  canWrite?: () => boolean;
   /** Stores a selection snapshot compatible with the add_* tools and returns its token. */
   mintSelectionToken?: (sources: WatchSelectionSource[]) => string;
 };
@@ -208,7 +217,11 @@ export class ProblemStepWatchFeed {
    * Resolves a step alias for the comment tool and reserves the watch's single in-flight
    * comment slot. Aliases stay inside the page; the host never learns the item id.
    */
-  commentTarget(token: string, alias: string): WatchedStepCommentTarget {
+  commentTarget(
+    token: string,
+    alias: string,
+    requestedAction?: AssistAction,
+  ): WatchedStepCommentTarget {
     if (this.destroyed) throw new Error("The problem-step watch is no longer available.");
     this.expireSessions();
     const session = this.sessions.get(token);
@@ -236,7 +249,9 @@ export class ProblemStepWatchFeed {
     }
     session.commentInFlight = true;
     let released = false;
-    const action = session.requestedActions.get(alias);
+    // The reply plan hands the host the action it is answering, which is authoritative when
+    // several requests queued on one step; the per-alias memory is only a fallback.
+    const action = requestedAction ?? session.requestedActions.get(alias);
     return {
       itemId,
       ...(action === undefined ? {} : { action }),
@@ -425,7 +440,6 @@ export class ProblemStepWatchFeed {
     session.expiryTimer = expiryTimer;
     this.emitState();
 
-    const selectionToken = this.selectionTokenFor(session);
     return {
       status: "started",
       watchToken: token,
@@ -434,8 +448,9 @@ export class ProblemStepWatchFeed {
       durationSeconds: PROBLEM_STEP_WATCH_DURATION_MS / 1_000,
       nextSeq: startSeq,
       steps: this.currentSteps(session),
-      ...(selectionToken === undefined ? {} : { selectionToken }),
+      ...this.selectionTokenFields(session),
       canComment: this.options.canComment?.() ?? false,
+      canWrite: this.options.canWrite?.() ?? false,
       participantRequests: {
         actions: ASSIST_ACTIONS,
         deliveredAs:
@@ -511,19 +526,21 @@ export class ProblemStepWatchFeed {
     const requests = session.requests.splice(0);
     const droppedRequests = session.droppedRequests;
     session.droppedRequests = 0;
-    const selectionToken = this.selectionTokenFor(session);
+    const selection = this.selectionTokenFields(session);
     const canComment = this.options.canComment?.() ?? false;
+    const canWrite = this.options.canWrite?.() ?? false;
     return {
       status: "requested",
       watchToken: session.token,
       changes: [],
       requests: requests.map((request) => ({
         ...request,
-        reply: replyPlan(session.token, request, selectionToken, canComment),
+        reply: replyPlan(session.token, request, selection, { canComment, canWrite }),
       })),
       ...(droppedRequests > 0 ? { droppedRequests } : {}),
-      ...(selectionToken === undefined ? {} : { selectionToken }),
+      ...selection,
       canComment,
+      canWrite,
       nextSeq: session.lastReportedSeq,
       remainingSeconds: remainingSeconds(session),
       responseGuidance: {
@@ -539,23 +556,44 @@ export class ProblemStepWatchFeed {
     };
   }
 
-  private selectionTokenFor(session: WatchSession): string | undefined {
+  /**
+   * Mints a snapshot over the watch's sticky-note steps. The add_* tool schemas only accept
+   * idea_N source aliases, so the snapshot uses those and the result reports how each step
+   * alias maps onto them.
+   */
+  private selectionTokenFields(session: WatchSession): SelectionTokenFields | Record<never, never> {
     const mint = this.options.mintSelectionToken;
-    if (!mint) return undefined;
-    const sources: WatchSelectionSource[] = [];
+    if (!mint) return {};
+    const stickySteps: Array<{ stepAlias: string; itemId: string; version: number; text: string }> =
+      [];
     for (const [itemId, alias] of session.aliases) {
       const item = this.options.getAuthoritativeItem(itemId);
       if (item?.kind !== "sticky" || !session.steps.has(itemId)) continue;
-      sources.push({
-        alias,
+      stickySteps.push({
+        stepAlias: alias,
         itemId,
         version: item.version,
-        kind: "sticky",
         text: item.geometry.text.trim(),
       });
     }
-    if (sources.length === 0) return undefined;
-    return mint(sources.sort(byAlias));
+    if (stickySteps.length === 0) return {};
+    stickySteps.sort((left, right) =>
+      left.stepAlias.localeCompare(right.stepAlias, undefined, { numeric: true }),
+    );
+    const sources: WatchSelectionSource[] = stickySteps.map((step, index) => ({
+      alias: `idea_${index + 1}`,
+      itemId: step.itemId,
+      version: step.version,
+      kind: "sticky",
+      text: step.text,
+    }));
+    return {
+      selectionToken: mint(sources),
+      selectionSources: stickySteps.map((step, index) => ({
+        stepAlias: step.stepAlias,
+        sourceAlias: `idea_${index + 1}`,
+      })),
+    };
   }
 
   private newestSession(): WatchSession | undefined {
@@ -605,12 +643,11 @@ export class ProblemStepWatchFeed {
   private changesResult(session: WatchSession, afterSeq: number): Record<string, unknown> {
     // A change bumps item versions, which invalidates any earlier selection token, so every
     // result that reports new text also carries a fresh one.
-    const selectionToken = this.selectionTokenFor(session);
     return {
       status: "changed",
       watchToken: session.token,
       changes: session.changes.filter((change) => change.seq > afterSeq),
-      ...(selectionToken === undefined ? {} : { selectionToken }),
+      ...this.selectionTokenFields(session),
       nextSeq: session.lastReportedSeq,
       remainingSeconds: remainingSeconds(session),
       ...watchGuidance(session.token, session.lastReportedSeq),
@@ -629,14 +666,13 @@ export class ProblemStepWatchFeed {
   }
 
   private resyncResult(session: WatchSession): Record<string, unknown> {
-    const selectionToken = this.selectionTokenFor(session);
     return {
       status: "resync",
       watchToken: session.token,
       reason:
         "More changes occurred than this page retains for one watch. Use this fresh snapshot.",
       steps: this.currentSteps(session),
-      ...(selectionToken === undefined ? {} : { selectionToken }),
+      ...this.selectionTokenFields(session),
       nextSeq: session.lastReportedSeq,
       remainingSeconds: remainingSeconds(session),
       ...watchGuidance(session.token, session.lastReportedSeq),
@@ -763,18 +799,29 @@ export function assistActionLabel(action: AssistAction): string {
 function replyPlan(
   watchToken: string,
   request: AssistRequest,
-  selectionToken: string | undefined,
-  canComment: boolean,
+  selection: SelectionTokenFields | Record<never, never>,
+  permissions: { canComment: boolean; canWrite: boolean },
 ): Record<string, unknown> {
   const guidance = ASSIST_GUIDANCE[request.action];
-  const stickyAliases = request.steps
-    .filter((step) => step.kind === "sticky")
-    .map((step) => step.alias);
+  const selectionToken = "selectionToken" in selection ? selection.selectionToken : undefined;
+  const sourceAliasByStep = new Map(
+    "selectionSources" in selection
+      ? selection.selectionSources.map((source) => [source.stepAlias, source.sourceAlias])
+      : [],
+  );
+  const sourceAliases = request.steps.flatMap((step) => {
+    const sourceAlias = sourceAliasByStep.get(step.alias);
+    return sourceAlias === undefined ? [] : [sourceAlias];
+  });
   let via: ReplyChannel = guidance.replyVia;
-  if (via === "board" && (selectionToken === undefined || stickyAliases.length === 0)) {
+  // Cards need a writable board and a sticky-note source the writers can cite.
+  if (
+    via === "board" &&
+    (!permissions.canWrite || selectionToken === undefined || sourceAliases.length === 0)
+  ) {
     via = "comment";
   }
-  if (via === "comment" && !canComment) via = "conversation";
+  if (via === "comment" && !permissions.canComment) via = "conversation";
   const firstAlias = request.steps[0]?.alias ?? "step_1";
   return {
     instruction: guidance.instruction,
@@ -783,15 +830,20 @@ function replyPlan(
       ? {
           call: {
             tool: WATCHED_STEP_COMMENT_TOOL,
-            input: { watchToken, stepAlias: firstAlias, body: COMMENT_BODY_PLACEHOLDER },
+            input: {
+              watchToken,
+              stepAlias: firstAlias,
+              action: request.action,
+              body: COMMENT_BODY_PLACEHOLDER,
+            },
           },
         }
       : via === "board"
         ? {
             call: {
               tool: "add_thinking_expansion",
-              input: { selectionToken, sourceAliases: stickyAliases },
-              note: "Any add_* education tool accepting this selectionToken may be used instead.",
+              input: { selectionToken, sourceAliases },
+              note: "Any add_* education tool accepting this selectionToken may be used instead. Cite the idea_N source aliases, not the step_N watch aliases.",
             },
           }
         : {

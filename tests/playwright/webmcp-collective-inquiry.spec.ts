@@ -220,7 +220,10 @@ test("a board participant can use headless WebMCP tools with neutral board attri
       {
         action: "critique",
         note: "Not sure about the second step",
-        reply: { via: "comment", call: { tool: "comment_on_watched_step" } },
+        reply: {
+          via: "comment",
+          call: { tool: "comment_on_watched_step", input: { action: "critique" } },
+        },
       },
     ],
   });
@@ -237,7 +240,12 @@ test("a board participant can use headless WebMCP tools with neutral board attri
       const tool = window.__spaceScaleWebMcpTools.comment_on_watched_step;
       if (!tool) throw new Error("The comment tool was not registered.");
       return tool.execute(
-        { watchToken, stepAlias, body: "Check the division step: $6/2=3$, so $x=3$." },
+        {
+          watchToken,
+          stepAlias,
+          action: "critique",
+          body: "Check the division step: $6/2=3$, so $x=3$.",
+        },
         { signal: new AbortController().signal },
       );
     },
@@ -285,6 +293,9 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   expect(changedResult).toMatchObject({
     status: "changed",
     selectionToken: expect.any(String),
+    selectionSources: expect.arrayContaining([
+      { stepAlias: repliedAlias, sourceAlias: expect.stringMatching(/^idea_[1-9]/u) },
+    ]),
     changes: [
       {
         steps: [
@@ -733,9 +744,14 @@ test("a board participant can use headless WebMCP tools with neutral board attri
       );
     },
     {
-      // The edit above bumped a version, so use the token the changed result re-minted.
+      // The edit above bumped a version, so use the token the changed result re-minted, and
+      // cite the idea_N alias the writers accept rather than the step_N watch alias.
       selectionToken: String(changedResult.selectionToken),
-      sourceAliases: [repliedAlias],
+      sourceAliases: [
+        (changedResult.selectionSources as Array<{ stepAlias: string; sourceAlias: string }>).find(
+          (source) => source.stepAlias === repliedAlias,
+        )?.sourceAlias ?? "idea_1",
+      ],
     },
   );
   expect(expansion).toMatchObject({ status: expect.any(String) });

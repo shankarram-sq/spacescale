@@ -1,7 +1,7 @@
 import "./collective-inquiry.css";
 
 import { boundsForItems, boundsHeight, boundsWidth } from "@collab/geometry";
-import { type Assistance, normalizeBoardItem } from "@collab/protocol";
+import { ASSIST_ACTIONS, type Assistance, normalizeBoardItem } from "@collab/protocol";
 import { renderSvgItem } from "@collab/svg-export";
 import type { BoardItem, ServerAction } from "../types";
 import {
@@ -15,6 +15,7 @@ import {
   type WatchState,
 } from "./problem-step-watch";
 import {
+  enumValue,
   isRecord,
   requiredText,
   trimSnapshots,
@@ -72,6 +73,8 @@ export type CollectiveInquiryWebMcpOptions = {
   notify: (message: string, kind: "info" | "warning" | "error") => void;
   /** Whether this browser's participant may post object comments. */
   canComment?: () => boolean;
+  /** Whether this browser may add board items through the education writers. */
+  canWrite?: () => boolean;
   /** Posts a comment as this browser's participant, tagged with the writing tool. */
   createComment?: (itemId: string, body: string, assistance: Assistance) => Promise<void>;
   onWatchStateChanged?: (state: WatchState) => void;
@@ -93,6 +96,7 @@ export class CollectiveInquiryWebMcp {
       getParticipantDisplayName: options.getParticipantDisplayName,
       ...(options.onWatchStateChanged ? { onStateChanged: options.onWatchStateChanged } : {}),
       canComment: () => this.canComment(),
+      canWrite: () => options.canWrite?.() === true,
       mintSelectionToken: (sources) => this.mintSelectionToken(sources),
     });
     this.visualReviewDialog = this.buildVisualReviewDialog();
@@ -222,6 +226,12 @@ export class CollectiveInquiryWebMcp {
                 pattern: "^step_[1-9][0-9]{0,2}$",
                 description: "The step_N alias of the watched step to comment on.",
               },
+              action: {
+                type: "string",
+                enum: [...ASSIST_ACTIONS],
+                description:
+                  "The participant action this comment answers, copied from the reply plan. Omit for feedback on a changed step.",
+              },
               body: {
                 type: "string",
                 minLength: 1,
@@ -297,6 +307,8 @@ export class CollectiveInquiryWebMcp {
     if (!/^step_[1-9][0-9]{0,2}$/u.test(stepAlias)) {
       throw new Error("stepAlias must look like step_1.");
     }
+    const action =
+      input.action === undefined ? undefined : enumValue(input.action, ASSIST_ACTIONS, "action");
     if (typeof input.body !== "string") throw new Error("body must be text.");
     const body = input.body.trim();
     const characters = [...body].length;
@@ -307,7 +319,7 @@ export class CollectiveInquiryWebMcp {
     if (!this.canComment() || !createComment) {
       throw new Error("This browser cannot comment on this Space.");
     }
-    const target = this.problemStepWatch.commentTarget(watchToken, stepAlias);
+    const target = this.problemStepWatch.commentTarget(watchToken, stepAlias, action);
     try {
       await createComment(target.itemId, body, {
         tool: WATCHED_STEP_COMMENT_TOOL,

@@ -431,6 +431,7 @@ describe("board-side assist requests", () => {
     const states: Array<ReturnType<ProblemStepWatchFeed["getState"]>> = [];
     const minted: unknown[] = [];
     let canComment = true;
+    let canWrite = true;
     const context = setup(selected);
     const feed = new ProblemStepWatchFeed({
       getSelectedItems: () => selected,
@@ -439,6 +440,7 @@ describe("board-side assist requests", () => {
       getParticipantDisplayName: () => "Sam",
       onStateChanged: (state) => states.push(state),
       canComment: () => canComment,
+      canWrite: () => canWrite,
       mintSelectionToken: (sources) => {
         minted.push(sources);
         return `token_${minted.length}`;
@@ -451,6 +453,9 @@ describe("board-side assist requests", () => {
       items: context.items,
       setCanComment(value: boolean) {
         canComment = value;
+      },
+      setCanWrite(value: boolean) {
+        canWrite = value;
       },
     };
   }
@@ -465,7 +470,9 @@ describe("board-side assist requests", () => {
     expect(states.at(-1)?.watchedItemIds).toEqual(new Set([STICKY_ID, TEXT_ID]));
     expect(started).toMatchObject({
       selectionToken: "token_1",
+      selectionSources: [{ stepAlias: "step_1", sourceAlias: "idea_1" }],
       canComment: true,
+      canWrite: true,
       participantRequests: { actions: expect.arrayContaining(["explain", "check_work"]) },
     });
 
@@ -529,13 +536,15 @@ describe("board-side assist requests", () => {
             via: "comment",
             call: {
               tool: "comment_on_watched_step",
-              input: { watchToken: started.watchToken, stepAlias: "step_1" },
+              input: { watchToken: started.watchToken, stepAlias: "step_1", action: "critique" },
             },
           },
         },
       ],
     });
     expect(minted).toHaveLength(2);
+    // The writers' schemas only accept idea_N aliases, so the snapshot never uses step_N.
+    expect(minted[1]).toMatchObject([{ alias: "idea_1", itemId: STICKY_ID, version: 1 }]);
     expect(JSON.stringify(result)).not.toContain(STICKY_ID);
     expect(JSON.stringify(result)).not.toContain(ACTOR_ID);
   });
@@ -594,7 +603,7 @@ describe("board-side assist requests", () => {
             via: "board",
             call: {
               tool: "add_thinking_expansion",
-              input: { selectionToken: expect.any(String), sourceAliases: ["step_1"] },
+              input: { selectionToken: expect.any(String), sourceAliases: ["idea_1"] },
             },
           },
         },
@@ -602,8 +611,8 @@ describe("board-side assist requests", () => {
     });
   });
 
-  it("falls back to a comment for text steps and to the conversation when commenting is off", async () => {
-    const { feed, setCanComment } = watching();
+  it("falls back to a comment for text steps, read-only boards, and to the conversation when commenting is off", async () => {
+    const { feed, setCanComment, setCanWrite } = watching();
     const started = await feed.execute({ action: "start" }, new AbortController().signal);
     feed.requestAssistance({ itemIds: [TEXT_ID], action: "examples" });
     const commentFallback = await feed.execute(
@@ -611,6 +620,19 @@ describe("board-side assist requests", () => {
       new AbortController().signal,
     );
     expect(commentFallback.requests).toMatchObject([{ reply: { via: "comment" } }]);
+
+    // A sticky source exists, but a browser that cannot add items must not be sent to a writer.
+    setCanWrite(false);
+    feed.requestAssistance({ itemIds: [STICKY_ID], action: "ideate" });
+    const readOnlyFallback = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(readOnlyFallback).toMatchObject({ canWrite: false });
+    expect(readOnlyFallback.requests).toMatchObject([
+      { reply: { via: "comment", call: { tool: "comment_on_watched_step" } } },
+    ]);
+    setCanWrite(true);
 
     setCanComment(false);
     feed.requestAssistance({ itemIds: [TEXT_ID], action: "explain" });
@@ -654,7 +676,13 @@ describe("board-side assist requests", () => {
     expect(() => feed.commentTarget("missing", "step_1")).toThrow("missing or expired");
     expect(() => feed.commentTarget(token, "step_9")).toThrow("not part of this watch");
 
+    feed.requestAssistance({ itemIds: [STICKY_ID], action: "explain" });
     feed.requestAssistance({ itemIds: [STICKY_ID], action: "check_work" });
+    // Two requests queued on one step: the host names the action it answers, so the earlier
+    // Explain reply is not stamped with the later Check-my-work action.
+    const explicit = feed.commentTarget(token, "step_1", "explain");
+    expect(explicit).toMatchObject({ itemId: STICKY_ID, action: "explain" });
+    explicit.release(true);
     const target = feed.commentTarget(token, "step_1");
     expect(target).toMatchObject({ itemId: STICKY_ID, action: "check_work" });
     expect(() => feed.commentTarget(token, "step_1")).toThrow("previous comment");
