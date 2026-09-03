@@ -8245,8 +8245,11 @@ export class PendingCommitTracker {
 function isEditingTarget(target: EventTarget | null): boolean {
   return (
     target instanceof Element &&
-    target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])") !==
-      null
+    // MathLive's field is a custom element, and a key pressed inside it is retargeted to the host.
+    // Without it here, undo, redo and Delete would reach the board while a formula is being typed.
+    target.closest(
+      "input, textarea, select, math-field, [contenteditable]:not([contenteditable='false'])",
+    ) !== null
   );
 }
 

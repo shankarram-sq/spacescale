@@ -208,6 +208,16 @@ describe("exporting math", () => {
     expect(seen).toEqual([{ tex: "5n", fontSize: 20, display: true }]);
   });
 
+  it("pairs delimiters after an escape the way MathJax does", () => {
+    const { renderMath, seen } = fakeRenderer();
+    // Checked against MathJax itself in a browser, with this board's own configuration:
+    // "Costs \$$5$$ then $$x$$" renders "Costs $$5", one formula, then "x$$". The escape
+    // consumes one dollar, so the pair that opens is the one after it and the pair before x
+    // closes it. Reading this any other way would put the picture at odds with the board.
+    renderSvgItem(textItem("Costs \\$$5$$ then $$x$$"), { renderMath });
+    expect(seen).toEqual([{ tex: " then ", fontSize: 20, display: true }]);
+  });
+
   it("leaves a price alone", () => {
     const { renderMath, seen } = fakeRenderer();
     const svg = renderSvgItem(textItem("Kits cost $12 to $20 each"), { renderMath });
