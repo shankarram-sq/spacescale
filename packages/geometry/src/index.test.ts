@@ -688,6 +688,24 @@ describe("bounds and transforms", () => {
     // Absolute units resolve against the font size, so tiny kerns stay tiny.
     expect(textLayoutEstimateSource("$$\\kern 2pt x$$", 20)).toBe("x x");
 
+    // Negative movement extends the bounds to the left instead of disappearing from them.
+    expect(
+      itemBounds({
+        kind: "text",
+        geometry: { x: 0, y: 40, text: "$$x\\kern-20em y$$" },
+        transform: [1, 0, 0, 1, 0, 0],
+        style: { kind: "text", fontSize: 20 },
+      }),
+    ).toEqual({ minX: -400, minY: 20, maxX: 36, maxY: 44 });
+    const negativeThinSpaceBounds = itemBounds({
+      kind: "text",
+      geometry: { x: 0, y: 40, text: "$$x\\!y$$" },
+      transform: [1, 0, 0, 1, 0, 0],
+      style: { kind: "text", fontSize: 20 },
+    });
+    expect(negativeThinSpaceBounds.minX).toBeCloseTo(-10 / 3);
+    expect(negativeThinSpaceBounds.maxX).toBe(24);
+
     // Vertical space and rule heights extend the estimate downwards.
     expect(
       itemBounds({

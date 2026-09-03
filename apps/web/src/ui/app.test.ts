@@ -17,6 +17,7 @@ import {
   clampStickyText,
   deriveCommentStates,
   effectiveTextFontWeight,
+  elementColour,
   globalShortcutFor,
   imageUploadIssue,
   localSvg,
@@ -704,6 +705,15 @@ describe("sticky note UI configuration", () => {
       },
       geometry: { x: 10, y: 20, text: "Question" },
     };
+    const video: Extract<BoardItem, { kind: "text" }> = {
+      ...text,
+      id: "video-a",
+      geometry: {
+        ...text.geometry,
+        text: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        embed: "video",
+      },
+    };
 
     expect(buildElementColourOperations([text], "#874fff")).toEqual([
       {
@@ -713,6 +723,9 @@ describe("sticky note UI configuration", () => {
         patch: { style: { ...text.style, color: "#874fff" } },
       },
     ]);
+    expect(elementColour(video)).toBeNull();
+    expect(buildElementColourOperations([video], "#874fff")).toEqual([]);
+    expect(buildElementColourOperations([text, video], "#874fff")).toEqual([]);
     expect(buildTextStyleOperations([text], { fontFamily: "handwritten", fontSize: 52 })).toEqual([
       {
         kind: "item.update",
@@ -723,22 +736,7 @@ describe("sticky note UI configuration", () => {
         },
       },
     ]);
-    expect(
-      buildTextStyleOperations(
-        [
-          {
-            ...text,
-            id: "video-a",
-            geometry: {
-              ...text.geometry,
-              text: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-              embed: "video",
-            },
-          },
-        ],
-        { fontFamily: "serif", fontSize: 72 },
-      ),
-    ).toEqual([]);
+    expect(buildTextStyleOperations([video], { fontFamily: "serif", fontSize: 72 })).toEqual([]);
 
     const sticky: Extract<BoardItem, { kind: "sticky" }> = {
       id: "sticky-a",

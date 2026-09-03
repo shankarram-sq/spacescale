@@ -574,6 +574,8 @@ export function elementColour(item: BoardItem): string | null {
       return item.style.fill;
     case "image":
       return null;
+    case "text":
+      return item.geometry.embed === "video" ? null : item.style.color;
     default:
       return item.style.color;
   }
@@ -583,11 +585,16 @@ export function buildElementColourOperations(
   items: readonly BoardItem[],
   color: string,
 ): BatchItemOperation[] {
-  if (items.length === 0 || items.some((item) => item.version <= 0 || item.kind === "image")) {
+  if (
+    items.length === 0 ||
+    items.some((item) => item.version <= 0 || elementColour(item) === null)
+  ) {
     return [];
   }
   return items.flatMap((item) => {
-    if (item.kind === "image") return [];
+    if (item.kind === "image" || (item.kind === "text" && item.geometry.embed === "video")) {
+      return [];
+    }
     const nextStyle =
       item.kind === "sticky" || item.kind === "table" || item.kind === "zone"
         ? item.style.fill === color

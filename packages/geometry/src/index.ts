@@ -1177,10 +1177,10 @@ const TEX_RULE_COMMAND = new RegExp(
 const TEX_UNSIZED_DIMENSION_COMMAND =
   /\\(?:hspace\*?|vspace\*?|mspace|kern|mkern|hskip|vskip|mskip|rule|raisebox|makebox|framebox|parbox|resizebox|scalebox)\b/gu;
 const TEX_DIMENSION_PARTS = /^([+-]?(?:\d+\.?\d*|\.\d+))\s*([a-z]+)$/u;
-/** Fixed-width math spaces, in em. Negative spaces count as zero rather than shrinking bounds. */
+/** Fixed-width math spaces, in em. */
 const TEX_FIXED_SPACE_EM = new Map<string, number>([
-  ["\\!", 0],
-  ["\\negthinspace", 0],
+  ["\\!", -3 / 18],
+  ["\\negthinspace", -3 / 18],
   ["\\,", 3 / 18],
   ["\\thinspace", 3 / 18],
   ["\\:", 4 / 18],
@@ -1194,6 +1194,11 @@ const TEX_FIXED_SPACE_EM = new Map<string, number>([
 ]);
 const TEX_FIXED_SPACE =
   /\\(?:negthinspace|thinspace|medspace|thickspace|enspace|qquad|quad|[!,:;>])/gu;
+/** Horizontal movements whose signed cursor offsets can escape the estimated text width. */
+const TEX_HORIZONTAL_MOVEMENT = new RegExp(
+  `(?:${TEX_HORIZONTAL_DIMENSION_COMMAND.source})|(${TEX_FIXED_SPACE.source})`,
+  "gu",
+);
 /** Layout ratios the canonical text estimate below is expressed in. */
 const TEXT_GLYPH_WIDTH_RATIO = 0.6;
 const TEXT_LINE_HEIGHT_RATIO = 1.2;
@@ -1298,6 +1303,37 @@ function raisedRuleVerticalExtents(
     }
   }
   return { upward, downward };
+}
+
+function texHorizontalMovementExtents(
+  value: string,
+  fontSize: number,
+): { left: number; right: number } {
+  let left = 0;
+  let right = 0;
+  const maximum = TEX_MAX_ESTIMATE_GLYPHS * fontSize * TEXT_GLYPH_WIDTH_RATIO;
+  for (const markupMatch of normalizeSingleDollarMath(value).matchAll(UNAMBIGUOUS_TEX_MARKUP)) {
+    let cursor = 0;
+    let minimum = 0;
+    let maximumCursor = 0;
+    for (const movementMatch of markupMatch[0].matchAll(TEX_HORIZONTAL_MOVEMENT)) {
+      const dimension = movementMatch[1] ?? movementMatch[2];
+      const fixedSpace = movementMatch[3];
+      const pixels =
+        dimension !== undefined
+          ? texDimensionPixels(dimension, fontSize)
+          : fixedSpace === undefined
+            ? null
+            : (TEX_FIXED_SPACE_EM.get(fixedSpace) ?? 0) * fontSize;
+      if (pixels === null) continue;
+      cursor = Math.max(-maximum, Math.min(maximum, cursor + pixels));
+      minimum = Math.min(minimum, cursor);
+      maximumCursor = Math.max(maximumCursor, cursor);
+    }
+    left = Math.max(left, -minimum);
+    right = Math.max(right, maximumCursor);
+  }
+  return { left, right };
 }
 
 function texLayoutEstimateSource(
@@ -1560,13 +1596,14 @@ export function geometryBounds(
       const lines = textLayoutEstimateSource(text.text, textFontSize).split(/\r\n?|\n/u);
       const lineHeight = textFontSize * TEXT_LINE_HEIGHT_RATIO;
       const ruleExtents = raisedRuleVerticalExtents(text.text, textFontSize);
+      const horizontalExtents = texHorizontalMovementExtents(text.text, textFontSize);
       const width = Math.max(
         ...lines.map((line) => codePointLength(line) * textFontSize * TEXT_GLYPH_WIDTH_RATIO),
       );
       return {
-        minX: text.x,
+        minX: text.x - horizontalExtents.left,
         minY: Math.min(text.y - textFontSize, text.y - ruleExtents.upward),
-        maxX: text.x + width,
+        maxX: text.x + Math.max(width, horizontalExtents.right),
         maxY: Math.max(
           text.y - textFontSize + Math.max(1, lines.length) * lineHeight,
           text.y + ruleExtents.downward,

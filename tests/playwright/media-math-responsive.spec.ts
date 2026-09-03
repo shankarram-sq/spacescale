@@ -256,6 +256,7 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
     "src",
     "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ",
   );
+  await expect(page.getByRole("button", { name: "Change selected element colour" })).toBeHidden();
   const videoHeading = video.locator(".video-embed-heading");
   await expect(videoHeading).toHaveAttribute("data-board-link", "true");
   await videoHeading.evaluate((node) => {
