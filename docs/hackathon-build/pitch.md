@@ -174,8 +174,20 @@ Swap the skill and the same board becomes:
 3. Watch the reply arrive as a comment on that step, marked as AI, attributed
    to you, and one undo away from gone.
 
+## Honest limitations
+
+- **It gets chatty at scale.** With many students saving work at once, one
+  watch delivers a lot of changes to one agent, and replies slow down. The
+  transport is fine for a small group today; a full class needs the next item.
+- **One agent per task is in progress.** The current skill has Codex poll the
+  watch and handle every request itself. We are moving to a pattern where
+  Codex polls, collects the queued requests, and hands each one to its own
+  agent. This lives entirely at the client and skill level, which is the point:
+  the site does not change to make the agent side faster.
+
 ## What comes next
 
+- Finish the one-agent-per-task skill so a full class can work at once.
 - Replace long polling with a push channel the moment WebMCP offers one.
 - Ship a starter library of skills: problem set coach, brainstorm connector,
   debate mapper, with a plain-language editing guide for teachers.

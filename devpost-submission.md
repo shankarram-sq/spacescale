@@ -272,6 +272,12 @@ sensitive data.
 - The page-to-agent direction currently rides on bounded 20-second long polls.
   When WebMCP offers a push or subscription mechanism, the same tools move onto
   it.
+- The watch gets chatty when many participants save work at once: one agent
+  receives every change and replies slow down. It suits a small group today.
+- The current skill has Codex handle every request itself. Work in progress
+  has Codex poll the watch, collect the queued requests, and assign one agent
+  per task. This is a client and skill change; the site does not need to
+  change for it.
 - The public deployment is a hackathon demo for synthetic or non-sensitive
   content; real classroom rollout requires the documented safety,
   administration, and data-governance gate.
