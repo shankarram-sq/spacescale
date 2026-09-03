@@ -26,6 +26,7 @@ import {
 } from "../activities/organisation-templates";
 import {
   ACTIVITY_TEMPLATES,
+  type ActivityTemplate,
   type ActivityTemplateId,
   buildActivityBatch,
 } from "../activities/templates";
@@ -107,6 +108,7 @@ import type {
   ToolName,
 } from "../types";
 import { canRoleComment, canRoleDraw, createId, PROTOCOL_VERSION } from "../types";
+import { ActivityTemplateWebMcp } from "../webmcp/activity-templates";
 import { ClassDecisionWebMcp } from "../webmcp/class-decision";
 import { CollectiveInquiryWebMcp } from "../webmcp/collective-inquiry";
 import { EducationPartnerWebMcp, type EducationVisualSource } from "../webmcp/education-partner";
@@ -965,6 +967,7 @@ export class BoardApp {
   private inquiryMapWebMcp: InquiryMapWebMcp | null = null;
   private classDecisionWebMcp: ClassDecisionWebMcp | null = null;
   private educationPartnerWebMcp: EducationPartnerWebMcp | null = null;
+  private activityTemplateWebMcp: ActivityTemplateWebMcp | null = null;
   private readonly pendingWebMcpCommits = new PendingCommitTracker();
   /** True until the board first becomes editable, when the landing tool is chosen. */
   private landingToolPending = true;
@@ -1399,6 +1402,22 @@ export class BoardApp {
       notify: (message, kind) => this.notify(message, kind),
     });
 
+    this.activityTemplateWebMcp = new ActivityTemplateWebMcp({
+      canWrite: () => this.canCommit(),
+      templateIssue: (template) => this.templateAvailabilityIssue(template),
+      getPlacementCenter: () => {
+        const view = this.renderer.viewport.viewState;
+        return [view.center.x, view.center.y];
+      },
+      commit: (operation) => this.commitAndWait(operation),
+      revealItems: (itemIds) => {
+        this.tools.setTool("select");
+        this.tools.selectOnly(itemIds);
+        this.renderer.viewport.fit(this.model.boundsFor(itemIds));
+      },
+      notify: (message, kind) => this.notify(message, kind),
+    });
+
     this.inquiryMapWebMcp = new InquiryMapWebMcp({
       root: this.root,
       canWrite: () => this.canCommit(),
@@ -1485,6 +1504,8 @@ export class BoardApp {
     void this.closeTextEditor(false);
     this.pendingWebMcpCommits.finishAll(false);
     this.socket.destroy();
+    this.activityTemplateWebMcp?.destroy();
+    this.activityTemplateWebMcp = null;
     this.educationPartnerWebMcp?.destroy();
     this.educationPartnerWebMcp = null;
     this.classDecisionWebMcp?.destroy();
@@ -2016,18 +2037,32 @@ export class BoardApp {
     }
   }
 
+  /** Why this board cannot insert the template, or null when it can. */
+  private templateAvailabilityIssue(template: ActivityTemplate): string | null {
+    const features = this.bootstrap.board.features;
+    if (!features.templates) return "Enable templates to use this template.";
+    if (
+      (template.id === "vote-with-stamps" || template.id === "collective-inquiry-demo") &&
+      !features.voting
+    ) {
+      return "Enable voting to use this template.";
+    }
+    return templateFeatureIssue(template.items, features);
+  }
+
   private async insertActivity(templateId: ActivityTemplateId): Promise<void> {
     if (!this.bootstrap.board.features.templates || !this.canCommit() || this.activityInsertPending)
       return;
-    if (
-      (templateId === "vote-with-stamps" || templateId === "collective-inquiry-demo") &&
-      !this.bootstrap.board.features.voting
-    )
-      return;
     const template = ACTIVITY_TEMPLATES.find((value) => value.id === templateId);
     if (!template) return;
-    const featureIssue = templateFeatureIssue(template.items, this.bootstrap.board.features);
+    const featureIssue = this.templateAvailabilityIssue(template);
     if (featureIssue) {
+      if (
+        (templateId === "vote-with-stamps" || templateId === "collective-inquiry-demo") &&
+        !this.bootstrap.board.features.voting
+      ) {
+        return;
+      }
       this.notify(featureIssue, "warning");
       return;
     }
