@@ -61,7 +61,9 @@ the teacher can do: decide the mode, the rules, and the background material.
 This split is the personalisation story. A skill is a text file. Two teachers
 in the same school can run the same board with different coaching styles. A
 department can share one skill and edit it on a Friday afternoon. Nothing
-deploys.
+deploys. Five are in the repo today, under `.agents/skills`: a problem-set
+coach, a brainstorm connector, a debate mapper, a handwritten-working checker,
+and a follow-one-student coach, with an install guide.
 
 ### 3. Handwriting and diagrams, not just text
 
@@ -179,6 +181,10 @@ Swap the skill and the same board becomes:
 - **It gets chatty at scale.** With many students saving work at once, one
   watch delivers a lot of changes to one agent, and replies slow down. It suits
   a small group today.
+- **The watch has to stay in the foreground.** A Codex background agent has
+  no access to the browser, so it cannot call the board's tools. The watch
+  runs in the teacher's foreground session, and the teacher steers it with
+  short comments in chat rather than handing it off.
 - **Multiple agents are the answer, and they are not there yet.** The plan is
   for a background agent to hold the watch so Codex stays responsive to the
   teacher, ask back when it needs more detail, and spin up to two extra agents
@@ -191,7 +197,7 @@ Swap the skill and the same board becomes:
 - Make the multi-agent watch reliable on Codex so a full class can work at
   once with fast replies.
 - Replace long polling with a push channel the moment WebMCP offers one.
-- Ship a starter library of skills: problem set coach, brainstorm connector,
-  debate mapper, with a plain-language editing guide for teachers.
+- Grow the skill library past the first five, with a plain-language editing
+  guide for teachers.
 - Pilot in our own StayQrious classrooms with the safety and data-governance
   gate already documented in the repo.

@@ -128,7 +128,10 @@ bound site actions.
   tablet, so steps and diagrams that digital setups usually cannot evaluate
   become assessable.
 - Skills and local files as the pedagogy: the teacher's Codex skill and
-  documents set the mode, rules, and background material for the class.
+  documents set the mode, rules, and background material for the class. Five
+  skills ship in the repo under `.agents/skills` with an install guide:
+  problem-set coach, brainstorm connector, debate mapper, working checker,
+  and follow one student.
 - Per-student Sections so feedback lands on one person's work while the rest
   of the class stays visible beside it.
 - Same-author permission inheritance: no service account, no elevated agent
@@ -183,6 +186,7 @@ product. The challenge work added:
   MathJax with a MathLive keyboard, object comments, and classroom roles;
 - contract, unit, edge, and Chromium coverage for the permission and WebMCP
   boundaries;
+- five installable Codex skills with an install guide;
 - the implementation spec, safety gate, pitch, demo runbook, and screenshots.
 
 The public repository history and the comparison with the upstream foundation
@@ -274,6 +278,9 @@ sensitive data.
   it.
 - The watch gets chatty when many participants save work at once and replies
   slow down. It suits a small group today.
+- A Codex background agent has no access to the browser, so it cannot call
+  the board's tools. The watch runs in the foreground session and the teacher
+  steers it with comments in chat.
 - The fix is multiple agents: a background agent holding the watch so Codex
   stays responsive, asking back for detail, and spinning up to two extra
   agents when requests queue. Codex accepts the background instruction but the
