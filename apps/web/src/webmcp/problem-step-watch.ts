@@ -9,6 +9,10 @@ export const WATCHED_STEP_COMMENT_TOOL = "comment_on_watched_step";
 export const PROBLEM_STEP_WATCH_DURATION_MS = 15 * 60_000;
 export const PROBLEM_STEP_WATCH_DEFAULT_WAIT_MS = 15_000;
 export const PROBLEM_STEP_WATCH_MAX_WAIT_MS = 20_000;
+export const PROBLEM_STEP_WATCH_PING_INTERVAL_MS = PROBLEM_STEP_WATCH_DEFAULT_WAIT_MS;
+export const PROBLEM_STEP_WATCH_MISSED_PINGS = 3;
+export const PROBLEM_STEP_WATCH_PING_TIMEOUT_MS =
+  PROBLEM_STEP_WATCH_PING_INTERVAL_MS * PROBLEM_STEP_WATCH_MISSED_PINGS;
 /** Longest note a participant can attach to a board-side request. */
 export const ASSIST_NOTE_MAX_LENGTH = 280;
 /** Comments one watch may post, so a looping host cannot flood the board's comment cap. */
@@ -194,6 +198,7 @@ type WatchSession = {
   nextAlias: number;
   commentInFlight: boolean;
   expiryTimer?: ReturnType<typeof setTimeout>;
+  heartbeatTimer?: ReturnType<typeof setTimeout>;
 };
 
 export type ProblemStepWatchOptions = {
@@ -548,6 +553,7 @@ export class ProblemStepWatchFeed {
     this.destroyed = true;
     for (const session of [...this.sessions.values()]) {
       this.clearExpiry(session);
+      this.clearHeartbeat(session);
       this.rejectPending(session, new Error("The page closed while watching problem steps."));
     }
     this.sessions.clear();
@@ -706,6 +712,7 @@ export class ProblemStepWatchFeed {
     const expiryTimer = setTimeout(() => this.expireSessions(), PROBLEM_STEP_WATCH_DURATION_MS);
     (expiryTimer as { unref?: () => void }).unref?.();
     session.expiryTimer = expiryTimer;
+    this.refreshHeartbeat(session);
     this.emitState();
 
     return {
@@ -754,6 +761,7 @@ export class ProblemStepWatchFeed {
       input.waitMs === undefined
         ? PROBLEM_STEP_WATCH_DEFAULT_WAIT_MS
         : safeInteger(input.waitMs, "waitMs", 1_000, PROBLEM_STEP_WATCH_MAX_WAIT_MS);
+    this.refreshHeartbeat(session);
     // Requests embed the current step text, so they do not depend on the caller's cursor and
     // go out ahead of queued changes. Preserve that cursor so those changes follow next time.
     if (session.requests.length > 0 || session.boardShares.length > 0) {
@@ -1020,6 +1028,22 @@ export class ProblemStepWatchFeed {
     session.expiryTimer = undefined;
   }
 
+  private clearHeartbeat(session: WatchSession): void {
+    if (session.heartbeatTimer === undefined) return;
+    clearTimeout(session.heartbeatTimer);
+    session.heartbeatTimer = undefined;
+  }
+
+  private refreshHeartbeat(session: WatchSession): void {
+    this.clearHeartbeat(session);
+    const heartbeatTimer = setTimeout(() => {
+      if (this.sessions.get(session.token) !== session) return;
+      this.stopSession(session, "disconnected");
+    }, PROBLEM_STEP_WATCH_PING_TIMEOUT_MS);
+    (heartbeatTimer as { unref?: () => void }).unref?.();
+    session.heartbeatTimer = heartbeatTimer;
+  }
+
   private changesResult(session: WatchSession, afterSeq: number): Record<string, unknown> {
     // A change bumps item versions, which invalidates any earlier selection token, so every
     // result that reports new text also carries a fresh one.
@@ -1113,6 +1137,7 @@ export class ProblemStepWatchFeed {
     for (const session of [...this.sessions.values()]) {
       if (now < session.expiresAt) continue;
       this.clearExpiry(session);
+      this.clearHeartbeat(session);
       if (session.pending) this.resolvePending(session, this.expiredResult(session));
       this.sessions.delete(session.token);
     }
@@ -1121,6 +1146,7 @@ export class ProblemStepWatchFeed {
 
   private stopSession(session: WatchSession, status: WatchEndedStatus): void {
     this.clearExpiry(session);
+    this.clearHeartbeat(session);
     if (session.pending) this.resolvePending(session, endedResult(session.token, status));
     this.sessions.delete(session.token);
     this.emitState();
@@ -1397,13 +1423,15 @@ function safeInteger(value: unknown, field: string, minimum: number, maximum?: n
   return value;
 }
 
-type WatchEndedStatus = "stopped" | "expired" | "replaced" | "outgrown";
+type WatchEndedStatus = "stopped" | "expired" | "replaced" | "outgrown" | "disconnected";
 
 const WATCH_ENDED_REASON: Record<WatchEndedStatus, string> = {
   stopped: "The participant asked to stop this watch.",
   expired: "The 15-minute watch ended.",
   replaced: "A newer watch started in this browser and replaced this one.",
   outgrown: `This board grew past the ${MAX_WATCHED_ITEMS} objects one watch can follow. Start another watch to pick it up again.`,
+  disconnected:
+    "The agent missed three keep-alive pings, so this board no longer assumes it is watching.",
 };
 
 /** Every terminal result says why it ended and that no further wait should be issued. */
@@ -1440,6 +1468,11 @@ function watchGuidance(
 ): Record<string, unknown> {
   return {
     continueWatching: true,
+    keepAlive: {
+      pingWith: "Call action wait using this watchToken and nextSeq.",
+      pingIntervalMs: PROBLEM_STEP_WATCH_PING_INTERVAL_MS,
+      missedPingsBeforeStop: PROBLEM_STEP_WATCH_MISSED_PINGS,
+    },
     feedbackGuidance: {
       action:
         "When a step changes, comment briefly in the conversation before waiting again. Check the reasoning, acknowledge what is valid, identify the first specific issue or uncertainty, and ask one useful next-step question. Do not solve ahead unless the participant asks.",
@@ -1457,7 +1490,7 @@ function watchGuidance(
         waitMs: PROBLEM_STEP_WATCH_DEFAULT_WAIT_MS,
       },
       instruction:
-        "After giving feedback—or immediately after a timeout—call this tool again until the watch expires or the participant asks to stop.",
+        "This wait call is also the keep-alive ping. Call it again after every result; after three missed 15-second pings, the board stops showing the agent as watching.",
     },
   };
 }

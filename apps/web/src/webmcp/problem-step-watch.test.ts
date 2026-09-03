@@ -4,6 +4,9 @@ import {
   MAX_ASSIST_COMMENTS_PER_WATCH,
   MAX_WATCHED_ITEMS,
   PROBLEM_STEP_WATCH_DURATION_MS,
+  PROBLEM_STEP_WATCH_MISSED_PINGS,
+  PROBLEM_STEP_WATCH_PING_INTERVAL_MS,
+  PROBLEM_STEP_WATCH_PING_TIMEOUT_MS,
   ProblemStepWatchFeed,
 } from "./problem-step-watch";
 
@@ -613,6 +616,10 @@ describe("board-side assist requests", () => {
       canComment: true,
       canWrite: true,
       participantRequests: { actions: expect.arrayContaining(["explain", "check_work"]) },
+      keepAlive: {
+        pingIntervalMs: PROBLEM_STEP_WATCH_PING_INTERVAL_MS,
+        missedPingsBeforeStop: PROBLEM_STEP_WATCH_MISSED_PINGS,
+      },
     });
 
     const wait = feed.execute(
@@ -628,6 +635,45 @@ describe("board-side assist requests", () => {
       { action: "stop", watchToken: started.watchToken },
       new AbortController().signal,
     );
+    expect(feed.getState().phase).toBe("idle");
+  });
+
+  it("stops showing a watch after three agent keep-alive pings are missed", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-03T12:00:00Z"));
+    const { feed } = watching();
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    expect(feed.getState().phase).toBe("watching");
+
+    await vi.advanceTimersByTimeAsync(PROBLEM_STEP_WATCH_PING_TIMEOUT_MS - 1);
+    expect(feed.getState().phase).toBe("watching");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(feed.getState().phase).toBe("idle");
+    expect(() =>
+      feed.execute(
+        { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+        new AbortController().signal,
+      ),
+    ).toThrow(/missing or expired/);
+  });
+
+  it("keeps watching when the agent pings again before three windows are missed", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-03T12:00:00Z"));
+    const { feed } = watching();
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+
+    await vi.advanceTimersByTimeAsync(PROBLEM_STEP_WATCH_PING_INTERVAL_MS * 2);
+    const wait = feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq, waitMs: 1_000 },
+      new AbortController().signal,
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(wait).resolves.toMatchObject({ status: "timeout", continueWatching: true });
+
+    await vi.advanceTimersByTimeAsync(PROBLEM_STEP_WATCH_PING_TIMEOUT_MS - 1_001);
+    expect(feed.getState().phase).toBe("watching");
+    await vi.advanceTimersByTimeAsync(1);
     expect(feed.getState().phase).toBe("idle");
   });
 
