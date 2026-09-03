@@ -310,18 +310,45 @@ describe("problem-step WebMCP watch", () => {
       },
     ]);
 
-    // The stale sequence the caller still holds resolves to one more resync, then normal waits.
-    const stale = await feed.execute(
-      { action: "wait", watchToken, afterSeq: 7, waitMs: 1_000 },
-      new AbortController().signal,
-    );
-    expect(stale).toMatchObject({ status: "resync" });
+    // Following the returned nextCall resumes the long poll. Repeating the snapshot here would
+    // make the agent process one reload twice.
     const followUp = feed.execute(
       { action: "wait", watchToken, afterSeq: 42, waitMs: 1_000 },
       new AbortController().signal,
     );
     await vi.advanceTimersByTimeAsync(1_000);
     expect(await followUp).toMatchObject({ status: "timeout", nextSeq: 42 });
+
+    // A caller still holding a pre-reload sequence resolves to a resync on its own merit.
+    const stale = await feed.execute(
+      { action: "wait", watchToken, afterSeq: 7, waitMs: 1_000 },
+      new AbortController().signal,
+    );
+    expect(stale).toMatchObject({ status: "resync", nextSeq: 42 });
+    feed.destroy();
+  });
+
+  it("resyncs once on the next wait when a board reload finds no wait in flight", async () => {
+    vi.useFakeTimers();
+    const { feed, items, setSequence } = setup();
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    const watchToken = String(started.watchToken);
+
+    items.set(STICKY_ID, sticky("Reloaded step", 4));
+    setSequence(42);
+    feed.recordAuthoritativeReload(42);
+
+    const first = await feed.execute(
+      { action: "wait", watchToken, afterSeq: 7, waitMs: 1_000 },
+      new AbortController().signal,
+    );
+    expect(first).toMatchObject({ status: "resync", nextSeq: 42 });
+    const second = feed.execute(
+      { action: "wait", watchToken, afterSeq: 42, waitMs: 1_000 },
+      new AbortController().signal,
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(await second).toMatchObject({ status: "timeout", nextSeq: 42 });
     feed.destroy();
   });
 

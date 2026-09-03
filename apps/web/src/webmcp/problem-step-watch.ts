@@ -174,7 +174,10 @@ export class ProblemStepWatchFeed {
       // One less than the sequence handed back as nextSeq, so a caller resuming at nextSeq
       // waits normally while any older afterSeq still resolves to a resync.
       session.discardedThroughSeq = seq - 1;
-      session.needsResync = true;
+      // A pending wait consumes the notification itself, so the flag only survives for a
+      // session with no wait in flight. Leaving it set would hand the same snapshot to the
+      // very next call and have the agent process one reload twice.
+      session.needsResync = session.pending === undefined;
       if (session.pending) this.resolvePending(session, this.resyncResult(session));
     }
   }
