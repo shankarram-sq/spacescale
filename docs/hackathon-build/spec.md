@@ -100,7 +100,7 @@ Makes the current browser's saved visual selection inspectable in the same live 
 Follows changes to exact saved objects selected in the current browser, of any kind,
 for 15 minutes so Codex can comment as a participant works through a problem.
 
-- `start` snapshots up to 1,000 saved objects of any kind, bounded also by a 120,000-character text budget, and returns ephemeral `step_N` aliases plus the authoritative board sequence. Written work carries its text; drawn work (handwriting, shapes, images, stamps, video embeds) carries a short description and the saved version it is at, plus a `boardImage` PNG of the whole board on every result, so handwriting can be read rather than guessed at. With nothing selected it follows the whole board and reports `scope: entire_board`; with a selection it follows exactly that and reports `scope: browser_selection`.
+- `start` snapshots up to 1,000 saved objects of any kind, bounded also by a 120,000-character text budget, and returns ephemeral `step_N` aliases plus the authoritative board sequence. Written work carries its text; drawn work (handwriting, shapes, images, stamps, video embeds) carries a short description and the saved version it is at, plus a `boardImage` PNG of the whole board on every result, so handwriting can be read rather than guessed at. It always follows the whole board and reports `scope: entire_board`; the browser selection belongs to the other read tools.
 - `wait` is a cancelable long poll, bounded to 20 seconds per call. It returns promptly when a selected item is saved, otherwise times out with the next cursor so the host can wait again.
 - The tool tells the host to comment briefly after every changed step—checking the reasoning, acknowledging what is valid, identifying the first concrete issue or uncertainty, and asking one useful next-step question—then continue waiting.
 - Only server-acknowledged changes enter the feed. Unsaved keystrokes, video embeds, unselected items, Section children, coordinates, presence, history, stable board/item/participant IDs, and contact or authentication data are excluded.
@@ -108,6 +108,40 @@ for 15 minutes so Codex can comment as a participant works through a problem.
 - While a watch is live the tool rail shows an **AI** action. It delivers a `boardShares` entry on the next wait, naming the task prompt for the whole-board action the participant picked; the existing watch already follows that board.
 - While a watch is live the board shows an **Ask AI** button in the selection toolbar. A participant's request (a watched step, one of `explain`, `ideate`, `critique`, `check_work`, `examples`, `explain_with_video`, and an optional 280-character note) is delivered as the next `wait` result with status `requested`, carrying the step text and a reply plan that names the exact next tool call. Up to 10 requests queue between polls; the oldest are dropped and counted. `nextSeq` is unchanged, so queued changes follow on the next wait.
 - Replies go back to the board: `comment_on_watched_step` posts one object comment on a watched step (attributed to the participant, tagged as AI-written, at most 20 per watch), and every `start`, `changed`, `resync`, and `requested` result mints a fresh `selectionToken` over the watch's sticky-note steps, using the `idea_N` aliases the writers' schemas accept and reporting the `step_N` → `idea_N` mapping as `selectionSources`, so the `add_*` tools can insert cards without a second read call. Generative replies fall back to a comment when the browser cannot add items.
+
+### `read_templates` and `insert_filled_template`
+
+Two whole-board tools that let a host reach for the activity scaffolds the board
+already ships with, instead of assembling one card at a time. Neither uses the
+browser selection.
+
+- `read_templates` is publicly discoverable and read-only. It lists the templates
+  this board's features actually allow, each with its `templateId`, label,
+  description, object count and kinds, and its text slots.
+- A slot is one place a template holds text: a canvas text object, a sticky note,
+  a table cell, or a Section title. Slots are aliased `slot_1`, `slot_2`, … in
+  template order and carry the placeholder the template ships with, the longest
+  fill the board accepts there, and whether an empty fill is accepted, so a host
+  never has to guess a limit.
+- When a template draws shapes, stamps or images, the entry also carries a
+  `preview` PNG of the template as it would land, rendered in the page from the
+  template definition alone. A catalogue read stops rendering pictures once it
+  has spent 2,000,000 encoded characters and says how many it left out; reading a
+  single `templateId` always renders that one.
+- `insert_filled_template` inserts one template with its slots already filled.
+  Unlisted slots keep their placeholder. An empty string clears a sticky note or
+  table cell for students to complete; a canvas text object and a Section title
+  cannot stand empty, so the tool refuses that rather than letting the board
+  reject the batch. Fills are bounded by each slot's own board limit and rejected
+  for unknown or repeated aliases, so a bad call changes nothing.
+- The template lands centred on the requesting participant's view as one
+  acknowledged realtime batch, carries AI-assistance metadata like every other
+  AI-written object, and undoes in one step. The tool refuses without board edit
+  access and refuses any template this board's features disable.
+- Neither tool returns board or item IDs, coordinates, existing board content,
+  participants, presence, or history. The write tool is told to fill the prompts,
+  questions, headings and category labels that frame an activity, and to leave
+  answers, votes, ratings and the class's own conclusions blank.
 
 ### Five education collaboration tools
 

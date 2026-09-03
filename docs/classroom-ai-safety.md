@@ -102,6 +102,26 @@ attributed to the requesting participant and tagged as AI-written, or through
 the existing card tools; the caller's WebMCP permission is the confirmation, as
 it is for the headless card tools.
 
+### Activity templates
+
+`read_templates` and `insert_filled_template` work on the board's own template
+definitions, not on anyone's work. The read returns only what a template ships
+with: its label, description, object kinds, and the text slots it holds, plus a
+rendered picture of templates that draw. No board content, participant, or
+identifier is involved, so the read carries nothing about a class at all.
+
+The write inserts one template with text already in its slots. It refuses
+without edit access and refuses any template this board's features disable, so
+the AI cannot reach past what the Space owner turned on. It also refuses a fill
+the board itself would reject, such as emptying a canvas text object or a Section
+title, rather than letting a batch fail partway. Every object it creates
+carries the same AI-assistance metadata as any other AI-written object, lands as
+one acknowledged batch, and undoes in one step. The tool is instructed to fill
+the framing of an activity, the prompts, questions, headings and category
+labels, and to leave the students' own answers, votes, ratings, and conclusions
+blank, for the same reason the decision scaffolds keep those fields empty:
+filling them in would put the AI in the class's chair.
+
 ### Selected handwritten visual inspection
 
 `inspect_selected_board_visual` is a separately bounded visual-input use case for

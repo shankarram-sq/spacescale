@@ -1,5 +1,6 @@
 import { DEFAULT_BOARD_FEATURES } from "@collab/protocol";
 import { describe, expect, it, vi } from "vitest";
+import { ACTIVITY_TEMPLATES } from "../activities/templates";
 import { ApiError } from "../transport/api";
 import type { BoardComment, BoardItem, BoardSnapshot, DurableOperation } from "../types";
 import {
@@ -32,7 +33,9 @@ import {
   savedAuthoritativeItems,
   serializeAttributedData,
   tableCellDraftFromOperation,
+  templateAvailabilityIssue,
   templateFeatureIssue,
+  templateHiddenByVoting,
   withAdaptiveTurnstile,
   zoneTitleDraftFromOperation,
 } from "./app";
@@ -202,6 +205,41 @@ describe("template feature preflight", () => {
     expect(
       templateFeatureIssue([{ kind: "rectangle", transform: [0, 1, -1, 0, 200, 100] }], features),
     ).toMatch(/Scale and rotate/u);
+  });
+
+  it("hides both vote-seeding templates when voting is off, and only those", () => {
+    const features = { ...DEFAULT_BOARD_FEATURES, voting: false };
+    // K-W-L has a table but seeds no vote, so a table is not what makes a template vote-seeding.
+    expect(templateHiddenByVoting("vote-with-stamps", features)).toBe(true);
+    expect(templateHiddenByVoting("collective-inquiry-demo", features)).toBe(true);
+    expect(templateHiddenByVoting("kwl", features)).toBe(false);
+    expect(templateHiddenByVoting("vote-with-stamps", DEFAULT_BOARD_FEATURES)).toBe(false);
+  });
+
+  it("gives the menu and the WebMCP catalogue one answer for every template", () => {
+    // The activities menu and read_templates both ask this, so a template can never be offered
+    // in one place and refused in the other.
+    for (const features of [
+      DEFAULT_BOARD_FEATURES,
+      { ...DEFAULT_BOARD_FEATURES, voting: false },
+      { ...DEFAULT_BOARD_FEATURES, templates: false },
+      { ...DEFAULT_BOARD_FEATURES, tables: false },
+    ]) {
+      for (const template of ACTIVITY_TEMPLATES) {
+        const issue = templateAvailabilityIssue(template, features);
+        // Anything hidden must also be refused, or the menu would show a dead button.
+        if (templateHiddenByVoting(template.id, features)) expect(issue).not.toBeNull();
+      }
+    }
+    const kwl = ACTIVITY_TEMPLATES.find(({ id }) => id === "kwl");
+    if (!kwl) throw new Error("The K-W-L template is missing.");
+    expect(templateAvailabilityIssue(kwl, DEFAULT_BOARD_FEATURES)).toBeNull();
+    expect(templateAvailabilityIssue(kwl, { ...DEFAULT_BOARD_FEATURES, templates: false })).toMatch(
+      /Enable templates/u,
+    );
+    expect(templateAvailabilityIssue(kwl, { ...DEFAULT_BOARD_FEATURES, tables: false })).toMatch(
+      /Tables/u,
+    );
   });
 });
 
