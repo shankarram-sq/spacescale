@@ -27,7 +27,7 @@ what WebMCP uniquely enables.
 ## What it looks like in a classroom
 
 A teacher assigns five problems. Every student has a Section of the board and
-works in it, typing or writing by hand on a smart notepad. The teacher starts a
+works in it, typing or writing by hand on a pen tablet. The teacher starts a
 board watch from Codex with the class notes and a coaching skill loaded.
 
 From then on, without the teacher prompting again:
@@ -90,15 +90,26 @@ deploys.
 
 ### 3. Handwriting and diagrams, not just text
 
-In our classrooms students write on Huion smart notepads, and the strokes land
-on the board as ordinary pencil paths. Whenever a watched board holds drawn
-work, every watch result carries a PNG of the board as it stands, so the agent
-reads the handwriting and the diagram rather than a description of them.
+Most digital learning tools can only evaluate what a student types. The
+richest evidence of thinking is not typed. It is the working: the steps of a
+long division, the free-body diagram, the number line with the jump drawn in
+the wrong direction. That is exactly the work digital setups usually cannot
+assess.
 
-The demo board shows a hand-drawn parabola with the roots marked in the wrong
-place. The agent sees the sketch, notices that the student's own arithmetic
-already contradicts the claim, and asks them to plot one point before fixing
-the curve. That is feedback on visual work, on the canvas where it was drawn.
+On SpaceScale, students write with a Huion pen tablet or any other graphics
+tablet, and their strokes land on the board as ordinary pencil paths. The
+watch hands those strokes to the agent, which analyses the writing and the
+drawing as the student saved them. Huion simply makes this feel the same as
+writing on paper. Nothing about the pedagogy has to change to make it
+machine-readable.
+
+That opens up the deep end of feedback. The agent can follow a multi-step
+solution and point at the step where it went wrong. It can read a diagram and
+check it against the claim beside it. The demo board shows a hand-drawn
+parabola with the roots marked in the wrong place. The agent sees the sketch,
+notices that the student's own arithmetic already contradicts the claim, and
+asks them to plot one point before fixing the curve. That is feedback on
+visual work, on the canvas where it was drawn.
 
 ## Why this is new
 
