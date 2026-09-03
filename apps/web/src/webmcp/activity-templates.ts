@@ -204,9 +204,15 @@ export class ActivityTemplateWebMcp {
     for (const template of templates) {
       const draws = hasVisualContent(previewItems(template));
       const wantsPreview = requested !== undefined || draws;
+      const rendered = wantsPreview ? await this.renderPreview(template) : undefined;
+      // Reading one template by name always shows it. In a catalogue the picture is only kept if
+      // it fits what is left of the budget, since one dense render can be larger than the whole
+      // of it; measuring after rendering is the only way to know.
       const affordable =
-        requested !== undefined || spentCharacters < MAX_CATALOGUE_PREVIEW_CHARACTERS;
-      const preview = wantsPreview && affordable ? await this.renderPreview(template) : undefined;
+        requested !== undefined ||
+        (rendered !== undefined &&
+          spentCharacters + rendered.pngDataUrl.length <= MAX_CATALOGUE_PREVIEW_CHARACTERS);
+      const preview = affordable ? rendered : undefined;
       if (preview) spentCharacters += preview.pngDataUrl.length;
       else if (wantsPreview && draws) previewsOmitted += 1;
       signal.throwIfAborted();

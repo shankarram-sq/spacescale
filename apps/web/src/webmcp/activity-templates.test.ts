@@ -207,10 +207,31 @@ describe("read_templates", () => {
     context.templates.destroy();
   });
 
+  it("drops a single picture that would not fit the catalogue budget on its own", async () => {
+    // One dense render can be larger than the whole budget, so a first picture is not free.
+    const context = harness({
+      canvas: true,
+      pngCharacters: MAX_CATALOGUE_PREVIEW_CHARACTERS + 1,
+    });
+    await vi.waitFor(() => expect(context.tools.has("read_templates")).toBe(true));
+
+    const catalogue = await context.call("read_templates", {});
+    const listed = catalogue.templates as Array<Record<string, unknown>>;
+    expect(listed.filter((entry) => entry.preview !== undefined)).toHaveLength(0);
+    // Every template that draws is named instead of shown.
+    expect(catalogue).toMatchObject({ previewsOmitted: 4 });
+
+    // Reading one template by name still shows it, however large.
+    const single = await context.call("read_templates", { templateId: "exit-ticket" });
+    expect((single.templates as Array<Record<string, unknown>>)[0]?.preview).toBeDefined();
+    context.templates.destroy();
+  });
+
   it("stops rendering pictures once a catalogue read has spent its budget", async () => {
     const context = harness({
       canvas: true,
-      pngCharacters: Math.ceil(MAX_CATALOGUE_PREVIEW_CHARACTERS / 2),
+      // Two of these fit the budget and a third does not.
+      pngCharacters: Math.floor(MAX_CATALOGUE_PREVIEW_CHARACTERS / 2) - 100,
     });
     await vi.waitFor(() => expect(context.tools.has("read_templates")).toBe(true));
 

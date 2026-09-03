@@ -229,6 +229,33 @@ const FEATURE_LABELS: Readonly<Record<BoardFeatureKey, { label: string; detail: 
   spotlight: { label: "Follow me", detail: "Coach-led viewport spotlight" },
 };
 
+/**
+ * A template that seeds a vote is hidden rather than disabled when voting is off, as the stamp
+ * vote always has been. Both such templates are covered here so the activities menu, the WebMCP
+ * catalogue, and the insert can never disagree about what this Space offers.
+ */
+export function templateHiddenByVoting(
+  templateId: ActivityTemplateId,
+  features: BoardFeatures,
+): boolean {
+  return (
+    (templateId === "vote-with-stamps" || templateId === "collective-inquiry-demo") &&
+    !features.voting
+  );
+}
+
+/** Why this board cannot insert the template, or null when it can. */
+export function templateAvailabilityIssue(
+  template: ActivityTemplate,
+  features: BoardFeatures,
+): string | null {
+  if (!features.templates) return "Enable templates to use this template.";
+  if (templateHiddenByVoting(template.id, features)) {
+    return "Enable voting to use this template.";
+  }
+  return templateFeatureIssue(template.items, features);
+}
+
 export function templateFeatureIssue(
   items: readonly { kind: string; geometry?: unknown; transform?: readonly number[] }[],
   features: BoardFeatures,
@@ -1404,7 +1431,8 @@ export class BoardApp {
 
     this.activityTemplateWebMcp = new ActivityTemplateWebMcp({
       canWrite: () => this.canCommit(),
-      templateIssue: (template) => this.templateAvailabilityIssue(template),
+      templateIssue: (template) =>
+        templateAvailabilityIssue(template, this.bootstrap.board.features),
       getPlacementCenter: () => {
         const view = this.renderer.viewport.viewState;
         return [view.center.x, view.center.y];
@@ -2037,33 +2065,16 @@ export class BoardApp {
     }
   }
 
-  /** Why this board cannot insert the template, or null when it can. */
-  private templateAvailabilityIssue(template: ActivityTemplate): string | null {
-    const features = this.bootstrap.board.features;
-    if (!features.templates) return "Enable templates to use this template.";
-    if (
-      (template.id === "vote-with-stamps" || template.id === "collective-inquiry-demo") &&
-      !features.voting
-    ) {
-      return "Enable voting to use this template.";
-    }
-    return templateFeatureIssue(template.items, features);
-  }
-
   private async insertActivity(templateId: ActivityTemplateId): Promise<void> {
     if (!this.bootstrap.board.features.templates || !this.canCommit() || this.activityInsertPending)
       return;
     const template = ACTIVITY_TEMPLATES.find((value) => value.id === templateId);
     if (!template) return;
-    const featureIssue = this.templateAvailabilityIssue(template);
+    const featureIssue = templateAvailabilityIssue(template, this.bootstrap.board.features);
     if (featureIssue) {
-      if (
-        (templateId === "vote-with-stamps" || templateId === "collective-inquiry-demo") &&
-        !this.bootstrap.board.features.voting
-      ) {
-        return;
-      }
-      this.notify(featureIssue, "warning");
+      // A hidden button cannot be clicked, so there is nobody to tell.
+      if (!templateHiddenByVoting(template.id, this.bootstrap.board.features))
+        this.notify(featureIssue, "warning");
       return;
     }
     this.activityInsertPending = true;
@@ -6100,20 +6111,18 @@ export class BoardApp {
     for (const button of this.activitiesMenu.querySelectorAll<HTMLButtonElement>(
       "[data-activity-template]",
     )) {
-      const votingTemplate = button.dataset.activityTemplate === "vote-with-stamps";
       const template = ACTIVITY_TEMPLATES.find(
         (candidate) => candidate.id === button.dataset.activityTemplate,
       );
+      const hidden = template
+        ? templateHiddenByVoting(template.id, this.bootstrap.board.features)
+        : false;
       const featureIssue = template
-        ? templateFeatureIssue(template.items, this.bootstrap.board.features)
+        ? templateAvailabilityIssue(template, this.bootstrap.board.features)
         : null;
-      button.hidden = votingTemplate && !this.bootstrap.board.features.voting;
-      button.disabled =
-        !canEdit ||
-        this.activityInsertPending ||
-        (votingTemplate && !this.bootstrap.board.features.voting) ||
-        featureIssue !== null;
-      button.title = featureIssue ?? "";
+      button.hidden = hidden;
+      button.disabled = !canEdit || this.activityInsertPending || featureIssue !== null;
+      button.title = hidden ? "" : (featureIssue ?? "");
     }
     for (const button of this.activitiesMenu.querySelectorAll<HTMLButtonElement>(
       "[data-organisation-template]",
