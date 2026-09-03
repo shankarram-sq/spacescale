@@ -1006,6 +1006,53 @@ describe("normal board reductions", () => {
     ).toThrowError(expect.objectContaining({ code: "INVALID_FRAME" }));
   });
 
+  it("keeps a Section lock in the canonical snapshot projection", () => {
+    const locked = { ...zone(), geometry: { ...zone().geometry, locked: true as const } };
+    const created = applyDurableOperation(
+      createBoardState(),
+      { kind: "item.create", item: locked },
+      { seq: 1, actorId: ALICE },
+    );
+    const stored = created.state.items.get(RECTANGLE_ID)?.item;
+    if (stored?.kind !== "zone") throw new Error("Expected stored zone fixture");
+    expect(stored.geometry.locked).toBe(true);
+
+    const snapshot = JSON.parse(
+      serializeCanonicalSnapshot({
+        boardId: "018f0000-0000-7000-8000-0000000000ff",
+        seq: 1,
+        createdAt: 0,
+        settings: { title: "Square gating" },
+        items: [stored],
+      }),
+    ) as { items: Array<{ kind: string; geometry: { locked?: boolean } }> };
+    const section = snapshot.items.find((item) => item.kind === "zone");
+    expect(section?.geometry.locked).toBe(true);
+
+    // An unlocked Section must not gain the key, so the canonical form stays stable.
+    const unlocked = JSON.parse(
+      serializeCanonicalSnapshot({
+        boardId: "018f0000-0000-7000-8000-0000000000ff",
+        seq: 1,
+        createdAt: 0,
+        settings: { title: "Square gating" },
+        items: [
+          {
+            ...stored,
+            geometry: {
+              x: stored.geometry.x,
+              y: stored.geometry.y,
+              width: stored.geometry.width,
+              height: stored.geometry.height,
+              title: stored.geometry.title,
+            },
+          },
+        ],
+      }),
+    ) as { items: Array<{ geometry: Record<string, unknown> }> };
+    expect("locked" in (unlocked.items[0]?.geometry ?? {})).toBe(false);
+  });
+
   it("persists zone titles through copy, history, delete, and canonical snapshots", () => {
     const created = applyDurableOperation(
       createBoardState(),

@@ -7161,6 +7161,101 @@ describe("BoardRoom Section membership history", () => {
     owner.socket.close(1000, "done");
     editor.socket.close(1000, "done");
   });
+
+  it("keeps a Section's lock through a recovery snapshot and restore", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const owner = await connect(stub, actorId);
+    const sectionId = "018f0000-0000-7000-8000-00000000a040";
+    const geometry = { x: 0, y: 0, width: 600, height: 400, title: "Members" };
+
+    expect(
+      await send(
+        owner,
+        sectionCreate(
+          "018f0000-0000-7000-8000-00000000a041",
+          "018f0000-0000-7000-8000-00000000a042",
+          sectionId,
+          0,
+        ),
+      ),
+    ).toMatchObject({ t: "server.action", seq: 1 });
+    const lock = (commandId: string, actionId: string, baseSeq: number, locked: boolean) => ({
+      v: 1,
+      t: "client.commit",
+      commandId,
+      actionId,
+      baseSeq,
+      op: {
+        kind: "item.update",
+        itemId: sectionId,
+        expectedVersion: baseSeq,
+        patch: { geometry: { ...geometry, locked } },
+      },
+    });
+    expect(
+      await send(
+        owner,
+        lock(
+          "018f0000-0000-7000-8000-00000000a043",
+          "018f0000-0000-7000-8000-00000000a044",
+          1,
+          true,
+        ),
+      ),
+    ).toMatchObject({ t: "server.action", seq: 2, op: { item: { geometry: { locked: true } } } });
+
+    // Snapshot the locked state, unlock so restore is permitted, then restore.
+    const snapshot = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/snapshots`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "locked-section-snapshot-a045",
+        },
+        body: JSON.stringify({ label: "While locked" }),
+      }),
+    );
+    expect(snapshot.status).toBe(201);
+    await snapshot.arrayBuffer();
+    expect(
+      await send(
+        owner,
+        lock(
+          "018f0000-0000-7000-8000-00000000a046",
+          "018f0000-0000-7000-8000-00000000a047",
+          2,
+          false,
+        ),
+      ),
+    ).toMatchObject({ t: "server.action", seq: 3 });
+
+    const restored = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/restore/2`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "locked-section-restore-a048",
+        },
+        body: JSON.stringify({ expectedBoardSeq: 3 }),
+      }),
+    );
+    expect(restored.status).toBe(200);
+    await restored.arrayBuffer();
+
+    const stored = await runInDurableObject(
+      stub,
+      (_instance, durableState) =>
+        JSON.parse(
+          durableState.storage.sql
+            .exec<{ data_json: string }>("SELECT data_json FROM items WHERE item_id = ?", sectionId)
+            .one().data_json,
+        ) as { geometry: { locked?: boolean } },
+    );
+    expect(stored.geometry.locked).toBe(true);
+
+    owner.socket.close(1000, "done");
+  });
 });
 
 describe("BoardRoom facilitation spotlight", () => {

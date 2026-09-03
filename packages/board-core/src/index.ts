@@ -1255,6 +1255,7 @@ function canonicalItem(item: BoardItem): BoardItem {
                           width: normalized.geometry.width,
                           height: normalized.geometry.height,
                           title: normalized.geometry.title,
+                          ...(normalized.geometry.locked === true ? { locked: true } : {}),
                         }
                       : normalized.kind === "table"
                         ? {
