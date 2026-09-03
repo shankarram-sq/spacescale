@@ -33,6 +33,9 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   await expect(page.getByTestId("tool-select")).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator(".sticky-math-content")).toHaveAttribute("data-math-state", "ready");
   await expect(page.locator(".sticky-math-content mjx-container")).toHaveCount(1);
+  expect(await page.locator(".sticky-math-content").evaluate((node) => node.style.opacity)).toBe(
+    "",
+  );
 
   await page.getByRole("button", { name: "Comment on selected object" }).click();
   const comments = page.getByTestId("comments-drawer");
@@ -47,7 +50,7 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   await page.mouse.click(textPoint.x, textPoint.y);
   const textEditor = page.getByTestId("canvas-text-editor");
   await textEditor.fill(
-    "$$\\begin{pmatrix}\\frac{1}{2}\\\\\\frac{3}{4}\\\\\\frac{5}{6}\\\\\\frac{7}{8}\\end{pmatrix}$$",
+    "$$\\begin{pmatrix}\\frac{1}{2}\\\\\\frac{3}{4}\\\\\\frac{5}{6}\\\\\\frac{7}{8}\\end{pmatrix}$$ See https://example.com/math",
   );
   await textEditor.press("Control+Enter");
   const freeMath = page.locator(".board-math-content");
@@ -63,6 +66,21 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   });
   expect(mathSize.height).toBeGreaterThan(mathSize.initialHeight);
   expect(mathSize.height).toBeGreaterThanOrEqual(mathSize.scrollHeight);
+  expect(await freeMath.evaluate((node) => node.style.opacity)).toBe("1");
+  await expect(freeMath.locator("a.board-text-link")).toHaveAttribute(
+    "href",
+    "https://example.com/math",
+  );
+
+  const renderedMathBox = await freeMath.locator("mjx-container").boundingBox();
+  expect(renderedMathBox).not.toBeNull();
+  await page.getByTestId("tool-select").click();
+  await page.mouse.click(
+    (renderedMathBox?.x ?? 0) + (renderedMathBox?.width ?? 0) / 2,
+    (renderedMathBox?.y ?? 0) + Math.max(4, (renderedMathBox?.height ?? 0) - 4),
+  );
+  const selectionHeight = Number(await page.locator(".selection-outline").getAttribute("height"));
+  expect(selectionHeight).toBeGreaterThanOrEqual(mathSize.height);
 
   const sectionPoint = await canvasPoint(page, 0.28, 0.68);
   await page.getByTestId("tool-zone").click();
@@ -71,6 +89,7 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   await sectionTitle.fill("Results: $y=mx+b$");
   await sectionTitle.press("Enter");
   await expect(page.locator(".zone-math-content")).toHaveAttribute("data-math-state", "ready");
+  expect(await page.locator(".zone-math-content").evaluate((node) => node.style.opacity)).toBe("");
 
   await page.getByTestId("tool-table").click();
   const picker = page.getByTestId("table-picker");
@@ -87,6 +106,9 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   await cellEditor.fill("$x^2$");
   await cellEditor.press("Control+Enter");
   await expect(table.locator(".table-math-content")).toHaveAttribute("data-math-state", "ready");
+  expect(await table.locator(".table-math-content").evaluate((node) => node.style.opacity)).toBe(
+    "",
+  );
 
   const urlTextPoint = await canvasPoint(page, 0.52, 0.5);
   await page.getByTestId("tool-text").click();
@@ -95,7 +117,7 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   await urlEditor.fill("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
   await urlEditor.press("Control+Enter");
   await expect(page.locator("#drawing-area .video-embed-item")).toHaveCount(0);
-  await expect(page.locator("#drawing-area .board-text-link")).toHaveCount(1);
+  await expect(page.locator("#drawing-area .board-text-link")).toHaveCount(2);
 
   await page.getByTestId("tool-video").click();
   const videoDialog = page.getByRole("dialog", { name: "Embed a video" });
@@ -115,7 +137,7 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   await page.reload();
   await expect(page.locator("#drawing-area [data-math-state='ready']")).toHaveCount(4);
   await expect(page.locator("#drawing-area .video-embed-item")).toHaveCount(1);
-  await expect(page.locator("#drawing-area .board-text-link")).toHaveCount(1);
+  await expect(page.locator("#drawing-area .board-text-link")).toHaveCount(2);
 
   await page.setViewportSize({ width: 840, height: 640 });
   await expect(page.locator(".comments-button-label")).toBeHidden();

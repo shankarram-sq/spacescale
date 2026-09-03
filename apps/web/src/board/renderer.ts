@@ -852,6 +852,11 @@ export class BoardRenderer {
         item,
         (assetId) => this.imageAssets.load(assetId),
         this.resolveCreatorName(item.createdBy),
+        (width, height) => {
+          if (!this.model.setRenderedTextSize(id, item.version, width, height)) return;
+          this.refreshSelection();
+          this.refreshComments();
+        },
       );
       if (current) {
         current.replaceWith(replacement);
@@ -1274,6 +1279,7 @@ function itemNode(
   item: BoardItem,
   loadImageAsset: (assetId: string) => Promise<string>,
   creatorName?: string,
+  onTextSize?: (width: number, height: number) => void,
 ): SVGGraphicsElement {
   let node: SVGGraphicsElement;
   switch (item.kind) {
@@ -1298,7 +1304,7 @@ function itemNode(
       node = video
         ? videoEmbedNode(item.geometry, item.style, video)
         : containsMathMarkup(item.geometry.text)
-          ? mathTextNode(item.geometry, item.style)
+          ? mathTextNode(item.geometry, item.style, onTextSize)
           : textNode(item.geometry, item.style);
       break;
     }
@@ -1390,7 +1396,11 @@ export function textNode(geometry: TextGeometry, style: TextStyle): SVGTextEleme
   return text;
 }
 
-function mathTextNode(geometry: TextGeometry, style: TextStyle): SVGGElement {
+function mathTextNode(
+  geometry: TextGeometry,
+  style: TextStyle,
+  onSize?: (width: number, height: number) => void,
+): SVGGElement {
   const lines = geometry.text.split("\n");
   const estimatedWidth =
     Math.max(1, ...lines.map((line) => [...line].length)) * style.fontSize * 0.7;
@@ -1407,8 +1417,7 @@ function mathTextNode(geometry: TextGeometry, style: TextStyle): SVGGElement {
       geometry.text,
       style,
       "board-math-content",
-      "normal",
-      true,
+      { fitContent: true, opacity: style.opacity, onSize },
     ),
   );
   return node;
@@ -1460,6 +1469,32 @@ function videoEmbedNode(geometry: TextGeometry, style: TextStyle, video: VideoEm
   return node;
 }
 
+type MathForeignObjectOptions = {
+  defaultWeight?: string;
+  fitContent?: boolean;
+  opacity?: number;
+  onSize?: (width: number, height: number) => void;
+};
+
+function appendLinkifiedHtml(container: HTMLElement, value: string): void {
+  for (const token of tokenizeSafeLinks(value)) {
+    if (token.kind === "text") {
+      container.append(token.text);
+      continue;
+    }
+    container.classList.add("has-board-text-link");
+    const anchor = document.createElement("a");
+    anchor.classList.add("board-text-link");
+    anchor.dataset.boardLink = "true";
+    anchor.href = token.href;
+    anchor.target = "_blank";
+    anchor.rel = "noopener noreferrer";
+    anchor.referrerPolicy = "no-referrer";
+    anchor.textContent = token.text;
+    container.append(anchor);
+  }
+}
+
 function mathForeignObject(
   x: number,
   y: number,
@@ -1468,8 +1503,7 @@ function mathForeignObject(
   value: string,
   style: TextStyle | StickyStyle | TableStyle | ZoneStyle,
   className: string,
-  defaultWeight = "normal",
-  fitContent = false,
+  options: MathForeignObjectOptions = {},
 ): SVGForeignObjectElement {
   const foreign = svgElement("foreignObject");
   foreign.setAttribute("x", String(x));
@@ -1478,19 +1512,22 @@ function mathForeignObject(
   foreign.setAttribute("height", String(Math.max(1, height)));
   const content = document.createElement("div");
   content.className = className;
-  content.textContent = value;
-  content.style.opacity = String(style.opacity);
+  appendLinkifiedHtml(content, value);
+  if (options.opacity !== undefined) content.style.opacity = String(options.opacity);
   content.style.color = "color" in style ? style.color : style.textColor;
   content.style.fontSize = `${style.fontSize}px`;
   content.style.fontFamily = textFontStack(style.fontFamily ?? "sans");
-  content.style.fontWeight = resolveTextFontWeight(style.fontWeight, defaultWeight);
+  content.style.fontWeight = resolveTextFontWeight(style.fontWeight, options.defaultWeight);
   content.style.fontStyle = style.fontStyle ?? "normal";
   content.style.textDecoration = style.textDecoration ?? "none";
   foreign.append(content);
   typesetMath(content, () => {
-    if (!fitContent || !foreign.isConnected) return;
-    foreign.setAttribute("width", String(Math.ceil(Math.max(width, content.scrollWidth))));
-    foreign.setAttribute("height", String(Math.ceil(Math.max(height, content.scrollHeight))));
+    if (!options.fitContent || !foreign.isConnected) return;
+    const renderedWidth = Math.ceil(Math.max(width, content.scrollWidth));
+    const renderedHeight = Math.ceil(Math.max(height, content.scrollHeight));
+    foreign.setAttribute("width", String(renderedWidth));
+    foreign.setAttribute("height", String(renderedHeight));
+    options.onSize?.(renderedWidth, renderedHeight);
   });
   return foreign;
 }
@@ -1625,7 +1662,7 @@ export function zoneNode(itemId: string, geometry: ZoneGeometry, style: ZoneStyl
         normalizedTitle,
         style,
         "zone-math-content",
-        "700",
+        { defaultWeight: "700" },
       )
     : svgElement("text");
   title.classList.add("zone-title");
@@ -1766,7 +1803,7 @@ export function tableNode(itemId: string, geometry: TableGeometry, style: TableS
           value,
           style,
           "table-math-content",
-          isHeader ? "700" : "500",
+          { defaultWeight: isHeader ? "700" : "500" },
         );
         math.setAttribute("clip-path", `url(#${clipId})`);
         cell.append(math);

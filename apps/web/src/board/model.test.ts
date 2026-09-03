@@ -40,6 +40,25 @@ function sticky(version = 1): BoardItem {
   };
 }
 
+function textItem(version = 1): Extract<BoardItem, { kind: "text" }> {
+  return {
+    id: ITEM_ID,
+    kind: "text",
+    z: 1,
+    version,
+    createdBy: ACTOR_ID,
+    style: {
+      kind: "text",
+      color: "#20201e",
+      fontSize: 20,
+      fontFamily: "sans",
+      opacity: 1,
+    },
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: { x: 10, y: 40, text: "$$\\frac{1}{2}$$" },
+  };
+}
+
 function stamp(version = 1): BoardItem {
   return {
     id: ITEM_ID,
@@ -227,6 +246,23 @@ describe("BoardModel", () => {
     model.load(snapshot([item], 1));
     expect(model.hitTest([50, 30])?.id).toBe(ITEM_ID);
     expect(model.hitTest([400, 300])).toBeUndefined();
+  });
+
+  it("uses measured MathJax dimensions for bounds and hit testing", () => {
+    const item = textItem();
+    item.geometry.text = `$$${"x".repeat(100)}$$`;
+    const model = new BoardModel();
+    model.load(snapshot([item], 1));
+    expect(model.setRenderedTextSize(ITEM_ID, 1, 240, 180)).toBe(true);
+    expect(model.getBounds(ITEM_ID)).toEqual({ minX: 8, minY: 18, maxX: 252, maxY: 202 });
+    expect(itemBounds(model.getItem(ITEM_ID) as BoardItem)).toEqual({
+      minX: 8,
+      minY: 18,
+      maxX: 252,
+      maxY: 202,
+    });
+    expect(model.hitTest([200, 180], 0)?.id).toBe(ITEM_ID);
+    expect(model.setRenderedTextSize(ITEM_ID, 0, 500, 500)).toBe(false);
   });
 
   it("finds connector anchors on transformed local edges", () => {

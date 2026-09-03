@@ -27,6 +27,7 @@ import type {
   Point,
   ServerAction,
   TableGeometry,
+  TextGeometry,
 } from "../types";
 import { isBoardItem } from "../types";
 import { VIDEO_EMBED_HEIGHT, VIDEO_EMBED_WIDTH, videoEmbedFromText } from "./links";
@@ -46,6 +47,40 @@ export type ConnectorAnchor = {
 
 type ModelListener = (changedIds: ReadonlySet<string> | null) => void;
 type RebaseListener = (error: Error | null) => void;
+
+type RenderedTextMeasurement = {
+  signature: string;
+  width: number;
+  height: number;
+};
+
+const renderedTextMeasurements = new WeakMap<TextGeometry, RenderedTextMeasurement>();
+
+function textMeasurementSignature(item: Extract<BoardItem, { kind: "text" }>): string {
+  return JSON.stringify([
+    item.geometry.text,
+    item.style.fontSize,
+    item.style.fontFamily,
+    item.style.fontWeight,
+    item.style.fontStyle,
+    item.style.textDecoration,
+  ]);
+}
+
+function renderedTextMeasurement(
+  item: Extract<BoardItem, { kind: "text" }>,
+): RenderedTextMeasurement | undefined {
+  const measurement = renderedTextMeasurements.get(item.geometry);
+  return measurement?.signature === textMeasurementSignature(item) ? measurement : undefined;
+}
+
+function preserveRenderedTextMeasurement(previous: BoardItem | undefined, next: BoardItem): void {
+  if (previous?.kind !== "text" || next.kind !== "text") return;
+  const measurement = renderedTextMeasurement(previous);
+  if (measurement?.signature === textMeasurementSignature(next)) {
+    renderedTextMeasurements.set(next.geometry, measurement);
+  }
+}
 
 export class BoardModel {
   private authoritative = new Map<string, BoardItem>();
@@ -131,6 +166,29 @@ export class BoardModel {
     const computed = itemBounds(item);
     this.bounds.set(id, computed);
     return computed;
+  }
+
+  setRenderedTextSize(id: string, expectedVersion: number, width: number, height: number): boolean {
+    const item = this.rendered.get(id);
+    if (
+      item?.kind !== "text" ||
+      item.version !== expectedVersion ||
+      !Number.isFinite(width) ||
+      !Number.isFinite(height) ||
+      width <= 0 ||
+      height <= 0
+    ) {
+      return false;
+    }
+    const previous = renderedTextMeasurement(item);
+    if (previous?.width === width && previous.height === height) return false;
+    renderedTextMeasurements.set(item.geometry, {
+      signature: textMeasurementSignature(item),
+      width,
+      height,
+    });
+    this.bounds.delete(id);
+    return true;
   }
 
   queue(command: CommitFrame, actorId: string): void {
@@ -368,6 +426,7 @@ export class BoardModel {
       rebaseError = error instanceof Error ? error : new Error("Optimistic rebase failed.");
     }
 
+    for (const [id, item] of next) preserveRenderedTextMeasurement(previous.get(id), item);
     this.rendered = next;
     const affected = changed ? new Set(changed) : new Set<string>();
     if (!changed) {
@@ -916,9 +975,12 @@ function geometryBounds(item: BoardItem): Bounds {
         };
       }
       const lines = item.geometry.text.split("\n");
-      const width =
+      const estimatedWidth =
         Math.max(1, ...lines.map((line) => [...line].length)) * item.style.fontSize * 0.61;
-      const height = Math.max(1, lines.length) * item.style.fontSize * 1.2;
+      const estimatedHeight = Math.max(1, lines.length) * item.style.fontSize * 1.2;
+      const measurement = renderedTextMeasurement(item);
+      const width = measurement?.width ?? estimatedWidth;
+      const height = measurement?.height ?? estimatedHeight;
       return {
         minX: item.geometry.x,
         minY: item.geometry.y - item.style.fontSize,
