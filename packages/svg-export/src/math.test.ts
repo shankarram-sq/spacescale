@@ -193,6 +193,21 @@ describe("exporting math", () => {
     ]);
   });
 
+  it("leaves an escaped delimiter as the dollars the participant typed", () => {
+    const { renderMath, seen } = fakeRenderer();
+    // MathJax is configured with processEscapes, so \$ is a literal dollar and the board shows
+    // this whole line as text. A picture of it has to agree.
+    const svg = renderSvgItem(textItem("Costs \\$$5$$ a kit"), { renderMath });
+    expect(seen).toEqual([]);
+    expect(svg).toContain("Costs \\$$5$$ a kit");
+  });
+
+  it("still reads a real formula after an escaped dollar", () => {
+    const { renderMath, seen } = fakeRenderer();
+    renderSvgItem(textItem("\\$5 a kit, so $$5n$$"), { renderMath });
+    expect(seen).toEqual([{ tex: "5n", fontSize: 20, display: true }]);
+  });
+
   it("leaves a price alone", () => {
     const { renderMath, seen } = fakeRenderer();
     const svg = renderSvgItem(textItem("Kits cost $12 to $20 each"), { renderMath });
