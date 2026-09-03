@@ -9,14 +9,15 @@ function occurrences(source: string, value: string): number {
 }
 
 describe("deployment and CI workflows", () => {
-  it("runs the full validation suite for pull requests, main pushes, and manual requests", () => {
+  it("runs validation automatically and keeps browser E2E manual-only", () => {
     expect(ci).toContain("workflow_dispatch:");
     expect(ci).toContain("pull_request:\n    branches: [main]");
     expect(ci).toContain("push:\n    branches: [main]");
-    expect(ci).toContain("group: ci-${{ github.workflow }}-${{ github.ref }}");
+    expect(ci).toContain("group: ci-$" + "{{ github.workflow }}-$" + "{{ github.ref }}");
     expect(ci).toContain("cancel-in-progress: true");
     expect(ci).toContain("npm run check");
     expect(ci).toContain("npm run cf:types -- --check");
+    expect(ci).toContain("browser:\n    if: github.event_name == 'workflow_dispatch'");
     expect(ci).toContain("npm run test:e2e");
   });
 

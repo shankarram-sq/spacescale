@@ -329,10 +329,11 @@ The retained GitHub Actions path is deliberately direct. A push to `staging` or
 `main` checks out that exact SHA, idempotently creates or reuses both private R2
 buckets, builds the web assets, uploads a Worker version, deploys it at 100%, and
 makes a small five-attempt health probe. Pull requests into `main` require an
-approval plus the full validation and Playwright jobs; CI repeats on the resulting
-push to `main`. The deployment itself still does not wait for that post-merge run,
-stage a candidate, run load suites, or automate rollback. Moving the same SHA
-through `staging` before opening the production PR remains recommended.
+approval plus the full `validate` job; CI repeats on the resulting push to `main`.
+Playwright browser E2E is run explicitly with a manual CI workflow dispatch. The
+deployment itself still does not wait for that post-merge run, stage a candidate,
+run load suites, or automate rollback. Moving the same SHA through `staging`
+before opening the production PR remains recommended.
 
 For GitHub deployments, add `ORGANISATION_SIGNING_KEYS` as an encrypted secret
 in both the `staging` and `production` GitHub environments. The workflow uploads

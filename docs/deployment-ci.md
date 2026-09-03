@@ -6,9 +6,10 @@ changes while retaining a lightweight direct deployment after merge.
 ## Workflows
 
 `.github/workflows/ci.yml` runs for pull requests into `main`, pushes to `main`,
-and manual `workflow_dispatch` requests. It runs the full repository check,
-verifies generated Worker binding types, and runs Playwright. The `validate` and
-`browser` jobs are required before a pull request can merge into `main`.
+and manual `workflow_dispatch` requests. The automatic runs execute the full
+repository check and verify generated Worker binding types. Playwright runs only
+when the workflow is dispatched manually. Only the `validate` job is required
+before a pull request can merge into `main`.
 
 `.github/workflows/deploy.yml` runs directly on pushes to `staging` and `main`.
 Each job reads its target hostname and resource names from that GitHub
@@ -111,9 +112,10 @@ git push origin development:staging
 gh pr create --base main --head development
 ```
 
-After the required `validate` and `browser` checks pass and at least one reviewer
-approves, merge the pull request. The resulting `main` push triggers production
-deployment and a second CI run. CI can also be dispatched manually when needed.
+After the required `validate` check passes and at least one reviewer approves,
+merge the pull request. The resulting `main` push triggers production deployment
+and a second validation run. Dispatch CI manually when browser E2E coverage is
+needed.
 
 ## Cloudflare Workers Builds
 
