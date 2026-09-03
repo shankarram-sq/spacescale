@@ -16,7 +16,7 @@ function deterministicIds(): () => string {
 }
 
 describe("classroom templates", () => {
-  it("builds all six templates as small valid ordinary-item batches", () => {
+  it("builds every template as a small valid ordinary-item batch", () => {
     const expectedCounts: Record<ActivityTemplateId, number> = {
       "collective-inquiry-demo": 13,
       "exit-ticket": 7,
@@ -24,6 +24,8 @@ describe("classroom templates", () => {
       "sort-it": 12,
       "pair-share": 7,
       "vote-with-stamps": 4,
+      "ai-feedback-graph": 17,
+      "ai-explain-moon-phases": 25,
     };
 
     expect(ACTIVITY_TEMPLATES.map(({ id }) => id)).toEqual(Object.keys(expectedCounts));
@@ -89,5 +91,36 @@ describe("classroom templates", () => {
       createdBy: "teacher",
     };
     expect(isVoteTable(voteTable)).toBe(true);
+  });
+
+  it("gives the demo boards handwriting, a written claim, and an empty Section for the AI", () => {
+    const byId = new Map(ACTIVITY_TEMPLATES.map((template) => [template.id, template]));
+
+    for (const id of ["ai-feedback-graph", "ai-explain-moon-phases"] as const) {
+      const template = byId.get(id);
+      if (!template) throw new Error(`${id} is missing.`);
+      // Strokes are what make the watch send a picture rather than a description.
+      expect(template.items.filter(({ kind }) => kind === "pencil").length).toBeGreaterThanOrEqual(
+        5,
+      );
+      // A written claim is what the AI comments on.
+      expect(template.items.some(({ kind }) => kind === "sticky")).toBe(true);
+      // An empty Section is where the AI's image or video lands.
+      const sections = template.items.filter((item) => item.kind === "zone");
+      expect(sections.length).toBeGreaterThanOrEqual(2);
+      expect(
+        sections.some((item) => item.kind === "zone" && /Ask the AI/u.test(item.geometry.title)),
+      ).toBe(true);
+      // Every stroke must be drawable.
+      for (const item of template.items) {
+        if (item.kind !== "pencil") continue;
+        expect(item.geometry.points.length).toBeGreaterThanOrEqual(2);
+      }
+    }
+
+    const graph = byId.get("ai-feedback-graph");
+    expect(
+      graph?.items.some((item) => item.kind === "sticky" && item.geometry.text.includes("$x=-3$")),
+    ).toBe(true);
   });
 });
