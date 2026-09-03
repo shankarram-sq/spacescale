@@ -86,6 +86,15 @@ notices that the student's own arithmetic already contradicts the claim, and
 asks them to plot one point before fixing the curve. That is feedback on
 visual work, on the canvas where it was drawn.
 
+### 4. A background watch that fans out
+
+The watch does not sit in the teacher's chat. A background agent holds it, so
+Codex stays responsive to the teacher while the class works, and the
+background agent comes back to ask when it needs more detail. When the queue
+holds several requests at once, it spins up to two extra agents to handle them
+in parallel. All of this is set by prompt or skill. The site sends the same
+long poll it always did; how many agents pick it up is the teacher's choice.
+
 ## Why this is new
 
 Each piece exists somewhere. A tutor bot can give hints. A chat can summarise a
@@ -177,17 +186,12 @@ Swap the skill and the same board becomes:
 ## Honest limitations
 
 - **It gets chatty at scale.** With many students saving work at once, one
-  watch delivers a lot of changes to one agent, and replies slow down. The
-  transport is fine for a small group today; a full class needs the next item.
-- **One agent per task is in progress.** The current skill has Codex poll the
-  watch and handle every request itself. We are moving to a pattern where
-  Codex polls, collects the queued requests, and hands each one to its own
-  agent. This lives entirely at the client and skill level, which is the point:
-  the site does not change to make the agent side faster.
+  watch delivers a lot of changes, and replies slow down. The background agent
+  and its helpers absorb a group comfortably; a very large class on one board
+  will feel the polling until WebMCP offers a push channel.
 
 ## What comes next
 
-- Finish the one-agent-per-task skill so a full class can work at once.
 - Replace long polling with a push channel the moment WebMCP offers one.
 - Ship a starter library of skills: problem set coach, brainstorm connector,
   debate mapper, with a plain-language editing guide for teachers.
