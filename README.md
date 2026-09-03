@@ -94,29 +94,29 @@ on shapes, sticky notes, tables, image cards, and sections. V1 stores the snappe
 coordinates as ordinary line geometry, so moving the target later does not move
 the connector automatically.
 
-AI assistance is exposed through twelve consent-aware WebMCP tools: a capability catalog,
-a teacher-approved text selection reader, a selected-board visual inspector for handwriting
-and sketches, five education collaboration writers spanning 27
-non-section modes, a source-linked class visual/meme writer, a collective-inquiry mapper,
-an aggregate vote reader, and a dissent-preserving class decision tool. The visual writer
-renders safe meme cards locally or accepts inline generated raster data, then reuses the
-private board-asset pipeline. AI-generated PNG is preferred; inline JPEG, WebP, and GIF are
-also accepted, while raw SVG and external image URLs are rejected. Selected contribution and
-visual metadata includes the creator's board-visible display name and stable participant ID
-for action attribution. The visual inspector opens a teacher-approved, selected-only SVG
-review surface in the live page, masks the rest of the board, aliases item IDs, and leaves
-private board images as placeholders.
-Cross-Group
-Jigsaw is reserved for the tested
+Codex and other compatible browser hosts discover twelve WebMCP tools directly from every
+board browser: a capability catalog, browser-selection text and visual readers, five
+education collaboration writers spanning 27 non-section modes, a source-linked class
+visual/meme writer, a collective-inquiry mapper, an aggregate vote reader, and a
+dissent-preserving class decision tool. Read tools operate on that browser's saved
+selection. Write tools use the board's normal edit permission and cannot bypass read-only
+access. The visual writer renders safe meme cards locally or accepts inline generated
+raster data, then reuses the private board-asset pipeline. Generated PNG is preferred;
+inline JPEG, WebP, and GIF are also accepted, while raw SVG and external image URLs are
+rejected. Selected contribution and visual metadata includes the creator's board-visible
+display name and stable participant ID for action attribution. The visual inspector opens
+a selected-only SVG review surface in the live page, masks the rest of the board, aliases
+item IDs, and leaves private board images as placeholders. Cross-Group Jigsaw is reserved for the tested
 section-context integration arriving separately; its writer adapter remains dormant
 unless an authoritative section snapshot provider is configured. The capability catalog publishes an
 exact contract for every live mode—including entry bounds, source-link cardinality,
 semantic roles, visible connections, and student-owned decision fields—and the write
-tools enforce the same registry at runtime. Writes require the teacher's WebMCP
-permission; the two headline demo flows add an extra visual preview. Every AI
-contribution is visibly attributed, source-linked, realtime, and undoable. The public
-deployment is a hackathon demo for synthetic or otherwise non-sensitive content; real
-classroom rollout remains subject to the [classroom AI safety and implementation
+tools enforce the same registry at runtime. The two headline write flows add a proposal
+preview. Generated items retain internal origin metadata for MCP context and auditing, but
+use the responsible participant's ordinary author initials with no AI-specific board
+labels. Every generated contribution remains source-linked, realtime, and undoable. The
+public deployment is a hackathon demo for synthetic or otherwise non-sensitive content;
+real classroom rollout remains subject to the [classroom AI safety and implementation
 gate](docs/classroom-ai-safety.md).
 
 ## Local development
@@ -156,7 +156,10 @@ npm run check
 
 Run the focused checks relevant to a change during normal development. The full
 `npm run check` and Playwright suites are available on demand and are not release
-gates.
+gates. `npm run build` verifies the production bundle with `wrangler deploy --dry-run`;
+on a checkout without deployment details it substitutes non-deployable `dry-run`
+placeholders for `DEPLOYMENT_NAME`, `APP_HOSTNAME`, and `TURNSTILE_SITE_KEY`, while
+`deployment:init` keeps strict validation.
 
 ## Cloudflare setup
 
@@ -268,8 +271,9 @@ without printing credential values:
 npm run cf:check
 ```
 
-`cf:check` first generates the ignored configuration from the current process
-environment and then verifies that exact mapping. For production, a token that can read Turnstile Sites
+`cf:check` first loads `.env.<environment>` and then `.env` (defaulting to
+production unless `--env` or `DEPLOYMENT_ENVIRONMENT` selects another
+environment), generates the ignored configuration, and then verifies that exact mapping. For production, a token that can read Turnstile Sites
 also checks the widget site key, hostname allowlist, and returned secret pairing
 without printing any of those values. The documented least-privilege
 Workers/R2 token cannot read widgets, so a production

@@ -56,6 +56,7 @@ def create_launch_token(
     display_name: str,
     participant_id: str,
     features: dict[str, bool] | None = None,
+    organisation_admin: bool | None = None,
     expires_in_seconds: int = 60 * 60,
 ) -> str:
     if role not in {"owner", "editor", "viewer"}:
@@ -78,6 +79,8 @@ def create_launch_token(
     }
     if features is not None:
         payload["features"] = features
+    if organisation_admin is not None:
+        payload["organisation_admin"] = organisation_admin
 
     encoded_payload = base64url_json(payload)
     signed = f"el1.{encoded_payload}"
@@ -101,7 +104,8 @@ def create_embed_url(
     return f"{origin.rstrip('/')}/embed#{urlencode(fragment)}"
 
 
-def sample_items(version: int) -> list[dict[str, Any]]:
+def sample_items(version: int, *, lock_sections: bool = False) -> list[dict[str, Any]]:
+    response_section_id = str(uuid.uuid4())
     return [
         {
             "id": str(uuid.uuid4()),
@@ -124,11 +128,36 @@ def sample_items(version: int) -> list[dict[str, Any]]:
             },
         },
         {
-            "id": str(uuid.uuid4()),
-            "kind": "sticky",
+            "id": response_section_id,
+            "kind": "zone",
             "z": 2,
             "version": version,
             "createdBy": SYNTHETIC_TEMPLATE_AUTHOR,
+            "style": {
+                "kind": "zone",
+                "borderColor": "#60a5fa",
+                "fill": "#eff6ff",
+                "textColor": "#1e3a8a",
+                "fontSize": 20,
+                "opacity": 0.8,
+            },
+            "transform": [1, 0, 0, 1, 0, 0],
+            "geometry": {
+                "x": 80,
+                "y": 130,
+                "width": 700,
+                "height": 360,
+                "title": "Participant responses",
+                "locked": lock_sections,
+            },
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "kind": "sticky",
+            "z": 3,
+            "version": version,
+            "createdBy": SYNTHETIC_TEMPLATE_AUTHOR,
+            "sectionId": response_section_id,
             "style": {
                 "kind": "sticky",
                 "fill": "#FFE7A8",
@@ -148,7 +177,11 @@ def sample_items(version: int) -> list[dict[str, Any]]:
     ]
 
 
-def create_initial_template(title: str) -> dict[str, Any]:
+def create_initial_template(
+    title: str,
+    *,
+    lock_sections: bool = False,
+) -> dict[str, Any]:
     return {
         "format": "cf-whiteboard-json",
         "version": 1,
@@ -156,7 +189,7 @@ def create_initial_template(title: str) -> dict[str, Any]:
         "seq": 0,
         "createdAt": int(time.time() * 1000),
         "settings": {"title": title},
-        "items": sample_items(0),
+        "items": sample_items(0, lock_sections=lock_sections),
     }
 
 
@@ -254,7 +287,7 @@ def delete_board(owner_token: str, board_id: str) -> None:
 
 
 def main() -> None:
-    initial_template = create_initial_template("Notice and wonder")
+    initial_template = create_initial_template("Notice and wonder", lock_sections=True)
     common = {
         "hostname": HOSTNAME,
         "organisation_id": ORGANISATION_ID,
@@ -275,6 +308,14 @@ def main() -> None:
         display_name="Student Sample",
         participant_id="student:sample-001",
     )
+    admin_token = create_launch_token(
+        **common,
+        role="owner",
+        display_name="Organisation administrator",
+        participant_id="service:organisation-admin",
+        organisation_admin=True,
+        expires_in_seconds=15 * 60,
+    )
 
     print("Owner iframe URL:")
     print(
@@ -286,6 +327,8 @@ def main() -> None:
     )
     print("\nStudent iframe URL:")
     print(create_embed_url(origin=ORIGIN, launch_token=editor_token))
+    print("\nOrganisation admin URL:")
+    print(f"{ORIGIN}/organisation/admin#launch={quote(admin_token, safe='')}")
 
     # Optional backend preflight: creates the Space and atomically applies the
     # initial template before any iframe is rendered.

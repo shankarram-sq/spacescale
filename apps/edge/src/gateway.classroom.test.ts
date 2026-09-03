@@ -143,6 +143,7 @@ async function launchToken(
     display_name: string;
     participant_id: string;
     features: Partial<BoardFeatures>;
+    organisation_admin: boolean;
   }> = {},
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1_000);
@@ -438,7 +439,7 @@ describe("organisation embed gateway", () => {
     expect(captured).toHaveLength(0);
   });
 
-  it("lets an owner assertion configure only its own organisation webhook", async () => {
+  it("lets only an Organisation admin assertion configure its own webhook", async () => {
     const { env } = makeEnv();
     const organisationFetch = vi.fn(async (request: Request) => {
       if (request.method === "PATCH") {
@@ -454,7 +455,10 @@ describe("organisation embed gateway", () => {
     (env as Env).ORGANISATION_ROOMS = {
       getByName: vi.fn(() => ({ fetch: organisationFetch })),
     } as unknown as DurableObjectNamespace;
-    const token = await launchToken("service-settings", { role: "owner" });
+    const token = await launchToken("service-settings", {
+      role: "owner",
+      organisation_admin: true,
+    });
     const launch = await new OrganisationAuthService(env).verifyLaunchToken(token);
     const route = `/api/v1/organisations/${encodeURIComponent(ORGANISATION_KEY)}/webhook`;
 
@@ -480,6 +484,15 @@ describe("organisation embed gateway", () => {
       webhookUrl: "https://partner.example/hooks/spacescale",
       updatedBy: launch.actorId,
     });
+
+    const plainOwnerToken = await launchToken("service-settings", { role: "owner" });
+    const refused = await gateway.fetch(
+      new Request(`http://localhost${route}`, {
+        headers: { Authorization: `Bearer ${plainOwnerToken}` },
+      }),
+      env,
+    );
+    expect(refused.status).toBe(403);
 
     const crossOrganisation = await gateway.fetch(
       new Request("http://localhost/api/v1/organisations/other-school/webhook", {
@@ -752,6 +765,13 @@ describe("embed response framing policy", () => {
       role: "owner",
       display_name: "Coach Owner",
       participant_id: "coach-owner",
+      organisation_admin: true,
+    });
+    const participantToken = await launchToken("admin", {
+      space_id: "Admin Space",
+      role: "owner",
+      display_name: "Coach Owner",
+      participant_id: "coach-owner",
     });
     const authentication = new OrganisationAuthService(env);
     const verified = await authentication.verifyLaunchToken(token);
@@ -805,6 +825,16 @@ describe("embed response framing policy", () => {
     env.ORGANISATION_ROOMS = {
       getByName: vi.fn(() => ({ fetch: organisationFetch })),
     } as unknown as Env["ORGANISATION_ROOMS"];
+
+    const refused = await gateway.fetch(
+      new Request("http://localhost/api/v1/organisation-admin/session", {
+        method: "POST",
+        headers: { Origin: "http://localhost", "Content-Type": "application/json" },
+        body: JSON.stringify({ token: participantToken }),
+      }),
+      env,
+    );
+    expect(refused.status).toBe(403);
 
     const session = await gateway.fetch(
       new Request("http://localhost/api/v1/organisation-admin/session", {

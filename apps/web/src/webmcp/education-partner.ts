@@ -3,6 +3,7 @@ import {
   buildEducationVisuals,
   buildGroupDecisionScaffold,
   COLLECTIVE_REASONING_MODES,
+  type EducationBatch,
   type EducationCard,
   type EducationConnection,
   type EducationMoveFamily,
@@ -20,8 +21,9 @@ import {
   THINKING_EXPANSION_MODES,
 } from "../activities/education-partner";
 import type { Bounds } from "../board/model";
-import type { DurableOperation, Role } from "../types";
+import type { DurableOperation } from "../types";
 import type { CollectiveInquirySnapshot } from "./collective-inquiry";
+import { enumValue, isRecord, optionalText, requiredText, textArray } from "./shared";
 
 type CardToolConfiguration = {
   name: string;
@@ -42,6 +44,14 @@ type DecisionMode = (typeof GROUP_DECISION_MODES)[number];
 type SectionMode = (typeof SECTION_INTEGRATION_MODES)[number];
 type LiveCollaborationMode = CardMode | DecisionMode;
 type CollaborationMode = LiveCollaborationMode | SectionMode;
+
+/** A parsed proposal ready to be laid out, queued, and reported. */
+type StagedAddition = {
+  batch: EducationBatch;
+  queueFailure: string;
+  notice: string;
+  result: Record<string, unknown>;
+};
 
 export const EDUCATION_VISUAL_PALETTES = [
   "sunset",
@@ -377,7 +387,7 @@ const MODE_CONTRACTS = {
     purpose: "Draft possible decision criteria while leaving every class priority or weight blank.",
     requirements: [
       "Use entries for possible criteria and pass an empty criteria array.",
-      "Students edit the wording and fill every class weight; the AI assigns no priorities.",
+      "Students edit the wording and fill every class weight; no priorities are assigned.",
     ],
     minimumEntries: 2,
     maximumEntries: 6,
@@ -389,7 +399,7 @@ const MODE_CONTRACTS = {
       "Lay out options against class-selected criteria while leaving ratings and evidence cells blank.",
     requirements: [
       "Use entries for options and provide two to four criteria selected or requested by the class.",
-      "Students fill every rating and evidence cell; the AI does not score options.",
+      "Students fill every rating and evidence cell; options are not scored.",
     ],
     minimumEntries: 2,
     maximumEntries: 6,
@@ -401,7 +411,7 @@ const MODE_CONTRACTS = {
       "Turn important assumptions into testable candidates while leaving prioritization votes to students.",
     requirements: [
       "Use entries for testable assumptions and pass an empty criteria array.",
-      "Students cast every vote; the AI does not rank assumptions.",
+      "Students cast every vote; assumptions are not ranked.",
     ],
     minimumEntries: 2,
     maximumEntries: 6,
@@ -424,7 +434,7 @@ const MODE_CONTRACTS = {
     purpose:
       "Preserve explicitly expressed unresolved concerns and ask what evidence or change could address them.",
     requirements: [
-      "Use entries only for concerns present in the teacher-approved sources and pass an empty criteria array.",
+      "Use entries only for concerns present in the browser-selected sources and pass an empty criteria array.",
       "Do not invent dissent or identify dissenters; preserve the concern alongside any majority choice.",
     ],
     minimumEntries: 2,
@@ -539,7 +549,7 @@ const MODE_CONTRACTS = {
 } as const satisfies Record<CollaborationMode, CollaborationModeContract>;
 
 export type EducationPartnerWebMcpOptions = {
-  getRole: () => Role;
+  canWrite: () => boolean;
   getSnapshot: (token: string) => CollectiveInquirySnapshot | undefined;
   sectionContext?: CrossGroupJigsawSectionContext;
   getItemVersion: (itemId: string) => number | undefined;
@@ -567,7 +577,6 @@ export class EducationPartnerWebMcp {
   }
 
   private async register(): Promise<void> {
-    if (this.options.getRole() !== "owner") return;
     const modelContext = document.modelContext;
     if (typeof modelContext?.registerTool !== "function") return;
     try {
@@ -586,7 +595,7 @@ export class EducationPartnerWebMcp {
         await modelContext.registerTool(
           {
             name: configuration.name,
-            description: `${configuration.description} First call read_selected_class_ideas and pass its selectionToken. The teacher's WebMCP permission is the approval; this tool adds one normal realtime batch directly, with AI attribution and ordinary undo.`,
+            description: `${configuration.description} First call read_selected_class_ideas and pass its selectionToken. The caller's WebMCP permission is the approval; this tool adds one normal realtime batch directly, with ordinary undo and internal origin metadata.`,
             inputSchema: cardToolSchema(configuration),
             annotations: { readOnlyHint: false },
             execute: async (input, { signal }) => this.addCardMove(input, configuration, signal),
@@ -598,7 +607,7 @@ export class EducationPartnerWebMcp {
         {
           name: "add_content_visuals",
           description:
-            "Add one to three playful, content-grounded visuals beside teacher-approved class ideas. Use meme_card for a reliable locally rendered classroom meme, or inline_image for an LLM-generated PNG, JPEG, WebP, or GIF supplied as a data URL. Every visual must cite selected idea aliases, include accessible alt text and a discussion question, avoid real student likenesses or targeting individuals, and help the class discuss rather than merely decorate. First call read_selected_class_ideas and pass its selectionToken. External image URLs are never fetched or embedded; SpaceScale sanitizes and privately stores every image in the board bucket.",
+            "Add one to three playful, content-grounded visuals beside browser-selected class ideas. Use meme_card for a reliable locally rendered classroom meme, or inline_image for an LLM-generated PNG, JPEG, WebP, or GIF supplied as a data URL. Every visual must cite selected idea aliases, include accessible alt text and a discussion question, avoid real student likenesses or targeting individuals, and help the class discuss rather than merely decorate. First call read_selected_class_ideas and pass its selectionToken. External image URLs are never fetched or embedded; SpaceScale sanitizes and privately stores every image in the board bucket.",
           inputSchema: contentVisualsToolSchema(),
           annotations: { readOnlyHint: false },
           execute: async (input, { signal }) => this.addContentVisuals(input, signal),
@@ -613,7 +622,7 @@ export class EducationPartnerWebMcp {
         await modelContext.registerTool(
           {
             name: "add_cross_group_jigsaw",
-            description: `Compare teacher-approved contributions from different authoritative class sections. Include agreement, tension, and complementary idea cards; every card must cite sources from at least two section aliases and end with a testable class question. First call ${sectionContext.readToolName} and pass its sectionToken. This tool never infers group membership from coordinates.`,
+            description: `Compare selected contributions from different authoritative class sections. Include agreement, tension, and complementary idea cards; every card must cite sources from at least two section aliases and end with a testable class question. First call ${sectionContext.readToolName} and pass its sectionToken. This tool never infers group membership from coordinates.`,
             inputSchema: jigsawToolSchema(sectionContext.readToolName),
             annotations: { readOnlyHint: false },
             execute: async (input, { signal }) => this.addCrossGroupJigsaw(input, signal),
@@ -625,7 +634,7 @@ export class EducationPartnerWebMcp {
         {
           name: "add_group_decision_scaffold",
           description:
-            "Add a source-linked scaffold that students complete for criteria_co_designer, tradeoff_visualizer, assumption_auction, consensus_with_dissent, minority_report, or decision_record. The AI may structure criteria, options, expressed concerns, and questions, but every weight, rating, response count, vote, and final class choice stays blank for students. Never infer consensus from silence or note similarity. First call read_selected_class_ideas and pass its selectionToken.",
+            "Add a source-linked scaffold that students complete for criteria_co_designer, tradeoff_visualizer, assumption_auction, consensus_with_dissent, minority_report, or decision_record. The tool may structure criteria, options, expressed concerns, and questions, but every weight, rating, response count, vote, and final class choice stays blank for students. Never infer consensus from silence or note similarity. First call read_selected_class_ideas and pass its selectionToken.",
           inputSchema: decisionToolSchema(),
           annotations: { readOnlyHint: false },
           execute: async (input, { signal }) => this.addDecisionScaffold(input, signal),
@@ -634,13 +643,12 @@ export class EducationPartnerWebMcp {
       );
     } catch {
       if (this.registration.signal.aborted) return;
-      this.options.notify("The extended AI education tools could not be registered.", "warning");
+      this.options.notify("The extended education tools could not be registered.", "warning");
     }
   }
 
   private async listCapabilities(signal: AbortSignal): Promise<Record<string, unknown>> {
     signal.throwIfAborted();
-    this.assertOwner();
     const families: Array<{
       tool: string;
       family: string;
@@ -682,17 +690,17 @@ export class EducationPartnerWebMcp {
         };
     const workflow = this.options.sectionContext
       ? [
-          "Choose one mode that fits the teacher's request.",
+          "Choose one mode that fits the participant's request.",
           "For Cross-Group Jigsaw, call the authoritative section reader named in sectionIntegration.readTool and use its sectionToken.",
           "For every other mode, call read_selected_class_ideas and use its selectionToken.",
-          "Ground every proposed card in the aliases returned by the matching teacher-approved reader.",
-          "Call the matching write tool; its WebMCP permission is the teacher's approval.",
+          "Ground every proposed card in the aliases returned by the matching selection reader.",
+          "Call the matching write tool; its WebMCP permission is the caller's approval.",
         ]
       : [
-          "Choose one mode that fits the teacher's request.",
-          "Call read_selected_class_ideas and wait for the teacher to approve the exact text.",
+          "Choose one mode that fits the participant's request.",
+          "Call read_selected_class_ideas for the current browser selection.",
           "Ground every proposed card in the returned idea aliases.",
-          "Call the matching write tool; its WebMCP permission is the teacher's approval.",
+          "Call the matching write tool; its WebMCP permission is the caller's approval.",
         ];
     return {
       availableModeCount: families.reduce((total, family) => total + family.modes.length, 0),
@@ -734,187 +742,193 @@ export class EducationPartnerWebMcp {
     };
   }
 
-  private async addCardMove(
+  /**
+   * Shared write pipeline: guard the write, let `stage` parse and lay out the
+   * addition, then queue it as one batch, select it, and report the result.
+   */
+  private async addStructure(
+    signal: AbortSignal,
+    stage: () => StagedAddition | Promise<StagedAddition>,
+  ): Promise<Record<string, unknown>> {
+    signal.throwIfAborted();
+    this.assertCanWrite();
+    const staged = await stage();
+    signal.throwIfAborted();
+    const accepted = await this.options.commit(staged.batch.operation);
+    if (!accepted) throw new Error(staged.queueFailure);
+    this.options.selectItems(staged.batch.itemIds);
+    this.options.notify(staged.notice, "info");
+    return staged.result;
+  }
+
+  private addCardMove(
     input: unknown,
     configuration: CardToolConfiguration,
     signal: AbortSignal,
   ): Promise<Record<string, unknown>> {
-    signal.throwIfAborted();
-    this.assertOwner();
-    const parsed = parseCardMove(input, configuration);
-    const snapshot = this.snapshot(parsed.selectionToken);
-    const sources = this.resolveSources(snapshot, parsed.proposal.cards);
-    const batch = buildEducationMove(
-      parsed.proposal,
-      sources,
-      undefined,
-      this.options.getPlacementBounds(),
-    );
-    signal.throwIfAborted();
-    const accepted = await this.options.commit(batch.operation);
-    if (!accepted) throw new Error("The collaboration move could not be queued for saving.");
-    this.options.selectItems(batch.itemIds);
-    this.options.notify(
-      `${modeLabel(parsed.proposal.mode)} added for the class to test and extend.`,
-      "info",
-    );
-    return {
-      status: "teacher_requested_and_added",
-      changedCanvas: true,
-      mode: parsed.proposal.mode,
-      createdItemCount: batch.itemIds.length,
-      additionCount: parsed.proposal.cards.length,
-      sourceLinkCount: batch.sourceLinkCount,
-      testableQuestionCount: parsed.proposal.cards.length,
-      aiAttributed: true,
-      undoable: true,
-      message:
-        "Added as one acknowledged realtime batch. The cards are prompts for collective inquiry, not judgments or grades.",
-    };
+    return this.addStructure(signal, () => {
+      const parsed = parseCardMove(input, configuration);
+      const snapshot = this.snapshot(parsed.token);
+      const batch = this.buildMove(
+        parsed.proposal,
+        this.resolveSources(snapshot, parsed.proposal.cards),
+      );
+      return {
+        batch,
+        queueFailure: "The collaboration move could not be queued for saving.",
+        notice: `${modeLabel(parsed.proposal.mode)} added for the class to test and extend.`,
+        result: {
+          status: "participant_requested_and_added",
+          changedCanvas: true,
+          mode: parsed.proposal.mode,
+          createdItemCount: batch.itemIds.length,
+          additionCount: parsed.proposal.cards.length,
+          sourceLinkCount: batch.sourceLinkCount,
+          testableQuestionCount: parsed.proposal.cards.length,
+          aiAttributed: true,
+          undoable: true,
+          message:
+            "Added as one acknowledged realtime batch. The cards are prompts for collective inquiry, not judgments or grades.",
+        },
+      };
+    });
   }
 
-  private async addContentVisuals(
+  private addContentVisuals(input: unknown, signal: AbortSignal): Promise<Record<string, unknown>> {
+    return this.addStructure(signal, async () => {
+      if (!this.options.imagesEnabled()) {
+        throw new Error("Image cards are disabled for this Space.");
+      }
+      const parsed = parseContentVisuals(input);
+      const snapshot = this.snapshot(parsed.selectionToken);
+      const sources = this.resolveSources(snapshot, parsed.proposal.visuals);
+      const assets = await this.options.storeVisualImages(parsed.imageSources, signal);
+      signal.throwIfAborted();
+      if (!this.options.imagesEnabled()) {
+        throw new Error("Image cards were disabled before the visual could be added.");
+      }
+      this.snapshot(parsed.selectionToken);
+      const batch = buildEducationVisuals(
+        parsed.proposal,
+        sources,
+        assets,
+        undefined,
+        this.options.getPlacementBounds(),
+      );
+      const visualCount = parsed.proposal.visuals.length;
+      return {
+        batch,
+        queueFailure: "The class visuals could not be queued for saving.",
+        notice: `${visualCount} class visual${visualCount === 1 ? "" : "s"} added for discussion.`,
+        result: {
+          status: "participant_requested_and_added",
+          changedCanvas: true,
+          visualCount,
+          formats: parsed.proposal.visuals.map((visual) => visual.format),
+          createdItemCount: batch.itemIds.length,
+          sourceLinkCount: batch.sourceLinkCount,
+          discussionPromptCount: visualCount,
+          privatelyStored: true,
+          externalImageUrlsEmbedded: false,
+          aiAttributed: true,
+          undoable: true,
+          message:
+            "Added as one acknowledged realtime board batch. The visuals are source-linked invitations for class discussion, not depictions or judgments of students.",
+        },
+      };
+    });
+  }
+
+  private addCrossGroupJigsaw(
     input: unknown,
     signal: AbortSignal,
   ): Promise<Record<string, unknown>> {
-    signal.throwIfAborted();
-    this.assertOwner();
-    if (!this.options.imagesEnabled()) {
-      throw new Error("Image cards are disabled for this Space.");
-    }
-    const parsed = parseContentVisuals(input);
-    const snapshot = this.snapshot(parsed.selectionToken);
-    const sources = this.resolveSources(snapshot, parsed.proposal.visuals);
-    const assets = await this.options.storeVisualImages(parsed.imageSources, signal);
-    signal.throwIfAborted();
-    if (!this.options.imagesEnabled()) {
-      throw new Error("Image cards were disabled before the visual could be added.");
-    }
-    this.snapshot(parsed.selectionToken);
-    const batch = buildEducationVisuals(
-      parsed.proposal,
-      sources,
-      assets,
-      undefined,
-      this.options.getPlacementBounds(),
-    );
-    const accepted = await this.options.commit(batch.operation);
-    if (!accepted) throw new Error("The class visuals could not be queued for saving.");
-    this.options.selectItems(batch.itemIds);
-    this.options.notify(
-      `${parsed.proposal.visuals.length} AI-assisted class visual${parsed.proposal.visuals.length === 1 ? "" : "s"} added for discussion.`,
-      "info",
-    );
-    return {
-      status: "teacher_requested_and_added",
-      changedCanvas: true,
-      visualCount: parsed.proposal.visuals.length,
-      formats: parsed.proposal.visuals.map((visual) => visual.format),
-      createdItemCount: batch.itemIds.length,
-      sourceLinkCount: batch.sourceLinkCount,
-      discussionPromptCount: parsed.proposal.visuals.length,
-      privatelyStored: true,
-      externalImageUrlsEmbedded: false,
-      aiAttributed: true,
-      undoable: true,
-      message:
-        "Added as one acknowledged realtime board batch. The visuals are source-linked invitations for class discussion, not depictions or judgments of students.",
-    };
+    return this.addStructure(signal, () => {
+      const parsed = parseCrossGroupJigsaw(input);
+      const snapshot = this.sectionSnapshot(parsed.token);
+      validateJigsawSnapshot(snapshot);
+      validateJigsawSources(snapshot, parsed.proposal.cards);
+      const batch = this.buildMove(
+        parsed.proposal,
+        this.resolveSources(snapshot, parsed.proposal.cards),
+      );
+      const groupsBySource = new Map(
+        snapshot.sources.map((source) => [source.alias, source.groupAlias]),
+      );
+      const comparedGroupCount = new Set(
+        parsed.proposal.cards
+          .flatMap((card) => card.sourceAliases)
+          .map((alias) => groupsBySource.get(alias))
+          .filter((group): group is string => group !== undefined),
+      ).size;
+      return {
+        batch,
+        queueFailure: "The Cross-Group Jigsaw could not be queued for saving.",
+        notice: "Cross-Group Jigsaw added for the class to compare, challenge, and extend.",
+        result: {
+          status: "participant_requested_and_added",
+          changedCanvas: true,
+          mode: parsed.proposal.mode,
+          createdItemCount: batch.itemIds.length,
+          additionCount: parsed.proposal.cards.length,
+          sourceLinkCount: batch.sourceLinkCount,
+          comparedGroupCount,
+          testableQuestionCount: parsed.proposal.cards.length,
+          authoritativeGroupContext: true,
+          groupMembershipInferred: false,
+          aiAttributed: true,
+          undoable: true,
+          message:
+            "Added from authoritative selected-section context as one acknowledged realtime batch.",
+        },
+      };
+    });
   }
 
-  private async addCrossGroupJigsaw(
+  private addDecisionScaffold(
     input: unknown,
     signal: AbortSignal,
   ): Promise<Record<string, unknown>> {
-    signal.throwIfAborted();
-    this.assertOwner();
-    const parsed = parseCrossGroupJigsaw(input);
-    const snapshot = this.sectionSnapshot(parsed.sectionToken);
-    validateJigsawSnapshot(snapshot);
-    validateJigsawSources(snapshot, parsed.proposal.cards);
-    const sources = this.resolveSources(snapshot, parsed.proposal.cards);
-    const batch = buildEducationMove(
-      parsed.proposal,
-      sources,
-      undefined,
-      this.options.getPlacementBounds(),
-    );
-    signal.throwIfAborted();
-    const accepted = await this.options.commit(batch.operation);
-    if (!accepted) throw new Error("The Cross-Group Jigsaw could not be queued for saving.");
-    this.options.selectItems(batch.itemIds);
-    this.options.notify(
-      "Cross-Group Jigsaw added for the class to compare, challenge, and extend.",
-      "info",
-    );
-    const groupsBySource = new Map(
-      snapshot.sources.map((source) => [source.alias, source.groupAlias]),
-    );
-    const comparedGroupCount = new Set(
-      parsed.proposal.cards
-        .flatMap((card) => card.sourceAliases)
-        .map((alias) => groupsBySource.get(alias))
-        .filter((group): group is string => group !== undefined),
-    ).size;
-    return {
-      status: "teacher_requested_and_added",
-      changedCanvas: true,
-      mode: parsed.proposal.mode,
-      createdItemCount: batch.itemIds.length,
-      additionCount: parsed.proposal.cards.length,
-      sourceLinkCount: batch.sourceLinkCount,
-      comparedGroupCount,
-      testableQuestionCount: parsed.proposal.cards.length,
-      authoritativeGroupContext: true,
-      groupMembershipInferred: false,
-      aiAttributed: true,
-      undoable: true,
-      message:
-        "Added from teacher-approved authoritative section context as one acknowledged realtime batch.",
-    };
+    return this.addStructure(signal, () => {
+      const parsed = parseDecisionScaffold(input);
+      const snapshot = this.snapshot(parsed.selectionToken);
+      const batch = buildGroupDecisionScaffold(
+        parsed.proposal,
+        this.resolveSources(snapshot, parsed.proposal.entries),
+        undefined,
+        this.options.getPlacementBounds(),
+      );
+      return {
+        batch,
+        queueFailure: "The group-decision scaffold could not be queued for saving.",
+        notice: `${modeLabel(parsed.proposal.mode)} scaffold added. Students still make and record the decision.`,
+        result: {
+          status: "participant_requested_and_added",
+          changedCanvas: true,
+          mode: parsed.proposal.mode,
+          createdItemCount: batch.itemIds.length,
+          sourceLinkCount: batch.sourceLinkCount,
+          aiAttributed: true,
+          undoable: true,
+          studentOwnedFields: ["weights", "ratings", "votes", "responses", "final choice"],
+          consensusInferred: false,
+          message:
+            "The class decision space was structured; all prioritization and explicit responses remain for students.",
+        },
+      };
+    });
   }
 
-  private async addDecisionScaffold(
-    input: unknown,
-    signal: AbortSignal,
-  ): Promise<Record<string, unknown>> {
-    signal.throwIfAborted();
-    this.assertOwner();
-    const parsed = parseDecisionScaffold(input);
-    const snapshot = this.snapshot(parsed.selectionToken);
-    const sources = this.resolveSources(snapshot, parsed.proposal.entries);
-    const batch = buildGroupDecisionScaffold(
-      parsed.proposal,
-      sources,
-      undefined,
-      this.options.getPlacementBounds(),
-    );
-    signal.throwIfAborted();
-    const accepted = await this.options.commit(batch.operation);
-    if (!accepted) throw new Error("The group-decision scaffold could not be queued for saving.");
-    this.options.selectItems(batch.itemIds);
-    this.options.notify(
-      `${modeLabel(parsed.proposal.mode)} scaffold added. Students still make and record the decision.`,
-      "info",
-    );
-    return {
-      status: "teacher_requested_and_added",
-      changedCanvas: true,
-      mode: parsed.proposal.mode,
-      createdItemCount: batch.itemIds.length,
-      sourceLinkCount: batch.sourceLinkCount,
-      aiAttributed: true,
-      undoable: true,
-      studentOwnedFields: ["weights", "ratings", "votes", "responses", "final choice"],
-      consensusInferred: false,
-      message:
-        "AI structured the class decision space; all prioritization and explicit responses remain for students.",
-    };
+  private buildMove(
+    proposal: EducationMoveProposal,
+    sources: readonly EducationSource[],
+  ): EducationBatch {
+    return buildEducationMove(proposal, sources, undefined, this.options.getPlacementBounds());
   }
 
-  private assertOwner(): void {
-    if (this.options.getRole() !== "owner") {
-      throw new Error("Only the Space owner can add AI-assisted class collaboration structures.");
+  private assertCanWrite(): void {
+    if (!this.options.canWrite()) {
+      throw new Error("This browser needs board edit access to add collaboration structures.");
     }
   }
 
@@ -922,7 +936,7 @@ export class EducationPartnerWebMcp {
     const snapshot = this.options.getSnapshot(token);
     if (!snapshot) {
       throw new Error(
-        "That selection token has expired. Read the current teacher-approved selection again.",
+        "That selection token has expired. Read the current browser selection again.",
       );
     }
     for (const source of snapshot.sources) {
@@ -938,9 +952,7 @@ export class EducationPartnerWebMcp {
   private sectionSnapshot(token: string): CrossGroupJigsawSnapshot {
     const snapshot = this.options.sectionContext?.getSnapshot(token);
     if (!snapshot || snapshot.token !== token) {
-      throw new Error(
-        "That section token has expired. Read the current teacher-approved sections again.",
-      );
+      throw new Error("That section token has expired. Read the current selected sections again.");
     }
     for (const source of snapshot.sources) {
       if (this.options.getItemVersion(source.itemId) !== source.version) {
@@ -962,7 +974,7 @@ export class EducationPartnerWebMcp {
     const aliases = [...new Set(cards.flatMap((card) => card.sourceAliases))];
     return aliases.map((alias) => {
       const source = byAlias.get(alias);
-      if (!source) throw new Error(`${alias} is not part of the teacher-approved selection.`);
+      if (!source) throw new Error(`${alias} is not part of the browser selection.`);
       const bounds = this.options.getItemBounds(source.itemId);
       if (!bounds) throw new Error(`${alias} is no longer present on the shared canvas.`);
       return {
@@ -1115,22 +1127,10 @@ function jigsawToolSchema(readToolName: string): Record<string, unknown> {
           "Include agreement, tension, and complementary idea cards. Each card must cite sources from at least two authoritative group aliases.",
         items: cardSchema(),
       },
-      connections: {
-        type: "array",
-        minItems: 1,
-        maxItems: 8,
-        description: "Visible semantic relationships among the cross-group comparison cards.",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: ["fromCardId", "toCardId", "label"],
-          properties: {
-            fromCardId: { type: "string", pattern: "^[a-z][a-z0-9_]{0,31}$" },
-            toCardId: { type: "string", pattern: "^[a-z][a-z0-9_]{0,31}$" },
-            label: { type: "string", minLength: 1, maxLength: 80 },
-          },
-        },
-      },
+      connections: connectionsSchema(
+        "Visible semantic relationships among the cross-group comparison cards.",
+        1,
+      ),
     },
   };
 }
@@ -1165,21 +1165,27 @@ function cardToolSchema(configuration: CardToolConfiguration): Record<string, un
           "Source-linked prompts. Follow the selected mode's entry count and role vocabulary from list_class_collaboration_modes.",
         items: cardSchema(),
       },
-      connections: {
-        type: "array",
-        maxItems: 8,
-        description:
-          "Visible semantic links between proposed cards. Required when the selected mode contract says so.",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: ["fromCardId", "toCardId", "label"],
-          properties: {
-            fromCardId: { type: "string", pattern: "^[a-z][a-z0-9_]{0,31}$" },
-            toCardId: { type: "string", pattern: "^[a-z][a-z0-9_]{0,31}$" },
-            label: { type: "string", minLength: 1, maxLength: 80 },
-          },
-        },
+      connections: connectionsSchema(
+        "Visible semantic links between proposed cards. Required when the selected mode contract says so.",
+      ),
+    },
+  };
+}
+
+function connectionsSchema(description: string, minItems?: number): Record<string, unknown> {
+  return {
+    type: "array",
+    ...(minItems === undefined ? {} : { minItems }),
+    maxItems: 8,
+    description,
+    items: {
+      type: "object",
+      additionalProperties: false,
+      required: ["fromCardId", "toCardId", "label"],
+      properties: {
+        fromCardId: { type: "string", pattern: "^[a-z][a-z0-9_]{0,31}$" },
+        toCardId: { type: "string", pattern: "^[a-z][a-z0-9_]{0,31}$" },
+        label: { type: "string", minLength: 1, maxLength: 80 },
       },
     },
   };
@@ -1212,7 +1218,7 @@ function decisionToolSchema(): Record<string, unknown> {
         minItems: 2,
         maxItems: 6,
         description:
-          "AI-drafted options, criteria, assumptions, expressed concerns, or alternatives. Student-owned values stay out of these entries.",
+          "Drafted options, criteria, assumptions, expressed concerns, or alternatives. Student-owned values stay out of these entries.",
         items: cardSchema(),
       },
       criteria: {
@@ -1254,22 +1260,49 @@ function cardSchema(): Record<string, unknown> {
   };
 }
 
-function parseCardMove(
+type CardProposalShape = {
+  label: string;
+  tokenField: "selectionToken" | "sectionToken";
+  family: EducationMoveFamily;
+  /** Either a fixed mode or the modes the caller may choose from. */
+  mode: CardMode | SectionMode | { oneOf: readonly CardMode[] };
+};
+
+function parseCardProposal(
   input: unknown,
-  configuration: CardToolConfiguration,
-): { selectionToken: string; proposal: EducationMoveProposal } {
-  if (!isRecord(input)) throw new Error("The collaboration move must be an object.");
-  const selectionToken = requiredText(input.selectionToken, "selectionToken", 100);
-  const mode = enumValue(input.mode, configuration.modes, "mode");
+  shape: CardProposalShape,
+): { token: string; proposal: EducationMoveProposal } {
+  if (!isRecord(input)) throw new Error(`${shape.label} must be an object.`);
+  const token = requiredText(input[shape.tokenField], shape.tokenField, 100);
+  const mode =
+    typeof shape.mode === "string" ? shape.mode : enumValue(input.mode, shape.mode.oneOf, "mode");
   const title = requiredText(input.title, "title", 100);
   const contract = modeContract(mode);
   const cards = parseCards(input.cards, contract.minimumEntries, contract.maximumEntries, "cards");
   const connections = parseConnections(input.connections, new Set(cards.map((card) => card.id)));
   validateCardMode(mode, cards, connections);
-  return {
-    selectionToken,
-    proposal: { family: configuration.family, mode, title, cards, connections },
-  };
+  return { token, proposal: { family: shape.family, mode, title, cards, connections } };
+}
+
+function parseCardMove(
+  input: unknown,
+  configuration: CardToolConfiguration,
+): { token: string; proposal: EducationMoveProposal } {
+  return parseCardProposal(input, {
+    label: "The collaboration move",
+    tokenField: "selectionToken",
+    family: configuration.family,
+    mode: { oneOf: configuration.modes },
+  });
+}
+
+function parseCrossGroupJigsaw(input: unknown): { token: string; proposal: EducationMoveProposal } {
+  return parseCardProposal(input, {
+    label: "The Cross-Group Jigsaw",
+    tokenField: "sectionToken",
+    family: "cross_group_sensemaking",
+    mode: "cross_group_jigsaw",
+  });
 }
 
 function parseContentVisuals(input: unknown): ParsedEducationVisuals {
@@ -1347,29 +1380,6 @@ function parseContentVisuals(input: unknown): ParsedEducationVisuals {
   return { selectionToken, proposal: { title, visuals }, imageSources };
 }
 
-function parseCrossGroupJigsaw(input: unknown): {
-  sectionToken: string;
-  proposal: EducationMoveProposal;
-} {
-  if (!isRecord(input)) throw new Error("The Cross-Group Jigsaw must be an object.");
-  const sectionToken = requiredText(input.sectionToken, "sectionToken", 100);
-  const title = requiredText(input.title, "title", 100);
-  const contract = modeContract("cross_group_jigsaw");
-  const cards = parseCards(input.cards, contract.minimumEntries, contract.maximumEntries, "cards");
-  const connections = parseConnections(input.connections, new Set(cards.map((card) => card.id)));
-  validateCardMode("cross_group_jigsaw", cards, connections);
-  return {
-    sectionToken,
-    proposal: {
-      family: "cross_group_sensemaking",
-      mode: "cross_group_jigsaw",
-      title,
-      cards,
-      connections,
-    },
-  };
-}
-
 function parseDecisionScaffold(input: unknown): {
   selectionToken: string;
   proposal: GroupDecisionProposal;
@@ -1392,6 +1402,9 @@ function parseDecisionScaffold(input: unknown): {
     contract.maximumCriteria ?? 0,
     60,
   );
+  if (new Set(criteria).size !== criteria.length) {
+    throw new Error("criteria must be unique.");
+  }
   return { selectionToken, proposal: { mode, title, entries, criteria } };
 }
 
@@ -1577,48 +1590,6 @@ function parseConnections(value: unknown, cardIds: ReadonlySet<string>): Educati
       label: requiredText(entry.label, `connections[${index}].label`, 80),
     };
   });
-}
-
-function textArray(
-  value: unknown,
-  field: string,
-  min: number,
-  max: number,
-  maxTextLength: number,
-): string[] {
-  if (!Array.isArray(value) || value.length < min || value.length > max) {
-    throw new Error(`${field} must contain ${min}-${max} entries.`);
-  }
-  return value.map((entry, index) => requiredText(entry, `${field}[${index}]`, maxTextLength));
-}
-
-function enumValue<const Values extends readonly string[]>(
-  value: unknown,
-  values: Values,
-  field: string,
-): Values[number] {
-  if (typeof value !== "string" || !values.includes(value)) {
-    throw new Error(`${field} must be one of: ${values.join(", ")}.`);
-  }
-  return value;
-}
-
-function requiredText(value: unknown, field: string, maxLength: number): string {
-  if (typeof value !== "string") throw new Error(`${field} must be text.`);
-  const text = value.trim();
-  if (text.length === 0 || text.length > maxLength) {
-    throw new Error(`${field} must contain 1-${maxLength} characters.`);
-  }
-  return text;
-}
-
-function optionalText(value: unknown, field: string, maxLength: number): string | undefined {
-  if (value === undefined) return undefined;
-  return requiredText(value, field, maxLength);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function normalizeRole(role: string): string {

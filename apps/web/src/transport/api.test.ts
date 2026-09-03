@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiClient, takeEmbedLaunch } from "./api";
+import { ApiClient, parseBoardComment, takeEmbedLaunch } from "./api";
 
 type CapturedRequest = { path: string; init: RequestInit };
 
@@ -658,5 +658,42 @@ describe("board image assets", () => {
     expect(requests[2]?.path).toBe(`/api/v1/boards/b_1234567890123456789012/assets/${assetId}`);
     expect(new Headers(requests[2]?.init.headers).get("accept")).toBe("image/*");
     expect(requests[2]?.init.credentials).toBe("same-origin");
+  });
+});
+
+describe("comment API responses", () => {
+  it("accepts all three comment states and resolved attribution", () => {
+    const base = {
+      id: `c_${"A".repeat(22)}`,
+      itemId: "018f0000-0000-7000-8000-000000000c01",
+      body: "Review this object",
+      author: { id: `a_${"B".repeat(22)}`, displayName: "Asha" },
+      createdAt: 100,
+      updatedAt: 120,
+    };
+    expect(parseBoardComment({ ...base, state: "open" }).state).toBe("open");
+    expect(parseBoardComment({ ...base, state: "orphaned" }).state).toBe("orphaned");
+    expect(
+      parseBoardComment({
+        ...base,
+        state: "resolved",
+        resolvedBy: { id: `a_${"C".repeat(22)}`, displayName: "Mira" },
+        resolvedAt: 130,
+      }),
+    ).toMatchObject({ state: "resolved", resolvedAt: 130 });
+  });
+
+  it("rejects unsupported states", () => {
+    expect(() =>
+      parseBoardComment({
+        id: `c_${"A".repeat(22)}`,
+        itemId: "018f0000-0000-7000-8000-000000000c01",
+        body: "Review this object",
+        state: "hidden",
+        author: { id: `a_${"B".repeat(22)}`, displayName: "Asha" },
+        createdAt: 100,
+        updatedAt: 120,
+      }),
+    ).toThrow("invalid comment data");
   });
 });

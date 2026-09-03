@@ -82,6 +82,7 @@ export interface StickyGeometry extends BoxGeometry {
 
 export interface ZoneGeometry extends BoxGeometry {
   title: string;
+  locked?: boolean;
 }
 
 export type ImageMimeType = (typeof IMAGE_MIME_TYPES)[number];
@@ -545,9 +546,16 @@ export function normalizeStickyGeometry(value: unknown, path = "$geometry"): Sti
 
 export function normalizeZoneGeometry(value: unknown, path = "$geometry"): ZoneGeometry {
   const object = expectRecord(value, path);
-  expectOnlyKeys(object, ["x", "y", "width", "height", "title"], path);
+  expectOnlyKeys(
+    object,
+    ["x", "y", "width", "height", "title", ...(own.call(object, "locked") ? ["locked"] : [])],
+    path,
+  );
   if (typeof object.title !== "string") {
     throw new GeometryValidationError("Expected zone title to be a string", `${path}.title`);
+  }
+  if (object.locked !== undefined && typeof object.locked !== "boolean") {
+    throw new GeometryValidationError("Expected zone locked to be a boolean", `${path}.locked`);
   }
   const box = normalizeBoxGeometry(
     { x: object.x, y: object.y, width: object.width, height: object.height },
@@ -559,7 +567,7 @@ export function normalizeZoneGeometry(value: unknown, path = "$geometry"): ZoneG
   if (box.height === 0) {
     throw new GeometryValidationError("Zone height must be greater than 0", `${path}.height`);
   }
-  return { ...box, title: object.title };
+  return { ...box, title: object.title, ...(object.locked === true ? { locked: true } : {}) };
 }
 
 export function isCanonicalImageAssetId(value: unknown): value is string {
@@ -912,7 +920,7 @@ export function inferAndNormalizeGeometry(value: unknown, path = "$geometry"): I
   throw new GeometryValidationError("Unrecognized geometry shape", path);
 }
 
-export function transformPoint(point: Point, transform: Transform): Point {
+export function transformPoint(point: Point, transform: Readonly<Transform>): Point {
   const [x, y] = point;
   const [a, b, c, d, e, f] = transform;
   return [a * x + c * y + e, b * x + d * y + f];
@@ -1354,6 +1362,21 @@ export function unionBounds(left: Bounds, right: Bounds): Bounds {
     maxX: Math.max(left.maxX, right.maxX),
     maxY: Math.max(left.maxY, right.maxY),
   };
+}
+
+/**
+ * Reports whether `candidate` lies entirely inside `container`, tolerating
+ * floating-point drift at the shared edges. This is the single containment
+ * predicate used for Section membership, so every caller agrees on the
+ * epsilon.
+ */
+export function boundsContain(container: Bounds, candidate: Bounds, epsilon = 1e-6): boolean {
+  return (
+    candidate.minX >= container.minX - epsilon &&
+    candidate.minY >= container.minY - epsilon &&
+    candidate.maxX <= container.maxX + epsilon &&
+    candidate.maxY <= container.maxY + epsilon
+  );
 }
 
 export function boundsForItems(items: readonly BoundsItem[]): Bounds | null {

@@ -1,7 +1,10 @@
 import {
   PROTOCOL_VERSION as SHARED_PROTOCOL_VERSION,
   type BoardFeatures as SharedBoardFeatures,
+  type TextDecoration as SharedTextDecoration,
   type TextFontFamily as SharedTextFontFamily,
+  type TextFontStyle as SharedTextFontStyle,
+  type TextFontWeight as SharedTextFontWeight,
 } from "@collab/protocol";
 
 export const PROTOCOL_VERSION = SHARED_PROTOCOL_VERSION;
@@ -39,6 +42,9 @@ export type StrokeStyle = {
 
 export type LineArrowhead = "none" | "arrow";
 export type TextFontFamily = SharedTextFontFamily;
+export type TextFontWeight = SharedTextFontWeight;
+export type TextFontStyle = SharedTextFontStyle;
+export type TextDecoration = SharedTextDecoration;
 
 export type LineStyle = {
   kind: "line";
@@ -59,6 +65,9 @@ export type TextStyle = {
   color: string;
   fontSize: number;
   fontFamily: TextFontFamily;
+  fontWeight?: TextFontWeight;
+  fontStyle?: TextFontStyle;
+  textDecoration?: TextDecoration;
   opacity: number;
 };
 
@@ -67,6 +76,10 @@ export type StickyStyle = {
   fill: string;
   textColor: string;
   fontSize: number;
+  fontFamily?: TextFontFamily;
+  fontWeight?: TextFontWeight;
+  fontStyle?: TextFontStyle;
+  textDecoration?: TextDecoration;
   opacity: number;
 };
 
@@ -91,6 +104,10 @@ export type TableStyle = {
   headerFill: string;
   textColor: string;
   fontSize: number;
+  fontFamily?: TextFontFamily;
+  fontWeight?: TextFontWeight;
+  fontStyle?: TextFontStyle;
+  textDecoration?: TextDecoration;
   opacity: number;
 };
 
@@ -100,6 +117,10 @@ export type ZoneStyle = {
   fill: string;
   textColor: string;
   fontSize: number;
+  fontFamily?: TextFontFamily;
+  fontWeight?: TextFontWeight;
+  fontStyle?: TextFontStyle;
+  textDecoration?: TextDecoration;
   opacity: number;
 };
 
@@ -170,10 +191,12 @@ export type TableGeometry = {
   headerRow?: boolean;
 };
 
-export type ZoneGeometry = BoxGeometry & { title: string };
+export type ZoneGeometry = BoxGeometry & { title: string; locked?: boolean };
 
 type ItemBase = {
   id: string;
+  groupId?: string;
+  sectionId?: string;
   z: number;
   version: number;
   createdBy: string;
@@ -260,6 +283,8 @@ export type NewBoardItem = WithoutServerFields<BoardItem>;
 export type ItemPatch = {
   style?: ItemStyle;
   transform?: Matrix;
+  groupId?: string | null;
+  sectionId?: string | null;
   geometry?:
     | PencilGeometry
     | LineGeometry
@@ -291,6 +316,8 @@ export type BatchItemOperation =
       expectedVersion: number;
       newItemId: string;
       translate: { x: number; y: number };
+      newGroupId?: string | null;
+      newSectionId?: string | null;
     };
 
 export type DurableOperation =
@@ -318,6 +345,20 @@ export type CommitFrame = {
 };
 
 export type Actor = { id: string; displayName: string };
+
+export type CommentState = "open" | "resolved" | "orphaned";
+
+export type BoardComment = {
+  id: string;
+  itemId: string;
+  body: string;
+  state: CommentState;
+  author: Actor;
+  createdAt: number;
+  updatedAt: number;
+  resolvedBy?: Actor;
+  resolvedAt?: number;
+};
 
 export type CanonicalOperation = DurableOperation & {
   item?: BoardItem;
@@ -457,6 +498,11 @@ export function canRoleDraw(role: Role, policy: DrawingPolicy): boolean {
   if (policy === "locked" || role === "viewer") return false;
   if (policy === "owner_only") return role === "owner";
   return role === "owner" || role === "editor";
+}
+
+/** Comments follow the drawing policy's role rules but are not blocked by a lock. */
+export function canRoleComment(role: Role, policy: DrawingPolicy): boolean {
+  return canRoleDraw(role, policy === "locked" ? "editors_enabled" : policy);
 }
 
 export function createId(): string {

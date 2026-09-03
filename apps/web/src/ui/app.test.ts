@@ -1,6 +1,7 @@
+import { DEFAULT_BOARD_FEATURES } from "@collab/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "../transport/api";
-import type { BoardItem, BoardSnapshot, DurableOperation } from "../types";
+import type { BoardComment, BoardItem, BoardSnapshot, DurableOperation } from "../types";
 import {
   actorFromAccessChanged,
   attributedDataDownloadAllowed,
@@ -9,19 +10,28 @@ import {
   buildCreatorNameMap,
   buildElementColourOperations,
   buildTextStyleOperations,
+  CommentStore,
+  canActorComment,
+  canResolveComment,
   clampImageAlt,
   clampStickyText,
+  deriveCommentStates,
+  effectiveTextFontWeight,
+  globalShortcutFor,
   imageUploadIssue,
   localSvg,
   MAX_IMAGE_UPLOAD_BYTES,
   managedInvitationStorageKey,
+  objectCommentVisible,
   operationAllowedForActor,
   organisationTemplateManagementForRole,
+  PendingCommitTracker,
   STAMP_CHOICES,
   STICKY_COLORS,
   savedAuthoritativeItems,
   serializeAttributedData,
   tableCellDraftFromOperation,
+  templateFeatureIssue,
   withAdaptiveTurnstile,
   zoneTitleDraftFromOperation,
 } from "./app";
@@ -31,6 +41,16 @@ const boardId = "b_1234567890123456789012";
 describe("SpaceScale browser storage", () => {
   it("uses the SpaceScale namespace for managed invitation metadata", () => {
     expect(managedInvitationStorageKey(boardId)).toBe(`spacescale:managed-invitations:${boardId}`);
+  });
+});
+
+describe("effective selection font weight", () => {
+  it("treats an omitted Section weight as bold and other omitted weights as normal", () => {
+    expect(effectiveTextFontWeight({ kind: "zone", style: {} })).toBe("bold");
+    expect(effectiveTextFontWeight({ kind: "zone", style: { fontWeight: "normal" } })).toBe(
+      "normal",
+    );
+    expect(effectiveTextFontWeight({ kind: "sticky", style: {} })).toBe("normal");
   });
 });
 
@@ -172,6 +192,18 @@ describe("live Organisation-template management", () => {
   });
 });
 
+describe("template feature preflight", () => {
+  it("requires object transforms only for non-identity linear components", () => {
+    const features = { ...DEFAULT_BOARD_FEATURES, objectTransforms: false };
+    expect(
+      templateFeatureIssue([{ kind: "rectangle", transform: [1, 0, 0, 1, 200, 100] }], features),
+    ).toBeNull();
+    expect(
+      templateFeatureIssue([{ kind: "rectangle", transform: [0, 1, -1, 0, 200, 100] }], features),
+    ).toMatch(/Scale and rotate/u);
+  });
+});
+
 describe("student item ownership preflight", () => {
   const studentId = "student-a";
   const otherStudentId = "student-b";
@@ -231,6 +263,73 @@ describe("student item ownership preflight", () => {
     ).toBe(false);
   });
 
+  it("lets a Section creator detach a foreign member without granting other edits", () => {
+    const section: BoardItem = {
+      id: "section-mine",
+      kind: "zone",
+      z: 0,
+      version: 1,
+      createdBy: studentId,
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "zone",
+        borderColor: "#60a5fa",
+        fill: "#eff6ff",
+        textColor: "#1e3a8a",
+        fontSize: 20,
+        opacity: 0.8,
+      },
+      geometry: { x: 0, y: 0, width: 600, height: 400, title: "Mine" },
+    };
+    const foreignMember: BoardItem = {
+      ...foreignItem,
+      id: "sticky-member",
+      sectionId: section.id,
+    };
+    const scoped = new Map<string, BoardItem>([
+      [section.id, section],
+      [foreignMember.id, foreignMember],
+      [ownItem.id, ownItem],
+    ]);
+    const detach: DurableOperation = {
+      kind: "item.update",
+      itemId: foreignMember.id,
+      expectedVersion: foreignMember.version,
+      patch: { sectionId: null },
+    };
+    const deleteSectionWithDetach: DurableOperation = {
+      kind: "items.batch",
+      operations: [
+        { kind: "item.delete", itemId: section.id, expectedVersion: section.version },
+        detach,
+      ],
+    };
+
+    expect(operationAllowedForActor(detach, "editor", studentId, scoped)).toBe(true);
+    expect(operationAllowedForActor(deleteSectionWithDetach, "editor", studentId, scoped)).toBe(
+      true,
+    );
+    // Not the Section's creator: no special right over the member.
+    expect(operationAllowedForActor(detach, "editor", "student-c", scoped)).toBe(false);
+    // Anything beyond a bare detach still needs ownership of the member.
+    expect(
+      operationAllowedForActor(
+        { ...detach, patch: { sectionId: null, transform: [1, 0, 0, 1, 5, 5] } },
+        "editor",
+        studentId,
+        scoped,
+      ),
+    ).toBe(false);
+    expect(
+      operationAllowedForActor(
+        { ...detach, patch: { sectionId: section.id } },
+        "editor",
+        studentId,
+        scoped,
+      ),
+    ).toBe(false);
+  });
+
   it("allows a foreign copy but rejects a batch containing any foreign mutation", () => {
     const copy: DurableOperation = {
       kind: "item.copy",
@@ -263,6 +362,56 @@ describe("student item ownership preflight", () => {
         items,
       ),
     ).toBe(false);
+  });
+
+  it("blocks everyone from mutating locked Section contents while allowing an owner unlock", () => {
+    const section: BoardItem = {
+      id: "locked-section",
+      kind: "zone",
+      z: 1,
+      version: 5,
+      createdBy: "coach",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "zone",
+        borderColor: "#60a5fa",
+        fill: "#eff6ff",
+        textColor: "#1e3a8a",
+        fontSize: 20,
+        opacity: 0.8,
+      },
+      geometry: { x: 0, y: 0, width: 600, height: 400, title: "Review", locked: true },
+    };
+    const member: BoardItem = { ...ownItem, sectionId: section.id };
+    const lockedItems = new Map<string, BoardItem>([
+      [section.id, section],
+      [member.id, member],
+    ]);
+    const updateMember: DurableOperation = {
+      kind: "item.update",
+      itemId: member.id,
+      expectedVersion: member.version,
+      patch: { geometry: { ...member.geometry, text: "Blocked" } },
+    };
+    const copyMember: DurableOperation = {
+      kind: "item.copy",
+      sourceItemId: member.id,
+      expectedVersion: member.version,
+      newItemId: "locked-copy",
+      translate: { x: 20, y: 20 },
+    };
+    const unlock: DurableOperation = {
+      kind: "item.update",
+      itemId: section.id,
+      expectedVersion: section.version,
+      patch: { geometry: { ...section.geometry, locked: false } },
+    };
+
+    expect(operationAllowedForActor(updateMember, "owner", "coach", lockedItems)).toBe(false);
+    expect(operationAllowedForActor(updateMember, "editor", studentId, lockedItems)).toBe(false);
+    expect(operationAllowedForActor(copyMember, "owner", "coach", lockedItems)).toBe(false);
+    expect(operationAllowedForActor(unlock, "owner", "coach", lockedItems)).toBe(true);
+    expect(operationAllowedForActor(unlock, "editor", studentId, lockedItems)).toBe(false);
   });
 
   it("keeps editor history available while viewers cannot commit", () => {
@@ -574,6 +723,86 @@ describe("sticky note UI configuration", () => {
         },
       },
     ]);
+
+    const sticky: Extract<BoardItem, { kind: "sticky" }> = {
+      id: "sticky-a",
+      kind: "sticky",
+      z: 2,
+      version: 5,
+      createdBy: "student-a",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "sticky",
+        fill: "#ffdf8a",
+        textColor: "#20201e",
+        fontSize: 20,
+        opacity: 1,
+      },
+      geometry: { x: 20, y: 30, width: 180, height: 140, text: "Evidence" },
+    };
+    expect(
+      buildTextStyleOperations([sticky], {
+        fontFamily: "serif",
+        fontWeight: "bold",
+        fontStyle: "italic",
+        textDecoration: "underline",
+      }),
+    ).toEqual([
+      {
+        kind: "item.update",
+        itemId: "sticky-a",
+        expectedVersion: 5,
+        patch: {
+          style: {
+            ...sticky.style,
+            fontFamily: "serif",
+            fontWeight: "bold",
+            fontStyle: "italic",
+            textDecoration: "underline",
+          },
+        },
+      },
+    ]);
+  });
+
+  it("clears Section membership when font size expands text outside its Section", () => {
+    const section: Extract<BoardItem, { kind: "zone" }> = {
+      id: "section-a",
+      kind: "zone",
+      z: 1,
+      version: 2,
+      createdBy: "student-a",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "zone",
+        borderColor: "#60a5fa",
+        fill: "#eff6ff",
+        textColor: "#1e3a8a",
+        fontSize: 20,
+        opacity: 0.8,
+      },
+      geometry: { x: 0, y: 0, width: 100, height: 100, title: "Text" },
+    };
+    const text: Extract<BoardItem, { kind: "text" }> = {
+      id: "text-section-member",
+      kind: "text",
+      sectionId: section.id,
+      z: 2,
+      version: 3,
+      createdBy: "student-a",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: { kind: "text", color: "#1e1e1e", fontSize: 10, fontFamily: "sans", opacity: 1 },
+      geometry: { x: 10, y: 30, text: "Question" },
+    };
+
+    expect(buildTextStyleOperations([text], { fontSize: 30 }, [section, text], false)).toEqual([
+      {
+        kind: "item.update",
+        itemId: text.id,
+        expectedVersion: text.version,
+        patch: { style: { ...text.style, fontSize: 30 }, sectionId: null },
+      },
+    ]);
   });
 
   it("limits input by Unicode code point rather than UTF-16 length", () => {
@@ -805,5 +1034,198 @@ describe("stamp UI configuration", () => {
     expect(svg).toContain('fill="#8e4ec6"');
     expect(svg).toContain('opacity="0.75"');
     expect(svg).not.toContain("<text");
+  });
+});
+
+describe("object comment visibility", () => {
+  it("shows only open comments by default and reveals hidden states on request", () => {
+    expect(objectCommentVisible("open", false)).toBe(true);
+    expect(objectCommentVisible("resolved", false)).toBe(false);
+    expect(objectCommentVisible("orphaned", false)).toBe(false);
+    expect(objectCommentVisible("resolved", true)).toBe(true);
+    expect(objectCommentVisible("orphaned", true)).toBe(true);
+  });
+});
+
+describe("object comment permissions", () => {
+  it("mirrors the server gate: drawing roles may comment, and a lock does not block them", () => {
+    expect(canActorComment("ready", "owner", "editors_enabled")).toBe(true);
+    expect(canActorComment("connecting", "editor", "editors_enabled")).toBe(true);
+    expect(canActorComment("ready", "viewer", "editors_enabled")).toBe(false);
+    expect(canActorComment("ready", "editor", "owner_only")).toBe(false);
+    expect(canActorComment("ready", "owner", "locked")).toBe(true);
+    expect(canActorComment("ready", "editor", "locked")).toBe(true);
+    expect(canActorComment("ready", "viewer", "locked")).toBe(false);
+    expect(canActorComment("archived", "owner", "editors_enabled")).toBe(false);
+    expect(canActorComment("reload_required", "owner", "editors_enabled")).toBe(false);
+    expect(canActorComment("stopped", "owner", "editors_enabled")).toBe(false);
+  });
+
+  it("offers Resolve only to the comment author or a board owner", () => {
+    const authored = { author: { id: "a_author", displayName: "Author" } };
+    expect(canResolveComment(authored, "a_author", "editor")).toBe(true);
+    expect(canResolveComment(authored, "a_other", "editor")).toBe(false);
+    expect(canResolveComment(authored, "a_other", "viewer")).toBe(false);
+    expect(canResolveComment(authored, "a_other", "owner")).toBe(true);
+  });
+});
+
+function comment(overrides: Partial<BoardComment> = {}): BoardComment {
+  return {
+    id: "c_1",
+    itemId: "item_1",
+    body: "Look here",
+    state: "open",
+    author: { id: "a_1", displayName: "Ada" },
+    createdAt: 1_000,
+    updatedAt: 1_000,
+    ...overrides,
+  };
+}
+
+describe("object comment states", () => {
+  it("shows an open comment as orphaned only while its object is missing", () => {
+    const open = comment();
+    const resolved = comment({ id: "c_2", state: "resolved" });
+    const serverOrphaned = comment({ id: "c_3", state: "orphaned" });
+    const missing = deriveCommentStates([open, resolved, serverOrphaned], () => false);
+    expect(missing.map((value) => value.state)).toEqual(["orphaned", "resolved", "orphaned"]);
+    const present = deriveCommentStates([open, resolved, serverOrphaned], () => true);
+    expect(present.map((value) => value.state)).toEqual(["open", "resolved", "orphaned"]);
+    expect(present[0]).toBe(open);
+  });
+
+  it("flips a locally orphaned comment back to open when a rejected delete restores its object", () => {
+    const items = new Set(["item_1"]);
+    const store = new CommentStore((itemId) => items.has(itemId));
+    const load = store.beginLoad();
+    expect(store.completeLoad(load, [comment()])).toBe(true);
+    expect(store.comments[0]?.state).toBe("open");
+
+    items.delete("item_1");
+    expect(store.reconcile()).toBe(true);
+    expect(store.comments[0]?.state).toBe("orphaned");
+    expect(store.reconcile()).toBe(false);
+
+    items.add("item_1");
+    expect(store.reconcile()).toBe(true);
+    expect(store.comments[0]?.state).toBe("open");
+  });
+
+  it("keeps a local write ahead of an older in-flight load", () => {
+    const store = new CommentStore(() => true);
+    const stale = store.beginLoad();
+    store.upsert(comment({ id: "c_new", createdAt: 2_000, updatedAt: 2_000 }));
+    expect(store.comments.map((value) => value.id)).toEqual(["c_new"]);
+
+    expect(store.completeLoad(stale, [comment({ id: "c_old" })])).toBe(false);
+    expect(store.comments.map((value) => value.id)).toEqual(["c_new"]);
+    expect(store.isLatestLoad(stale)).toBe(true);
+
+    const fresh = store.beginLoad();
+    expect(store.isLatestLoad(stale)).toBe(false);
+    expect(store.completeLoad(fresh, [comment({ id: "c_old" }), comment({ id: "c_new" })])).toBe(
+      true,
+    );
+    expect(store.comments.map((value) => value.id)).toEqual(["c_old", "c_new"]);
+  });
+
+  it("reports a resolved comment as a change without flipping its state", () => {
+    const store = new CommentStore(() => true);
+    store.completeLoad(store.beginLoad(), [comment()]);
+    store.upsert(comment({ state: "resolved", updatedAt: 3_000 }));
+    expect(store.comments[0]?.state).toBe("resolved");
+    expect(store.reconcile()).toBe(false);
+  });
+});
+
+describe("tool commit tracking", () => {
+  it("withdraws a queued command on timeout and reports the failure", () => {
+    vi.useFakeTimers();
+    try {
+      const tracker = new PendingCommitTracker(30_000);
+      const resolve = vi.fn();
+      const withdraw = vi.fn(() => true);
+      tracker.track("cmd_1", resolve, withdraw);
+      vi.advanceTimersByTime(29_999);
+      expect(withdraw).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(withdraw).toHaveBeenCalledWith("cmd_1");
+      expect(resolve).toHaveBeenCalledWith(false);
+      tracker.finish("cmd_1", true);
+      expect(resolve).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports success when the server already answered before the timeout fired", () => {
+    vi.useFakeTimers();
+    try {
+      const tracker = new PendingCommitTracker(30_000);
+      const resolve = vi.fn();
+      tracker.track("cmd_1", resolve, () => false);
+      vi.advanceTimersByTime(30_000);
+      expect(resolve).toHaveBeenCalledWith(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels the timer on an authoritative answer and settles the rest on destroy", () => {
+    vi.useFakeTimers();
+    try {
+      const tracker = new PendingCommitTracker(30_000);
+      const acked = vi.fn();
+      const abandoned = vi.fn();
+      const withdraw = vi.fn(() => true);
+      tracker.track("cmd_1", acked, withdraw);
+      tracker.track("cmd_2", abandoned, withdraw);
+      tracker.finish("cmd_1", true);
+      expect(acked).toHaveBeenCalledWith(true);
+      tracker.finishAll(false);
+      expect(abandoned).toHaveBeenCalledWith(false);
+      vi.advanceTimersByTime(30_000);
+      expect(withdraw).not.toHaveBeenCalled();
+      expect(acked).toHaveBeenCalledTimes(1);
+      expect(abandoned).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("global keyboard shortcuts", () => {
+  const idle = {
+    editing: false,
+    toolsMenuOpen: false,
+    shapeMenuOpen: false,
+    followingSpotlight: false,
+  };
+  const escapeKey = { key: "Escape", ctrlKey: false, metaKey: false, shiftKey: false };
+
+  it("lets Escape close menus and stop spotlight-follow even from an input", () => {
+    expect(globalShortcutFor(escapeKey, { ...idle, editing: true, toolsMenuOpen: true })).toBe(
+      "close-tools-menu",
+    );
+    expect(globalShortcutFor(escapeKey, { ...idle, editing: true, shapeMenuOpen: true })).toBe(
+      "close-shape-menu",
+    );
+    expect(globalShortcutFor(escapeKey, { ...idle, editing: true, followingSpotlight: true })).toBe(
+      "stop-following-spotlight",
+    );
+    expect(globalShortcutFor(escapeKey, { ...idle, editing: true })).toBeNull();
+  });
+
+  it("keeps undo and redo out of text fields while honouring them elsewhere", () => {
+    const undo = { key: "z", ctrlKey: true, metaKey: false, shiftKey: false };
+    expect(globalShortcutFor(undo, idle)).toBe("undo");
+    expect(globalShortcutFor({ ...undo, shiftKey: true }, idle)).toBe("redo");
+    expect(globalShortcutFor({ ...undo, key: "y" }, idle)).toBe("redo");
+    expect(
+      globalShortcutFor({ ...undo, key: "y", ctrlKey: false, metaKey: true }, idle),
+    ).toBeNull();
+    expect(globalShortcutFor(undo, { ...idle, editing: true })).toBeNull();
+    expect(globalShortcutFor({ ...undo, ctrlKey: false }, idle)).toBeNull();
   });
 });

@@ -43,6 +43,14 @@ function request(path: string, method = "GET", body?: unknown): Request {
   });
 }
 
+function legacyBoardFeatures(): Record<string, boolean> {
+  return Object.fromEntries(
+    Object.entries(DEFAULT_BOARD_FEATURES).filter(
+      ([key]) => key !== "objectTransforms" && key !== "grouping",
+    ),
+  );
+}
+
 describe("OrganisationRoom templates", () => {
   it("persists canonical templates across hibernation and deletes them", async () => {
     const stub = (env as unknown as Env).ORGANISATION_ROOMS.getByName(organisationId);
@@ -334,5 +342,73 @@ describe("OrganisationRoom Space registry", () => {
 
     const repeated = await stub.fetch(request(path, "DELETE"));
     expect(repeated.status).toBe(204);
+  });
+
+  it("fills additive feature defaults in Space summaries written by older workers", async () => {
+    const stub = (env as unknown as Env).ORGANISATION_ROOMS.getByName(organisationId);
+    const boardId = `b_${"L".repeat(22)}`;
+    const path = `/__internal/organisations/${organisationId}/spaces/${boardId}`;
+    const stored = await stub.fetch(
+      request(path, "PUT", {
+        spaceId: "legacy-feature-space",
+        title: "Legacy feature Space",
+        archived: false,
+        members: [{ id: actorId, displayName: "Coach Mira", role: "owner" }],
+        settings: {
+          accessMode: "private",
+          drawingPolicy: "editors_enabled",
+          features: { ...legacyBoardFeatures(), rectangle: false },
+          aclVersion: 1,
+        },
+      }),
+    );
+    expect(stored.status, await stored.clone().text()).toBe(200);
+    expect(await stored.json()).toMatchObject({
+      settings: {
+        features: { rectangle: false, objectTransforms: true, grouping: true },
+      },
+    });
+
+    const storedFeatures = await runInDurableObject(stub, (_instance, durableState) => {
+      const row = durableState.storage.sql
+        .exec<{ settings_json: string }>(
+          "SELECT settings_json FROM spaces WHERE board_id = ?",
+          boardId,
+        )
+        .one();
+      return (JSON.parse(row.settings_json) as { features: Record<string, boolean> }).features;
+    });
+    expect(storedFeatures).toMatchObject({
+      rectangle: false,
+      objectTransforms: true,
+      grouping: true,
+    });
+
+    await runInDurableObject(stub, (_instance, durableState) => {
+      durableState.storage.sql.exec(
+        "UPDATE spaces SET settings_json = ? WHERE board_id = ?",
+        JSON.stringify({
+          accessMode: "private",
+          drawingPolicy: "editors_enabled",
+          features: { ...legacyBoardFeatures(), rectangle: false },
+          aclVersion: 1,
+        }),
+        boardId,
+      );
+    });
+    await evictDurableObject(stub);
+
+    const admin = await stub.fetch(request(`/__internal/organisations/${organisationId}/admin`));
+    expect(admin.status, await admin.clone().text()).toBe(200);
+    expect(await admin.json()).toMatchObject({
+      boards: [
+        {
+          boardId,
+          settings: {
+            features: { rectangle: false, objectTransforms: true, grouping: true },
+          },
+        },
+      ],
+    });
   });
 });

@@ -1,8 +1,8 @@
 import type { Bounds } from "@collab/geometry";
-import { MAX_BATCH_OPERATIONS, validateDurableOperation } from "@collab/protocol";
 
-import type { BatchItemOperation, DurableOperation, NewBoardItem } from "../types";
+import type { BatchItemOperation, NewBoardItem } from "../types";
 import { createId, roundBoard } from "../types";
+import { boundsCenter, createItem, finalizeBatch, type ItemsBatchOperation } from "./batch";
 
 export type DecisionVoteOption = {
   label: string;
@@ -20,7 +20,7 @@ export type ClassDecisionProposal = {
 };
 
 export type ClassDecisionBatch = {
-  operation: Extract<DurableOperation, { kind: "items.batch" }>;
+  operation: ItemsBatchOperation;
   itemIds: string[];
 };
 
@@ -35,12 +35,9 @@ export function buildClassDecision(
   const itemIds: string[] = [];
   const operations: BatchItemOperation[] = [];
   const add = (item: NewBoardItem): void => {
-    itemIds.push(item.id);
-    operations.push({
-      kind: "item.create",
-      item: { ...item, assistedBy: "ai" } as NewBoardItem,
-    });
+    operations.push(createItem(item, itemIds));
   };
+  const [voteCenterX, voteCenterY] = boundsCenter(voteBounds);
 
   add({
     id: idFactory(),
@@ -54,8 +51,8 @@ export function buildClassDecision(
     },
     transform: [1, 0, 0, 1, 0, 0],
     geometry: {
-      x1: roundBoard((voteBounds.minX + voteBounds.maxX) / 2),
-      y1: roundBoard((voteBounds.minY + voteBounds.maxY) / 2),
+      x1: voteCenterX,
+      y1: voteCenterY,
       x2: originX,
       y2: originY + 28,
     },
@@ -74,7 +71,7 @@ export function buildClassDecision(
     geometry: {
       x: originX,
       y: originY + 34,
-      text: `AI-assisted · ${proposal.decisionTitle}`,
+      text: proposal.decisionTitle,
     },
   });
   add({
@@ -145,14 +142,8 @@ export function buildClassDecision(
     ),
   );
 
-  if (operations.length > MAX_BATCH_OPERATIONS) {
-    throw new Error("This class decision is too large for one shared update.");
-  }
   return {
-    operation: validateDurableOperation({
-      kind: "items.batch",
-      operations,
-    }) as ClassDecisionBatch["operation"],
+    operation: finalizeBatch(operations, "This class decision is too large for one shared update."),
     itemIds,
   };
 }

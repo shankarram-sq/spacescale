@@ -27,16 +27,92 @@ export class DeploymentConfigurationError extends Error {
   }
 }
 
-const PLACEHOLDER_PREFIX = "replace-with-";
+export const PLACEHOLDER_PREFIX = "replace-with-";
 const GENERATED_DIRECTORY = ".generated";
+const DEPLOYMENT_ENVIRONMENTS: readonly DeploymentEnvironment[] = [
+  "development",
+  "staging",
+  "production",
+];
+
+// Non-deployable values used only to verify a production build on a checkout
+// without deployment details (`npm run build`). The hostname deliberately maps
+// to workers.dev so the dry-run config never references a custom domain.
+const DRY_RUN_VALUES = {
+  DEPLOYMENT_NAME: "dry-run",
+  APP_HOSTNAME: "dry-run.workers.dev",
+  TURNSTILE_SITE_KEY: "1x00000000000000000000AA",
+} as const;
 
 export function generatedWranglerConfigPath(environment: DeploymentEnvironment): string {
   return `${GENERATED_DIRECTORY}/wrangler.${environment}.jsonc`;
 }
 
 export function parseDeploymentEnvironment(value: string | undefined): DeploymentEnvironment {
-  if (value === "development" || value === "staging" || value === "production") return value;
+  const environment = DEPLOYMENT_ENVIRONMENTS.find((candidate) => candidate === value);
+  if (environment) return environment;
   throw new DeploymentConfigurationError();
+}
+
+/** Returns the raw `--env` value, if present, without validating the other arguments. */
+export function requestedEnvironment(args: string[]): string | undefined {
+  const index = args.indexOf("--env");
+  return index < 0 ? undefined : args[index + 1];
+}
+
+/**
+ * Strict argument parsing for commands that accept only `--env <environment>`
+ * plus the listed boolean flags. Any other argument fails closed.
+ */
+export function parseEnvironmentArguments<Flag extends string>(
+  args: string[],
+  flags: readonly Flag[] = [],
+): { environment: DeploymentEnvironment; flags: Record<Flag, boolean> } {
+  const parsedFlags = Object.fromEntries(flags.map((flag) => [flag, false])) as Record<
+    Flag,
+    boolean
+  >;
+  const environmentIndex = args.indexOf("--env");
+  const remaining = args.filter(
+    (_, index) => index !== environmentIndex && index !== environmentIndex + 1,
+  );
+  for (const value of remaining) {
+    if (!flags.includes(value as Flag)) throw new DeploymentConfigurationError();
+    parsedFlags[value as Flag] = true;
+  }
+  return {
+    environment: parseDeploymentEnvironment(requestedEnvironment(args)),
+    flags: parsedFlags,
+  };
+}
+
+/** True when a value is present and is not a `.env.sample` placeholder. */
+export function isConfiguredValue(value: string | undefined): boolean {
+  return optionalValue(value) !== undefined;
+}
+
+/**
+ * Fills unconfigured deployment details with non-deployable dry-run values so a
+ * production build can be verified without `.env` files. Configured values are
+ * always kept, so a real checkout still builds against its own mapping.
+ */
+export function dryRunDeploymentValues(
+  environment: DeploymentEnvironment,
+  values: NodeJS.ProcessEnv,
+): { values: NodeJS.ProcessEnv; placeholders: string[] } {
+  if (environment === "development") return { values, placeholders: [] };
+  const turnstileEnabled = booleanValue(values.TURNSTILE_ENABLED, environment === "production");
+  const placeholders = (Object.keys(DRY_RUN_VALUES) as Array<keyof typeof DRY_RUN_VALUES>).filter(
+    (name) =>
+      !isConfiguredValue(values[name]) && (name !== "TURNSTILE_SITE_KEY" || turnstileEnabled),
+  );
+  return {
+    values: {
+      ...values,
+      ...Object.fromEntries(placeholders.map((name) => [name, DRY_RUN_VALUES[name]])),
+    },
+    placeholders,
+  };
 }
 
 export function deploymentConfigurationFromEnvironment(
@@ -201,7 +277,7 @@ function normalizeHostname(value: string): string {
   return url.hostname;
 }
 
-function derivedResourceNames(
+export function derivedResourceNames(
   deploymentName: string,
   environment: DeploymentEnvironment,
 ): Pick<DeploymentConfiguration, "workerName" | "bucketName" | "assetBucketName"> {
@@ -213,7 +289,7 @@ function derivedResourceNames(
   };
 }
 
-function validDeploymentName(value: string): boolean {
+export function validDeploymentName(value: string): boolean {
   return /^[a-z0-9][a-z0-9-]{1,40}[a-z0-9]$/u.test(value);
 }
 

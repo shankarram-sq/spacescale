@@ -105,6 +105,140 @@ test("line, text, styles, constrained shapes, eraser, and pen input commit canon
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
 });
 
+test("pencil survives consecutive mouse and pen strokes with delayed capture loss", async ({
+  page,
+}) => {
+  await createBoard(page, "Continuous pencil input");
+  const pencil = page.getByTestId("tool-pencil");
+  await pencil.click();
+  const start = await canvasPoint(page, 0.3, 0.35);
+
+  await page.locator("#board-canvas").evaluate((node, point) => {
+    node.dispatchEvent(
+      new PointerEvent("pointermove", {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        pointerId: 73,
+        pointerType: "pen",
+        isPrimary: true,
+        clientX: point.x,
+        clientY: point.y - 40,
+        buttons: 0,
+        pressure: 0,
+      }),
+    );
+  }, start);
+
+  for (const offset of [0, 80]) {
+    await page.mouse.move(start.x + offset, start.y);
+    await page.mouse.down();
+    await page.mouse.move(start.x + offset + 24, start.y + 18, { steps: 3 });
+    await page.mouse.move(start.x + offset + 48, start.y - 4, { steps: 3 });
+    await page.mouse.up();
+    await expect(pencil).toHaveAttribute("aria-pressed", "true");
+  }
+  const pencilStrokes = page.locator("#drawing-area .board-item-pencil");
+  await expect(pencilStrokes).toHaveCount(2);
+  await expect(pencilStrokes.first()).toHaveAttribute("stroke-width", "2");
+
+  await page.locator("#board-canvas").evaluate((node, point) => {
+    const canvas = node as SVGSVGElement;
+    const capturedPointers = new Set<number>();
+    Object.defineProperties(canvas, {
+      setPointerCapture: {
+        configurable: true,
+        value: (pointerId: number) => capturedPointers.add(pointerId),
+      },
+      hasPointerCapture: {
+        configurable: true,
+        value: (pointerId: number) => capturedPointers.has(pointerId),
+      },
+      releasePointerCapture: {
+        configurable: true,
+        value: (pointerId: number) => capturedPointers.delete(pointerId),
+      },
+    });
+    const send = (type: string, x: number, y: number, buttons: number): void => {
+      canvas.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          pointerId: 42,
+          pointerType: "pen",
+          isPrimary: true,
+          clientX: x,
+          clientY: y,
+          button: 0,
+          buttons,
+          pressure: buttons === 0 ? 0 : 0.5,
+        }),
+      );
+    };
+
+    send("pointerdown", point.x, point.y + 100, 1);
+    send("pointermove", point.x + 28, point.y + 120, 1);
+    send("pointerup", point.x + 52, point.y + 98, 0);
+    send("pointerdown", point.x + 80, point.y + 100, 1);
+    send("lostpointercapture", point.x + 80, point.y + 100, 0);
+    send("pointermove", point.x + 108, point.y + 120, 1);
+    send("pointerup", point.x + 132, point.y + 98, 0);
+  }, start);
+
+  await expect(page.locator("#drawing-area .board-item-pencil")).toHaveCount(4);
+  await expect(pencil).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+});
+
+test("board shortcuts stay disabled while text and sticky editors are active", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "Keyboard isolation runs in Chromium.");
+
+  await createBoard(page, "Keyboard isolation");
+  const shortcutText = "vplrotnkigzeuh 0+-";
+
+  const textPoint = await canvasPoint(page, 0.35, 0.3);
+  const textTool = page.getByTestId("tool-text");
+  await textTool.click();
+  await page.mouse.click(textPoint.x, textPoint.y);
+  const textEditor = page.getByTestId("canvas-text-editor");
+  await expect(textEditor).toBeFocused();
+  await textEditor.fill("Text ");
+  await page.keyboard.type(shortcutText);
+  await page.waitForTimeout(700);
+  await expect(textEditor).toBeVisible();
+  await expect(textEditor).toBeFocused();
+  await expect(textEditor).toHaveValue(`Text ${shortcutText}`);
+  await expect(textTool).toHaveAttribute("aria-pressed", "true");
+  await textEditor.press("Control+Enter");
+  await expect(page.locator("#drawing-area .board-item-text")).toContainText(
+    `Text ${shortcutText}`,
+  );
+
+  const stickyPoint = await canvasPoint(page, 0.68, 0.3);
+  const stickyTool = page.getByTestId("tool-sticky");
+  await stickyTool.click();
+  await page.mouse.click(stickyPoint.x, stickyPoint.y);
+  const stickyEditor = page.getByTestId("canvas-text-editor");
+  await expect(stickyEditor).toBeFocused();
+  await stickyEditor.fill("Sticky ");
+  await page.keyboard.type(shortcutText);
+  await page.keyboard.press("Backspace");
+  await page.keyboard.type("-");
+  await page.waitForTimeout(700);
+  await expect(stickyEditor).toBeVisible();
+  await expect(stickyEditor).toBeFocused();
+  await expect(stickyEditor).toHaveValue(`Sticky ${shortcutText}`);
+  await expect(stickyTool).toHaveAttribute("aria-pressed", "true");
+  await stickyEditor.press("Control+Enter");
+  await expect(page.locator("#drawing-area .board-item-sticky")).toContainText(
+    /Sticky.*vplrotnkigzeuh 0\+-/u,
+  );
+  await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+});
+
 test("Settings feature toggles hide and restore a tool live", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "Live Settings acceptance runs in Chromium.");
 

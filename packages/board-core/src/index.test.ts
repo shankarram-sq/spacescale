@@ -1,4 +1,9 @@
-import type { ImageGeometry, ItemEffect, TextFontFamily } from "@collab/protocol";
+import {
+  type ImageGeometry,
+  type ItemEffect,
+  normalizeBoardItem,
+  type TextFontFamily,
+} from "@collab/protocol";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -12,7 +17,10 @@ import {
   canonicalSnapshotItemByteLength,
   cloneBoardItem,
   createBoardState,
+  createCanonicalSnapshot,
+  findMoveCopyClosureLimitViolation,
   liveItemsInPaintOrder,
+  type MoveCopyRelationshipItem,
   serializeCanonicalSnapshot,
 } from "./index.js";
 
@@ -225,6 +233,51 @@ describe("normal board reductions", () => {
       items: item ? [item] : [],
     });
     expect(JSON.parse(serialized).items[0].geometry.shape).toBe("square");
+  });
+
+  it("persists, clears, and remaps group and Section relationships", () => {
+    const created = applyDurableOperation(
+      createBoardState(),
+      {
+        kind: "item.create",
+        item: { ...rectangle(), groupId: ACTION_1, sectionId: ACTION_2 },
+      },
+      { seq: 1, actorId: ALICE },
+    ).state;
+    const updated = applyDurableOperation(
+      created,
+      {
+        kind: "item.update",
+        itemId: RECTANGLE_ID,
+        expectedVersion: 1,
+        patch: { groupId: null, sectionId: ACTION_1 },
+      },
+      { seq: 2, actorId: ALICE },
+    ).state;
+    const copied = applyDurableOperation(
+      updated,
+      {
+        kind: "item.copy",
+        sourceItemId: RECTANGLE_ID,
+        expectedVersion: 2,
+        newItemId: COPY_ID,
+        translate: { x: 20, y: 20 },
+        newGroupId: ACTION_2,
+        newSectionId: null,
+      },
+      { seq: 3, actorId: ALICE },
+    ).state;
+
+    expect(liveItemsInPaintOrder(updated)[0]).toMatchObject({
+      sectionId: ACTION_1,
+    });
+    expect(liveItemsInPaintOrder(updated)[0]).not.toHaveProperty("groupId");
+    expect(liveItemsInPaintOrder(copied)[1]).toMatchObject({
+      id: COPY_ID,
+      groupId: ACTION_2,
+      createdBy: ALICE,
+    });
+    expect(liveItemsInPaintOrder(copied)[1]).not.toHaveProperty("sectionId");
   });
 
   it("assigns paint order/server fields and emits complete before/after effects", () => {
@@ -959,6 +1012,53 @@ describe("normal board reductions", () => {
     ).toThrowError(expect.objectContaining({ code: "INVALID_FRAME" }));
   });
 
+  it("keeps a Section lock in the canonical snapshot projection", () => {
+    const locked = { ...zone(), geometry: { ...zone().geometry, locked: true as const } };
+    const created = applyDurableOperation(
+      createBoardState(),
+      { kind: "item.create", item: locked },
+      { seq: 1, actorId: ALICE },
+    );
+    const stored = created.state.items.get(RECTANGLE_ID)?.item;
+    if (stored?.kind !== "zone") throw new Error("Expected stored zone fixture");
+    expect(stored.geometry.locked).toBe(true);
+
+    const snapshot = JSON.parse(
+      serializeCanonicalSnapshot({
+        boardId: "018f0000-0000-7000-8000-0000000000ff",
+        seq: 1,
+        createdAt: 0,
+        settings: { title: "Square gating" },
+        items: [stored],
+      }),
+    ) as { items: Array<{ kind: string; geometry: { locked?: boolean } }> };
+    const section = snapshot.items.find((item) => item.kind === "zone");
+    expect(section?.geometry.locked).toBe(true);
+
+    // An unlocked Section must not gain the key, so the canonical form stays stable.
+    const unlocked = JSON.parse(
+      serializeCanonicalSnapshot({
+        boardId: "018f0000-0000-7000-8000-0000000000ff",
+        seq: 1,
+        createdAt: 0,
+        settings: { title: "Square gating" },
+        items: [
+          {
+            ...stored,
+            geometry: {
+              x: stored.geometry.x,
+              y: stored.geometry.y,
+              width: stored.geometry.width,
+              height: stored.geometry.height,
+              title: stored.geometry.title,
+            },
+          },
+        ],
+      }),
+    ) as { items: Array<{ geometry: Record<string, unknown> }> };
+    expect("locked" in (unlocked.items[0]?.geometry ?? {})).toBe(false);
+  });
+
   it("persists zone titles through copy, history, delete, and canonical snapshots", () => {
     const created = applyDurableOperation(
       createBoardState(),
@@ -1361,6 +1461,65 @@ describe("lineage-aware undo and redo", () => {
   });
 });
 
+describe("move/copy closure limits", () => {
+  const sectionClosure = (memberCount: number): MoveCopyRelationshipItem[] => [
+    { id: "section", kind: "zone" as const },
+    ...Array.from({ length: memberCount }, (_, index) => ({
+      id: `member-${index}`,
+      kind: "rectangle" as const,
+      sectionId: "section",
+    })),
+  ];
+
+  it("allows a Section and 99 direct members in one atomic batch", () => {
+    expect(findMoveCopyClosureLimitViolation(sectionClosure(99))).toBeNull();
+  });
+
+  it("rejects a Section whose direct membership would require 101 operations", () => {
+    expect(findMoveCopyClosureLimitViolation(sectionClosure(100))).toEqual({
+      seedItemId: "section",
+      itemCount: 101,
+    });
+  });
+
+  it("includes outward explicit-group links in the fixed-point Section closure", () => {
+    const items = sectionClosure(98);
+    items[1] = {
+      id: "member-0",
+      kind: "rectangle",
+      sectionId: "section",
+      groupId: "group",
+    };
+    items.push(
+      {
+        id: "outside-a",
+        kind: "rectangle",
+        groupId: "group",
+      },
+      {
+        id: "outside-b",
+        kind: "rectangle",
+        groupId: "group",
+      },
+    );
+
+    expect(findMoveCopyClosureLimitViolation(items)).toEqual({
+      seedItemId: "section",
+      itemCount: 101,
+    });
+  });
+
+  it("allows a plain explicit group at the 100-item batch boundary", () => {
+    const group = Array.from({ length: 100 }, (_, index) => ({
+      id: `group-member-${index}`,
+      kind: "rectangle" as const,
+      groupId: "group",
+    }));
+
+    expect(findMoveCopyClosureLimitViolation(group)).toBeNull();
+  });
+});
+
 describe("authoritative replay and snapshots", () => {
   it("applies canonical deltas without computing inverses", () => {
     const created = applyDurableOperation(
@@ -1376,6 +1535,47 @@ describe("authoritative replay and snapshots", () => {
       changes: [{ kind: "item.remove", itemId: RECTANGLE_ID, version: 2 }],
     });
     expect(removed.size).toBe(0);
+  });
+
+  it("round-trips assistedBy through canonical snapshots", () => {
+    const state = applyDurableOperation(
+      createBoardState(),
+      { kind: "item.create", item: { ...rectangle(), assistedBy: "ai" } },
+      { seq: 1, actorId: ALICE },
+    ).state;
+    const items = liveItemsInPaintOrder(state);
+    expect(items[0]).toMatchObject({ assistedBy: "ai" });
+    const input = {
+      boardId: "018f0000-0000-7000-8000-0000000000ff",
+      seq: 1,
+      createdAt: 1_785_840_000_000,
+      settings: { title: "Assisted" },
+      items,
+    };
+    const snapshot = createCanonicalSnapshot(input);
+    expect(snapshot.items[0]).toMatchObject({ assistedBy: "ai" });
+    expect(Object.keys(snapshot.items[0] ?? {})).toEqual([
+      "id",
+      "kind",
+      "z",
+      "version",
+      "createdBy",
+      "assistedBy",
+      "style",
+      "transform",
+      "geometry",
+    ]);
+    const serialized = serializeCanonicalSnapshot(input);
+    const parsed = JSON.parse(serialized) as { items: unknown[] };
+    const restored = normalizeBoardItem(parsed.items[0]);
+    expect(restored).toEqual(snapshot.items[0]);
+    expect(restored.assistedBy).toBe("ai");
+    expect(canonicalSnapshotItemByteLength(restored)).toBe(
+      new TextEncoder().encode(JSON.stringify(parsed.items[0])).byteLength,
+    );
+    const { assistedBy: _assistedBy, ...plain } = items[0] as (typeof items)[number];
+    const unassisted = createCanonicalSnapshot({ ...input, items: [plain] });
+    expect(unassisted.items[0]).not.toHaveProperty("assistedBy");
   });
 
   it("serializes stable top-level/item order and paint order", () => {

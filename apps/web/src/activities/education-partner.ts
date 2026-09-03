@@ -1,8 +1,14 @@
-import { type Bounds, unionBounds } from "@collab/geometry";
-import { MAX_BATCH_OPERATIONS, validateDurableOperation } from "@collab/protocol";
+import type { Bounds } from "@collab/geometry";
 
-import type { BatchItemOperation, DurableOperation, ImageGeometry, NewBoardItem } from "../types";
+import type { BatchItemOperation, ImageGeometry } from "../types";
 import { createId, roundBoard } from "../types";
+import {
+  boundsCenter,
+  createItem,
+  finalizeBatch,
+  type ItemsBatchOperation,
+  combinedBounds as unionSourceBounds,
+} from "./batch";
 
 export const THINKING_EXPANSION_MODES = [
   "gap_finder",
@@ -92,7 +98,7 @@ export type GroupDecisionProposal = {
 };
 
 export type EducationBatch = {
-  operation: Extract<DurableOperation, { kind: "items.batch" }>;
+  operation: ItemsBatchOperation;
   itemIds: string[];
   sourceLinkCount: number;
 };
@@ -273,7 +279,7 @@ export function buildEducationMove(
         geometry: {
           x: originX,
           y: originY + 34,
-          text: `AI-assisted · ${modeLabel(proposal.mode)} · ${proposal.title}`,
+          text: `${modeLabel(proposal.mode)} · ${proposal.title}`,
         },
       },
       itemIds,
@@ -369,7 +375,7 @@ export function buildGroupDecisionScaffold(
         geometry: {
           x: originX,
           y: originY + 34,
-          text: `AI-assisted · ${modeLabel(proposal.mode)} · ${proposal.title}`,
+          text: `${modeLabel(proposal.mode)} · ${proposal.title}`,
         },
       },
       itemIds,
@@ -460,7 +466,7 @@ export function buildEducationVisuals(
         geometry: {
           x: originX,
           y: originY + 34,
-          text: `AI-assisted · Class visual response · ${proposal.title}`,
+          text: `Class visual response · ${proposal.title}`,
         },
       },
       itemIds,
@@ -630,9 +636,9 @@ function decisionTable(proposal: GroupDecisionProposal): {
 function decisionGuidance(mode: GroupDecisionProposal["mode"]): string {
   const guidance: Record<GroupDecisionProposal["mode"], string> = {
     criteria_co_designer:
-      "STUDENTS ASSIGN THE PRIORITY\n\nAI drafted possible criteria from the selected discussion. The class edits the wording and fills the weights.",
+      "STUDENTS ASSIGN THE PRIORITY\n\nPossible criteria were drafted from the selected discussion. The class edits the wording and fills the weights.",
     tradeoff_visualizer:
-      "STUDENTS MAKE THE TRADE-OFFS\n\nAI structured options against class-selected criteria. The class fills every rating and evidence cell.",
+      "STUDENTS MAKE THE TRADE-OFFS\n\nOptions were structured against class-selected criteria. The class fills every rating and evidence cell.",
     assumption_auction:
       "VOTE ON WHAT TO INVESTIGATE\n\nThese are testable assumptions, not facts. Students place the votes and choose what to test first.",
     consensus_with_dissent:
@@ -640,7 +646,7 @@ function decisionGuidance(mode: GroupDecisionProposal["mode"]): string {
     minority_report:
       "PRESERVE EXPRESSED DISSENT\n\nKeep concerns in the class's words and record what evidence or change could address them.",
     decision_record:
-      "THE CLASS MAKES THE DECISION\n\nRecord the explicit choice, alternatives, reasons, and evidence that could reopen it. AI does not infer consensus.",
+      "THE CLASS MAKES THE DECISION\n\nRecord the explicit choice, alternatives, reasons, and evidence that could reopen it. Do not infer consensus from silence.",
   };
   return guidance[mode];
 }
@@ -689,36 +695,22 @@ function validatedBatch(
   itemIds: string[],
   sourceLinkCount: number,
 ): EducationBatch {
-  if (operations.length === 0 || operations.length > MAX_BATCH_OPERATIONS) {
-    throw new Error("This collaboration move is too large for one shared update.");
-  }
   return {
-    operation: validateDurableOperation({
-      kind: "items.batch",
+    operation: finalizeBatch(
       operations,
-    }) as EducationBatch["operation"],
+      "This collaboration move is too large for one shared update.",
+      { rejectEmpty: true },
+    ),
     itemIds,
     sourceLinkCount,
   };
 }
 
-function createItem(item: NewBoardItem, itemIds: string[]): BatchItemOperation {
-  itemIds.push(item.id);
-  return { kind: "item.create", item: { ...item, assistedBy: "ai" } as NewBoardItem };
-}
-
 function combinedBounds(sources: readonly EducationSource[]): Bounds {
   if (sources.length === 0) throw new Error("At least one source contribution is required.");
-  const bounds = sources.reduce<Bounds | null>(
-    (combined, source) => (combined ? unionBounds(combined, source.bounds) : source.bounds),
-    null,
-  );
+  const bounds = unionSourceBounds(sources);
   if (!bounds) throw new Error("The source contributions have no layout bounds.");
   return bounds;
-}
-
-function boundsCenter(bounds: Bounds): [number, number] {
-  return [roundBoard((bounds.minX + bounds.maxX) / 2), roundBoard((bounds.minY + bounds.maxY) / 2)];
 }
 
 export function modeLabel(mode: string): string {

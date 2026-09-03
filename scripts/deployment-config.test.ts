@@ -5,7 +5,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   DeploymentConfigurationError,
   deploymentConfigurationFromEnvironment,
+  dryRunDeploymentValues,
   generatedWranglerConfigPath,
+  isConfiguredValue,
+  parseEnvironmentArguments,
+  requestedEnvironment,
   writeGeneratedWranglerConfig,
 } from "./deployment-config";
 
@@ -96,5 +100,63 @@ describe("setup-time deployment configuration", () => {
     expect(parsed.routes).toBeUndefined();
     expect(parsed.workers_dev).toBe(false);
     expect(statSync(path).mode & 0o077).toBe(0);
+  });
+});
+
+describe("shared deployment command helpers", () => {
+  it("reads the requested environment without validating other arguments", () => {
+    expect(requestedEnvironment(["--env", "staging", "--verbose"])).toBe("staging");
+    expect(requestedEnvironment(["--verbose"])).toBeUndefined();
+    expect(requestedEnvironment(["--env"])).toBeUndefined();
+  });
+
+  it("parses strict environment arguments with optional flags only", () => {
+    expect(parseEnvironmentArguments(["--env", "production"])).toEqual({
+      environment: "production",
+      flags: {},
+    });
+    expect(parseEnvironmentArguments(["--dry-run", "--env", "staging"], ["--dry-run"])).toEqual({
+      environment: "staging",
+      flags: { "--dry-run": true },
+    });
+    for (const args of [
+      [],
+      ["--env"],
+      ["--env", "test"],
+      ["--env", "production", "--dry-run"],
+      ["--env", "production", "--env", "staging"],
+    ]) {
+      expect(() => parseEnvironmentArguments(args)).toThrow(DeploymentConfigurationError);
+    }
+  });
+
+  it("treats blanks and .env.sample placeholders as unconfigured", () => {
+    expect(isConfiguredValue(undefined)).toBe(false);
+    expect(isConfiguredValue("   ")).toBe(false);
+    expect(isConfiguredValue("replace-with-your-value")).toBe(false);
+    expect(isConfiguredValue(" configured ")).toBe(true);
+  });
+
+  it("verifies a production build without deployment details using dry-run values", () => {
+    const dryRun = dryRunDeploymentValues("production", {});
+    const configuration = deploymentConfigurationFromEnvironment("production", dryRun.values);
+
+    expect(dryRun.placeholders).toEqual(["DEPLOYMENT_NAME", "APP_HOSTNAME", "TURNSTILE_SITE_KEY"]);
+    expect(configuration.hostname.endsWith(".workers.dev")).toBe(true);
+    expect(configuration.turnstileEnabled).toBe(true);
+    expect(configuration.workerName).toBe("dry-run-production");
+  });
+
+  it("keeps configured deployment details during a dry run", () => {
+    const dryRun = dryRunDeploymentValues("staging", {
+      DEPLOYMENT_NAME: "example-canvas",
+      APP_HOSTNAME: "replace-with-hostname",
+      TURNSTILE_ENABLED: "false",
+    });
+
+    expect(dryRun.placeholders).toEqual(["APP_HOSTNAME"]);
+    expect(dryRun.values.DEPLOYMENT_NAME).toBe("example-canvas");
+    expect(dryRun.values.TURNSTILE_SITE_KEY).toBeUndefined();
+    expect(dryRunDeploymentValues("development", {})).toEqual({ values: {}, placeholders: [] });
   });
 });

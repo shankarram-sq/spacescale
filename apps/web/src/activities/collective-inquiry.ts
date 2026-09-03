@@ -1,8 +1,14 @@
-import { type Bounds, unionBounds } from "@collab/geometry";
-import { MAX_BATCH_OPERATIONS, validateDurableOperation } from "@collab/protocol";
+import type { Bounds } from "@collab/geometry";
 
-import type { BatchItemOperation, DurableOperation, NewBoardItem, Point } from "../types";
+import type { BatchItemOperation, Point } from "../types";
 import { createId, roundBoard } from "../types";
+import {
+  boundsCenter,
+  combinedBounds,
+  createItem,
+  finalizeBatch,
+  type ItemsBatchOperation,
+} from "./batch";
 
 export type InquiryTheme = {
   id: string;
@@ -34,7 +40,7 @@ export type InquirySource = {
 };
 
 export type CollectiveInquiryBatch = {
-  operation: Extract<DurableOperation, { kind: "items.batch" }>;
+  operation: ItemsBatchOperation;
   itemIds: string[];
   mapBounds: Bounds;
 };
@@ -46,6 +52,9 @@ const CLUSTER_GAP = 36;
 const HEADER_HEIGHT = 64;
 const SUMMARY_WIDTH = 300;
 const SUMMARY_HEIGHT = 132;
+const FOOTER_GAP = 24;
+const FOOTER_MIN_WIDTH = 320;
+const FOOTER_HEIGHT = 190;
 
 const THEME_FILLS = ["#eee5ff", "#dff2ff", "#ffe7dd", "#e5f5df"] as const;
 
@@ -68,15 +77,16 @@ export function buildCollectiveInquiryMap(
     throw new CollectiveInquiryError("The selected ideas are no longer available.");
   }
 
-  const sourceBounds = sources.reduce<Bounds | null>(
-    (combined, source) => (combined ? unionBounds(combined, source.bounds) : source.bounds),
-    null,
-  );
+  const sourceBounds = combinedBounds(sources);
   if (!sourceBounds) throw new CollectiveInquiryError("The selected ideas have no layout bounds.");
 
   const columns = proposal.themes.length === 2 ? 1 : 2;
   const rows = Math.ceil(proposal.themes.length / columns);
-  const mapWidth = columns * CLUSTER_WIDTH + (columns - 1) * CLUSTER_GAP;
+  const clusterRowWidth = columns * CLUSTER_WIDTH + (columns - 1) * CLUSTER_GAP;
+  // The bridges and tension stickies sit side by side under the clusters; a
+  // single-column map is narrower than that pair, so the map grows to fit them.
+  const footerWidth = Math.max(FOOTER_MIN_WIDTH, (clusterRowWidth - FOOTER_GAP) / 2);
+  const mapWidth = Math.max(clusterRowWidth, footerWidth * 2 + FOOTER_GAP);
   const mapHeight = HEADER_HEIGHT + rows * CLUSTER_HEIGHT + (rows - 1) * CLUSTER_GAP + 250;
   const originX = roundBoard(sourceBounds.maxX + MAP_GAP);
   const originY = roundBoard(sourceBounds.minY);
@@ -107,10 +117,7 @@ export function buildCollectiveInquiryMap(
     for (const alias of theme.ideaAliases) {
       const source = sources.find((candidate) => candidate.alias === alias);
       if (!source) continue;
-      const start: Point = [
-        roundBoard((source.bounds.minX + source.bounds.maxX) / 2),
-        roundBoard((source.bounds.minY + source.bounds.maxY) / 2),
-      ];
+      const start = boundsCenter(source.bounds);
       operations.push(
         createItem(
           {
@@ -185,7 +192,7 @@ export function buildCollectiveInquiryMap(
         geometry: {
           x: originX,
           y: originY + 36,
-          text: `AI-assisted · ${proposal.mapTitle}`,
+          text: proposal.mapTitle,
         },
       },
       itemIds,
@@ -247,7 +254,7 @@ export function buildCollectiveInquiryMap(
             y: y + 58,
             width: SUMMARY_WIDTH,
             height: SUMMARY_HEIGHT,
-            text: `AI-assisted synthesis\n\n${theme.summary}`,
+            text: `Synthesis\n\n${theme.summary}`,
           },
         },
         itemIds,
@@ -278,9 +285,9 @@ export function buildCollectiveInquiryMap(
         geometry: {
           x: originX,
           y: bridgeY,
-          width: Math.max(320, mapWidth / 2 - 12),
-          height: 190,
-          text: `AI-assisted bridges\n\n${bridgeText || "Look for a bridge the class wants to test."}`,
+          width: footerWidth,
+          height: FOOTER_HEIGHT,
+          text: `Bridges\n\n${bridgeText || "Look for a bridge the class wants to test."}`,
         },
       },
       itemIds,
@@ -298,31 +305,21 @@ export function buildCollectiveInquiryMap(
         },
         transform: [1, 0, 0, 1, 0, 0],
         geometry: {
-          x: originX + mapWidth / 2 + 12,
+          x: originX + footerWidth + FOOTER_GAP,
           y: bridgeY,
-          width: Math.max(320, mapWidth / 2 - 12),
-          height: 190,
-          text: `AI-assisted productive tension\n\n${proposal.tension.statement}\n\nNEXT QUESTION\n${proposal.tension.nextQuestion}`,
+          width: footerWidth,
+          height: FOOTER_HEIGHT,
+          text: `Productive tension\n\n${proposal.tension.statement}\n\nNEXT QUESTION\n${proposal.tension.nextQuestion}`,
         },
       },
       itemIds,
     ),
   );
 
-  if (operations.length > MAX_BATCH_OPERATIONS) {
-    throw new CollectiveInquiryError("This inquiry map is too large for one shared update.");
-  }
-  const operation = validateDurableOperation({
-    kind: "items.batch",
+  const operation = finalizeBatch(
     operations,
-  }) as CollectiveInquiryBatch["operation"];
+    "This inquiry map is too large for one shared update.",
+    { errorType: CollectiveInquiryError },
+  );
   return { operation, itemIds, mapBounds };
-}
-
-function createItem(item: NewBoardItem, itemIds: string[]): BatchItemOperation {
-  itemIds.push(item.id);
-  return {
-    kind: "item.create",
-    item: { ...item, assistedBy: "ai" } as NewBoardItem,
-  };
 }

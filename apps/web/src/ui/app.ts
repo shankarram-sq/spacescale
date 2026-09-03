@@ -10,6 +10,7 @@ import {
   MAX_ZONE_TITLE_CODE_POINTS,
   normalizeBoardFeatures,
   normalizeBoardItem,
+  resolveTextFontWeight,
   textFontStack,
   validateClientFrame,
   validateDurableOperation,
@@ -46,12 +47,16 @@ import {
   buildCapturedTextUpdate,
   buildImageCreateOperation,
   buildStickyCreateOperation,
+  buildTranslationMembershipOperations,
   type CapturedTextEdit,
   DEFAULT_STICKY_HEIGHT,
   DEFAULT_STICKY_WIDTH,
+  assignCreatedItemsToSections as decorateCreatedItemsWithSections,
   type ShapeVariant,
+  sectionIdAfterBoundsChange,
   ToolController,
 } from "../tools/controller";
+import { explicitGroupClosure, GroupingError } from "../tools/grouping";
 import {
   type ApiClient,
   ApiError,
@@ -68,6 +73,7 @@ import type {
   AccessMode,
   Actor,
   BatchItemOperation,
+  BoardComment,
   BoardItem,
   BoardSnapshot,
   Bootstrap,
@@ -88,10 +94,13 @@ import type {
   SpotlightFrame,
   StampKind,
   TableGeometry,
+  TextDecoration,
   TextFontFamily,
+  TextFontStyle,
+  TextFontWeight,
   ToolName,
 } from "../types";
-import { canRoleDraw, createId, PROTOCOL_VERSION } from "../types";
+import { canRoleComment, canRoleDraw, createId, PROTOCOL_VERSION } from "../types";
 import { ClassDecisionWebMcp } from "../webmcp/class-decision";
 import { CollectiveInquiryWebMcp } from "../webmcp/collective-inquiry";
 import { EducationPartnerWebMcp, type EducationVisualSource } from "../webmcp/education-partner";
@@ -193,20 +202,29 @@ const FEATURE_LABELS: Readonly<Record<BoardFeatureKey, { label: string; detail: 
   protractor: { label: "Protractor", detail: "Movable 180° measuring tool" },
   eraser: { label: "Eraser", detail: "Erase board work" },
   partialEraser: { label: "Partial eraser", detail: "Cut only touched line segments" },
+  objectTransforms: { label: "Scale and rotate", detail: "Transform shapes, images, and tools" },
+  grouping: { label: "Grouping", detail: "Move and copy related items together" },
   templates: { label: "Templates", detail: "Built-in starter layouts" },
   organisationTemplates: { label: "Organisation templates", detail: "Shared reusable layouts" },
   voting: { label: "Voting", detail: "Vote controls on templates" },
   spotlight: { label: "Follow me", detail: "Coach-led viewport spotlight" },
 };
 
-function templateFeatureIssue(
-  items: readonly { kind: string; geometry?: unknown }[],
+export function templateFeatureIssue(
+  items: readonly { kind: string; geometry?: unknown; transform?: readonly number[] }[],
   features: BoardFeatures,
 ): string | null {
   const unavailable = new Set<BoardFeatureKey>();
   for (const item of items) {
     const feature = featureForTemplateItem(item);
     if (feature !== null && !features[feature]) unavailable.add(feature);
+    if (
+      !features.objectTransforms &&
+      Array.isArray(item.transform) &&
+      [1, 0, 0, 1].some((expected, index) => item.transform?.[index] !== expected)
+    ) {
+      unavailable.add("objectTransforms");
+    }
     if (
       item.geometry !== null &&
       typeof item.geometry === "object" &&
@@ -264,7 +282,7 @@ function featureForTemplateItem(item: {
 }
 
 const BRUSH_PRESETS = {
-  pen: { width: 4, opacity: 1 },
+  pen: { width: 2, opacity: 1 },
   marker: { width: 10, opacity: 1 },
   highlighter: { width: 20, opacity: 0.35 },
 } as const;
@@ -589,29 +607,68 @@ export function buildElementColourOperations(
   });
 }
 
+export type TextStylePatch = {
+  fontFamily?: TextFontFamily;
+  fontSize?: number;
+  fontWeight?: TextFontWeight;
+  fontStyle?: TextFontStyle;
+  textDecoration?: TextDecoration;
+};
+
+type TextWeightItem = {
+  kind: "text" | "sticky" | "table" | "zone";
+  style: { fontWeight?: TextFontWeight };
+};
+
+export function effectiveTextFontWeight(item: TextWeightItem): TextFontWeight {
+  return item.style.fontWeight ?? (item.kind === "zone" ? "bold" : "normal");
+}
+
 export function buildTextStyleOperations(
   items: readonly BoardItem[],
-  patch: { fontFamily?: TextFontFamily; fontSize?: number },
+  patch: TextStylePatch,
+  allItems: Iterable<BoardItem> = items,
+  assignNewMembership = true,
 ): BatchItemOperation[] {
-  if (items.length === 0 || items.some((item) => item.kind !== "text" || item.version <= 0)) {
+  const textItems = items.filter(
+    (item) =>
+      item.kind === "text" ||
+      item.kind === "sticky" ||
+      item.kind === "table" ||
+      item.kind === "zone",
+  );
+  if (
+    textItems.length !== items.length ||
+    textItems.length === 0 ||
+    textItems.some((item) => item.version <= 0)
+  ) {
     return [];
   }
-  return items.flatMap((item) => {
-    if (item.kind !== "text") return [];
+  const boardItems = [...allItems];
+  return textItems.flatMap((item) => {
     const nextStyle = { ...item.style, ...patch };
-    if (
-      nextStyle.fontFamily === item.style.fontFamily &&
-      nextStyle.fontSize === item.style.fontSize
-    ) {
-      return [];
-    }
+    const changed = (Object.keys(patch) as Array<keyof TextStylePatch>).some(
+      (key) => nextStyle[key] !== item.style[key],
+    );
+    if (!changed) return [];
+    const sectionId =
+      item.kind === "text" && patch.fontSize !== undefined
+        ? sectionIdAfterBoundsChange(
+            boardItems,
+            { ...item, style: nextStyle } as Extract<BoardItem, { kind: "text" }>,
+            assignNewMembership,
+          )
+        : item.sectionId;
     return [
       {
         kind: "item.update" as const,
         itemId: item.id,
         expectedVersion: item.version,
-        patch: { style: nextStyle },
-      },
+        patch: {
+          style: nextStyle,
+          ...(sectionId === item.sectionId ? {} : { sectionId: sectionId ?? null }),
+        },
+      } as BatchItemOperation,
     ];
   });
 }
@@ -638,16 +695,140 @@ export function savedAuthoritativeItems(
   return result;
 }
 
-export function operationAllowedForActor(
+export function lockedSectionIdForItem(
+  item: BoardItem,
+  items: ReadonlyMap<string, BoardItem>,
+): string | null {
+  if (item.kind === "zone" && item.geometry.locked === true) return item.id;
+  if (item.sectionId === undefined) return null;
+  const section = items.get(item.sectionId);
+  return section?.kind === "zone" && section.geometry.locked === true ? section.id : null;
+}
+
+function sectionLockChange(
+  operation: BatchItemOperation,
+  items: ReadonlyMap<string, BoardItem>,
+): { section: Extract<BoardItem, { kind: "zone" }>; locked: boolean } | null {
+  if (operation.kind !== "item.update" || operation.patch.geometry === undefined) return null;
+  const section = items.get(operation.itemId);
+  if (section?.kind !== "zone") return null;
+  const geometry = operation.patch.geometry as Partial<typeof section.geometry>;
+  const locked = geometry.locked === true;
+  return locked === (section.geometry.locked === true) ? null : { section, locked };
+}
+
+function pureSectionLockChange(
+  operation: BatchItemOperation,
+  section: Extract<BoardItem, { kind: "zone" }>,
+): boolean {
+  if (
+    operation.kind !== "item.update" ||
+    operation.patch.geometry === undefined ||
+    Object.keys(operation.patch).length !== 1
+  ) {
+    return false;
+  }
+  const geometry = operation.patch.geometry;
+  return (
+    "title" in geometry &&
+    geometry.x === section.geometry.x &&
+    geometry.y === section.geometry.y &&
+    geometry.width === section.geometry.width &&
+    geometry.height === section.geometry.height &&
+    geometry.title === section.geometry.title &&
+    (geometry.locked === true) !== (section.geometry.locked === true)
+  );
+}
+
+export function operationBlockedBySectionLock(
+  operation: DurableOperation,
+  role: Role,
+  items: ReadonlyMap<string, BoardItem>,
+): boolean {
+  if (operation.kind === "board.clear") {
+    return [...items.values()].some(
+      (item) => item.kind === "zone" && item.geometry.locked === true,
+    );
+  }
+  if (operation.kind === "history.undo" || operation.kind === "history.redo") return false;
+  const operations = operation.kind === "items.batch" ? operation.operations : [operation];
+  const lockChanges = operations.flatMap((child) => {
+    const change = sectionLockChange(child, items);
+    return change === null ? [] : [{ operation: child, ...change }];
+  });
+  const [lockChange] = lockChanges;
+  if (
+    lockChange !== undefined &&
+    (role !== "owner" ||
+      operations.length !== 1 ||
+      lockChanges.length !== 1 ||
+      !pureSectionLockChange(lockChange.operation, lockChange.section))
+  ) {
+    return true;
+  }
+
+  for (const child of operations) {
+    if (
+      child.kind === "item.create" &&
+      child.item.kind === "zone" &&
+      child.item.geometry.locked === true &&
+      role !== "owner"
+    ) {
+      return true;
+    }
+    const source =
+      child.kind === "item.create"
+        ? undefined
+        : items.get(child.kind === "item.copy" ? child.sourceItemId : child.itemId);
+    if (source?.kind === "zone" && source.geometry.locked === true) {
+      const change = sectionLockChange(child, items);
+      if (
+        change !== null &&
+        role === "owner" &&
+        change.locked === false &&
+        pureSectionLockChange(child, source)
+      ) {
+        continue;
+      }
+      return true;
+    }
+    if (source && lockedSectionIdForItem(source, items) !== null) return true;
+    const prospectiveSectionId =
+      child.kind === "item.create"
+        ? child.item.sectionId
+        : child.kind === "item.update"
+          ? typeof child.patch.sectionId === "string"
+            ? child.patch.sectionId
+            : undefined
+          : child.kind === "item.copy" && typeof child.newSectionId === "string"
+            ? child.newSectionId
+            : undefined;
+    if (prospectiveSectionId !== undefined) {
+      const section = items.get(prospectiveSectionId);
+      if (section?.kind === "zone" && section.geometry.locked === true) return true;
+    }
+  }
+  return false;
+}
+
+export type OperationDenial = "section-locked" | "ownership";
+
+/**
+ * Explains why the local actor may not commit `operation`, or returns null
+ * when it is allowed. The Section-lock scan runs exactly once here; callers
+ * that need to pick a message should use this rather than re-running it.
+ */
+export function operationDenialForActor(
   operation: DurableOperation,
   role: Role,
   actorId: string,
   authoritativeItems: ReadonlyMap<string, BoardItem>,
-): boolean {
-  if (role === "owner") return true;
-  if (role !== "editor") return false;
-  if (operation.kind === "history.undo" || operation.kind === "history.redo") return true;
-  if (operation.kind === "board.clear") return false;
+): OperationDenial | null {
+  if (operationBlockedBySectionLock(operation, role, authoritativeItems)) return "section-locked";
+  if (role === "owner") return null;
+  if (role !== "editor") return "ownership";
+  if (operation.kind === "history.undo" || operation.kind === "history.redo") return null;
+  if (operation.kind === "board.clear") return "ownership";
 
   const ownedItemIds = new Set(
     [...authoritativeItems.values()]
@@ -661,12 +842,40 @@ export function operationAllowedForActor(
     } else if (child.kind === "item.copy") {
       ownedItemIds.add(child.newItemId);
     } else if (!ownedItemIds.has(child.itemId)) {
-      return false;
+      if (!isOwnSectionDetach(child, actorId, authoritativeItems)) return "ownership";
     } else if (child.kind === "item.delete") {
       ownedItemIds.delete(child.itemId);
     }
   }
-  return true;
+  return null;
+}
+
+export function operationAllowedForActor(
+  operation: DurableOperation,
+  role: Role,
+  actorId: string,
+  authoritativeItems: ReadonlyMap<string, BoardItem>,
+): boolean {
+  return operationDenialForActor(operation, role, actorId, authoritativeItems) === null;
+}
+
+/**
+ * A Section's creator may detach members they do not own from that Section.
+ * Membership is assigned by geometry, so the creator must be able to reverse
+ * it (and delete the Section) without the member's author. Only a bare
+ * `{ sectionId: null }` patch qualifies; the edge enforces the same rule.
+ */
+function isOwnSectionDetach(
+  child: BatchItemOperation,
+  actorId: string,
+  items: ReadonlyMap<string, BoardItem>,
+): boolean {
+  if (child.kind !== "item.update") return false;
+  const patch = child.patch as Record<string, unknown>;
+  if (Object.keys(patch).length !== 1 || patch.sectionId !== null) return false;
+  const member = items.get(child.itemId);
+  const section = member?.sectionId === undefined ? undefined : items.get(member.sectionId);
+  return section?.kind === "zone" && section.createdBy === actorId;
 }
 
 export function buildCreatorNameMap(creators: readonly Actor[], self: Actor): Map<string, string> {
@@ -727,16 +936,13 @@ export class BoardApp {
   private inquiryMapWebMcp: InquiryMapWebMcp | null = null;
   private classDecisionWebMcp: ClassDecisionWebMcp | null = null;
   private educationPartnerWebMcp: EducationPartnerWebMcp | null = null;
-  private readonly pendingWebMcpCommits = new Map<
-    string,
-    { timer: number; resolve: (accepted: boolean) => void }
-  >();
+  private readonly pendingWebMcpCommits = new PendingCommitTracker();
   private bootstrap: Bootstrap;
   private phase: ConnectionPhase = "idle";
   private history: HistoryState;
   private style: StyleState = {
     color: DRAWING_COLOR_VALUES.ink,
-    width: 4,
+    width: 2,
     opacity: 1,
     lineArrowhead: "none",
     shapeVariant: "rectangle",
@@ -767,7 +973,6 @@ export class BoardApp {
   private expiredRecovery: OutboxEntry[] = [];
   private previewExpiryTimer: number;
   private textEditor: HTMLTextAreaElement | null = null;
-  private textEditorTimer: number | null = null;
   private textEditContext: CapturedTextEdit | null = null;
   private textEditorMode: "text" | "sticky" | null = null;
   private textEditorPreview: (() => void) | null = null;
@@ -786,7 +991,17 @@ export class BoardApp {
   private readonly pendingZoneTitleDrafts = new Map<string, ZoneTitleDraftRecovery>();
   private readonly rejectedZoneTitleDrafts: ZoneTitleDraftRecovery[] = [];
   private readonly pendingNewZoneTitles = new Set<string>();
+  private readonly comments = new CommentStore(
+    (itemId) => this.model.getItem(itemId) !== undefined,
+  );
+  private readonly commentsResolving = new Set<string>();
+  private activeCommentTargetId: string | null = null;
+  private showHiddenComments = false;
+  private commentSubmitting = false;
+  private commentsLoading = true;
   private accessMembers: Member[] = [];
+  private readonly participantRoleChangesPending = new Set<string>();
+  private participantRenderPending = false;
   private managedInvitations: ManagedInvitation[];
   private recoverySnapshots: RecoverySnapshot[] = [];
   private outboxAvailable = true;
@@ -812,6 +1027,14 @@ export class BoardApp {
   private readonly participantCount: HTMLElement;
   private readonly participantDrawer: HTMLElement;
   private readonly participantList: HTMLElement;
+  private readonly commentsButton: HTMLButtonElement;
+  private readonly commentsCount: HTMLElement;
+  private readonly commentsDrawer: HTMLElement;
+  private readonly commentsList: HTMLElement;
+  private readonly commentComposer: HTMLElement;
+  private readonly commentTargetLabel: HTMLElement;
+  private readonly commentInput: HTMLTextAreaElement;
+  private readonly showHiddenCommentsInput: HTMLInputElement;
   private readonly spotlightToggle: HTMLButtonElement;
   private readonly spotlightFollowBanner: HTMLElement;
   private readonly spotlightFollowText: HTMLElement;
@@ -872,6 +1095,18 @@ export class BoardApp {
     this.participantCount = query(this.root, "[data-participant-count]", HTMLElement);
     this.participantDrawer = query(this.root, "[data-testid='participant-drawer']", HTMLElement);
     this.participantList = query(this.root, "[data-participant-list]", HTMLElement);
+    this.commentsButton = query(this.root, "[data-testid='comments-button']", HTMLButtonElement);
+    this.commentsCount = query(this.commentsButton, "[data-comments-count]", HTMLElement);
+    this.commentsDrawer = query(this.root, "[data-testid='comments-drawer']", HTMLElement);
+    this.commentsList = query(this.commentsDrawer, "[data-comments-list]", HTMLElement);
+    this.commentComposer = query(this.commentsDrawer, "[data-comment-composer]", HTMLElement);
+    this.commentTargetLabel = query(this.commentComposer, "[data-comment-target]", HTMLElement);
+    this.commentInput = query(this.commentComposer, "[data-comment-input]", HTMLTextAreaElement);
+    this.showHiddenCommentsInput = query(
+      this.commentsDrawer,
+      "[data-show-hidden-comments]",
+      HTMLInputElement,
+    );
     this.spotlightToggle = query(this.root, "[data-testid='spotlight-toggle']", HTMLButtonElement);
     this.spotlightFollowBanner = query(
       this.root,
@@ -952,9 +1187,11 @@ export class BoardApp {
       (actorId) => this.creatorNames.get(actorId),
     );
     this.renderer.setVotingEnabled(this.bootstrap.board.features.voting);
+    this.renderer.setObjectTransformsEnabled(this.bootstrap.board.features.objectTransforms);
     this.renderer.viewport.subscribe((zoom) => {
       this.zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
       this.renderer.refreshSelection();
+      this.renderer.refreshComments();
     });
     this.unsubscribeViewport = this.renderer.viewport.subscribeView(() => {
       this.scheduleSpotlightViewportUpdate();
@@ -967,6 +1204,8 @@ export class BoardApp {
       canUseImages: () => this.canUploadImages(),
       canUseTool: (tool) => this.isToolEnabled(tool),
       canSnapLines: () => this.bootstrap.board.features.lineSnapping,
+      canTransformObjects: () => this.bootstrap.board.features.objectTransforms,
+      canGroup: () => this.bootstrap.board.features.grouping,
       usePartialEraser: () => this.bootstrap.board.features.partialEraser,
       getStyle: () => this.style,
       commit: (operation, actionId) => this.commit(operation, actionId),
@@ -1025,8 +1264,10 @@ export class BoardApp {
           this.flushOutbox();
           this.socket.sendPresence(null, this.tools.tool);
           this.sendCurrentSpotlight();
+          void this.reloadComments(false);
         },
         onRejected: (frame) => this.handleRejection(frame),
+        onCommentsChanged: () => void this.reloadComments(false),
         onHistory: (state) => {
           this.history = state;
           this.updateHistoryControls();
@@ -1045,9 +1286,6 @@ export class BoardApp {
 
     this.webMcp = new CollectiveInquiryWebMcp({
       root: this.root,
-      status: query(this.root, "[data-webmcp-status]", HTMLElement),
-      selectionButton: query(this.root, "[data-selection-ai]", HTMLButtonElement),
-      getRole: () => this.bootstrap.actor.role,
       getSelectedItems: () =>
         savedAuthoritativeItems(
           [...this.tools.selection],
@@ -1059,7 +1297,7 @@ export class BoardApp {
     });
 
     this.educationPartnerWebMcp = new EducationPartnerWebMcp({
-      getRole: () => this.bootstrap.actor.role,
+      canWrite: () => this.canCommit(),
       getSnapshot: (token) => this.webMcp?.getSnapshot(token),
       getItemVersion: (itemId) => this.model.authoritativeItems.get(itemId)?.version,
       getItemBounds: (itemId) => this.model.getBounds(itemId),
@@ -1076,7 +1314,7 @@ export class BoardApp {
 
     this.inquiryMapWebMcp = new InquiryMapWebMcp({
       root: this.root,
-      getRole: () => this.bootstrap.actor.role,
+      canWrite: () => this.canCommit(),
       getSnapshot: (token) => this.webMcp?.getSnapshot(token),
       getItemVersion: (itemId) => this.model.authoritativeItems.get(itemId)?.version,
       getItemBounds: (itemId) => this.model.getBounds(itemId),
@@ -1090,7 +1328,7 @@ export class BoardApp {
 
     this.classDecisionWebMcp = new ClassDecisionWebMcp({
       root: this.root,
-      getRole: () => this.bootstrap.actor.role,
+      canWrite: () => this.canCommit(),
       getSelectedItems: () =>
         savedAuthoritativeItems(
           [...this.tools.selection],
@@ -1114,6 +1352,7 @@ export class BoardApp {
       this.tools.reconcileSelection();
       this.updateSelectionActions(this.tools.selection);
       this.syncNewZoneTitleEditor();
+      this.reconcileCommentStates();
     });
     this.model.subscribeRebase((error) => this.handleRebaseState(error));
     this.presences.set(bootstrap.actor.id, {
@@ -1139,7 +1378,6 @@ export class BoardApp {
     this.clearFollowingSpotlight();
     this.unsubscribeViewport?.();
     this.unsubscribeViewport = null;
-    if (this.textEditorTimer !== null) window.clearTimeout(this.textEditorTimer);
     this.pendingStickyDrafts.clear();
     this.rejectedStickyDrafts.length = 0;
     this.pendingTableCellDrafts.clear();
@@ -1156,9 +1394,7 @@ export class BoardApp {
     void this.closeTableCellEditor(false);
     void this.closeZoneTitleEditor(false);
     void this.closeTextEditor(false);
-    for (const commandId of [...this.pendingWebMcpCommits.keys()]) {
-      this.finishWebMcpCommit(commandId, false);
-    }
+    this.pendingWebMcpCommits.finishAll(false);
     this.socket.destroy();
     this.educationPartnerWebMcp?.destroy();
     this.educationPartnerWebMcp = null;
@@ -1186,11 +1422,6 @@ export class BoardApp {
             <input class="board-title" data-testid="board-title" maxlength="100" autocomplete="off" />
           </label>
           <div class="topbar-actions">
-            <div class="webmcp-status" data-webmcp-status hidden>
-              <span class="webmcp-status-dot" aria-hidden="true"></span>
-              <span data-webmcp-label>AI partner</span>
-              <span class="webmcp-badge">WebMCP</span>
-            </div>
             <div class="history-controls" aria-label="Board history">
               <button class="icon-button" type="button" data-testid="undo-button" aria-label="Undo (Control or Command Z)" title="Undo · Ctrl/⌘ Z">↶</button>
               <button class="icon-button" type="button" data-testid="redo-button" aria-label="Redo (Control or Command Shift Z)" title="Redo · Ctrl/⌘ Shift Z">↷</button>
@@ -1221,6 +1452,11 @@ export class BoardApp {
             <button class="topbar-button spotlight-toggle" type="button" data-testid="spotlight-toggle" aria-label="Start Follow me" aria-pressed="false" hidden>
               <span class="spotlight-toggle-mark" aria-hidden="true"></span>
               <span class="spotlight-toggle-label">Follow me</span>
+            </button>
+            <button class="topbar-button comments-button" type="button" data-testid="comments-button" aria-controls="comments-drawer" aria-expanded="false">
+              <span class="comments-button-mark" aria-hidden="true">●</span>
+              <span>Comments</span>
+              <span class="comments-count" data-comments-count>0</span>
             </button>
             <button class="topbar-button people-button" type="button" data-testid="participants-button" aria-controls="participant-drawer" aria-expanded="false">
               <span class="avatar-stack" aria-hidden="true"><i></i><i></i></span>
@@ -1279,7 +1515,6 @@ export class BoardApp {
               </form>
             </dialog>
             <div class="selection-actions" data-testid="selection-actions" hidden>
-              <button class="selection-ai-button" type="button" data-selection-ai aria-label="Use selected board content with the AI partner" hidden><span aria-hidden="true">✦</span> Ask AI</button>
               <button type="button" data-selection-alt aria-label="Edit image alt text" hidden>Edit alt text</button>
               <div class="selection-colour-wrap" hidden>
                 <button type="button" data-selection-colour aria-label="Change selected element colour" aria-haspopup="menu" aria-controls="selection-colour-menu" aria-expanded="false">Colour</button>
@@ -1302,9 +1537,16 @@ export class BoardApp {
                   <option value="52">Extra large</option>
                   <option value="72">Huge</option>
                 </select>
+                <button type="button" data-selection-font-weight aria-label="Bold" aria-pressed="false"><strong>B</strong></button>
+                <button type="button" data-selection-font-style aria-label="Italic" aria-pressed="false"><em>I</em></button>
+                <button type="button" data-selection-text-decoration aria-label="Underline" aria-pressed="false"><u>U</u></button>
               </div>
               <span class="selection-actions-divider" data-selection-style-divider aria-hidden="true" hidden></span>
+              <button type="button" data-selection-comment aria-label="Comment on selected object">Comment</button>
+              <button type="button" data-selection-section-lock aria-label="Lock Section" aria-pressed="false" hidden>Lock Section</button>
               <button type="button" data-selection-copy aria-label="Copy selected items">Copy</button>
+              <button type="button" data-selection-group aria-label="Group selected items" hidden>Group</button>
+              <button type="button" data-selection-ungroup aria-label="Ungroup selected items" hidden>Ungroup</button>
               <div class="selection-arrange-wrap">
                 <button type="button" data-selection-arrange aria-label="Arrange selected items" aria-haspopup="menu" aria-controls="arrange-menu" aria-expanded="false">Arrange</button>
                 <div class="arrange-menu" data-testid="arrange-menu" id="arrange-menu" role="menu" aria-label="Arrange selected items" hidden>
@@ -1365,7 +1607,7 @@ export class BoardApp {
               <div class="color-grid sticky-color-grid" data-sticky-color-grid hidden></div>
               <label class="custom-color" title="Custom colour" data-custom-color><span class="sr-only">Custom colour</span><input type="color" value="${UI_COLORS.ink}" data-style-color /></label>
             </fieldset>
-            <label class="range-row" data-style-stroke-row><span>Stroke</span><output data-width-output>4</output><input type="range" min="1" max="32" value="4" step="1" data-style-stroke /></label>
+            <label class="range-row" data-style-stroke-row><span>Stroke</span><output data-width-output>2</output><input type="range" min="1" max="32" value="2" step="1" data-style-stroke /></label>
             <label class="style-checkbox-row" data-line-arrow-row hidden><input type="checkbox" data-line-arrow /> <span>End arrow</span><span class="line-arrow-preview" aria-hidden="true">→</span></label>
             <label class="range-row"><span>Opacity</span><output data-opacity-output>100%</output><input type="range" min="10" max="100" value="100" step="5" data-style-opacity /></label>
             <label class="style-select-row" data-style-font-family-row><span>Font</span><select data-style-font-family>
@@ -1377,6 +1619,23 @@ export class BoardApp {
             <label class="range-row" data-style-font-row><span>Text</span><output data-font-output>28</output><input type="range" min="8" max="96" value="28" step="1" data-style-font /></label>
           </section>
         </div>
+
+        <aside class="side-drawer comments-drawer" id="comments-drawer" data-testid="comments-drawer" aria-label="Comments" hidden>
+          <div class="drawer-heading"><div><span class="eyebrow">Objects</span><h2>Comments</h2></div><button type="button" data-close-drawer aria-label="Close comments">×</button></div>
+          <label class="comments-filter"><input type="checkbox" data-show-hidden-comments /> <span>Show resolved &amp; orphaned</span></label>
+          <section class="comment-composer" data-comment-composer hidden>
+            <span class="comment-target-label" data-comment-target></span>
+            <form data-comment-form>
+              <label class="sr-only" for="object-comment-input">Comment</label>
+              <textarea id="object-comment-input" data-comment-input rows="3" maxlength="2000" placeholder="Add a comment…" required></textarea>
+              <div class="comment-composer-actions">
+                <button type="button" data-comment-cancel>Cancel</button>
+                <button class="primary-button" type="submit" data-comment-submit>Comment</button>
+              </div>
+            </form>
+          </section>
+          <div class="comments-list" data-comments-list></div>
+        </aside>
 
         <aside class="side-drawer participant-drawer" id="participant-drawer" data-testid="participant-drawer" aria-label="Participants" hidden>
           <div class="drawer-heading"><div><span class="eyebrow">Live Space</span><h2>Participants</h2></div><button type="button" data-close-drawer aria-label="Close participants">×</button></div>
@@ -1741,6 +2000,7 @@ export class BoardApp {
         template,
         [view.center.x, view.center.y],
         createId,
+        this.bootstrap.board.features.grouping,
       );
       const accepted = await this.commit(batch.operation);
       if (!accepted) return;
@@ -1996,10 +2256,7 @@ export class BoardApp {
     await this.commit({ kind: "items.batch", operations });
   }
 
-  private async restyleSelectedText(patch: {
-    fontFamily?: TextFontFamily;
-    fontSize?: number;
-  }): Promise<void> {
+  private async restyleSelectedText(patch: TextStylePatch): Promise<void> {
     if (!this.canCommit()) return;
     const selectedIds = [...this.tools.selection];
     const limit = Math.max(1, Math.min(100, Math.floor(this.bootstrap.limits.maxBatchItems)));
@@ -2020,19 +2277,54 @@ export class BoardApp {
       this.notify("You can edit only work that you created.", "warning");
       return;
     }
-    const operations = buildTextStyleOperations(items, patch);
+    const operations = buildTextStyleOperations(
+      items,
+      patch,
+      this.model.authoritativeItems.values(),
+      this.bootstrap.board.features.grouping,
+    );
     if (operations.length > 0) await this.commit({ kind: "items.batch", operations });
+  }
+
+  private async toggleSelectedSectionLock(): Promise<void> {
+    if (this.bootstrap.actor.role !== "owner" || !this.canCommit()) return;
+    const [selectedId] = this.tools.selection;
+    if (this.tools.selection.size !== 1 || selectedId === undefined) return;
+    const selected = savedAuthoritativeItems(
+      [selectedId],
+      this.model.items,
+      this.model.authoritativeItems,
+    )?.[0];
+    if (selected?.kind !== "zone") return;
+    const nextLocked = selected.geometry.locked !== true;
+    const accepted = await this.commit({
+      kind: "item.update",
+      itemId: selected.id,
+      expectedVersion: selected.version,
+      patch: { geometry: { ...selected.geometry, locked: nextLocked } },
+    });
+    if (accepted) {
+      this.notify(
+        nextLocked
+          ? "Section locked. Its contents are now read only for everyone."
+          : "Section unlocked. Its contents can be edited again.",
+        "info",
+      );
+    }
   }
 
   private async arrangeSelection(kind: ArrangeKind): Promise<void> {
     if (!this.canCommit()) return;
     const selectedIds = [...this.tools.selection];
-    const participantIds =
+    const seedIds =
       kind === "tidy-stickies"
         ? selectedIds.filter((id) => this.model.getItem(id)?.kind === "sticky")
         : selectedIds;
     const minimum = kind.startsWith("distribute-") ? 3 : 2;
-    if (participantIds.length < minimum) return;
+    if (seedIds.length < minimum) return;
+    const participantIds = this.bootstrap.board.features.grouping
+      ? explicitGroupClosure(this.model.items.values(), seedIds).map((item) => item.id)
+      : seedIds;
     const limit = Math.max(1, Math.min(100, Math.floor(this.bootstrap.limits.maxBatchItems)));
     if (participantIds.length > limit) {
       this.notify(`Arrange ${limit} items or fewer at a time.`, "warning");
@@ -2047,11 +2339,25 @@ export class BoardApp {
       this.notify("Wait for every selected item to finish saving before arranging.", "info");
       return;
     }
-    const operations = buildArrangeUpdates(kind, items);
+    const directUpdates = buildArrangeUpdates(kind, items, this.bootstrap.board.features.grouping);
     this.setArrangeMenuOpen(false);
     this.arrangeButton.focus();
-    if (operations.length === 0) {
+    if (directUpdates.length === 0) {
       this.notify("Those items are already arranged that way.", "info");
+      return;
+    }
+    let operations: BatchItemOperation[];
+    try {
+      operations = buildTranslationMembershipOperations(
+        directUpdates,
+        this.model.items.values(),
+        this.bootstrap.board.features.grouping,
+        (item) => this.canModifyItem(item),
+        limit,
+      );
+    } catch (error) {
+      if (!(error instanceof GroupingError)) throw error;
+      this.notify(error.message, "warning");
       return;
     }
     const accepted = await this.commit({ kind: "items.batch", operations });
@@ -2228,15 +2534,72 @@ export class BoardApp {
         void this.restyleSelectedText({ fontSize });
       },
     );
+    const toggleTextStyle = (
+      key: "fontWeight" | "fontStyle" | "textDecoration",
+      active: "bold" | "italic" | "underline",
+      inactive: "normal" | "none",
+    ): void => {
+      const items = [...this.tools.selection].flatMap((id) => {
+        const item = this.model.getItem(id);
+        return item &&
+          (item.kind === "text" ||
+            item.kind === "sticky" ||
+            item.kind === "table" ||
+            item.kind === "zone")
+          ? [item]
+          : [];
+      });
+      const allActive =
+        items.length > 0 &&
+        items.every((item) =>
+          key === "fontWeight"
+            ? effectiveTextFontWeight(item) === "bold"
+            : item.style[key] === active,
+        );
+      void this.restyleSelectedText({ [key]: allActive ? inactive : active });
+    };
+    query(
+      this.selectionActions,
+      "[data-selection-font-weight]",
+      HTMLButtonElement,
+    ).addEventListener("click", () => toggleTextStyle("fontWeight", "bold", "normal"));
+    query(this.selectionActions, "[data-selection-font-style]", HTMLButtonElement).addEventListener(
+      "click",
+      () => toggleTextStyle("fontStyle", "italic", "normal"),
+    );
+    query(
+      this.selectionActions,
+      "[data-selection-text-decoration]",
+      HTMLButtonElement,
+    ).addEventListener("click", () => toggleTextStyle("textDecoration", "underline", "none"));
     this.selectionColourMenu.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
       this.setSelectionColourMenuOpen(false);
       this.selectionColourButton.focus();
     });
+    query(this.root, "[data-selection-comment]", HTMLButtonElement).addEventListener(
+      "click",
+      () => {
+        const [itemId] = this.tools.selection;
+        if (itemId && this.tools.selection.size === 1) this.openCommentsForItem(itemId);
+      },
+    );
+    query(this.root, "[data-selection-section-lock]", HTMLButtonElement).addEventListener(
+      "click",
+      () => void this.toggleSelectedSectionLock(),
+    );
     query(this.root, "[data-selection-copy]", HTMLButtonElement).addEventListener(
       "click",
       () => void this.tools.copySelection(),
+    );
+    query(this.root, "[data-selection-group]", HTMLButtonElement).addEventListener(
+      "click",
+      () => void this.tools.groupSelection(),
+    );
+    query(this.root, "[data-selection-ungroup]", HTMLButtonElement).addEventListener(
+      "click",
+      () => void this.tools.ungroupSelection(),
     );
     query(this.root, "[data-selection-delete]", HTMLButtonElement).addEventListener(
       "click",
@@ -2394,11 +2757,42 @@ export class BoardApp {
       () => this.stopFollowingSpotlight(),
     );
 
+    this.commentsButton.addEventListener("click", () => {
+      const opening = this.commentsDrawer.hidden;
+      if (opening) this.activeCommentTargetId = null;
+      this.toggleDrawer(this.commentsDrawer, this.commentsButton);
+      this.renderComments();
+    });
+    this.showHiddenCommentsInput.addEventListener("change", () => {
+      this.showHiddenComments = this.showHiddenCommentsInput.checked;
+      this.renderComments();
+    });
+    query(this.commentsDrawer, "[data-comment-cancel]", HTMLButtonElement).addEventListener(
+      "click",
+      () => {
+        this.activeCommentTargetId = null;
+        this.commentInput.value = "";
+        this.renderComments();
+      },
+    );
+    query(this.commentsDrawer, "[data-comment-form]", HTMLFormElement).addEventListener(
+      "submit",
+      (event) => {
+        event.preventDefault();
+        void this.submitComment();
+      },
+    );
+    this.renderer.svg.addEventListener("board-comment-open", (event) => {
+      const detail = (event as CustomEvent<{ itemId?: unknown }>).detail;
+      if (typeof detail?.itemId === "string") this.openCommentsForItem(detail.itemId);
+    });
+
     query(this.root, "[data-testid='participants-button']", HTMLButtonElement).addEventListener(
       "click",
       (event) => {
         this.toggleDrawer(this.participantDrawer, event.currentTarget as HTMLButtonElement);
         this.renderParticipants();
+        if (!this.participantDrawer.hidden) void this.loadParticipantRoles();
       },
     );
     this.accessButton.addEventListener("click", () => {
@@ -2641,7 +3035,7 @@ export class BoardApp {
       throw new Error("Image cards are disabled for this Space.");
     }
     if (!navigator.onLine || this.phase !== "ready") {
-      throw new Error("Reconnect before adding AI-assisted visuals.");
+      throw new Error("Reconnect before adding generated visuals.");
     }
     if (!this.canCommit()) throw new Error("This drawing is read only.");
     if (this.imageUploadInFlight) throw new Error("Another image is already uploading.");
@@ -2659,8 +3053,9 @@ export class BoardApp {
       }
       return assets;
     } catch (error) {
+      if (signal.aborted || isAbortError(error)) throw error;
       if (error instanceof ApiError || error instanceof ImagePreparationError) throw error;
-      throw new Error("The AI-assisted visual could not be prepared or stored.", {
+      throw new Error("The generated visual could not be prepared or stored.", {
         cause: error,
       });
     } finally {
@@ -2789,6 +3184,13 @@ export class BoardApp {
     editor.style.height = `${height}px`;
     editor.style.fontSize = `${Math.max(14, Math.min(36, item.style.fontSize * this.renderer.viewport.zoom))}px`;
     editor.style.color = item.style.textColor;
+    editor.style.fontFamily = textFontStack(item.style.fontFamily ?? "sans");
+    editor.style.fontWeight = resolveTextFontWeight(
+      item.style.fontWeight,
+      item.geometry.headerRow === true && row === 0 ? "700" : "500",
+    );
+    editor.style.fontStyle = item.style.fontStyle ?? "normal";
+    editor.style.textDecoration = item.style.textDecoration ?? "none";
     editor.style.background =
       item.geometry.headerRow === true && row === 0 ? item.style.headerFill : item.style.fill;
     document.body.append(editor);
@@ -2919,6 +3321,10 @@ export class BoardApp {
     editor.style.height = `${height}px`;
     editor.style.fontSize = `${Math.max(14, Math.min(32, item.style.fontSize * this.renderer.viewport.zoom))}px`;
     editor.style.color = item.style.textColor;
+    editor.style.fontFamily = textFontStack(item.style.fontFamily ?? "sans");
+    editor.style.fontWeight = resolveTextFontWeight(item.style.fontWeight, "700");
+    editor.style.fontStyle = item.style.fontStyle ?? "normal";
+    editor.style.textDecoration = item.style.textDecoration ?? "none";
     document.body.append(editor);
     this.zoneTitleEditor = editor;
 
@@ -3073,6 +3479,7 @@ export class BoardApp {
         commands.map((command) => command.commandId),
       );
       this.model.discardOptimistic();
+      for (const command of commands) this.finishWebMcpCommit(command.commandId, false);
       this.notify("Unsaved edits were discarded. The shared board is unchanged.", "info");
     } catch {
       this.notify(
@@ -3080,6 +3487,11 @@ export class BoardApp {
         "error",
       );
     }
+  }
+
+  private assignCreatedItemsToSections(operation: DurableOperation): DurableOperation {
+    if (!this.bootstrap.board.features.grouping) return operation;
+    return decorateCreatedItemsWithSections(operation, this.model.items.values());
   }
 
   private async commit(
@@ -3100,20 +3512,26 @@ export class BoardApp {
     const commandId = createId();
     let normalizedOperation: DurableOperation;
     try {
-      normalizedOperation = validateDurableOperation(operation) as DurableOperation;
+      normalizedOperation = validateDurableOperation(
+        this.assignCreatedItemsToSections(operation),
+      ) as DurableOperation;
     } catch {
       this.notify("That gesture could not be converted into a valid board edit.", "error");
       return false;
     }
-    if (
-      !operationAllowedForActor(
-        normalizedOperation,
-        this.bootstrap.actor.role,
-        this.bootstrap.actor.id,
-        this.model.authoritativeItems,
-      )
-    ) {
-      this.notify("You can edit only work that you created. Make a copy to adapt it.", "warning");
+    const denial = operationDenialForActor(
+      normalizedOperation,
+      this.bootstrap.actor.role,
+      this.bootstrap.actor.id,
+      this.model.authoritativeItems,
+    );
+    if (denial !== null) {
+      this.notify(
+        denial === "section-locked"
+          ? "This Section is locked. An owner must unlock it before its contents can change."
+          : "You can edit only work that you created. Make a copy to adapt it.",
+        "warning",
+      );
       return false;
     }
     const command: CommitFrame = {
@@ -3147,8 +3565,7 @@ export class BoardApp {
       let queued = false;
       void this.commit(operation, createId(), undefined, (commandId) => {
         queued = true;
-        const timer = window.setTimeout(() => this.finishWebMcpCommit(commandId, false), 30_000);
-        this.pendingWebMcpCommits.set(commandId, { timer, resolve });
+        this.pendingWebMcpCommits.track(commandId, resolve, (id) => this.withdrawCommand(id));
       }).then((accepted) => {
         if (!accepted && !queued) resolve(false);
       });
@@ -3156,11 +3573,19 @@ export class BoardApp {
   }
 
   private finishWebMcpCommit(commandId: string, accepted: boolean): void {
-    const pending = this.pendingWebMcpCommits.get(commandId);
-    if (!pending) return;
-    window.clearTimeout(pending.timer);
-    this.pendingWebMcpCommits.delete(commandId);
-    pending.resolve(accepted);
+    this.pendingWebMcpCommits.finish(commandId, accepted);
+  }
+
+  /**
+   * Drops a command that is still queued locally so it cannot be flushed
+   * later. Returns false when the model no longer holds it, which means the
+   * server already answered it.
+   */
+  private withdrawCommand(commandId: string): boolean {
+    if (!this.model.reject(commandId)) return false;
+    void this.outbox.remove(this.bootstrap.board.id, this.bootstrap.actor.id, commandId);
+    this.updateStatus();
+    return true;
   }
 
   private handleAction(action: ServerAction, replay: boolean): void {
@@ -3320,6 +3745,10 @@ export class BoardApp {
       this.tools.setTool("select");
     if (!this.isToolEnabled(this.tools.tool)) this.tools.setTool("select");
     this.updatePermissions();
+    this.renderParticipants();
+    if (this.bootstrap.actor.role === "owner" && !this.participantDrawer.hidden) {
+      void this.loadParticipantRoles();
+    }
     if (!this.settingsDrawer.hidden) this.renderSettingsPanel();
   }
 
@@ -3601,32 +4030,32 @@ export class BoardApp {
   }
 
   private readonly onGlobalKeyDown = (event: KeyboardEvent): void => {
-    if (event.key === "Escape" && !this.toolsMenu.hidden) {
-      event.preventDefault();
-      this.setToolsMenuOpen(false);
-      query(this.root, "[data-testid='tool-protractor']", HTMLButtonElement).focus();
-      return;
-    }
-    if (event.key === "Escape" && !this.shapeMenu.hidden) {
-      event.preventDefault();
-      this.setShapeMenuOpen(false);
-      query(this.root, "[data-testid='tool-rectangle']", HTMLButtonElement).focus();
-      return;
-    }
-    if (event.key === "Escape" && this.followedSpotlight) {
-      event.preventDefault();
-      this.stopFollowingSpotlight();
-      return;
-    }
-    if (isEditingTarget(event.target) || !(event.ctrlKey || event.metaKey)) return;
-    const key = event.key.toLowerCase();
-    if (key === "z") {
-      event.preventDefault();
-      if (event.shiftKey) void this.redo();
-      else void this.undo();
-    } else if (key === "y" && !event.metaKey) {
-      event.preventDefault();
-      void this.redo();
+    const shortcut = globalShortcutFor(event, {
+      editing: isEditingTarget(event.target),
+      toolsMenuOpen: !this.toolsMenu.hidden,
+      shapeMenuOpen: !this.shapeMenu.hidden,
+      followingSpotlight: this.followedSpotlight !== null,
+    });
+    if (shortcut === null) return;
+    event.preventDefault();
+    switch (shortcut) {
+      case "close-tools-menu":
+        this.setToolsMenuOpen(false);
+        query(this.root, "[data-testid='tool-protractor']", HTMLButtonElement).focus();
+        break;
+      case "close-shape-menu":
+        this.setShapeMenuOpen(false);
+        query(this.root, "[data-testid='tool-rectangle']", HTMLButtonElement).focus();
+        break;
+      case "stop-following-spotlight":
+        this.stopFollowingSpotlight();
+        break;
+      case "undo":
+        void this.undo();
+        break;
+      case "redo":
+        void this.redo();
+        break;
     }
   };
 
@@ -3651,6 +4080,7 @@ export class BoardApp {
           itemId: editedItem.id,
           expectedVersion: editedItem.version,
           geometry: structuredClone(editedItem.geometry),
+          item: structuredClone(editedItem),
         }
       : null;
     const textPoint: Point = editedItem ? [editedItem.geometry.x, editedItem.geometry.y] : point;
@@ -3713,6 +4143,10 @@ export class BoardApp {
       editor.style.padding = `${Math.max(10, Math.min(18, STICKY_PADDING * zoom))}px`;
       editor.style.fontSize = `${Math.max(14, Math.min(48, stickyStyle.fontSize * zoom))}px`;
       editor.style.color = stickyStyle.textColor;
+      editor.style.fontFamily = textFontStack(stickyStyle.fontFamily ?? "sans");
+      editor.style.fontWeight = resolveTextFontWeight(stickyStyle.fontWeight);
+      editor.style.fontStyle = stickyStyle.fontStyle ?? "normal";
+      editor.style.textDecoration = stickyStyle.textDecoration ?? "none";
       editor.style.background = stickyStyle.fill;
       editor.style.opacity = String(stickyStyle.opacity);
     } else {
@@ -3721,6 +4155,9 @@ export class BoardApp {
       editor.style.fontSize = `${Math.max(14, Math.min(48, (textItem?.style.fontSize ?? style.fontSize) * zoom))}px`;
       editor.style.color = textItem?.style.color ?? style.color;
       editor.style.fontFamily = textFontStack(textItem?.style.fontFamily ?? style.fontFamily);
+      editor.style.fontWeight = resolveTextFontWeight(textItem?.style.fontWeight);
+      editor.style.fontStyle = textItem?.style.fontStyle ?? "normal";
+      editor.style.textDecoration = textItem?.style.textDecoration ?? "none";
     }
     document.body.append(editor);
     this.textEditor = editor;
@@ -3759,8 +4196,6 @@ export class BoardApp {
         return;
       }
       preview();
-      if (this.textEditorTimer !== null) window.clearTimeout(this.textEditorTimer);
-      this.textEditorTimer = window.setTimeout(() => void this.closeTextEditor(true), 500);
     };
     editor.addEventListener("input", schedule);
     editor.addEventListener("blur", () => void this.closeTextEditor(true));
@@ -3796,8 +4231,6 @@ export class BoardApp {
       this.discardTextEditor(editor);
       return;
     }
-    if (this.textEditorTimer !== null) window.clearTimeout(this.textEditorTimer);
-    this.textEditorTimer = null;
     const value = mode === "sticky" ? clampStickyText(editor.value) : editor.value;
     if (mode === "text" && !value) {
       this.discardTextEditor(editor);
@@ -3807,7 +4240,12 @@ export class BoardApp {
     const point: Point = [Number(editor.dataset.boardX), Number(editor.dataset.boardY)];
     const draftItemId = editor.dataset.draftItemId ?? createId();
     const operation: DurableOperation = context
-      ? buildCapturedTextUpdate(context, value)
+      ? buildCapturedTextUpdate(
+          context,
+          value,
+          this.model.authoritativeItems.values(),
+          this.bootstrap.board.features.grouping,
+        )
       : mode === "sticky"
         ? buildStickyCreateOperation(draftItemId, point, this.style, value)
         : {
@@ -3883,8 +4321,6 @@ export class BoardApp {
     this.textEditContext = null;
     this.textEditorMode = null;
     this.textEditorPreview = null;
-    if (this.textEditorTimer !== null) window.clearTimeout(this.textEditorTimer);
-    this.textEditorTimer = null;
     editor.remove();
     this.renderer.clearLocalPreview();
     this.scheduleRejectedDraftRestore();
@@ -4027,6 +4463,16 @@ export class BoardApp {
       this.renderAccessPanel();
     } catch (error) {
       this.accessBody.replaceChildren(errorBlock("Access controls could not be loaded."));
+      this.apiError(error);
+    }
+  }
+
+  private async loadParticipantRoles(): Promise<void> {
+    if (this.bootstrap.actor.role !== "owner") return;
+    try {
+      this.accessMembers = await this.api.members(this.bootstrap.board.id);
+      if (!this.participantDrawer.hidden) this.renderParticipants();
+    } catch (error) {
       this.apiError(error);
     }
   }
@@ -4666,6 +5112,32 @@ export class BoardApp {
     }
   }
 
+  private async changeParticipantRole(member: Member, role: "viewer" | "editor"): Promise<void> {
+    if (member.role === role || this.participantRoleChangesPending.has(member.id)) return;
+    this.participantRoleChangesPending.add(member.id);
+    this.renderParticipants();
+    try {
+      const result = await this.api.updateMember(
+        this.bootstrap.board.id,
+        member.id,
+        role,
+        this.bootstrap.board.aclVersion,
+      );
+      this.adoptAclVersion(result);
+      this.accessMembers = this.accessMembers.map((value) =>
+        value.id === member.id ? { ...value, role } : value,
+      );
+      for (const [key, presence] of this.presences) {
+        if (presence.id === member.id) this.presences.set(key, { ...presence, role });
+      }
+    } catch (error) {
+      this.apiError(error);
+    } finally {
+      this.participantRoleChangesPending.delete(member.id);
+      if (!this.participantDrawer.hidden) this.renderParticipants();
+    }
+  }
+
   private async revokeMember(member: Member): Promise<void> {
     if (!confirm(`Remove ${member.displayName} from this board?`)) return;
     try {
@@ -4860,7 +5332,211 @@ export class BoardApp {
     else this.bootstrap.board.aclVersion += 1;
   }
 
+  private canComment(): boolean {
+    return canActorComment(
+      this.phase,
+      this.bootstrap.actor.role,
+      this.bootstrap.board.drawingPolicy,
+    );
+  }
+
+  private async reloadComments(notifyOnError = true): Promise<void> {
+    const load = this.comments.beginLoad();
+    this.commentsLoading = true;
+    this.renderComments();
+    try {
+      const comments = await this.api.comments(this.bootstrap.board.id);
+      if (this.comments.completeLoad(load, comments)) this.applyCommentChange();
+    } catch (error) {
+      if (notifyOnError) this.apiError(error);
+    } finally {
+      if (this.comments.isLatestLoad(load)) {
+        this.commentsLoading = false;
+        this.renderComments();
+      }
+    }
+  }
+
+  private reconcileCommentStates(): void {
+    if (this.comments.reconcile()) this.applyCommentChange();
+  }
+
+  private applyCommentChange(): void {
+    this.renderer.setComments(this.comments.comments);
+    this.renderComments();
+  }
+
+  private openCommentsForItem(itemId: string): void {
+    if (!this.model.getItem(itemId)) return;
+    this.activeCommentTargetId = itemId;
+    this.closeDrawers();
+    this.commentsDrawer.hidden = false;
+    this.commentsButton.setAttribute("aria-expanded", "true");
+    this.renderComments();
+    this.commentInput.focus();
+  }
+
+  private async submitComment(): Promise<void> {
+    const itemId = this.activeCommentTargetId;
+    const body = this.commentInput.value.trim();
+    if (!itemId || !this.model.getItem(itemId) || this.commentSubmitting || !this.canComment())
+      return;
+    if (body.length === 0) {
+      this.commentInput.focus();
+      return;
+    }
+    if ([...body].length > 2_000) {
+      this.notify("Comments can contain at most 2,000 characters.", "error");
+      return;
+    }
+    this.commentSubmitting = true;
+    this.renderComments();
+    try {
+      const comment = await this.api.createComment(this.bootstrap.board.id, itemId, body);
+      this.comments.upsert(comment);
+      this.commentInput.value = "";
+      this.applyCommentChange();
+      this.liveRegion.textContent = "Comment added.";
+    } catch (error) {
+      this.apiError(error);
+    } finally {
+      this.commentSubmitting = false;
+      this.renderComments();
+    }
+  }
+
+  private async resolveObjectComment(commentId: string): Promise<void> {
+    if (this.commentsResolving.has(commentId)) return;
+    this.commentsResolving.add(commentId);
+    this.renderComments();
+    try {
+      const comment = await this.api.resolveComment(this.bootstrap.board.id, commentId);
+      this.comments.upsert(comment);
+      this.applyCommentChange();
+      this.liveRegion.textContent = "Comment resolved.";
+    } catch (error) {
+      this.apiError(error);
+    } finally {
+      this.commentsResolving.delete(commentId);
+      this.renderComments();
+    }
+  }
+
+  private renderComments(): void {
+    const comments = this.comments.comments;
+    const openCount = comments.filter((comment) => comment.state === "open").length;
+    this.commentsCount.textContent = String(openCount);
+    this.commentsCount.hidden = openCount === 0;
+    this.commentsButton.setAttribute(
+      "aria-label",
+      openCount === 0 ? "Comments" : `Comments, ${openCount} open`,
+    );
+    // The card list is rebuilt when the drawer opens, so a hidden drawer only
+    // needs the badge.
+    if (this.commentsDrawer.hidden) return;
+    this.showHiddenCommentsInput.checked = this.showHiddenComments;
+
+    const target = this.activeCommentTargetId
+      ? this.model.getItem(this.activeCommentTargetId)
+      : undefined;
+    if (this.activeCommentTargetId && !target) this.activeCommentTargetId = null;
+    this.commentComposer.hidden = target === undefined || !this.canComment();
+    if (target) {
+      this.commentTargetLabel.textContent = `Comment on ${commentObjectLabel(target)}`;
+      this.commentInput.disabled = this.commentSubmitting;
+      query(this.commentComposer, "[data-comment-submit]", HTMLButtonElement).disabled =
+        this.commentSubmitting;
+    }
+
+    const visible = comments
+      .filter((comment) => objectCommentVisible(comment.state, this.showHiddenComments))
+      .sort((left, right) => {
+        const leftTarget = left.itemId === this.activeCommentTargetId ? 0 : 1;
+        const rightTarget = right.itemId === this.activeCommentTargetId ? 0 : 1;
+        if (leftTarget !== rightTarget) return leftTarget - rightTarget;
+        const rank = { open: 0, orphaned: 1, resolved: 2 } as const;
+        return rank[left.state] - rank[right.state] || right.createdAt - left.createdAt;
+      });
+    this.commentsList.replaceChildren();
+    if (visible.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "comments-empty";
+      empty.textContent = this.commentsLoading
+        ? "Loading comments…"
+        : this.showHiddenComments
+          ? "No comments yet."
+          : "No open comments. Select an object to start one.";
+      this.commentsList.append(empty);
+      return;
+    }
+
+    for (const comment of visible) {
+      const card = document.createElement("article");
+      card.className = "comment-card";
+      card.dataset.state = comment.state;
+      if (comment.itemId === this.activeCommentTargetId) card.dataset.activeTarget = "true";
+      const heading = document.createElement("div");
+      heading.className = "comment-card-heading";
+      const identity = document.createElement("span");
+      const author = document.createElement("strong");
+      author.textContent = comment.author.displayName;
+      const time = document.createElement("time");
+      time.dateTime = new Date(comment.createdAt).toISOString();
+      time.textContent = formatCommentTime(comment.createdAt);
+      identity.append(author, time);
+      const state = document.createElement("span");
+      state.className = "comment-state";
+      state.textContent = comment.state;
+      heading.append(identity, state);
+
+      const body = document.createElement("p");
+      body.className = "comment-body";
+      body.textContent = comment.body;
+      const actions = document.createElement("div");
+      actions.className = "comment-card-actions";
+      const item = this.model.getItem(comment.itemId);
+      if (item) {
+        const show = document.createElement("button");
+        show.type = "button";
+        show.textContent = `Show ${commentObjectLabel(item)}`;
+        show.addEventListener("click", () => {
+          this.tools.setTool("select");
+          this.tools.selectOnly([item.id]);
+          const bounds = this.model.getBounds(item.id);
+          if (bounds) this.renderer.viewport.fit(bounds, 180);
+        });
+        actions.append(show);
+      } else {
+        const orphan = document.createElement("span");
+        orphan.className = "comment-orphan-label";
+        orphan.textContent = "Deleted object";
+        actions.append(orphan);
+      }
+      if (
+        comment.state !== "resolved" &&
+        canResolveComment(comment, this.bootstrap.actor.id, this.bootstrap.actor.role)
+      ) {
+        const resolve = document.createElement("button");
+        resolve.type = "button";
+        resolve.className = "comment-resolve";
+        resolve.textContent = "Resolve";
+        resolve.disabled = this.commentsResolving.has(comment.id);
+        resolve.addEventListener("click", () => void this.resolveObjectComment(comment.id));
+        actions.append(resolve);
+      }
+      card.append(heading, body, actions);
+      this.commentsList.append(card);
+    }
+  }
+
   private renderParticipants(): void {
+    const active = document.activeElement;
+    if (active instanceof HTMLSelectElement && this.participantList.contains(active)) {
+      // Rebuilding the rows would close the role picker the owner is using.
+      this.participantRenderPending = true;
+      return;
+    }
+    this.participantRenderPending = false;
     this.participantList.replaceChildren();
     const entries = [...this.presences.values()];
     this.participantCount.textContent = String(Math.max(1, entries.length));
@@ -4874,16 +5550,44 @@ export class BoardApp {
       const name = document.createElement("strong");
       name.textContent = participant.displayName;
       const detail = document.createElement("small");
-      const role =
+      const member = this.accessMembers.find((value) => value.id === participant.id);
+      const participantRole =
         participant.id === this.bootstrap.actor.id
-          ? `${this.bootstrap.actor.role} · you`
-          : (participant.role ?? "participant");
+          ? this.bootstrap.actor.role
+          : (member?.role ?? participant.role ?? "participant");
+      const role =
+        participant.id === this.bootstrap.actor.id ? `${participantRole} · you` : participantRole;
       detail.textContent = participant.activeTool ? `${role} · ${participant.activeTool}` : role;
       identity.append(name, detail);
+      const actions = document.createElement("span");
+      actions.className = "participant-row-actions";
+      if (
+        this.bootstrap.actor.role === "owner" &&
+        participant.id !== this.bootstrap.actor.id &&
+        member !== undefined &&
+        (member.role === "viewer" || member.role === "editor")
+      ) {
+        const select = document.createElement("select");
+        select.setAttribute("aria-label", `Role for ${participant.displayName}`);
+        select.innerHTML =
+          '<option value="editor">Editor</option><option value="viewer">Viewer</option>';
+        select.value = member.role;
+        select.disabled = this.participantRoleChangesPending.has(member.id);
+        select.addEventListener("change", () => {
+          if (select.value === "viewer" || select.value === "editor") {
+            void this.changeParticipantRole(member, select.value);
+          }
+        });
+        select.addEventListener("blur", () => {
+          if (this.participantRenderPending) this.renderParticipants();
+        });
+        actions.append(select);
+      }
       const live = document.createElement("i");
       live.className = "live-dot";
       live.title = "Connected";
-      row.append(avatar, identity, live);
+      actions.append(live);
+      row.append(avatar, identity, actions);
       this.participantList.append(row);
     }
   }
@@ -4933,6 +5637,7 @@ export class BoardApp {
   }
 
   private canModifyItem(item: BoardItem): boolean {
+    if (lockedSectionIdForItem(item, this.model.items) !== null) return false;
     return (
       this.bootstrap.actor.role === "owner" ||
       (this.bootstrap.actor.role === "editor" && item.createdBy === this.bootstrap.actor.id)
@@ -4978,6 +5683,7 @@ export class BoardApp {
     this.updateHistoryControls();
     this.updateStatus();
     this.renderParticipants();
+    this.renderComments();
     query(this.root, "[data-canvas-hint]", HTMLElement).hidden = this.model.items.size > 0;
     document.title = brandedDocumentTitle(this.bootstrap.board.title);
   }
@@ -5053,6 +5759,7 @@ export class BoardApp {
       this.organisationTemplateDialog.close();
     }
     this.renderer.setVotingEnabled(this.bootstrap.board.features.voting);
+    this.renderer.setObjectTransformsEnabled(this.bootstrap.board.features.objectTransforms);
     if (this.activitiesButton.disabled || this.activitiesButton.hidden) {
       this.closeActivitiesMenu();
     }
@@ -5119,6 +5826,7 @@ export class BoardApp {
     if (!canEdit) void this.closeTableCellEditor(false);
     if (!canEdit) void this.closeZoneTitleEditor(true);
     this.updateSelectionActions(this.tools.selection);
+    this.renderComments();
     if (canEdit && !this.textEditor && !this.tableCellEditor) {
       this.scheduleRejectedDraftRestore();
     }
@@ -5301,6 +6009,9 @@ export class BoardApp {
     const allSelectedAuthoritative =
       savedAuthoritativeItems(selectedIds, this.model.items, this.model.authoritativeItems) !==
       null;
+    const allSelectedUnlocked =
+      selectedItems.length === selectedIds.length &&
+      selectedItems.every((item) => lockedSectionIdForItem(item, this.model.items) === null);
     const allSelectedOwned =
       selectedItems.length === selectedIds.length &&
       selectedItems.every((item) => this.canModifyItem(item));
@@ -5330,19 +6041,54 @@ export class BoardApp {
     this.arrangeButton.hidden = ids.size < 2;
     this.arrangeButton.disabled = enabledArrangeActions === 0;
     if (this.arrangeButton.hidden || this.arrangeButton.disabled) this.setArrangeMenuOpen(false);
-    const copyReady = canEdit && allSelectedAuthoritative && selectedIds.length <= maxBatchItems;
+    const copyReady =
+      canEdit &&
+      allSelectedAuthoritative &&
+      allSelectedUnlocked &&
+      selectedIds.length <= maxBatchItems;
     const mutationReady =
       canEdit && allSelectedAuthoritative && selectedIds.length <= maxBatchItems;
     const copy = query(this.selectionActions, "[data-selection-copy]", HTMLButtonElement);
     const remove = query(this.selectionActions, "[data-selection-delete]", HTMLButtonElement);
+    const comment = query(this.selectionActions, "[data-selection-comment]", HTMLButtonElement);
+    comment.disabled = !this.canComment() || selectedIds.length !== 1 || !allSelectedAuthoritative;
+    comment.title = allSelectedAuthoritative
+      ? ""
+      : "Wait for the selected object to finish saving.";
     copy.disabled = !copyReady;
     remove.disabled = !mutationReady || !allSelectedOwned;
+    const group = query(this.selectionActions, "[data-selection-group]", HTMLButtonElement);
+    const ungroup = query(this.selectionActions, "[data-selection-ungroup]", HTMLButtonElement);
+    const selectedGroupIds = new Set(
+      selectedItems.flatMap((item) => (item.groupId ? [item.groupId] : [])),
+    );
+    const selectedGroupId =
+      selectedGroupIds.size === 1 && selectedItems.every((item) => item.groupId)
+        ? [...selectedGroupIds][0]
+        : undefined;
+    const completeSingleGroup =
+      selectedGroupId !== undefined &&
+      [...this.model.items.values()].filter((item) => item.groupId === selectedGroupId).length ===
+        selectedItems.length;
+    const groupingEnabled = this.bootstrap.board.features.grouping;
+    group.hidden = !groupingEnabled || selectedIds.length < 2 || completeSingleGroup;
+    ungroup.hidden = !groupingEnabled || !completeSingleGroup;
+    group.disabled = !mutationReady || !allSelectedOwned;
+    ungroup.disabled = group.disabled;
     const pendingTitle = !allSelectedAuthoritative
       ? "Wait for the selected items to finish saving."
-      : !allSelectedOwned
-        ? "You can edit only work that you created."
+      : !allSelectedUnlocked
+        ? "This Section is locked. Unlock it before editing its contents."
+        : !allSelectedOwned
+          ? "You can edit only work that you created."
+          : "";
+    copy.title = !allSelectedAuthoritative
+      ? "Wait for the selected items to finish saving."
+      : !allSelectedUnlocked
+        ? "This Section is locked. Unlock it before copying its contents."
         : "";
-    copy.title = allSelectedAuthoritative ? "" : "Wait for the selected items to finish saving.";
+    group.title = pendingTitle;
+    ungroup.title = pendingTitle;
     remove.title = pendingTitle;
 
     const colourWrap = query(this.selectionActions, ".selection-colour-wrap", HTMLElement);
@@ -5391,17 +6137,31 @@ export class BoardApp {
       "[data-selection-font-controls]",
       HTMLElement,
     );
+    const textItems = selectedItems.filter(
+      (item): item is Extract<BoardItem, { kind: "text" | "sticky" | "table" | "zone" }> =>
+        item.kind === "text" ||
+        item.kind === "sticky" ||
+        item.kind === "table" ||
+        item.kind === "zone",
+    );
     const allText =
       selectedItems.length === selectedIds.length &&
       selectedItems.length > 0 &&
-      selectedItems.every((item) => item.kind === "text");
+      textItems.length === selectedItems.length;
     fontControls.hidden = !allText;
     const fontFamily = query(fontControls, "[data-selection-font-family]", HTMLSelectElement);
     const fontSize = query(fontControls, "[data-selection-font-size]", HTMLSelectElement);
+    const formatButtons = [
+      query(fontControls, "[data-selection-font-weight]", HTMLButtonElement),
+      query(fontControls, "[data-selection-font-style]", HTMLButtonElement),
+      query(fontControls, "[data-selection-text-decoration]", HTMLButtonElement),
+    ];
     fontFamily.disabled = !mutationReady || !allSelectedOwned || !allText;
     fontSize.disabled = fontFamily.disabled;
-    const textItems = selectedItems.filter((item) => item.kind === "text");
-    const selectedFontFamilies = new Set(textItems.map((item) => item.style.fontFamily));
+    formatButtons.forEach((button) => {
+      button.disabled = fontFamily.disabled;
+    });
+    const selectedFontFamilies = new Set(textItems.map((item) => item.style.fontFamily ?? "sans"));
     const selectedFontSizes = new Set(textItems.map((item) => item.style.fontSize));
     fontFamily.value = selectedFontFamilies.size === 1 ? ([...selectedFontFamilies][0] ?? "") : "";
     const selectedFontSize = selectedFontSizes.size === 1 ? [...selectedFontSizes][0] : undefined;
@@ -5417,6 +6177,23 @@ export class BoardApp {
       fontSize.append(option);
     }
     fontSize.value = selectedFontSize === undefined ? "" : String(selectedFontSize);
+    formatButtons[0]?.setAttribute(
+      "aria-pressed",
+      String(
+        textItems.length > 0 && textItems.every((item) => effectiveTextFontWeight(item) === "bold"),
+      ),
+    );
+    formatButtons[1]?.setAttribute(
+      "aria-pressed",
+      String(textItems.length > 0 && textItems.every((item) => item.style.fontStyle === "italic")),
+    );
+    formatButtons[2]?.setAttribute(
+      "aria-pressed",
+      String(
+        textItems.length > 0 &&
+          textItems.every((item) => item.style.textDecoration === "underline"),
+      ),
+    );
     query(this.selectionActions, "[data-selection-style-divider]", HTMLElement).hidden =
       colourWrap.hidden && fontControls.hidden;
     const alt = query(this.selectionActions, "[data-selection-alt]", HTMLButtonElement);
@@ -5427,6 +6204,23 @@ export class BoardApp {
     );
     const [selectedId] = ids;
     const selected = selectedId ? this.model.getItem(selectedId) : undefined;
+    const sectionLock = query(
+      this.selectionActions,
+      "[data-selection-section-lock]",
+      HTMLButtonElement,
+    );
+    const selectedSection = ids.size === 1 && selected?.kind === "zone" ? selected : undefined;
+    const sectionLocked = selectedSection?.geometry.locked === true;
+    sectionLock.hidden = this.bootstrap.actor.role !== "owner" || selectedSection === undefined;
+    sectionLock.disabled = !canEdit || !allSelectedAuthoritative || selectedSection === undefined;
+    sectionLock.textContent = sectionLocked ? "Unlock Section" : "Lock Section";
+    sectionLock.setAttribute("aria-label", sectionLocked ? "Unlock Section" : "Lock Section");
+    sectionLock.setAttribute("aria-pressed", String(sectionLocked));
+    sectionLock.title = sectionLock.disabled
+      ? "Wait for the Section to finish saving."
+      : sectionLocked
+        ? "Allow changes within this Section"
+        : "Prevent everyone from changing this Section or its contents";
     alt.hidden = ids.size !== 1 || selected?.kind !== "image";
     alt.disabled =
       !canEdit || selected?.version === 0 || !selected || !this.canModifyItem(selected);
@@ -5456,7 +6250,6 @@ export class BoardApp {
     clearVotes.title = voteSummary
       ? voteSummary.options.map((option) => `${option.label}: ${option.count}`).join(" · ")
       : "";
-    this.webMcp?.refresh();
     this.updateOrganisationTemplateSaveButton();
   }
 
@@ -5664,9 +6457,11 @@ export class BoardApp {
   }
 
   private closeDrawers(): void {
+    this.commentsDrawer.hidden = true;
     this.participantDrawer.hidden = true;
     this.accessDrawer.hidden = true;
     this.settingsDrawer.hidden = true;
+    this.commentsButton.setAttribute("aria-expanded", "false");
     query(this.root, "[data-testid='participants-button']", HTMLButtonElement).setAttribute(
       "aria-expanded",
       "false",
@@ -6451,6 +7246,36 @@ function parseManagedInvitation(value: unknown): ManagedInvitation[] {
   ];
 }
 
+export function objectCommentVisible(
+  state: BoardComment["state"],
+  showHiddenComments: boolean,
+): boolean {
+  return showHiddenComments || state === "open";
+}
+
+function commentObjectLabel(item: BoardItem): string {
+  switch (item.kind) {
+    case "sticky":
+      return "sticky note";
+    case "text":
+      return "text object";
+    case "image":
+      return "image";
+    case "table":
+      return "table";
+    case "zone":
+      return "section";
+    case "pencil":
+      return "drawing";
+    default:
+      return `${item.kind} object`;
+  }
+}
+
+function formatCommentTime(value: number): string {
+  return formatDateTime(value);
+}
+
 function snapshotKindLabel(kind: RecoverySnapshot["kind"]): string {
   if (kind === "pre_clear") return "Before board clear";
   if (kind === "automatic") return "Automatic recovery point";
@@ -6501,12 +7326,191 @@ function dataTransferHasImage(transfer: DataTransfer | null): boolean {
   );
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+export type GlobalShortcut =
+  | "close-tools-menu"
+  | "close-shape-menu"
+  | "stop-following-spotlight"
+  | "undo"
+  | "redo";
+
+/**
+ * Maps a window keydown to a board-wide shortcut. Escape closes transient UI
+ * even while a field is focused; every other shortcut stays out of inputs.
+ */
+export function globalShortcutFor(
+  event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "shiftKey">,
+  state: {
+    editing: boolean;
+    toolsMenuOpen: boolean;
+    shapeMenuOpen: boolean;
+    followingSpotlight: boolean;
+  },
+): GlobalShortcut | null {
+  if (event.key === "Escape") {
+    if (state.toolsMenuOpen) return "close-tools-menu";
+    if (state.shapeMenuOpen) return "close-shape-menu";
+    if (state.followingSpotlight) return "stop-following-spotlight";
+    return null;
+  }
+  if (state.editing || !(event.ctrlKey || event.metaKey)) return null;
+  const key = event.key.toLowerCase();
+  if (key === "z") return event.shiftKey ? "redo" : "undo";
+  if (key === "y" && !event.metaKey) return "redo";
+  return null;
+}
+
+/** Mirrors the server gate: commenting needs a live Space and drawing rights. */
+/** Mirrors the server rule: only the comment's author or a board owner may resolve it. */
+export function canResolveComment(
+  comment: Pick<BoardComment, "author">,
+  actorId: string,
+  role: Role,
+): boolean {
+  return role === "owner" || comment.author.id === actorId;
+}
+
+export function canActorComment(
+  phase: ConnectionPhase,
+  role: Role,
+  drawingPolicy: DrawingPolicy,
+): boolean {
+  return (
+    phase !== "archived" &&
+    phase !== "reload_required" &&
+    phase !== "stopped" &&
+    canRoleComment(role, drawingPolicy)
+  );
+}
+
+/**
+ * Derives the states shown for server comment snapshots: an open comment whose
+ * object is missing locally shows as orphaned, and flips back to open when the
+ * object returns (for example after a rejected optimistic delete).
+ */
+export function deriveCommentStates(
+  comments: Iterable<BoardComment>,
+  hasItem: (itemId: string) => boolean,
+): BoardComment[] {
+  const derived: BoardComment[] = [];
+  for (const comment of comments) {
+    derived.push(
+      comment.state === "open" && !hasItem(comment.itemId)
+        ? { ...comment, state: "orphaned" }
+        : comment,
+    );
+  }
+  return derived;
+}
+
+/**
+ * Holds the server's comment snapshots and the item-aware copies the UI shows.
+ * Every local write supersedes in-flight loads so an older response cannot
+ * overwrite fresher state.
+ */
+export class CommentStore {
+  private version = 0;
+  private latestLoad = 0;
+  private readonly server = new Map<string, BoardComment>();
+  private displayed: readonly BoardComment[] = [];
+
+  constructor(private readonly hasItem: (itemId: string) => boolean) {}
+
+  get comments(): readonly BoardComment[] {
+    return this.displayed;
+  }
+
+  beginLoad(): number {
+    this.version += 1;
+    this.latestLoad = this.version;
+    return this.version;
+  }
+
+  /** Whether no newer load has started since this token was issued. */
+  isLatestLoad(token: number): boolean {
+    return token === this.latestLoad;
+  }
+
+  /** Adopts a loaded snapshot unless it was superseded. Returns whether shown states changed. */
+  completeLoad(token: number, comments: readonly BoardComment[]): boolean {
+    if (token !== this.version) return false;
+    this.server.clear();
+    for (const comment of comments) this.server.set(comment.id, comment);
+    return this.reconcile();
+  }
+
+  /** Stores a comment the server just returned for a local write. */
+  upsert(comment: BoardComment): void {
+    this.version += 1;
+    this.server.set(comment.id, comment);
+    this.reconcile();
+  }
+
+  /** Re-derives shown states from item presence. Returns whether anything changed. */
+  reconcile(): boolean {
+    const next = deriveCommentStates(this.server.values(), this.hasItem);
+    const changed =
+      next.length !== this.displayed.length ||
+      next.some((comment, index) => {
+        const previous = this.displayed[index];
+        return (
+          previous === undefined ||
+          previous.id !== comment.id ||
+          previous.state !== comment.state ||
+          previous.updatedAt !== comment.updatedAt
+        );
+      });
+    if (changed) this.displayed = next;
+    return changed;
+  }
+}
+
+/**
+ * Tracks tool-initiated commits until the server answers them. A commit that
+ * receives no answer in time is withdrawn so the reported failure is truthful;
+ * one that can no longer be withdrawn was already acknowledged.
+ */
+export class PendingCommitTracker {
+  private readonly pending = new Map<
+    string,
+    { timer: ReturnType<typeof setTimeout>; resolve: (accepted: boolean) => void }
+  >();
+
+  constructor(private readonly timeoutMs = 30_000) {}
+
+  track(
+    commandId: string,
+    resolve: (accepted: boolean) => void,
+    withdraw: (commandId: string) => boolean,
+  ): void {
+    const timer = setTimeout(() => {
+      if (!this.pending.has(commandId)) return;
+      this.finish(commandId, !withdraw(commandId));
+    }, this.timeoutMs);
+    this.pending.set(commandId, { timer, resolve });
+  }
+
+  finish(commandId: string, accepted: boolean): void {
+    const entry = this.pending.get(commandId);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    this.pending.delete(commandId);
+    entry.resolve(accepted);
+  }
+
+  finishAll(accepted: boolean): void {
+    for (const commandId of [...this.pending.keys()]) this.finish(commandId, accepted);
+  }
+}
+
 function isEditingTarget(target: EventTarget | null): boolean {
   return (
-    target instanceof HTMLInputElement ||
-    target instanceof HTMLTextAreaElement ||
-    target instanceof HTMLSelectElement ||
-    (target instanceof HTMLElement && target.isContentEditable)
+    target instanceof Element &&
+    target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])") !==
+      null
   );
 }
 

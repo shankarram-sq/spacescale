@@ -2,9 +2,9 @@
 
 ## Setup
 
-1. Open SpaceScale in the latest ChatGPT desktop built-in browser with Site tools enabled.
+1. Open SpaceScale in a Codex or compatible browser environment with WebMCP enabled.
 2. Use GPT-5.6 Sol or GPT-5.6 Terra. Site tools are not currently available in Enterprise or Edu workspaces.
-3. Sign in as the Space owner. For a convincing live vote, open the same board as two students through separate invitation/browser sessions.
+3. Open the board as any participant. Use a participant with edit access for write-tool demos, and open two more invitation/browser sessions for a convincing live vote.
 4. From **Templates**, add **Collective inquiry demo**. Wait until the seeded objects finish saving.
 
 The template contains the challenge “How might our school reduce cafeteria waste?”, eight contrasting contributions, and a live three-option vote table.
@@ -17,17 +17,17 @@ Show that several students are editing one canvas. Say:
 
 > Most classroom AI creates 30 private conversations for 30 students. SpaceScale gives the class one shared, visible conversation with an AI thinking partner.
 
-Select the eight sticky notes. The purple **Ask AI** action and the top-bar **AI partner · WebMCP** status make the integration visible.
+Select the eight sticky notes, then ask Codex to inspect the board's available WebMCP tools. SpaceScale needs no dedicated AI button or status chrome.
 
 ### 0:30–1:20 — first collaborative loop
 
 Ask the agent:
 
-> Use SpaceScale’s site tools to read the selected class ideas. Find three meaningful themes, two surprising bridges across the class, one productive tension, and a next question. Then stage a collective inquiry map for teacher review.
+> Use SpaceScale’s site tools to read the selected class ideas. Find three meaningful themes, two surprising bridges across the class, one productive tension, and a next question. Then stage a collective inquiry map for participant review.
 
 Show both human-control moments:
 
-1. SpaceScale previews the exact selected text; the result includes board-visible creator attribution.
+1. The WebMCP host shows the selected-ideas tool call; the result includes board-visible creator attribution.
 2. SpaceScale previews the proposed themes, bridges, tension, and operation count before changing the canvas.
 
 Approve the map. Point out that it appears as shared canvas objects, not private chat text, and is one undoable realtime update.
@@ -53,7 +53,7 @@ Show the aggregate bars in the decision preview. Approve it. Point out the four 
 
 ### 2:45–3:00 — close
 
-Undo the decision once to prove teacher control, then redo it if useful. End with:
+Undo the decision once to prove participant control, then redo it if useful. End with:
 
 > The AI has a seat at the table, not the teacher’s chair.
 
@@ -69,7 +69,7 @@ For the second loop:
 
 ## Judge exploration: the broader education toolkit
 
-The core three-minute story uses the two previewed loops. If a judge asks what else the WebMCP integration enables, call `list_class_collaboration_modes`, let ChatGPT follow the returned entry/role/connection contract, keep the same teacher-approved selection token, and try one prompt from each family:
+The core three-minute story uses the two previewed loops. If a judge asks what else the WebMCP integration enables, call `list_class_collaboration_modes`, let Codex follow the returned entry/role/connection contract, keep the same browser-selection token, and try one prompt from each family:
 
 - **Expand thinking:** “Use Gap Finder to add only two missing perspectives as testable questions.”
 - **Understand ideas:** “Offer exactly two alternative clusterings and ask what each organization reveals or hides.”
@@ -78,7 +78,7 @@ The core three-minute story uses the two previewed loops. If a judge asks what e
 - **Turn ideas into action:** “Convert one selected hypothesis into a prediction, evidence need and small reversible test.”
 - **Make the thinking memorable:** “Create one classroom-safe meme from two selected ideas. Make the joke reveal a connection, add alt text, and ask what the meme helps us notice or oversimplifies.”
 
-These calls use `add_thinking_expansion`, `add_idea_sensemaking`, `add_collective_reasoning`, `add_group_decision_scaffold`, `add_learning_action_plan`, and `add_content_visuals`. They add no new feature-specific interface: ChatGPT supplies the reasoning and visual concept, SpaceScale validates the structure and source aliases, and the browser's WebMCP write permission keeps the teacher in control. Meme cards render locally; generated raster images are sanitized into the existing private board asset path. Cross-Group Jigsaw is intentionally deferred to the separately tested section-context integration.
+These calls use `add_thinking_expansion`, `add_idea_sensemaking`, `add_collective_reasoning`, `add_group_decision_scaffold`, `add_learning_action_plan`, and `add_content_visuals`. They add no new feature-specific interface: Codex supplies the reasoning and visual concept, SpaceScale validates the structure and source aliases, and normal board edit permission governs writes. Meme cards render locally; generated raster images are sanitized into the existing private board asset path. Cross-Group Jigsaw is intentionally deferred to the separately tested section-context integration.
 
 ### Optional handwriting moment
 
@@ -86,15 +86,15 @@ Draw or paste synthetic handwritten strokes on an otherwise quiet part of the bo
 
 > Inspect the selected board visual. Carefully transcribe what is legible, mark anything uncertain, and suggest two connections plus one question the class should discuss together.
 
-ChatGPT calls `inspect_selected_board_visual`. SpaceScale first shows item kinds and counts, then—only after approval—opens a selected-only visual review with an opaque backdrop. Point out that the SVG contains ephemeral aliases instead of board IDs, unselected notes are absent, private image pixels are placeholders, and closing the review leaves the shared canvas unchanged.
+Codex calls `inspect_selected_board_visual`. SpaceScale directly opens a selected-only visual review with an opaque backdrop. Point out that the SVG contains ephemeral aliases instead of board IDs, unselected notes are absent, private image pixels are placeholders, and closing the review leaves the shared canvas unchanged.
 
 ## Demo checks
 
-- Site tools menu lists all eleven tools; `list_class_collaboration_modes` reports 27 live modes, the separate bounded visual tool, an enforceable input contract for every mode, the reserved section boundary, and no student data.
+- Site tools menu lists all twelve tools; `list_class_collaboration_modes` reports 27 live modes, the separate bounded visual tool, an enforceable input contract for every mode, the reserved section boundary, and no unselected board data.
 - Selection results include selected text, action type, and the creator's board-visible name and stable participant ID.
 - Thinking expansion rejects more than three additions; every critique card ends in a question.
 - Decision scaffolds leave weights, ratings, votes, response counts, and final choice blank.
-- Every generated card has source connectors and the AI-assistance sparkle on its author badge.
+- Every generated card has source connectors and the responsible participant's ordinary author badge; no AI-specific label is added to the board.
 - A visual call adds only one to three private images, each with alt text, a source-linked caption, and a discussion question; external URLs and student likenesses are rejected by contract.
 - Cancelling either proposal leaves the board unchanged.
 - Approval appears in a second browser session.

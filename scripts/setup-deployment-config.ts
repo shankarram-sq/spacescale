@@ -1,29 +1,31 @@
 import {
   deploymentConfigurationFromEnvironment,
-  parseDeploymentEnvironment,
+  dryRunDeploymentValues,
+  parseEnvironmentArguments,
   writeGeneratedWranglerConfig,
 } from "./deployment-config.ts";
 import { loadLocalEnv } from "./env.ts";
 import { ensureLocalDevelopmentSecrets } from "./local-development-secrets.ts";
 
-function requestedEnvironment(args: string[]): string | undefined {
-  const index = args.indexOf("--env");
-  if (index < 0 || args.length !== 2) return undefined;
-  return args[index + 1];
-}
-
 try {
-  const environment = parseDeploymentEnvironment(requestedEnvironment(process.argv.slice(2)));
+  const { environment, flags } = parseEnvironmentArguments(process.argv.slice(2), ["--dry-run"]);
+  const dryRun = flags["--dry-run"];
   const localSecrets = environment === "development" ? ensureLocalDevelopmentSecrets() : undefined;
   loadLocalEnv(`.env.${environment}`);
   loadLocalEnv();
-  const configuration = deploymentConfigurationFromEnvironment(environment, process.env);
+  // `--dry-run` only verifies that the build works: unconfigured deployment
+  // details fall back to non-deployable values instead of failing.
+  const source = dryRun
+    ? dryRunDeploymentValues(environment, process.env)
+    : { values: process.env, placeholders: [] };
+  const configuration = deploymentConfigurationFromEnvironment(environment, source.values);
   const configPath = writeGeneratedWranglerConfig(configuration);
   process.stdout.write(
     `${JSON.stringify({
       ok: true,
       environment,
       configPath,
+      ...(dryRun ? { dryRun: true, placeholders: source.placeholders } : {}),
       ...(localSecrets
         ? {
             localSecrets: {

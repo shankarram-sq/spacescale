@@ -42,7 +42,7 @@ describe("education partner WebMCP contract", () => {
     let selected: readonly string[] = [];
     const storeVisualImages = vi.fn(storedVisualAssets);
     const partner = new EducationPartnerWebMcp({
-      getRole: () => "owner",
+      canWrite: () => true,
       getSnapshot: (token) =>
         token === "selected-ideas"
           ? {
@@ -139,7 +139,7 @@ describe("education partner WebMCP contract", () => {
     )) as Record<string, unknown>;
 
     expect(result).toMatchObject({
-      status: "teacher_requested_and_added",
+      status: "participant_requested_and_added",
       mode: "bridge_builder",
       additionCount: 2,
       sourceLinkCount: 4,
@@ -180,7 +180,7 @@ describe("education partner WebMCP contract", () => {
     )) as Record<string, unknown>;
 
     expect(visualResult).toMatchObject({
-      status: "teacher_requested_and_added",
+      status: "participant_requested_and_added",
       visualCount: 1,
       formats: ["meme_card"],
       sourceLinkCount: 2,
@@ -250,7 +250,7 @@ describe("education partner WebMCP contract", () => {
     });
     const committed: DurableOperation[] = [];
     const partner = new EducationPartnerWebMcp({
-      getRole: () => "owner",
+      canWrite: () => true,
       getSnapshot: (token) =>
         token === "selected-ideas"
           ? {
@@ -413,7 +413,7 @@ describe("education partner WebMCP contract", () => {
         { signal: new AbortController().signal },
       )) as Record<string, unknown>;
       expect(result).toMatchObject({
-        status: "teacher_requested_and_added",
+        status: "participant_requested_and_added",
         mode,
         additionCount: cardCount,
         aiAttributed: true,
@@ -450,7 +450,7 @@ describe("education partner WebMCP contract", () => {
         { signal: new AbortController().signal },
       )) as Record<string, unknown>;
       expect(result).toMatchObject({
-        status: "teacher_requested_and_added",
+        status: "participant_requested_and_added",
         mode,
         aiAttributed: true,
         consensusInferred: false,
@@ -493,6 +493,85 @@ describe("education partner WebMCP contract", () => {
 
     partner.destroy();
     expect(tools.size).toBe(0);
+  });
+
+  it("rejects duplicate trade-off criteria even when they differ only by whitespace", async () => {
+    const tools = new Map<string, WebMcpToolDefinition>();
+    vi.stubGlobal("document", {
+      modelContext: {
+        registerTool(tool: WebMcpToolDefinition) {
+          tools.set(tool.name, tool);
+        },
+      },
+    });
+    const committed: DurableOperation[] = [];
+    const partner = new EducationPartnerWebMcp({
+      canWrite: () => true,
+      getSnapshot: (token) =>
+        token === "selected-ideas"
+          ? {
+              token,
+              capturedAt: "2026-09-01T00:00:00.000Z",
+              sources: [
+                { alias: "idea_1", itemId: "source-one", version: 3, kind: "sticky", text: "A" },
+                { alias: "idea_2", itemId: "source-two", version: 5, kind: "sticky", text: "B" },
+              ],
+            }
+          : undefined,
+      getItemVersion: (itemId) => (itemId === "source-one" ? 3 : 5),
+      getItemBounds: () => ({ minX: 0, minY: 0, maxX: 180, maxY: 140 }),
+      getPlacementBounds: () => undefined,
+      imagesEnabled: () => true,
+      storeVisualImages: storedVisualAssets,
+      commit: async (operation) => {
+        committed.push(operation);
+        return true;
+      },
+      selectItems: vi.fn(),
+      notify: vi.fn(),
+    });
+
+    await vi.waitFor(() => expect(tools.size).toBe(7));
+    const decisionTool = tools.get("add_group_decision_scaffold");
+    if (!decisionTool) throw new Error("Decision tool did not register.");
+    const scaffold = (criteria: string[]) => ({
+      selectionToken: "selected-ideas",
+      mode: "tradeoff_visualizer",
+      title: "Which option should the class test?",
+      entries: [
+        {
+          id: "entry_one",
+          heading: "Reusable containers",
+          body: "A return station at one lunch line.",
+          sourceAliases: ["idea_1"],
+          question: "What evidence could reopen this option?",
+        },
+        {
+          id: "entry_two",
+          heading: "Smaller portions",
+          body: "Portion choice at the counter.",
+          sourceAliases: ["idea_2"],
+          question: "What evidence could reopen this option?",
+        },
+      ],
+      criteria,
+    });
+
+    await expect(
+      decisionTool.execute(scaffold(["Access", " Access "]), {
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow("criteria must be unique.");
+    expect(committed).toHaveLength(0);
+
+    await expect(
+      decisionTool.execute(scaffold(["Access", "Impact"]), {
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toMatchObject({ status: "participant_requested_and_added" });
+    expect(committed).toHaveLength(1);
+
+    partner.destroy();
   });
 
   it("enables Cross-Group Jigsaw only with authoritative section context", async () => {
@@ -561,7 +640,7 @@ describe("education partner WebMCP contract", () => {
     };
     const committed: DurableOperation[] = [];
     const partner = new EducationPartnerWebMcp({
-      getRole: () => "owner",
+      canWrite: () => true,
       getSnapshot: () => undefined,
       sectionContext: {
         readToolName: "read_selected_class_sections",
@@ -646,7 +725,7 @@ describe("education partner WebMCP contract", () => {
       { signal: new AbortController().signal },
     )) as Record<string, unknown>;
     expect(result).toMatchObject({
-      status: "teacher_requested_and_added",
+      status: "participant_requested_and_added",
       mode: "cross_group_jigsaw",
       additionCount: 3,
       sourceLinkCount: 6,
@@ -673,6 +752,50 @@ describe("education partner WebMCP contract", () => {
       ),
     ).rejects.toThrow("at least two authoritative groups");
     expect(committed).toHaveLength(1);
+
+    partner.destroy();
+    expect(tools.size).toBe(0);
+  });
+
+  it("registers tools for every board browser while preserving write permissions", async () => {
+    const tools = new Map<string, WebMcpToolDefinition>();
+    vi.stubGlobal("document", {
+      modelContext: {
+        registerTool(tool: WebMcpToolDefinition, options?: WebMcpRegisterToolOptions) {
+          tools.set(tool.name, tool);
+          options?.signal?.addEventListener("abort", () => tools.delete(tool.name), {
+            once: true,
+          });
+        },
+      },
+    });
+    const commit = vi.fn(async () => true);
+    const partner = new EducationPartnerWebMcp({
+      canWrite: () => false,
+      getSnapshot: () => undefined,
+      getItemVersion: () => undefined,
+      getItemBounds: () => undefined,
+      getPlacementBounds: () => undefined,
+      imagesEnabled: () => true,
+      storeVisualImages: storedVisualAssets,
+      commit,
+      selectItems: vi.fn(),
+      notify: vi.fn(),
+    });
+
+    await vi.waitFor(() => expect(tools.size).toBe(7));
+    const capabilityTool = tools.get("list_class_collaboration_modes");
+    if (!capabilityTool) throw new Error("Capability tool did not register.");
+    await expect(
+      capabilityTool.execute({}, { signal: new AbortController().signal }),
+    ).resolves.toMatchObject({ availableModeCount: 27 });
+
+    const writeTool = tools.get("add_thinking_expansion");
+    if (!writeTool) throw new Error("Write tool did not register.");
+    await expect(writeTool.execute({}, { signal: new AbortController().signal })).rejects.toThrow(
+      "needs board edit access",
+    );
+    expect(commit).not.toHaveBeenCalled();
 
     partner.destroy();
     expect(tools.size).toBe(0);

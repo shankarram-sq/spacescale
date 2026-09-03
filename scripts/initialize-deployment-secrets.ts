@@ -1,22 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, writeFileSync } from "node:fs";
-import { parseDeploymentEnvironment } from "./deployment-config.ts";
+import { isConfiguredValue, parseEnvironmentArguments } from "./deployment-config.ts";
 import { loadLocalEnv } from "./env.ts";
 import { ensureLocalDevelopmentSecrets } from "./local-development-secrets.ts";
 
-function requestedEnvironment(args: string[]): string | undefined {
-  const index = args.indexOf("--env");
-  if (index < 0 || args.length !== 2) return undefined;
-  return args[index + 1];
-}
-
-function configured(value: string | undefined): boolean {
-  const normalized = value?.trim() ?? "";
-  return normalized.length > 0 && !normalized.startsWith("replace-with-");
-}
-
 try {
-  const environment = parseDeploymentEnvironment(requestedEnvironment(process.argv.slice(2)));
+  const { environment } = parseEnvironmentArguments(process.argv.slice(2));
   if (environment === "development") {
     const result = ensureLocalDevelopmentSecrets();
     process.stdout.write(`${JSON.stringify({ ok: true, environment, ...result })}\n`);
@@ -24,8 +13,8 @@ try {
     const path = `.env.${environment}`;
     loadLocalEnv(path);
     loadLocalEnv();
-    const needsSessionKey = !configured(process.env.SESSION_SIGNING_KEY_CURRENT);
-    const needsOrganisationKeys = !configured(process.env.ORGANISATION_SIGNING_KEYS);
+    const needsSessionKey = !isConfiguredValue(process.env.SESSION_SIGNING_KEY_CURRENT);
+    const needsOrganisationKeys = !isConfiguredValue(process.env.ORGANISATION_SIGNING_KEYS);
 
     if (!needsSessionKey && !needsOrganisationKeys) {
       process.stdout.write(

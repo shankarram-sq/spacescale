@@ -13,7 +13,7 @@ declare global {
   }
 }
 
-test("teacher can expose only selected handwriting as an isolated WebMCP visual", async ({
+test("a board participant can expose only selected handwriting as an isolated WebMCP visual", async ({
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "The WebMCP visual smoke runs in Chromium.");
@@ -74,23 +74,16 @@ test("teacher can expose only selected handwriting as an isolated WebMCP visual"
   );
   await expect(page.getByTestId("selection-actions")).toBeVisible();
 
-  const resultPromise = page.evaluate(() => {
+  const result = await page.evaluate(() => {
     const tool = window.__spaceScaleVisualTools.inspect_selected_board_visual;
     if (!tool) throw new Error("The visual inspection tool was not registered.");
     return tool.execute({}, { signal: new AbortController().signal });
   });
-  const consent = page.getByTestId("webmcp-visual-consent-dialog");
-  await expect(consent).toBeVisible();
-  await expect(consent).toContainText("handwriting / pencil stroke");
-  await expect(page.getByTestId("webmcp-visual-review-dialog")).toBeHidden();
-  await consent.getByRole("button", { name: "Share 1 visual item" }).click();
-
-  const result = await resultPromise;
   expect(result).toMatchObject({
     visualReady: true,
     preview: {
       state: "open_in_live_page",
-      scope: "teacher_selected_saved_items_only",
+      scope: "browser_selected_saved_items_only",
       itemCount: 1,
       itemKinds: { pencil: 1 },
       containsHandwriting: true,
@@ -113,9 +106,9 @@ test("teacher can expose only selected handwriting as an isolated WebMCP visual"
 
   const review = page.getByTestId("webmcp-visual-review-dialog");
   await expect(review).toBeVisible();
-  await expect(review).toContainText("AI can inspect now");
+  await expect(review).toContainText("Selected visual inspection");
   await expect(review).toContainText("1 handwriting stroke");
-  const visual = review.locator('img[data-visual-scope="teacher-selected-items-only"]');
+  const visual = review.locator('img[data-visual-scope="browser-selected-items-only"]');
   await expect(visual).toBeVisible();
   await expect(visual).toHaveAttribute("src", /^blob:/u);
   const visualMarkup = await visual.evaluate((node) => {

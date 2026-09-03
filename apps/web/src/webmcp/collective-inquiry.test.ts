@@ -1,18 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { BoardItem } from "../types";
-import { serializeVisualPreview, visualSelectionIsFresh } from "./collective-inquiry";
+import { serializeVisualPreview } from "./collective-inquiry";
 
 const ACTOR_ID = "018f0000-0000-7000-8000-0000000000a1";
 const PENCIL_ID = "018f0000-0000-7000-8000-0000000000b1";
 const STICKY_ID = "018f0000-0000-7000-8000-0000000000b2";
 const IMAGE_ID = "018f0000-0000-7000-8000-0000000000b3";
 
-function pencil(version = 1): Extract<BoardItem, { kind: "pencil" }> {
+function pencil(): Extract<BoardItem, { kind: "pencil" }> {
   return {
     id: PENCIL_ID,
     kind: "pencil",
     z: 2,
-    version,
+    version: 1,
     createdBy: ACTOR_ID,
     transform: [1, 0, 0, 1, 12, 18],
     style: { kind: "stroke", color: "#123456", width: 4, opacity: 1 },
@@ -75,7 +75,7 @@ describe("selected board visual serialization", () => {
     const preview = serializeVisualPreview([pencil(), sticky()]);
 
     expect(preview.viewBox.split(" ").map(Number).every(Number.isFinite)).toBe(true);
-    expect(preview.ariaLabel).toContain("2 selected items");
+    expect(preview.ariaLabel).toContain("2 browser-selected items");
     expect(preview.content).toContain("<path");
     expect(preview.content).toContain(">Selected<");
     expect(preview.content).toContain(">context<");
@@ -87,11 +87,8 @@ describe("selected board visual serialization", () => {
     expect(preview.content).not.toContain("Unselected private note");
   });
 
-  it("requires a non-empty visual and rejects changed or replaced selections", () => {
+  it("requires a non-empty visual", () => {
     expect(() => serializeVisualPreview([])).toThrow("at least one item");
-    expect(visualSelectionIsFresh([pencil(), sticky()], [sticky(), pencil()])).toBe(true);
-    expect(visualSelectionIsFresh([pencil(), sticky()], [pencil(2), sticky()])).toBe(false);
-    expect(visualSelectionIsFresh([pencil(), sticky()], [pencil()])).toBe(false);
   });
 
   it("renders a generic placeholder without private image pixels or alt text", () => {

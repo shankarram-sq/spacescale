@@ -5,16 +5,18 @@ import {
   type CollectiveInquiryBatch,
   CollectiveInquiryError,
   type CollectiveInquiryProposal,
+  type InquirySource,
 } from "../activities/collective-inquiry";
 import type { Bounds } from "../board/model";
-import type { DurableOperation, Role } from "../types";
+import type { DurableOperation } from "../types";
 import type { CollectiveInquirySnapshot } from "./collective-inquiry";
+import { awaitDialogDecision, isRecord, requiredText } from "./shared";
 
 const STAGE_INQUIRY_TOOL = "stage_collective_inquiry";
 
 export type InquiryMapWebMcpOptions = {
   root: HTMLElement;
-  getRole: () => Role;
+  canWrite: () => boolean;
   getSnapshot: (token: string) => CollectiveInquirySnapshot | undefined;
   getItemVersion: (itemId: string) => number | undefined;
   getItemBounds: (itemId: string) => Bounds | undefined;
@@ -26,7 +28,6 @@ export type InquiryMapWebMcpOptions = {
 export class InquiryMapWebMcp {
   private readonly previewDialog: HTMLDialogElement;
   private readonly registration = new AbortController();
-  private previewPending = false;
 
   constructor(private readonly options: InquiryMapWebMcpOptions) {
     this.previewDialog = this.buildPreviewDialog();
@@ -41,7 +42,6 @@ export class InquiryMapWebMcp {
   }
 
   private async register(): Promise<void> {
-    if (this.options.getRole() !== "owner") return;
     const modelContext = document.modelContext;
     if (typeof modelContext?.registerTool !== "function") return;
     try {
@@ -49,7 +49,7 @@ export class InquiryMapWebMcp {
         {
           name: STAGE_INQUIRY_TOOL,
           description:
-            "Stage a visual collective-inquiry map from a teacher-approved SpaceScale selection. Connect the selected contribution aliases into 2-4 themes, identify bridges across themes, and name one productive tension plus a next question. SpaceScale computes the canvas layout and shows the teacher a preview; nothing is added unless the teacher approves inside the app.",
+            "Stage a visual collective-inquiry map from a SpaceScale selection read in this browser. Connect the selected contribution aliases into 2-4 themes, identify bridges across themes, and name one productive tension plus a next question. SpaceScale computes the canvas layout and shows a preview; nothing is added unless the participant approves inside the app.",
           inputSchema: {
             type: "object",
             additionalProperties: false,
@@ -116,15 +116,14 @@ export class InquiryMapWebMcp {
       );
     } catch {
       if (this.registration.signal.aborted) return;
-      this.options.notify("The AI inquiry-map tool could not be registered.", "warning");
+      this.options.notify("The inquiry-map tool could not be registered.", "warning");
     }
   }
 
   private async stage(input: unknown, signal: AbortSignal): Promise<Record<string, unknown>> {
     signal.throwIfAborted();
-    if (this.options.getRole() !== "owner") {
-      throw new Error("Only the Space owner can stage an AI-assisted inquiry map.");
-    }
+    if (!this.options.canWrite())
+      throw new Error("This browser needs board edit access to stage an inquiry map.");
     const proposal = parseProposal(input);
     const snapshot = this.options.getSnapshot(proposal.selectionToken);
     if (!snapshot) {
@@ -137,7 +136,7 @@ export class InquiryMapWebMcp {
     for (const theme of proposal.themes) {
       for (const alias of theme.ideaAliases) {
         if (!knownAliases.has(alias)) {
-          throw new Error(`${alias} is not part of the teacher-approved selection.`);
+          throw new Error(`${alias} is not part of the browser selection.`);
         }
         if (assignedAliases.has(alias)) {
           throw new Error(`${alias} was assigned to more than one theme.`);
@@ -145,6 +144,43 @@ export class InquiryMapWebMcp {
         assignedAliases.add(alias);
       }
     }
+    const previewBatch = buildBatch(proposal, this.liveSources(snapshot));
+
+    const approved = await this.confirmPreview(
+      proposal,
+      assignedAliases.size,
+      previewBatch.itemIds.length,
+      signal,
+    );
+    if (!approved) {
+      return {
+        status: "participant_declined",
+        changedCanvas: false,
+        message: "The participant reviewed the proposal and kept the shared canvas unchanged.",
+      };
+    }
+    signal.throwIfAborted();
+    // The ideas may have been edited or moved while the preview was open, so
+    // re-validate them and lay the map out again from their current bounds.
+    const batch = buildBatch(proposal, this.liveSources(snapshot));
+    const accepted = await this.options.commit(batch.operation);
+    if (!accepted)
+      throw new Error("The inquiry map was approved but could not be queued for saving.");
+    this.options.selectItems(batch.itemIds);
+    this.options.notify("Inquiry map added. The class can now challenge and extend it.", "info");
+    return {
+      status: "participant_approved_and_added",
+      changedCanvas: true,
+      createdItemCount: batch.itemIds.length,
+      connectedContributionCount: assignedAliases.size,
+      themeCount: proposal.themes.length,
+      message:
+        "The map was added as one normal SpaceScale batch. It is visible to collaborators and can be undone.",
+    };
+  }
+
+  /** Throws unless every snapshot idea is unchanged; returns their current bounds. */
+  private liveSources(snapshot: CollectiveInquirySnapshot): InquirySource[] {
     for (const source of snapshot.sources) {
       if (this.options.getItemVersion(source.itemId) !== source.version) {
         throw new Error(
@@ -152,51 +188,11 @@ export class InquiryMapWebMcp {
         );
       }
     }
-
-    const sources = snapshot.sources.map((source) => {
+    return snapshot.sources.map((source) => {
       const bounds = this.options.getItemBounds(source.itemId);
       if (!bounds) throw new Error("One of the selected class ideas is no longer on the canvas.");
       return { alias: source.alias, bounds };
     });
-    let batch: CollectiveInquiryBatch;
-    try {
-      batch = buildCollectiveInquiryMap(proposal, sources);
-    } catch (error) {
-      if (error instanceof CollectiveInquiryError) throw error;
-      throw new Error("SpaceScale could not lay out that inquiry map safely.");
-    }
-
-    const approved = await this.confirmPreview(
-      proposal,
-      assignedAliases.size,
-      batch.itemIds.length,
-      signal,
-    );
-    if (!approved) {
-      return {
-        status: "teacher_declined",
-        changedCanvas: false,
-        message: "The teacher reviewed the proposal and kept the shared canvas unchanged.",
-      };
-    }
-    signal.throwIfAborted();
-    const accepted = await this.options.commit(batch.operation);
-    if (!accepted)
-      throw new Error("The inquiry map was approved but could not be queued for saving.");
-    this.options.selectItems(batch.itemIds);
-    this.options.notify(
-      "AI-assisted inquiry map added. The class can now challenge and extend it.",
-      "info",
-    );
-    return {
-      status: "teacher_approved_and_added",
-      changedCanvas: true,
-      createdItemCount: batch.itemIds.length,
-      connectedContributionCount: assignedAliases.size,
-      themeCount: proposal.themes.length,
-      message:
-        "The map was added as one normal SpaceScale batch. It is visible to collaborators and can be undone by the teacher.",
-    };
   }
 
   private confirmPreview(
@@ -205,13 +201,16 @@ export class InquiryMapWebMcp {
     itemCount: number,
     signal: AbortSignal,
   ): Promise<boolean> {
-    signal.throwIfAborted();
-    if (this.previewPending) {
-      return Promise.reject(
-        new Error("Another AI proposal is already waiting for teacher review."),
-      );
-    }
-    this.previewPending = true;
+    return awaitDialogDecision(this.previewDialog, signal, () =>
+      this.renderPreview(proposal, contributionCount, itemCount),
+    );
+  }
+
+  private renderPreview(
+    proposal: CollectiveInquiryProposal,
+    contributionCount: number,
+    itemCount: number,
+  ): void {
     const title = this.previewDialog.querySelector<HTMLElement>("[data-inquiry-preview-title]");
     if (title) title.textContent = proposal.mapTitle;
     const meta = this.previewDialog.querySelector<HTMLElement>("[data-inquiry-preview-meta]");
@@ -252,26 +251,6 @@ export class InquiryMapWebMcp {
     if (tension) {
       tension.textContent = `${proposal.tension.statement} Next question: ${proposal.tension.nextQuestion}`;
     }
-    this.previewDialog.returnValue = "";
-    this.previewDialog.showModal();
-    return new Promise((resolve, reject) => {
-      const cleanup = (): void => {
-        signal.removeEventListener("abort", onAbort);
-        this.previewDialog.removeEventListener("close", onClose);
-        this.previewPending = false;
-      };
-      const onClose = (): void => {
-        cleanup();
-        resolve(this.previewDialog.returnValue === "apply");
-      };
-      const onAbort = (): void => {
-        cleanup();
-        if (this.previewDialog.open) this.previewDialog.close("cancel");
-        reject(signal.reason);
-      };
-      this.previewDialog.addEventListener("close", onClose, { once: true });
-      signal.addEventListener("abort", onAbort, { once: true });
-    });
   }
 
   private buildPreviewDialog(): HTMLDialogElement {
@@ -281,8 +260,8 @@ export class InquiryMapWebMcp {
     dialog.setAttribute("aria-labelledby", "inquiry-preview-heading");
     dialog.innerHTML = `
       <form method="dialog">
-        <div class="inquiry-preview-topline"><span class="webmcp-dialog-mark" aria-hidden="true">✦</span><span class="inquiry-preview-state">Proposal · no changes yet</span></div>
-        <span class="eyebrow">AI partner · teacher review</span>
+        <div class="inquiry-preview-topline"><span class="webmcp-dialog-mark" aria-hidden="true">↗</span><span class="inquiry-preview-state">Proposal · no changes yet</span></div>
+        <span class="eyebrow">Review before adding</span>
         <h2 id="inquiry-preview-heading">Add this map to the class canvas?</h2>
         <div class="inquiry-preview-title" data-inquiry-preview-title></div>
         <p class="inquiry-preview-meta" data-inquiry-preview-meta></p>
@@ -297,6 +276,18 @@ export class InquiryMapWebMcp {
       </form>
     `;
     return dialog;
+  }
+}
+
+function buildBatch(
+  proposal: CollectiveInquiryProposal,
+  sources: readonly InquirySource[],
+): CollectiveInquiryBatch {
+  try {
+    return buildCollectiveInquiryMap(proposal, sources);
+  } catch (error) {
+    if (error instanceof CollectiveInquiryError) throw error;
+    throw new Error("SpaceScale could not lay out that inquiry map safely.");
   }
 }
 
@@ -355,17 +346,4 @@ function parseProposal(input: unknown): CollectiveInquiryProposal {
       nextQuestion: requiredText(input.tension.nextQuestion, "tension.nextQuestion", 240),
     },
   };
-}
-
-function requiredText(value: unknown, field: string, maxLength: number): string {
-  if (typeof value !== "string") throw new Error(`${field} must be text.`);
-  const text = value.trim();
-  if (text.length === 0 || text.length > maxLength) {
-    throw new Error(`${field} must contain 1-${maxLength} characters.`);
-  }
-  return text;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }

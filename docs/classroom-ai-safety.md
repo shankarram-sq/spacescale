@@ -5,9 +5,11 @@
 SpaceScale now exposes a constrained WebMCP integration for the hackathon. The
 application still embeds no AI provider, model binding, AI request route, or
 provider credential: the visiting WebMCP host performs the reasoning. The
-integration reads only a teacher-selected contribution set, including each
-creator's board-visible display name and stable participant ID for attribution,
-and submits validated ordinary board operations after WebMCP write permission.
+integration is discoverable in every browser that can open the board. It reads
+only that browser's saved selection, including each creator's board-visible
+display name and stable participant ID for attribution. Writes submit validated
+ordinary board operations only when the current participant has normal board
+edit permission.
 
 The public hackathon deployment is an isolated demonstration for synthetic or
 otherwise non-sensitive test content. It is not approval for use with real
@@ -23,14 +25,14 @@ selected section for the teacher, or drafting starter prompts. It must not grade
 profile, rank, discipline, diagnose, or make consequential decisions about a
 student.
 
-- Only an owner acting as the teacher may read selected content or execute an AI
-  write. Normal product participation covers sharing board-visible attribution;
-  the selection dialog controls which content enters a turn. A future classroom
-  rollout must additionally add a server-enforced, fail-closed kill switch and
-  board-level owner opt-in.
-- Everyone on the board must see when AI is active, what selected content will
-  be shared, why it is being shared, and how to withdraw before submission.
-  Confirmed output remains visibly marked with AI-assistance metadata.
+- Every browser with board access discovers the WebMCP tools. Read tools operate
+  on the saved selection in that browser; write tools use the existing board
+  edit permission and never elevate a viewer. A future classroom rollout must
+  additionally add a server-enforced, fail-closed kill switch and board-level
+  owner opt-in.
+- The WebMCP host surfaces tool calls and permissions. SpaceScale adds no
+  persistent AI-specific chrome or board labels; generated items retain internal
+  origin metadata and use the responsible participant's normal author badge.
 - School approval and the applicable lawful basis, notice, and student or
   guardian consent must be recorded before use. Age and jurisdiction rules are
   determined by the school; uncertainty means the feature stays off.
@@ -39,7 +41,7 @@ student.
 
 ## Data boundary
 
-An AI request may contain only the content the teacher explicitly selected and
+An AI request may contain only the content selected in the current browser and
 the minimum instruction needed for the approved task. The complete board must
 never be sent merely because a section or item is selected.
 
@@ -53,38 +55,36 @@ separately reviewed image use case is approved and visibly selected.
 ### Selected handwritten visual inspection
 
 `inspect_selected_board_visual` is a separately bounded visual-input use case for
-teacher-selected pencil strokes, sketches, shapes, arrows, and nearby selected
-context. It sends no request through a new SpaceScale AI backend. After the
-teacher approves item kinds and counts, the browser renders only the still-current
-saved selection into an isolated SVG review surface for the visiting WebMCP host
-to inspect. An opaque backdrop covers the unselected board.
+browser-selected pencil strokes, sketches, shapes, arrows, and nearby selected
+context. It sends no request through a new SpaceScale AI backend. The browser
+renders the current saved selection into an isolated SVG review surface for the
+visiting WebMCP host to inspect. An opaque backdrop covers the unselected board.
 
 The renderer replaces stable item IDs with ephemeral aliases. Result metadata
 includes the board-visible creator name and stable participant ID for each item,
 but no board ID, item ID, coordinate, presence, or history fields. Private board
 image pixels and file metadata are not exposed; selected image cards render as
-labeled placeholders. The call fails if the selected item set or any version
-changes during approval. The tool instructs the model to preserve uncertainty
-rather than guess unclear handwriting and prohibits grading, ranking, profiling,
-or inferences about a person from attribution. Closing the review removes the
+labeled placeholders. The tool instructs the model to preserve uncertainty rather
+than guess unclear handwriting and prohibits grading, ranking, profiling, or
+inferences about a person from attribution. Closing the review removes the
 temporary surface and never mutates the board. This remains synthetic-demo
 functionality until the governance and provider requirements below are satisfied
 for real student content.
 
 ### Generated visual responses
 
-`add_content_visuals` is an output-only, teacher-requested image use case. It
+`add_content_visuals` is an output-only, participant-requested image use case. It
 does not send existing board images or file metadata to a model. The model may
 provide a classroom meme specification that is rendered locally, or an inline
 PNG, JPEG, WebP, or GIF. SpaceScale rejects external URLs and SVG, decodes and
 re-encodes the raster to remove metadata, applies the existing type, byte,
 dimension, and pixel limits, and stores it only in the board's private asset
-bucket. The tool fails if the Space owner has not enabled Images.
+bucket. The tool fails if Images are disabled or the participant lacks edit access.
 
-Every visual must cite the approved text aliases, include alt text and a
+Every visual must cite the selected text aliases, include alt text and a
 discussion question, and explicitly confirm that it depicts no real student
 and does not ridicule or target an individual. The image, caption, and source
-connectors carry durable AI attribution and are added as one teacher-permitted,
+connectors retain internal origin metadata and are added as one participant-permitted,
 undoable board batch. This control is suitable for the synthetic hackathon
 demo; a real classroom rollout still requires the provider, age-appropriateness,
 school approval, and incident-response gates in this document.
@@ -109,21 +109,23 @@ logs, analytics, error reports, or durable audit metadata.
 
 Inputs and outputs need age-appropriate content filtering and bounded size,
 time, and rate limits. Unsafe, disallowed, or uncertain results fail closed and
-leave the board unchanged. The interface must label generated suggestions as
-AI-assisted and warn that they may be inaccurate or biased.
+leave the board unchanged. The WebMCP host surfaces tool calls and their
+permissions; SpaceScale keeps origin metadata internally without adding
+AI-specific board labels.
 
-Model output remains a proposal until the teacher explicitly confirms its
-write. For the five headless education tools, the WebMCP host write permission
-shows the semantic tool invocation—including the proposed cards and approved
-source aliases—and serves as that confirmation. The headline inquiry and class
-decision flows add an in-app “no changes yet” preview. No tool may create,
-update, delete, group, move, or otherwise mutate board items without this
-confirmation. Confirmed actions pass through the existing authorization, lock,
-limits, validation, history, undo, snapshot, and export paths and are attributed
-to the confirming teacher, not to a synthetic AI participant.
+Model output remains a proposal until the participant confirms its write. For
+the five headless education tools, the caller's WebMCP host permission shows the
+semantic tool invocation—including the proposed cards and selected source
+aliases—and serves as confirmation when normal board edit permission also
+allows it. The headline inquiry and class decision flows add an in-app “no
+changes yet” preview. No tool may create, update, delete, group, move, or
+otherwise mutate board items without this confirmation. Confirmed actions pass
+through the existing authorization, lock, limits, validation, history, undo,
+snapshot, and export paths and are attributed to the confirming participant,
+not to a synthetic AI participant.
 
 The AI audit record should be metadata-only: approved feature name, policy and
-provider version, confirming teacher's opaque actor ID, affected item IDs,
+provider version, confirming participant's opaque actor ID, affected item IDs,
 time, outcome, and deletion status. Do not retain the raw input or output in
 that record. Confirmed output is ordinary board content, so owners can undo or
 delete it and it follows the normal board export and retention behavior. The

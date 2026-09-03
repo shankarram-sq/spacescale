@@ -113,13 +113,13 @@ export const ACTIVITY_TEMPLATES: readonly ActivityTemplate[] = [
   {
     id: "collective-inquiry-demo",
     label: "Collective inquiry demo",
-    description: "Seed the full WebMCP class collaboration story in one click.",
+    description: "Seed a full class collaboration story in one click.",
     items: [
       text(-650, -360, "How might our school reduce cafeteria waste?", 32),
       text(
         -650,
         -315,
-        "Eight students have contributed. Select their ideas and invite the AI into the shared conversation.",
+        "Eight students have contributed. Select their ideas and build on them together.",
         18,
         MUTED,
       ),
@@ -187,7 +187,7 @@ export const ACTIVITY_TEMPLATES: readonly ActivityTemplate[] = [
         "Packaging matters, but long lunch queues matter too.",
         STICKY_COLOR_VALUES.sky,
       ),
-      text(-650, 105, "After the AI map: students respond, then vote with stamps.", 18, MUTED),
+      text(-650, 105, "After the inquiry map: students respond, then vote with stamps.", 18, MUTED),
       text(-650, 155, "Which idea should the class pilot first?", 22),
       table(
         -650,

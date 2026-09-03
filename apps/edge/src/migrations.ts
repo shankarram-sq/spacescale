@@ -370,6 +370,37 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
       ALTER TABLE members ADD COLUMN external_participant_id TEXT;
     `,
   },
+  {
+    version: 13,
+    name: "object_comments",
+    sql: `
+      CREATE TABLE comments (
+        comment_id TEXT PRIMARY KEY
+          CHECK (
+            length(comment_id) = 24 AND
+            substr(comment_id, 1, 2) = 'c_' AND
+            comment_id NOT GLOB '*[^A-Za-z0-9_-]*'
+          ),
+        target_item_id TEXT NOT NULL,
+        body TEXT NOT NULL CHECK (length(body) BETWEEN 1 AND 2000),
+        state TEXT NOT NULL CHECK (state IN ('open', 'resolved', 'orphaned')),
+        created_by TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        resolved_by TEXT,
+        resolved_at_ms INTEGER,
+        updated_at_ms INTEGER NOT NULL,
+        CHECK (
+          (state = 'resolved' AND resolved_by IS NOT NULL AND resolved_at_ms IS NOT NULL) OR
+          (state != 'resolved' AND resolved_by IS NULL AND resolved_at_ms IS NULL)
+        )
+      ) WITHOUT ROWID;
+
+      CREATE INDEX comments_target_state
+        ON comments(target_item_id, state, created_at_ms);
+      CREATE INDEX comments_state_updated
+        ON comments(state, updated_at_ms DESC);
+    `,
+  },
 ] as const;
 
 export const ORGANISATION_SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [

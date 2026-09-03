@@ -1,11 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 import {
   type BoardFeatures,
-  normalizeBoardFeatures,
   type BoardItem as ProtocolBoardItem,
   ProtocolValidationError,
   validatePlainText,
 } from "@collab/protocol";
+import { normalizePersistedBoardFeatures } from "./board-features";
 import { randomOpaqueId } from "./crypto";
 import { BoardDomainError, canonicalItemFromUnknown } from "./domain";
 import { assertExactKeys, isRecord, readJsonBody } from "./http/body";
@@ -302,7 +302,10 @@ export class OrganisationRoom extends DurableObject<Env> {
     }
     let features: BoardFeatures;
     try {
-      features = normalizeBoardFeatures(body.settings.features);
+      // Organisation summaries can arrive from an older BoardRoom during a
+      // rolling deployment. Expand only the known additive feature omissions
+      // before persisting the canonical, complete map.
+      features = normalizePersistedBoardFeatures(body.settings.features);
     } catch (error) {
       if (error instanceof ProtocolValidationError) {
         throw new HttpError(400, "BAD_REQUEST", error.message);
@@ -583,7 +586,7 @@ function spaceFromRow(row: SpaceRow): OrganisationAdminSpace {
 
   let features: BoardFeatures;
   try {
-    features = normalizeBoardFeatures(rawSettings.features);
+    features = normalizePersistedBoardFeatures(rawSettings.features);
   } catch {
     throw new Error("Stored Organisation Space features are invalid.");
   }

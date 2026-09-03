@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import {
   canonicalSnapshotByteLengthFromParts,
   canonicalSnapshotItemByteLength,
+  findMoveCopyClosureLimitViolation,
 } from "@collab/board-core";
 import {
   BOARD_FEATURE_KEYS,
@@ -9,12 +10,15 @@ import {
   type ClientFrame,
   canonicalRequestHashInput,
   DEFAULT_BOARD_FEATURES,
+  MAX_BATCH_OPERATIONS,
   MAX_SNAPSHOT_BYTES,
   normalizeBoardFeatures,
   type BoardItem as ProtocolBoardItem,
   ProtocolValidationError,
   parseClientFrame,
 } from "@collab/protocol";
+import { appendSectionExportSummaries, buildSectionExportSummaries } from "./board-export";
+import { normalizePersistedBoardFeatures } from "./board-features";
 import { decodeClassroomBoardImport, MAX_CLASSROOM_IMPORT_ENCODED_CHARS } from "./classroom-import";
 import {
   base64UrlToBytes,
@@ -53,7 +57,15 @@ import {
   parseImageAsset,
   requireImageAssetMimeType,
 } from "./image-assets";
-import { prepareOwnedItemOperation } from "./item-ownership";
+import {
+  assertGroupMembershipOwnership,
+  assertItemsOutsideLockedSections,
+  assertItemsOwnedByActor,
+  type ItemOwnershipContext,
+  prepareOwnedItemOperation,
+  sectionRecordIdsForItems,
+  sectionRecordIdsForMutation,
+} from "./item-ownership";
 import { safeLog } from "./logging";
 import { applyMigrations } from "./migrations";
 import { OrganisationAuthService } from "./organisation-auth";
@@ -75,6 +87,7 @@ import {
   readBoard,
   readItem,
   readItems,
+  readLiveItems,
   resolveAccess,
   serializeSnapshot,
   snapshotAccountingForItems,
@@ -109,6 +122,7 @@ import type {
 import {
   ACTOR_ID_PATTERN,
   BOARD_ID_PATTERN,
+  containsDisallowedControlCharacter,
   fallbackDisplayName,
   OPAQUE_ID_PATTERN,
   optionalTitle,
@@ -116,6 +130,7 @@ import {
   requireDisplayName,
   requireOpaqueId,
   requireSafeInteger,
+  validateUnicodeText,
 } from "./validation";
 import { deliverOrganisationWebhook } from "./webhook-delivery";
 
@@ -126,6 +141,10 @@ const LIMITS = {
   maxStrokePoints: 10_000,
   previewHz: 12,
 } as const;
+const MAX_COMMENTS = 10_000;
+const MAX_COMMENT_CODE_POINTS = 2_000;
+// Keeps `IN (?, ...)` lists well inside SQLite's bound-parameter limit.
+const COMMENT_UPDATE_CHUNK_SIZE = 100;
 const MAX_CONNECTIONS_PER_ACTOR = 5;
 const MAX_REPLAY_ACTIONS = 100;
 const SNAPSHOT_ACTION_INTERVAL = 250;
@@ -171,6 +190,35 @@ const PREVIEW_SHED_TRIGGER_PER_SECOND = 100;
 // from every actor while reserving the event loop for durable commands. The
 // normal five-drawer workload never enters this shedding path.
 const OVERLOADED_PREVIEW_HZ_PER_ACTOR = 1;
+
+type CommentState = "open" | "resolved" | "orphaned";
+
+type CommentRow = {
+  [key: string]: SqlStorageValue;
+  comment_id: string;
+  target_item_id: string;
+  body: string;
+  state: CommentState;
+  created_by: string;
+  created_at_ms: number;
+  resolved_by: string | null;
+  resolved_at_ms: number | null;
+  updated_at_ms: number;
+  author_name: string;
+  resolver_name: string | null;
+};
+
+type BoardComment = {
+  id: string;
+  itemId: string;
+  body: string;
+  state: CommentState;
+  author: { id: string; displayName: string };
+  createdAt: number;
+  updatedAt: number;
+  resolvedBy?: { id: string; displayName: string };
+  resolvedAt?: number;
+};
 
 type ActionRow = {
   [key: string]: SqlStorageValue;
@@ -393,6 +441,18 @@ export class BoardRoom extends DurableObject<Env> {
       requireMethod(request, "POST");
       return this.claim(request, actor);
     }
+    if (suffix === "/comments") {
+      if (request.method === "GET") return this.listComments(actor, board);
+      if (request.method === "POST") return this.createComment(request, actor, board);
+      return methodNotAllowed("GET, POST");
+    }
+    const commentMatch = /^\/comments\/(c_[A-Za-z0-9_-]{22})$/u.exec(suffix);
+    if (commentMatch !== null) {
+      const commentId = commentMatch[1];
+      if (commentId === undefined) throw new HttpError(404, "NOT_FOUND", "Comment not found.");
+      if (request.method === "PATCH") return this.resolveComment(request, actor, board, commentId);
+      return methodNotAllowed("PATCH");
+    }
     if (suffix === "/members") {
       requireMethod(request, "GET");
       return this.listMembers(actor, board);
@@ -515,6 +575,182 @@ export class BoardRoom extends DurableObject<Env> {
       return this.upgradeWebSocket(request, actor, board);
     }
     throw new HttpError(404, "NOT_FOUND", "The requested endpoint does not exist.");
+  }
+
+  private listComments(actor: InternalActorContext, capturedBoard: BoardRow): Response {
+    const board = readBoard(this.#sql) ?? capturedBoard;
+    this.requireView(board, actor.actorId);
+    return Response.json(
+      { comments: this.readComments() },
+      { headers: { "Cache-Control": "no-store" } },
+    );
+  }
+
+  private async createComment(
+    request: Request,
+    actor: InternalActorContext,
+    capturedBoard: BoardRow,
+  ): Promise<Response> {
+    const body = await readJsonBody(request, 16 * 1_024);
+    assertExactKeys(body, ["itemId", "body"], ["itemId", "body"]);
+    const itemId = requireOpaqueId(body.itemId, "comment target");
+    const text = requireCommentBody(body.body);
+    const commentId = randomOpaqueId("c_");
+    const now = Date.now();
+    let comment!: BoardComment;
+    this.ctx.storage.transactionSync(() => {
+      const board = readBoard(this.#sql) ?? capturedBoard;
+      const access = this.requireView(board, actor.actorId);
+      if (!canComment(board.drawing_policy, access.role)) {
+        throw new BoardDomainError("FORBIDDEN", "Commenting is not allowed for your role.");
+      }
+      const target = readItem(this.#sql, itemId);
+      if (target === undefined || target.deleted) {
+        throw new HttpError(404, "NOT_FOUND", "The comment target no longer exists.");
+      }
+      const count = this.#sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM comments")
+        .one().count;
+      if (count >= MAX_COMMENTS) {
+        throw new HttpError(
+          409,
+          "BOARD_LIMIT_REACHED",
+          "This Space has reached its comment limit.",
+        );
+      }
+      this.#sql.exec(
+        `INSERT INTO comments(
+          comment_id, target_item_id, body, state, created_by,
+          created_at_ms, resolved_by, resolved_at_ms, updated_at_ms
+        ) VALUES (?, ?, ?, 'open', ?, ?, NULL, NULL, ?)`,
+        commentId,
+        itemId,
+        text,
+        actor.actorId,
+        now,
+        now,
+      );
+      comment = this.readComment(commentId) as BoardComment;
+    });
+    this.broadcastCommentsRefresh();
+    return Response.json(comment, {
+      status: 201,
+      headers: { "Cache-Control": "no-store" },
+    });
+  }
+
+  private async resolveComment(
+    request: Request,
+    actor: InternalActorContext,
+    capturedBoard: BoardRow,
+    commentId: string,
+  ): Promise<Response> {
+    const body = await readJsonBody(request, 4 * 1_024);
+    assertExactKeys(body, ["state"], ["state"]);
+    if (body.state !== "resolved") {
+      throw new HttpError(400, "BAD_REQUEST", "A comment can only transition to resolved.");
+    }
+    const now = Date.now();
+    let comment!: BoardComment;
+    let changed = false;
+    this.ctx.storage.transactionSync(() => {
+      const board = readBoard(this.#sql) ?? capturedBoard;
+      const access = this.requireView(board, actor.actorId);
+      const existing = this.readComment(commentId);
+      if (existing === null) throw new HttpError(404, "NOT_FOUND", "Comment not found.");
+      if (existing.author.id !== actor.actorId && access.role !== "owner") {
+        throw new HttpError(
+          403,
+          "FORBIDDEN",
+          "Only the comment author or a board owner can resolve a comment.",
+        );
+      }
+      if (existing.state !== "resolved") {
+        this.#sql.exec(
+          `UPDATE comments
+           SET state = 'resolved', resolved_by = ?, resolved_at_ms = ?, updated_at_ms = ?
+           WHERE comment_id = ? AND state != 'resolved'`,
+          actor.actorId,
+          now,
+          now,
+          commentId,
+        );
+        changed = true;
+      }
+      comment = this.readComment(commentId) as BoardComment;
+    });
+    if (changed) this.broadcastCommentsRefresh();
+    return Response.json(comment, { headers: { "Cache-Control": "no-store" } });
+  }
+
+  private readComments(): BoardComment[] {
+    return this.queryComments("ORDER BY c.created_at_ms ASC, c.comment_id ASC");
+  }
+
+  private readComment(commentId: string): BoardComment | null {
+    return this.queryComments("WHERE c.comment_id = ?", [commentId])[0] ?? null;
+  }
+
+  private queryComments(clause: string, params: SqlStorageValue[] = []): BoardComment[] {
+    return this.#sql
+      .exec<CommentRow>(
+        `SELECT c.comment_id, c.target_item_id, c.body, c.state, c.created_by,
+          c.created_at_ms, c.resolved_by, c.resolved_at_ms, c.updated_at_ms,
+          author.display_name AS author_name, resolver.display_name AS resolver_name
+         FROM comments c
+         LEFT JOIN members author ON author.actor_id = c.created_by
+         LEFT JOIN members resolver ON resolver.actor_id = c.resolved_by
+         ${clause}`,
+        ...params,
+      )
+      .toArray()
+      .map(commentFromRow);
+  }
+
+  /** Marks open comments on removed items as orphaned. Returns rows written. */
+  private orphanOpenComments(itemIds: Iterable<string>, updatedAt: number): number {
+    return this.transitionCommentsForItems(itemIds, "open", "orphaned", updatedAt);
+  }
+
+  /** Reopens orphaned comments on items brought back by undo, redo, or restore. */
+  private restoreOrphanedComments(itemIds: Iterable<string>, updatedAt: number): number {
+    return this.transitionCommentsForItems(itemIds, "orphaned", "open", updatedAt);
+  }
+
+  private transitionCommentsForItems(
+    itemIds: Iterable<string>,
+    from: CommentState,
+    to: CommentState,
+    updatedAt: number,
+  ): number {
+    const ids = [...new Set(itemIds)];
+    if (ids.length === 0) return 0;
+    const hasCandidates =
+      this.#sql
+        .exec<{ found: number }>(
+          "SELECT EXISTS(SELECT 1 FROM comments WHERE state = ?) AS found",
+          from,
+        )
+        .one().found === 1;
+    if (!hasCandidates) return 0;
+    let rowsWritten = 0;
+    for (let start = 0; start < ids.length; start += COMMENT_UPDATE_CHUNK_SIZE) {
+      const chunk = ids.slice(start, start + COMMENT_UPDATE_CHUNK_SIZE);
+      rowsWritten += this.#sql.exec(
+        `UPDATE comments
+         SET state = ?, updated_at_ms = ?
+         WHERE state = ? AND target_item_id IN (${chunk.map(() => "?").join(", ")})`,
+        to,
+        updatedAt,
+        from,
+        ...chunk,
+      ).rowsWritten;
+    }
+    return rowsWritten;
+  }
+
+  private broadcastCommentsRefresh(): void {
+    this.broadcastFrame({ v: 1, t: "server.comments.refresh" }, undefined, true);
   }
 
   private async initialize(request: Request, actor: InternalActorContext): Promise<Response> {
@@ -683,6 +919,7 @@ export class BoardRoom extends DurableObject<Env> {
       boardBeforeLaunch === null && role === "owner" && body.importSnapshot !== undefined
         ? decodeClassroomBoardImport(body.importSnapshot)
         : null;
+    if (importedBoard !== null) this.assertMoveCopyClosureTarget(importedBoard.items);
     const importedAccounting =
       importedBoard === null ? null : snapshotAccountingForItems(importedBoard.items);
     const title = importedBoard?.title ?? launchTitle;
@@ -1437,6 +1674,32 @@ export class BoardRoom extends DurableObject<Env> {
         : null;
       return { itemId: effect.itemId, before, after };
     });
+  }
+
+  private deriveHistoryAttributionEffect(
+    effect: ItemEffect,
+    current: ItemRecord | undefined,
+    targetSide: "before" | "after",
+    actorId: string,
+    seq: number,
+    acceptedAt: number,
+  ): ItemAttributionEffect {
+    const currentItem = current === undefined || current.deleted ? null : current.item;
+    const currentAttribution = currentItem === null ? null : this.readItemAttribution(currentItem);
+    const target = effect[targetSide];
+    const targetAttribution = target.exists
+      ? deriveItemAttribution(
+          currentItem,
+          target.item,
+          currentAttribution,
+          actorId,
+          seq,
+          acceptedAt,
+        )
+      : null;
+    return targetSide === "before"
+      ? { itemId: effect.itemId, before: targetAttribution, after: currentAttribution }
+      : { itemId: effect.itemId, before: currentAttribution, after: targetAttribution };
   }
 
   private applyAttributionEffects(
@@ -2854,6 +3117,7 @@ export class BoardRoom extends DurableObject<Env> {
       throw new HttpError(503, "TEMPORARILY_UNAVAILABLE", "Snapshot recovery data is invalid.");
     }
     const snapshot = parseStoredSnapshot(rawSnapshot, initialBoard.public_id);
+    this.assertMoveCopyClosureTarget(snapshot.items);
     const snapshotAttribution = this.readSnapshotAttribution(snapshotSeq);
     const acceptedAt = Date.now();
     const commandId = crypto.randomUUID();
@@ -2863,6 +3127,7 @@ export class BoardRoom extends DurableObject<Env> {
     let requiresResync = false;
     let snapshotScheduleRowsWritten = 0;
     let recordedFrames = 0;
+    let commentsChanged = false;
 
     this.ctx.storage.transactionSync(() => {
       const board = this.requireBoard();
@@ -2882,6 +3147,10 @@ export class BoardRoom extends DurableObject<Env> {
       const capacityRowsWritten = this.ensureActionCapacity(board);
       const seq = board.latest_seq + 1;
       const current = readAllItemRecords(this.#sql);
+      assertItemsOutsideLockedSections(
+        [...current.values()].flatMap((record) => (record.deleted ? [] : [record.item])),
+        current,
+      );
       const targetItems = snapshot.items.map(
         (item) => ({ ...structuredClone(item), version: seq }) as BoardItem,
       );
@@ -2897,6 +3166,7 @@ export class BoardRoom extends DurableObject<Env> {
       });
       const replacements: BoardItem[] = [];
       const removals: string[] = [];
+      const restorations: string[] = [];
       const authoritativeOperations: Array<Record<string, unknown>> = [];
       let maximumZ = 0;
       let itemRowsWritten = 0;
@@ -2920,11 +3190,14 @@ export class BoardRoom extends DurableObject<Env> {
           itemWriteFromState(item, false, crypto.randomUUID()),
         );
         replacements.push(item);
-        authoritativeOperations.push({
-          kind: current.get(item.id)?.deleted === false ? "item.update" : "item.create",
-          item,
-        });
+        const wasLive = current.get(item.id)?.deleted === false;
+        if (!wasLive) restorations.push(item.id);
+        authoritativeOperations.push({ kind: wasLive ? "item.update" : "item.create", item });
       }
+      const commentRowsWritten =
+        this.orphanOpenComments(removals, acceptedAt) +
+        this.restoreOrphanedComments(restorations, acceptedAt);
+      commentsChanged = commentRowsWritten > 0;
       const attributionRowsWritten = this.replaceCurrentAttribution(
         targetItems,
         snapshotAttribution,
@@ -2998,6 +3271,7 @@ export class BoardRoom extends DurableObject<Env> {
         capacityRowsWritten +
         itemRowsWritten +
         attributionRowsWritten +
+        commentRowsWritten +
         invalidatedHistoryRows +
         receiptRowsWritten +
         boardRowsWritten +
@@ -3029,6 +3303,7 @@ export class BoardRoom extends DurableObject<Env> {
 
     if (action !== undefined) {
       this.#pendingFrameCount = Math.max(0, this.#pendingFrameCount - recordedFrames);
+      if (commentsChanged) this.broadcastCommentsRefresh();
       if (requiresResync)
         this.broadcastResyncRequired("Snapshot restore requires a fresh bootstrap.");
       else this.broadcastAction(action);
@@ -3074,7 +3349,10 @@ export class BoardRoom extends DurableObject<Env> {
     board: BoardRow,
     snapshot: CanonicalSnapshot,
   ): Promise<Response> {
-    const body = serializeSnapshot(snapshot);
+    const body = appendSectionExportSummaries(
+      serializeSnapshot(snapshot),
+      buildSectionExportSummaries(snapshot.items),
+    );
     const etag = `"${await sha256Base64Url(body)}"`;
     return new Response(body, {
       headers: {
@@ -3208,6 +3486,7 @@ export class BoardRoom extends DurableObject<Env> {
         stateCreatedAt: snapshot.createdAt,
       },
       participants,
+      sections: buildSectionExportSummaries(snapshot.items),
       objects,
     };
   }
@@ -3643,6 +3922,7 @@ export class BoardRoom extends DurableObject<Env> {
     let recordedFrames = 0;
     let sqliteRowsRead = 0;
     let sqliteRowsWritten = 0;
+    let commentsOrphaned = false;
     const transactionStartedAt = performance.now();
     execution.transactionStarted = true;
     this.ctx.storage.transactionSync(() => {
@@ -3661,6 +3941,8 @@ export class BoardRoom extends DurableObject<Env> {
       this.ensureItemIdentityCapacity(newItemIdentityCount(operation));
       const seq = board.latest_seq + 1;
       const records = readItems(this.#sql, affectedIds(operation));
+      const sectionRecords = readItems(this.#sql, sectionRecordIdsForMutation(operation, records));
+      for (const [itemId, record] of sectionRecords) records.set(itemId, record);
       assertOperationFeaturesEnabled(featuresForBoard(board), operation, records);
       const prepared = prepareOwnedItemOperation(operation, records, {
         seq,
@@ -3675,6 +3957,12 @@ export class BoardRoom extends DurableObject<Env> {
           this.requireCommittedImageAsset(board, item);
         }
       }
+      const topologyRowsRead = this.assertProspectiveMoveCopyClosure(
+        prepared.effects,
+        "after",
+        undefined,
+        { actorId: attachment.actorId, role: access.role },
+      );
       const acceptedAt = Date.now();
       action = {
         v: 1,
@@ -3725,6 +4013,13 @@ export class BoardRoom extends DurableObject<Env> {
       for (const write of prepared.writes.values()) {
         itemRowsWritten += writeItem(this.#sql, write);
       }
+      const commentRowsWritten = this.orphanOpenComments(
+        [...prepared.writes.values()]
+          .filter((write) => write.deleted)
+          .map((write) => write.item.id),
+        acceptedAt,
+      );
+      commentsOrphaned = commentRowsWritten > 0;
       const attributionRowsWritten = this.applyAttributionEffects(attributionEffects, "after");
       const invalidatedHistory = this.#sql.exec(
         "UPDATE history_entries SET state = 'invalidated', last_transition_seq = ? WHERE actor_id = ? AND state = 'undone'",
@@ -3757,13 +4052,14 @@ export class BoardRoom extends DurableObject<Env> {
         snapshotAccounting.itemBytes,
       ).rowsWritten;
       recordedFrames = this.#pendingFrameCount;
-      const rowsReadEstimate = records.size + 8;
+      const rowsReadEstimate = records.size + topologyRowsRead + 8;
       const rowsWrittenEstimate =
         capacityRowsWritten +
         snapshotScheduleRowsWritten +
         (snapshotScheduleRowsWritten > 0 ? 1 : 0) +
         itemRowsWritten +
         attributionRowsWritten +
+        commentRowsWritten +
         invalidatedHistory.rowsWritten +
         historyRowsWritten +
         historyVersion.rowsWritten +
@@ -3805,6 +4101,7 @@ export class BoardRoom extends DurableObject<Env> {
     }
     this.#pendingFrameCount = Math.max(0, this.#pendingFrameCount - recordedFrames);
     this.broadcastAction(action);
+    if (commentsOrphaned) this.broadcastCommentsRefresh();
     this.broadcastHistoryState(attachment.actorId, history);
     if (snapshotScheduleRowsWritten > 0) this.scheduleNextAlarmAfterCommit();
     return {
@@ -3832,6 +4129,7 @@ export class BoardRoom extends DurableObject<Env> {
     let recordedFrames = 0;
     let sqliteRowsRead = 0;
     let sqliteRowsWritten = 0;
+    let commentsChanged = false;
     const transactionStartedAt = performance.now();
     execution.transactionStarted = true;
     this.ctx.storage.transactionSync(() => {
@@ -3882,7 +4180,7 @@ export class BoardRoom extends DurableObject<Env> {
         );
       }
       const originalPayload = parseStoredActionPayload(entry.payload_json);
-      const effects = originalPayload.effects;
+      let effects = originalPayload.effects;
       if (effects.length === 0)
         throw new BoardDomainError("INTERNAL_ERROR", "Stored undo effects are unavailable.");
       const currentRecords = new Map<string, ItemRecord>();
@@ -3899,12 +4197,150 @@ export class BoardRoom extends DurableObject<Env> {
         }
         currentRecords.set(effect.itemId, current);
       }
+
+      // Applying this entry may remove a Section (undoing its create, or
+      // redoing its delete). Members that joined after the entry was recorded
+      // are not in its effects, so synthesize a detach for each of them in the
+      // same direction as the entry. The detached side gets a fresh state token
+      // because it is a new logical state: any other participant's history
+      // entry that recorded the member must now conflict instead of replaying
+      // against a Section that no longer exists.
+      let topologyItems: readonly BoardItem[] | undefined;
+      const dependentItemIds = new Set<string>();
+      const deletedSectionIds = deletedSectionIdsForTarget(effects, undo ? "before" : "after");
+      if (deletedSectionIds.size > 0) {
+        topologyItems = readLiveItems(this.#sql);
+        const effectItemIds = new Set(effects.map((effect) => effect.itemId));
+        const dependentEffects: ItemEffect[] = [];
+        for (const item of topologyItems) {
+          if (
+            item.sectionId === undefined ||
+            !deletedSectionIds.has(item.sectionId) ||
+            effectItemIds.has(item.id)
+          ) {
+            continue;
+          }
+          const current = readItem(this.#sql, item.id);
+          if (current === undefined || current.deleted) {
+            throw new BoardDomainError(
+              "INTERNAL_ERROR",
+              "A live Section member record is unavailable.",
+            );
+          }
+          // Membership was assigned by geometry, so removing it is the
+          // Section creator's right even when the member belongs to someone
+          // else. Owners may detach anything.
+          const section = currentRecords.get(item.sectionId)?.item;
+          if (access.role !== "owner" && section?.createdBy !== attachment.actorId) {
+            throw new BoardDomainError("FORBIDDEN", "You can modify only work that you created.", {
+              itemId: item.id,
+            });
+          }
+          const attached = structuredClone(current.item);
+          const detached = structuredClone(current.item);
+          delete detached.sectionId;
+          const detachedToken = crypto.randomUUID();
+          dependentEffects.push(
+            undo
+              ? {
+                  itemId: item.id,
+                  before: { exists: true, item: detached },
+                  after: { exists: true, item: attached },
+                  beforeStateToken: detachedToken,
+                  afterStateToken: current.stateToken,
+                }
+              : {
+                  itemId: item.id,
+                  before: { exists: true, item: attached },
+                  after: { exists: true, item: detached },
+                  beforeStateToken: current.stateToken,
+                  afterStateToken: detachedToken,
+                },
+          );
+          currentRecords.set(item.id, current);
+          dependentItemIds.add(item.id);
+        }
+        if (dependentEffects.length > 0) effects = [...effects, ...dependentEffects];
+      }
+      // Relationship-only changes to the membership of a Section this actor
+      // created are theirs to apply in either direction, whoever authored the
+      // member: membership was assigned by geometry, not by the member's
+      // author. This covers the synthesized detaches above and the recorded
+      // detaches/re-attaches of the actor's own Section delete or create.
+      const membershipExemptItemIds = new Set(dependentItemIds);
+      for (const effect of effects) {
+        if (membershipExemptItemIds.has(effect.itemId)) continue;
+        if (!isPureHistorySectionMembershipChange(effect)) continue;
+        const sectionIds = [effect.before, effect.after].flatMap((state) =>
+          state.exists && state.item.sectionId !== undefined ? [state.item.sectionId] : [],
+        );
+        const ownsEverySection =
+          sectionIds.length > 0 &&
+          sectionIds.every(
+            (sectionId) =>
+              (currentRecords.get(sectionId) ?? readItem(this.#sql, sectionId))?.item.createdBy ===
+              attachment.actorId,
+          );
+        if (access.role === "owner" || ownsEverySection) membershipExemptItemIds.add(effect.itemId);
+      }
+      const currentItems = effects.flatMap((effect) => {
+        const current = currentRecords.get(effect.itemId);
+        return current === undefined || current.deleted ? [] : [current.item];
+      });
+      const targetItems = effects.flatMap((effect) => {
+        const target = undo ? effect.before : effect.after;
+        return target.exists ? [target.item] : [];
+      });
+      const historyItems = [...currentItems, ...targetItems];
+      // Synthesized detaches were authorised above against the Section's
+      // creator, so the member's own author is not required here.
+      assertItemsOwnedByActor(
+        historyItems.filter((item) => !membershipExemptItemIds.has(item.id)),
+        {
+          actorId: attachment.actorId,
+          role: access.role,
+        },
+      );
+      if (access.role !== "owner" && effects.some(isPureHistorySectionLockChange)) {
+        throw new BoardDomainError("FORBIDDEN", "Only an owner can lock or unlock a Section.");
+      }
+      const sectionRecords = readItems(this.#sql, sectionRecordIdsForItems(historyItems));
+      for (const [itemId, record] of sectionRecords) currentRecords.set(itemId, record);
+      const lockCheckedCurrentItems = effects.flatMap((effect) => {
+        if (isPureHistorySectionLockChange(effect)) return [];
+        const current = currentRecords.get(effect.itemId);
+        return current === undefined || current.deleted ? [] : [current.item];
+      });
+      assertItemsOutsideLockedSections(lockCheckedCurrentItems, currentRecords);
+      const prospectiveRecords = new Map(currentRecords);
+      const lockCheckedItems: BoardItem[] = [];
+      for (const effect of effects) {
+        const target = undo ? effect.before : effect.after;
+        if (!target.exists) {
+          prospectiveRecords.delete(effect.itemId);
+          continue;
+        }
+        const current = currentRecords.get(effect.itemId);
+        prospectiveRecords.set(effect.itemId, {
+          item: target.item,
+          deleted: false,
+          stateToken: current?.stateToken ?? "",
+        });
+        if (!isPureHistorySectionLockChange(effect)) lockCheckedItems.push(target.item);
+      }
+      assertItemsOutsideLockedSections(lockCheckedItems, prospectiveRecords);
       if (this.actionIdExists(command.actionId)) {
         throw new BoardDomainError("INVALID_FRAME", "The action ID was already used.");
       }
       const capacityRowsWritten = this.ensureActionCapacity(board);
       const seq = board.latest_seq + 1;
       const acceptedAt = Date.now();
+      const topologyRowsRead = this.assertProspectiveMoveCopyClosure(
+        effects,
+        undo ? "before" : "after",
+        topologyItems,
+        { actorId: attachment.actorId, role: access.role },
+      );
       const snapshotAccounting = this.projectSnapshotAccounting(
         board,
         effects.map((effect) => {
@@ -3942,23 +4378,60 @@ export class BoardRoom extends DurableObject<Env> {
             : { kind: "item.replace", item: write.item },
         );
       }
-      const targetAttributionEffects =
-        originalPayload.attributionEffects ??
-        effects.map((effect) => {
-          const state = undo ? effect.before : effect.after;
-          const attribution = state.exists
-            ? initialItemAttribution(
-                state.item,
-                state.item.createdBy,
-                state.item.version,
-                acceptedAt,
+      const commentRowsWritten =
+        this.orphanOpenComments(
+          changes.flatMap((change) => (change.kind === "item.remove" ? [change.itemId] : [])),
+          acceptedAt,
+        ) +
+        this.restoreOrphanedComments(
+          changes.flatMap((change) =>
+            change.kind === "item.replace" && currentRecords.get(change.item.id)?.deleted === true
+              ? [change.item.id]
+              : [],
+          ),
+          acceptedAt,
+        );
+      commentsChanged = commentRowsWritten > 0;
+      const storedAttributionEffects = originalPayload.attributionEffects;
+      const synthesizedAttributionEffects =
+        storedAttributionEffects === undefined
+          ? []
+          : effects
+              .filter(
+                (effect) =>
+                  !storedAttributionEffects.some(
+                    (attributionEffect) => attributionEffect.itemId === effect.itemId,
+                  ),
               )
-            : null;
-          return { itemId: effect.itemId, before: attribution, after: attribution };
-        });
+              .map((effect) =>
+                this.deriveHistoryAttributionEffect(
+                  effect,
+                  currentRecords.get(effect.itemId),
+                  undo ? "before" : "after",
+                  attachment.actorId,
+                  seq,
+                  acceptedAt,
+                ),
+              );
+
+      const targetAttributionEffects =
+        storedAttributionEffects === undefined
+          ? effects.map((effect) => {
+              const state = undo ? effect.before : effect.after;
+              const attribution = state.exists
+                ? initialItemAttribution(
+                    state.item,
+                    state.item.createdBy,
+                    state.item.version,
+                    acceptedAt,
+                  )
+                : null;
+              return { itemId: effect.itemId, before: attribution, after: attribution };
+            })
+          : [...storedAttributionEffects, ...synthesizedAttributionEffects];
       const attributionRowsWritten = this.applyAttributionEffects(
         targetAttributionEffects,
-        originalPayload.attributionEffects === undefined ? "after" : undo ? "before" : "after",
+        storedAttributionEffects === undefined ? "after" : undo ? "before" : "after",
       );
       const creators = this.restoredItemCreators(
         changes.flatMap((change) => (change.kind === "item.replace" ? [change.item] : [])),
@@ -3977,16 +4450,21 @@ export class BoardRoom extends DurableObject<Env> {
       };
       const payload: StoredActionPayload = { publicResult: action, effects: [] };
       const payloadJson = JSON.stringify(payload);
+      const historyEntryPayloadJson = JSON.stringify({ ...originalPayload, effects });
       if (
         utf8(JSON.stringify(action)).byteLength > MAX_PUBLIC_RESULT_BYTES ||
-        utf8(payloadJson).byteLength > MAX_ACTION_PAYLOAD_BYTES
+        utf8(payloadJson).byteLength > MAX_ACTION_PAYLOAD_BYTES ||
+        utf8(historyEntryPayloadJson).byteLength > MAX_ACTION_PAYLOAD_BYTES
       ) {
         throw new BoardDomainError("MESSAGE_TOO_LARGE", "The history action is too large.");
       }
       const historyRowsWritten = this.#sql.exec(
-        "UPDATE history_entries SET state = ?, last_transition_seq = ? WHERE normal_action_seq = ?",
+        `UPDATE history_entries
+         SET state = ?, last_transition_seq = ?, payload_json = ?
+         WHERE normal_action_seq = ?`,
         undo ? "undone" : "active",
         seq,
+        historyEntryPayloadJson,
         entry.normal_action_seq,
       ).rowsWritten;
       const historyVersion = this.incrementHistoryVersion(attachment.actorId, acceptedAt);
@@ -4004,13 +4482,14 @@ export class BoardRoom extends DurableObject<Env> {
         snapshotAccounting.itemBytes,
       ).rowsWritten;
       recordedFrames = this.#pendingFrameCount;
-      const rowsReadEstimate = effects.length + 10;
+      const rowsReadEstimate = effects.length + topologyRowsRead + 10;
       const rowsWrittenEstimate =
         capacityRowsWritten +
         snapshotScheduleRowsWritten +
         (snapshotScheduleRowsWritten > 0 ? 1 : 0) +
         itemRowsWritten +
         attributionRowsWritten +
+        commentRowsWritten +
         historyRowsWritten +
         historyVersion.rowsWritten +
         boardRowsWritten +
@@ -4048,6 +4527,7 @@ export class BoardRoom extends DurableObject<Env> {
     }
     this.#pendingFrameCount = Math.max(0, this.#pendingFrameCount - recordedFrames);
     this.broadcastAction(action);
+    if (commentsChanged) this.broadcastCommentsRefresh();
     this.broadcastHistoryState(attachment.actorId, history);
     if (snapshotScheduleRowsWritten > 0) this.scheduleNextAlarmAfterCommit();
     return {
@@ -4088,6 +4568,7 @@ export class BoardRoom extends DurableObject<Env> {
     let recordedFrames = 0;
     let sqliteRowsRead = 0;
     let sqliteRowsWritten = 0;
+    let commentsOrphaned = false;
     const transactionStartedAt = performance.now();
     execution.transactionStarted = true;
     this.ctx.storage.transactionSync(() => {
@@ -4101,6 +4582,13 @@ export class BoardRoom extends DurableObject<Env> {
       if (currentAccess.role !== "owner")
         throw new BoardDomainError("FORBIDDEN", "Only the owner can clear the board.");
       this.requireContentMutationAllowed(board, currentAccess.role);
+      const lockedSectionRows = this.#sql
+        .exec<ItemSqlRow>("SELECT * FROM items WHERE deleted = 0 AND kind = 'zone'")
+        .toArray();
+      assertItemsOutsideLockedSections(
+        lockedSectionRows.map((row) => itemRecordFromRow(row).item),
+        new Map(),
+      );
       if (board.latest_seq !== operation.expectedBoardSeq) {
         throw new BoardDomainError("STALE_BOARD", "The board changed before it could be cleared.", {
           latestSeq: board.latest_seq,
@@ -4130,6 +4618,8 @@ export class BoardRoom extends DurableObject<Env> {
         );
         removals.push(record.item.id);
       }
+      const commentRowsWritten = this.orphanOpenComments(removals, acceptedAt);
+      commentsOrphaned = commentRowsWritten > 0;
       const attributionRowsWritten = this.#sql.exec("DELETE FROM item_attribution").rowsWritten;
       const expanded = {
         kind: "board.clear",
@@ -4201,6 +4691,7 @@ export class BoardRoom extends DurableObject<Env> {
         capacityRowsWritten +
         itemRowsWritten +
         attributionRowsWritten +
+        commentRowsWritten +
         snapshotRowsWritten +
         snapshotAttributionRowsWritten +
         invalidatedHistoryRows +
@@ -4248,6 +4739,7 @@ export class BoardRoom extends DurableObject<Env> {
     } else {
       this.broadcastAction(action);
     }
+    if (commentsOrphaned) this.broadcastCommentsRefresh();
     this.broadcastAllHistoryStates();
     if (snapshotScheduleRowsWritten > 0) this.scheduleNextAlarmAfterCommit();
     return {
@@ -5119,6 +5611,96 @@ export class BoardRoom extends DurableObject<Env> {
     ).rowsWritten;
   }
 
+  private assertMoveCopyClosureTarget(items: readonly BoardItem[]): void {
+    this.assertSectionRelationshipTargets(items);
+    const violation = findMoveCopyClosureLimitViolation(items);
+    if (violation === null) return;
+    throw new BoardDomainError(
+      "BOARD_LIMIT_REACHED",
+      `A group or Section move/copy closure may contain at most ${MAX_BATCH_OPERATIONS} objects.`,
+      { ...violation, limit: MAX_BATCH_OPERATIONS },
+    );
+  }
+
+  private assertSectionRelationshipTargets(items: Iterable<BoardItem>): void {
+    const itemIndex = new Map<string, BoardItem>();
+    for (const item of items) itemIndex.set(item.id, item);
+    for (const item of itemIndex.values()) {
+      if (item.sectionId === undefined) continue;
+      if (item.kind !== "zone" && itemIndex.get(item.sectionId)?.kind === "zone") continue;
+      throw new BoardDomainError(
+        "INVALID_FRAME",
+        "Every Section relationship must reference a live Section.",
+        { sectionId: item.sectionId, itemId: item.id },
+      );
+    }
+  }
+
+  /**
+   * Scans the whole live topology only when an effect changes a grouping edge
+   * or creates/deletes a Section. The prepared effect overlay is checked in
+   * the same SQLite transaction, before any durable action or item write.
+   */
+  private assertProspectiveMoveCopyClosure(
+    effects: readonly ItemEffect[],
+    target: "before" | "after",
+    knownCurrentItems?: readonly BoardItem[],
+    ownership?: ItemOwnershipContext,
+  ): number {
+    if (!effects.some(topologyChanged)) return 0;
+
+    const currentItems = knownCurrentItems ?? readLiveItems(this.#sql);
+    if (ownership !== undefined) {
+      assertGroupMembershipOwnership(effects, target, currentItems, ownership);
+    }
+    const current = new Map(currentItems.map((item) => [item.id, item]));
+    const deletedSectionIds = deletedSectionIdsForTarget(effects, target);
+
+    const prospective = new Map(current);
+    for (const effect of effects) {
+      const state = effect[target];
+      if (state.exists) prospective.set(effect.itemId, state.item);
+      else prospective.delete(effect.itemId);
+    }
+
+    if (deletedSectionIds.size > 0) {
+      for (const item of prospective.values()) {
+        if (item.sectionId === undefined || !deletedSectionIds.has(item.sectionId)) continue;
+        throw new BoardDomainError(
+          "INVALID_FRAME",
+          "Deleting a Section must clear every surviving member relationship in the same operation.",
+          { sectionId: item.sectionId, itemId: item.id },
+        );
+      }
+    }
+
+    this.assertSectionRelationshipTargets(prospective.values());
+
+    const violation = findMoveCopyClosureLimitViolation(prospective.values());
+    if (violation === null) return currentItems.length;
+
+    // Older workers could persist an oversized closure. Edge and Section
+    // removal cannot enlarge any closure, so permit those monotonic repairs
+    // (and board.clear remains independently available) until the board is
+    // valid again.
+    if (
+      topologyChangesOnlyRemove(effects, target) &&
+      findMoveCopyClosureLimitViolation(currentItems) !== null
+    ) {
+      this.log("warn", "topology.oversize_remediation", {
+        result: violation.itemCount,
+        seedItemId: violation.seedItemId,
+      });
+      return currentItems.length;
+    }
+
+    throw new BoardDomainError(
+      "BOARD_LIMIT_REACHED",
+      `A group or Section move/copy closure may contain at most ${MAX_BATCH_OPERATIONS} objects.`,
+      { ...violation, limit: MAX_BATCH_OPERATIONS },
+    );
+  }
+
   private projectSnapshotAccounting(
     board: BoardRow,
     changes: Iterable<{ before?: ItemRecord; after?: BoardItem }>,
@@ -5966,6 +6548,114 @@ export class BoardRoom extends DurableObject<Env> {
   }
 }
 
+function requireCommentBody(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new HttpError(400, "BAD_REQUEST", "Comment text is required.");
+  }
+  const normalized = value.replace(/\r\n?/gu, "\n").trim();
+  validateUnicodeText(normalized, "comment");
+  if (
+    normalized.length === 0 ||
+    [...normalized].length > MAX_COMMENT_CODE_POINTS ||
+    containsDisallowedControlCharacter(normalized)
+  ) {
+    throw new HttpError(
+      400,
+      "BAD_REQUEST",
+      `Comments must be 1 to ${MAX_COMMENT_CODE_POINTS} visible characters.`,
+    );
+  }
+  return normalized;
+}
+function commentFromRow(row: CommentRow): BoardComment {
+  const resolved = row.state === "resolved";
+  if (
+    (resolved && (row.resolved_by === null || row.resolved_at_ms === null)) ||
+    (!resolved && (row.resolved_by !== null || row.resolved_at_ms !== null))
+  ) {
+    throw new HttpError(500, "INTERNAL_ERROR", "Stored comment data is invalid.");
+  }
+  return {
+    id: row.comment_id,
+    itemId: row.target_item_id,
+    body: row.body,
+    state: row.state,
+    author: {
+      id: row.created_by,
+      displayName: row.author_name || fallbackDisplayName(row.created_by),
+    },
+    createdAt: row.created_at_ms,
+    updatedAt: row.updated_at_ms,
+    ...(resolved && row.resolved_by !== null && row.resolved_at_ms !== null
+      ? {
+          resolvedBy: {
+            id: row.resolved_by,
+            displayName: row.resolver_name || fallbackDisplayName(row.resolved_by),
+          },
+          resolvedAt: row.resolved_at_ms,
+        }
+      : {}),
+  };
+}
+
+function topologyItem(state: ItemEffect["before"]): BoardItem | undefined {
+  return state.exists ? state.item : undefined;
+}
+
+function deletedSectionIdsForTarget(
+  effects: readonly ItemEffect[],
+  target: "before" | "after",
+): Set<string> {
+  const source = target === "after" ? "before" : "after";
+  const deletedSectionIds = new Set<string>();
+  for (const effect of effects) {
+    if (!effect[target].exists && topologyItem(effect[source])?.kind === "zone") {
+      deletedSectionIds.add(effect.itemId);
+    }
+  }
+  return deletedSectionIds;
+}
+
+function topologyChanged(effect: ItemEffect): boolean {
+  const before = topologyItem(effect.before);
+  const after = topologyItem(effect.after);
+  return (
+    (before?.kind === "zone") !== (after?.kind === "zone") ||
+    before?.groupId !== after?.groupId ||
+    before?.sectionId !== after?.sectionId
+  );
+}
+
+function topologyChangesOnlyRemove(
+  effects: readonly ItemEffect[],
+  target: "before" | "after",
+): boolean {
+  const source = target === "after" ? "before" : "after";
+  let changed = false;
+  for (const effect of effects) {
+    const sourceItem = topologyItem(effect[source]);
+    const targetItem = topologyItem(effect[target]);
+    if (
+      (sourceItem?.kind === "zone") === (targetItem?.kind === "zone") &&
+      sourceItem?.groupId === targetItem?.groupId &&
+      sourceItem?.sectionId === targetItem?.sectionId
+    ) {
+      continue;
+    }
+    changed = true;
+    if (sourceItem === undefined) return false;
+    if (targetItem === undefined) continue;
+    if (sourceItem.kind !== "zone" && targetItem.kind === "zone") return false;
+    if (sourceItem.groupId !== targetItem.groupId && targetItem.groupId !== undefined) {
+      return false;
+    }
+    if (sourceItem.sectionId !== targetItem.sectionId && targetItem.sectionId !== undefined) {
+      return false;
+    }
+  }
+  return changed;
+}
+
 function initialBoardFeatures(value: unknown): BoardFeatures {
   if (value === undefined) return { ...DEFAULT_BOARD_FEATURES };
   const patch = requireFeaturePatch(value, true);
@@ -5996,7 +6686,7 @@ function requireFeaturePatch(value: unknown, allowEmpty = false): Partial<BoardF
 
 function featuresForBoard(board: BoardRow): BoardFeatures {
   try {
-    const features = normalizeBoardFeatures(JSON.parse(board.features_json));
+    const features = normalizePersistedBoardFeatures(JSON.parse(board.features_json));
     if (features.images !== (board.images_enabled === 1)) {
       throw new Error("The mirrored image feature setting differs.");
     }
@@ -6021,6 +6711,18 @@ function assertOperationFeaturesEnabled(
   const operations = operation.kind === "items.batch" ? operation.operations : [operation];
   for (const child of operations) {
     if (child.kind === "item.create") {
+      if (
+        !features.objectTransforms &&
+        transformLinearPartChanged([1, 0, 0, 1, 0, 0], child.item.transform)
+      ) {
+        throw new BoardDomainError("FORBIDDEN", "Object transforms are disabled for this board.");
+      }
+      if (
+        !features.grouping &&
+        (child.item.groupId !== undefined || child.item.sectionId !== undefined)
+      ) {
+        throw new BoardDomainError("FORBIDDEN", "Grouping is disabled for this board.");
+      }
       assertItemFeatureEnabled(features, child.item as { kind: string; geometry?: unknown });
       if (
         geometryContainsVisiblePaths(child.item.geometry) &&
@@ -6031,7 +6733,22 @@ function assertOperationFeaturesEnabled(
       continue;
     }
     if (child.kind === "item.update") {
+      if (
+        !features.grouping &&
+        (typeof child.patch.groupId === "string" || typeof child.patch.sectionId === "string")
+      ) {
+        throw new BoardDomainError("FORBIDDEN", "Grouping is disabled for this board.");
+      }
       const source = records.get(child.itemId);
+      if (
+        source !== undefined &&
+        !source.deleted &&
+        child.patch.transform !== undefined &&
+        transformLinearPartChanged(source.item.transform, child.patch.transform) &&
+        !features.objectTransforms
+      ) {
+        throw new BoardDomainError("FORBIDDEN", "Object transforms are disabled for this board.");
+      }
       if (
         source !== undefined &&
         !source.deleted &&
@@ -6054,10 +6771,83 @@ function assertOperationFeaturesEnabled(
     }
     if (child.kind !== "item.copy") continue;
     const source = records.get(child.sourceItemId);
-    if (source !== undefined && !source.deleted) {
-      assertItemFeatureEnabled(features, source.item as { kind: string; geometry?: unknown });
+    const sourceItem = source !== undefined && !source.deleted ? source.item : undefined;
+    if (
+      sourceItem !== undefined &&
+      !features.objectTransforms &&
+      transformLinearPartChanged([1, 0, 0, 1, 0, 0], sourceItem.transform)
+    ) {
+      throw new BoardDomainError("FORBIDDEN", "Object transforms are disabled for this board.");
+    }
+    const effectiveGroupId =
+      child.newGroupId === undefined ? sourceItem?.groupId : child.newGroupId;
+    const effectiveSectionId =
+      child.newSectionId === undefined ? sourceItem?.sectionId : child.newSectionId;
+    if (
+      !features.grouping &&
+      (typeof effectiveGroupId === "string" || typeof effectiveSectionId === "string")
+    ) {
+      throw new BoardDomainError("FORBIDDEN", "Grouping is disabled for this board.");
+    }
+    if (sourceItem !== undefined) {
+      assertItemFeatureEnabled(features, sourceItem as { kind: string; geometry?: unknown });
     }
   }
+}
+
+/**
+ * True when the effect changes nothing about the item except its Section
+ * membership (and the version bump every write carries).
+ */
+function isPureHistorySectionMembershipChange(effect: ItemEffect): boolean {
+  const before = effect.before;
+  const after = effect.after;
+  if (!before.exists || !after.exists) return false;
+  if (before.item.sectionId === after.item.sectionId) return false;
+  return (
+    stableStringify(historyItemWithoutMembership(before.item)) ===
+    stableStringify(historyItemWithoutMembership(after.item))
+  );
+}
+
+function historyItemWithoutMembership(item: BoardItem): Record<string, unknown> {
+  const comparable = structuredClone(item) as unknown as Record<string, unknown>;
+  delete comparable.version;
+  delete comparable.sectionId;
+  return comparable;
+}
+
+function isPureHistorySectionLockChange(effect: ItemEffect): boolean {
+  const before = effect.before;
+  const after = effect.after;
+  if (
+    !before.exists ||
+    !after.exists ||
+    before.item.kind !== "zone" ||
+    after.item.kind !== "zone"
+  ) {
+    return false;
+  }
+  const beforeLocked = (before.item.geometry as { locked?: boolean }).locked === true;
+  const afterLocked = (after.item.geometry as { locked?: boolean }).locked === true;
+  return (
+    beforeLocked !== afterLocked &&
+    stableStringify(historySectionWithoutLock(before.item)) ===
+      stableStringify(historySectionWithoutLock(after.item))
+  );
+}
+
+function historySectionWithoutLock(item: BoardItem): Record<string, unknown> {
+  const comparable = structuredClone(item) as unknown as Record<string, unknown>;
+  delete comparable.version;
+  const geometry = comparable.geometry;
+  if (isRecord(geometry)) delete geometry.locked;
+  return comparable;
+}
+
+function transformLinearPartChanged(current: unknown, next: unknown): boolean {
+  if (!Array.isArray(current) || !Array.isArray(next)) return false;
+  return [0, 1, 2, 3].some((index) => current[index] !== next[index]);
 }
 
 function visiblePathsChanged(currentGeometry: unknown, nextGeometry: unknown): boolean {
@@ -6260,7 +7050,7 @@ function optionalExternalParticipantId(value: unknown): string | null {
   if (
     [...normalized].length < 1 ||
     [...normalized].length > 320 ||
-    /[\p{Cc}\p{Cs}]/u.test(normalized)
+    containsDisallowedControlCharacter(normalized)
   ) {
     throw new HttpError(400, "BAD_REQUEST", "The organisation participant ID is invalid.");
   }
@@ -6768,4 +7558,12 @@ function canDraw(policy: DrawingPolicy, role: BoardRole): boolean {
   if (policy === "locked" || role === "viewer") return false;
   if (policy === "owner_only") return role === "owner";
   return role === "editor" || role === "owner";
+}
+
+/**
+ * Comments follow the drawing policy's role rules but ignore a lock: a locked
+ * board still accepts comments from participants who could otherwise draw.
+ */
+function canComment(policy: DrawingPolicy, role: BoardRole): boolean {
+  return canDraw(policy === "locked" ? "editors_enabled" : policy, role);
 }
