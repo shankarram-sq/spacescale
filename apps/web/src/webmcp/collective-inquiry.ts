@@ -1,11 +1,26 @@
 import "./collective-inquiry.css";
 
 import { boundsForItems, boundsHeight, boundsWidth } from "@collab/geometry";
-import { normalizeBoardItem } from "@collab/protocol";
+import { type Assistance, normalizeBoardItem } from "@collab/protocol";
 import { renderSvgItem } from "@collab/svg-export";
 import type { BoardItem, ServerAction } from "../types";
-import { PROBLEM_STEP_WATCH_TOOL, ProblemStepWatchFeed } from "./problem-step-watch";
-import { trimSnapshots, WEBMCP_MATHJAX_GUIDANCE, WEBMCP_TEXT_RENDERING_CAPABILITY } from "./shared";
+import {
+  type AssistRequestInput,
+  type AssistRequestReceipt,
+  MAX_ASSIST_COMMENTS_PER_WATCH,
+  PROBLEM_STEP_WATCH_TOOL,
+  ProblemStepWatchFeed,
+  WATCHED_STEP_COMMENT_TOOL,
+  type WatchSelectionSource,
+  type WatchState,
+} from "./problem-step-watch";
+import {
+  isRecord,
+  requiredText,
+  trimSnapshots,
+  WEBMCP_MATHJAX_GUIDANCE,
+  WEBMCP_TEXT_RENDERING_CAPABILITY,
+} from "./shared";
 
 const READ_SELECTION_TOOL = "read_selected_class_ideas";
 const INSPECT_VISUAL_TOOL = "inspect_selected_board_visual";
@@ -13,7 +28,10 @@ const INSPIRE_SELECTION_TOOL = "inspire_from_selected_ideas";
 const EXPLAIN_SELECTION_TOOL = "explain_selected_ideas";
 const MAX_SHARED_IDEAS = 30;
 const MAX_SHARED_VISUAL_ITEMS = 40;
-const MAX_SNAPSHOTS = 10;
+/** Chat-minted and watch-minted tokens share this store, so leave room for both flows. */
+const MAX_SNAPSHOTS = 20;
+/** Matches the edge's comment limit, counted in code points like the server does. */
+const MAX_COMMENT_CODE_POINTS = 2_000;
 
 type ShareableItem = Extract<BoardItem, { kind: "sticky" }>;
 
@@ -52,6 +70,11 @@ export type CollectiveInquiryWebMcpOptions = {
   getSequence: () => number;
   getParticipantDisplayName: (participantId: string) => string | null;
   notify: (message: string, kind: "info" | "warning" | "error") => void;
+  /** Whether this browser's participant may post object comments. */
+  canComment?: () => boolean;
+  /** Posts a comment as this browser's participant, tagged with the writing tool. */
+  createComment?: (itemId: string, body: string, assistance: Assistance) => Promise<void>;
+  onWatchStateChanged?: (state: WatchState) => void;
 };
 
 export class CollectiveInquiryWebMcp {
@@ -68,6 +91,9 @@ export class CollectiveInquiryWebMcp {
       getAuthoritativeItem: options.getAuthoritativeItem,
       getSequence: options.getSequence,
       getParticipantDisplayName: options.getParticipantDisplayName,
+      ...(options.onWatchStateChanged ? { onStateChanged: options.onWatchStateChanged } : {}),
+      canComment: () => this.canComment(),
+      mintSelectionToken: (sources) => this.mintSelectionToken(sources),
     });
     this.visualReviewDialog = this.buildVisualReviewDialog();
     options.root.append(this.visualReviewDialog);
@@ -85,6 +111,15 @@ export class CollectiveInquiryWebMcp {
 
   recordAuthoritativeReload(seq: number): void {
     this.problemStepWatch.recordAuthoritativeReload(seq);
+  }
+
+  getWatchState(): WatchState {
+    return this.problemStepWatch.getState();
+  }
+
+  /** Board-side entry point: the AI button hands the participant's request to the live watch. */
+  requestAssistance(input: AssistRequestInput): AssistRequestReceipt {
+    return this.problemStepWatch.requestAssistance(input);
   }
 
   destroy(): void {
@@ -133,7 +168,7 @@ export class CollectiveInquiryWebMcp {
       await modelContext.registerTool(
         {
           name: PROBLEM_STEP_WATCH_TOOL,
-          description: `Start, continue, or stop a 15-minute read-only watch of the exact saved text items selected in this browser. Use this when a participant asks for real-time feedback while working through a problem. First call with action start. Briefly comment on every returned change, then call action wait again with the returned watchToken and nextSeq; repeat after timeouts until the watch expires or the participant asks to stop. Each wait returns once and lasts at most 20 seconds and reports status changed, timeout, resync, stopped, expired, or replaced; every status except changed, timeout and resync ends the watch, and resync carries a fresh snapshot after the board reloaded. The watch never includes unsaved keystrokes, other contents of a selected Section, unselected content, stable item IDs, coordinates, presence, or history. ${WEBMCP_MATHJAX_GUIDANCE}`,
+          description: `Start, continue, or stop a 15-minute read-only watch of the exact saved text items selected in this browser. Use this when a participant asks for real-time feedback while working through a problem. First call with action start. Briefly comment on every returned change, then call action wait again with the returned watchToken and nextSeq; repeat after timeouts until the watch expires or the participant asks to stop. Each wait returns once and lasts at most 20 seconds and reports status changed, requested, timeout, resync, stopped, expired, or replaced; every status except changed, requested, timeout and resync ends the watch, and resync carries a fresh snapshot after the board reloaded. While the watch is live the board shows an AI button; a requested result carries the participant's chosen action, the step text, an optional note, and a reply plan naming the exact next tool call (a comment on the step via ${WATCHED_STEP_COMMENT_TOOL}, or cards via an add_* tool with the returned selectionToken). Answer it, then wait again. The watch never includes unsaved keystrokes, other contents of a selected Section, unselected content, stable item IDs, coordinates, presence, or history. ${WEBMCP_MATHJAX_GUIDANCE}`,
           inputSchema: {
             type: "object",
             properties: {
@@ -172,6 +207,38 @@ export class CollectiveInquiryWebMcp {
       );
       await modelContext.registerTool(
         {
+          name: WATCHED_STEP_COMMENT_TOOL,
+          description: `Post one object comment on a step of a live problem-step watch. This is the reply channel for explain, critique, check_work, and explain_with_video requests and for feedback on a changed step. Pass the watchToken and the step alias from the watch result. The comment is attributed to this browser's participant, tagged as written by AI, renders MathJax, is limited to 2000 characters, and can be resolved by the class like any other comment. At most ${MAX_ASSIST_COMMENTS_PER_WATCH} comments per watch. Never grade, label, or profile the participant. ${WEBMCP_MATHJAX_GUIDANCE}`,
+          inputSchema: {
+            type: "object",
+            properties: {
+              watchToken: {
+                type: "string",
+                maxLength: 128,
+                description: "Opaque token returned by watch_selected_problem_steps.",
+              },
+              stepAlias: {
+                type: "string",
+                pattern: "^step_[1-9][0-9]{0,2}$",
+                description: "The step_N alias of the watched step to comment on.",
+              },
+              body: {
+                type: "string",
+                minLength: 1,
+                maxLength: MAX_COMMENT_CODE_POINTS,
+                description: "The reply. Plain text with optional TeX; no HTML.",
+              },
+            },
+            required: ["watchToken", "stepAlias", "body"],
+            additionalProperties: false,
+          },
+          annotations: { readOnlyHint: false, untrustedContentHint: true },
+          execute: (input, { signal }) => this.commentOnWatchedStep(input, signal),
+        },
+        { signal: this.registration.signal },
+      );
+      await modelContext.registerTool(
+        {
           name: EXPLAIN_SELECTION_TOOL,
           description: `Read only the saved sticky notes selected in this browser and return guidance for explaining their meaning clearly, defining terms, unpacking reasoning, and identifying ambiguities without inventing unsupported claims. Use this when a participant asks what selected writing means. ${WEBMCP_MATHJAX_GUIDANCE}`,
           inputSchema: { type: "object", properties: {}, additionalProperties: false },
@@ -202,6 +269,67 @@ export class CollectiveInquiryWebMcp {
       if (this.registration.signal.aborted) return;
       this.options.notify("The WebMCP collaboration tools could not be registered.", "warning");
     }
+  }
+
+  private canComment(): boolean {
+    return this.options.canComment?.() === true && this.options.createComment !== undefined;
+  }
+
+  private mintSelectionToken(sources: WatchSelectionSource[]): string {
+    const token = crypto.randomUUID();
+    this.snapshots.set(token, {
+      token,
+      capturedAt: new Date().toISOString(),
+      sources: sources.map((source) => ({ ...source })),
+    });
+    trimSnapshots(this.snapshots, MAX_SNAPSHOTS);
+    return token;
+  }
+
+  private async commentOnWatchedStep(
+    input: unknown,
+    signal: AbortSignal,
+  ): Promise<Record<string, unknown>> {
+    signal.throwIfAborted();
+    if (!isRecord(input)) throw new Error("Comment input must be an object.");
+    const watchToken = requiredText(input.watchToken, "watchToken", 128);
+    const stepAlias = requiredText(input.stepAlias, "stepAlias", 16);
+    if (!/^step_[1-9][0-9]{0,2}$/u.test(stepAlias)) {
+      throw new Error("stepAlias must look like step_1.");
+    }
+    if (typeof input.body !== "string") throw new Error("body must be text.");
+    const body = input.body.trim();
+    const characters = [...body].length;
+    if (characters === 0 || characters > MAX_COMMENT_CODE_POINTS) {
+      throw new Error(`body must contain 1-${MAX_COMMENT_CODE_POINTS} characters.`);
+    }
+    const createComment = this.options.createComment;
+    if (!this.canComment() || !createComment) {
+      throw new Error("This browser cannot comment on this Space.");
+    }
+    const target = this.problemStepWatch.commentTarget(watchToken, stepAlias);
+    try {
+      await createComment(target.itemId, body, {
+        tool: WATCHED_STEP_COMMENT_TOOL,
+        ...(target.action === undefined ? {} : { action: target.action }),
+      });
+      target.release(true);
+    } catch (error) {
+      target.release(false);
+      throw error;
+    }
+    this.options.notify(`The AI assistant commented on ${stepAlias}.`, "info");
+    return {
+      status: "commented",
+      watchToken,
+      stepAlias,
+      characters,
+      writtenBy: "ai",
+      attribution:
+        "The comment shows this browser's participant as its author with a small AI tag, like every AI-written object on the board.",
+      privacy:
+        "Only the comment text left the conversation. No board, item, or participant identifiers were returned.",
+    };
   }
 
   private async inspectSelectedVisual(signal: AbortSignal): Promise<Record<string, unknown>> {

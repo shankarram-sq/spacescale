@@ -120,3 +120,93 @@
     justify-content: flex-start;
   }
 }
+
+/* Board-side AI assist: only present while a WebMCP problem-step watch is live. */
+.ai-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #2d2240;
+  color: #fff;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  line-height: 1;
+}
+
+.ai-watch-indicator {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: 1px solid #d8cdf0;
+  border-radius: 999px;
+  background: #f7f4fb;
+  color: #5f477f;
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.selection-ai-wrap {
+  position: relative;
+}
+
+.selection-actions button[data-selection-ai] {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.ai-assist-menu {
+  width: 244px;
+}
+
+.ai-assist-note {
+  display: grid;
+  gap: 3px;
+  padding: 6px 9px 2px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.ai-assist-note input {
+  min-height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.ai-assist-menu-note {
+  margin: 0;
+  padding: 4px 9px 6px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.assistance-tag {
+  margin-left: 6px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #2d2240;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 760;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}
