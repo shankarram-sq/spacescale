@@ -212,7 +212,12 @@ describe("lightweight movement previews", () => {
     const border = created?.children.find((child) =>
       child.classList.values.has("video-embed-border"),
     );
+    const dragFrame = created?.children.find((child) =>
+      child.classList.values.has("video-embed-drag-frame"),
+    );
     expect(foreign?.attributes.get("x")).toBe("120");
+    expect(dragFrame?.attributes.get("x")).toBe("120");
+    expect(dragFrame?.dataset.videoDragFrame).toBe("true");
     expect(border?.attributes.get("x")).toBe("120");
   });
 
