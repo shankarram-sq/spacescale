@@ -24,8 +24,10 @@ describe("classroom templates", () => {
       "sort-it": 12,
       "pair-share": 7,
       "vote-with-stamps": 4,
-      "ai-feedback-graph": 17,
-      "ai-explain-moon-phases": 25,
+      "graph-check": 13,
+      "student-questions": 26,
+      "brainstorm-school-traffic": 26,
+      "problem-set-six-students": 14,
     };
 
     expect(ACTIVITY_TEMPLATES.map(({ id }) => id)).toEqual(Object.keys(expectedCounts));
@@ -93,24 +95,30 @@ describe("classroom templates", () => {
     expect(isVoteTable(voteTable)).toBe(true);
   });
 
-  it("gives the demo boards handwriting, a written claim, and an empty Section for the AI", () => {
+  it("gives each demo board student Sections and no AI scaffolding", () => {
     const byId = new Map(ACTIVITY_TEMPLATES.map((template) => [template.id, template]));
+    const demos = [
+      "graph-check",
+      "student-questions",
+      "brainstorm-school-traffic",
+      "problem-set-six-students",
+    ] as const;
 
-    for (const id of ["ai-feedback-graph", "ai-explain-moon-phases"] as const) {
+    for (const id of demos) {
       const template = byId.get(id);
       if (!template) throw new Error(`${id} is missing.`);
-      // Strokes are what make the watch send a picture rather than a description.
-      expect(template.items.filter(({ kind }) => kind === "pencil").length).toBeGreaterThanOrEqual(
-        5,
-      );
-      // A written claim is what the AI comments on.
-      expect(template.items.some(({ kind }) => kind === "sticky")).toBe(true);
-      // An empty Section is where the AI's image or video lands.
-      const sections = template.items.filter((item) => item.kind === "zone");
-      expect(sections.length).toBeGreaterThanOrEqual(2);
-      expect(
-        sections.some((item) => item.kind === "zone" && /Ask the AI/u.test(item.geometry.title)),
-      ).toBe(true);
+      // The AI answers in comments, so no board may carry a block waiting for it.
+      for (const item of template.items) {
+        const text =
+          item.kind === "text" || item.kind === "sticky"
+            ? item.geometry.text
+            : item.kind === "zone"
+              ? item.geometry.title
+              : "";
+        expect(text).not.toMatch(/\bAI\b/u);
+        // A lone $ is a dollar sign, so no board may lean on it for math.
+        expect(text.replace(/\$\$/gu, "")).not.toContain("$");
+      }
       // Every stroke must be drawable.
       for (const item of template.items) {
         if (item.kind !== "pencil") continue;
@@ -118,24 +126,37 @@ describe("classroom templates", () => {
       }
     }
 
-    // The wrong claim is what the AI corrects, written with MathJax's inline delimiters.
-    const graph = byId.get("ai-feedback-graph");
+    // The handwriting board is what makes a watch send a picture rather than a description.
+    const graph = byId.get("graph-check");
+    expect(graph?.items.filter(({ kind }) => kind === "pencil").length).toBeGreaterThanOrEqual(5);
     expect(
       graph?.items.some(
         (item) => item.kind === "sticky" && item.geometry.text.includes("\\(x=-3\\)"),
       ),
     ).toBe(true);
-    // A lone $ is a dollar sign, so no demo board may lean on it for math.
-    for (const template of [byId.get("ai-feedback-graph"), byId.get("ai-explain-moon-phases")]) {
-      for (const item of template?.items ?? []) {
-        const text =
-          item.kind === "text" || item.kind === "sticky"
-            ? item.geometry.text
-            : item.kind === "zone"
-              ? item.geometry.title
-              : "";
-        expect(text.replace(/\$\$/gu, "")).not.toContain("$");
-      }
+
+    // The three class boards each give six students a Section of their own.
+    for (const id of [
+      "student-questions",
+      "brainstorm-school-traffic",
+      "problem-set-six-students",
+    ] as const) {
+      const sections = byId.get(id)?.items.filter((item) => item.kind === "zone") ?? [];
+      expect(sections, id).toHaveLength(6);
+      const names = sections.map((item) => (item.kind === "zone" ? item.geometry.title : ""));
+      expect(new Set(names).size, id).toBe(6);
+      // Every Section holds work, or there would be nothing to comment on.
+      expect(
+        names.every((name) => name.length > 0),
+        id,
+      ).toBe(true);
     }
+
+    // One student is still short of the full set, so a reader can see who is mid-way.
+    const problems = byId.get("problem-set-six-students");
+    const answers = (problems?.items ?? []).filter((item) => item.kind === "text");
+    expect(
+      answers.some((item) => item.kind === "text" && /not started/u.test(item.geometry.text)),
+    ).toBe(true);
   });
 });

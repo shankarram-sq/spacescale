@@ -10,13 +10,11 @@ that the same tool remains permission-bound and collaborative.
    in-app browser or another compatible WebMCP host.
 2. Create a Space named **AI feedback on a quadratic**. Keep a second browser
    session open as a viewer.
-3. Open **Activities** and insert **AI feedback demo: graph check**. It lays out
-   the whole scene in one click: a hand-drawn parabola inside a Section called
-   *Priya's working* that wrongly marks the roots at `-3` and `-1`, a sticky
-   claiming those roots, a second sticky where the student's own check
-   `9 - 21 + 10 = -2` already contradicts the claim, and an empty Section called
-   *Ask the AI to explain* for the reply to land in. The board carries its own
-   three-step demo script beneath the working.
+3. Open **Templates** and insert **Graph check: one student's working**. It lays
+   out the whole scene in one click: a hand-drawn parabola inside a Section
+   called *Priya's working* that wrongly marks the roots at `-3` and `-1`, a
+   sticky claiming those roots, and a second sticky where the student's own
+   check `9 - 21 + 10 = -2` already contradicts the claim.
 4. Add one relevant public YouTube or Vimeo lesson video with **Video**. Keep it
    paused beside the work.
 5. Hide notifications, close unrelated tabs, set browser zoom to 100%, test the
@@ -114,21 +112,25 @@ session.
 
 ## Demo boards
 
-Two activity templates stage a whole demo in one click, so no scene has to be
-drawn live. Both mix handwriting, canvas text, stickies, Sections, and a table,
-so a watch on either returns a picture of the board alongside the text. Both also
-leave an empty Section for the AI's reply, which makes the moment the answer
-lands legible on camera. A visiting host can insert either one itself with
-`insert_filled_template`, after `read_templates` names the text slots.
+Four templates stage a demo in one click, so no scene has to be drawn live. Each
+one is student work and nothing else: there is no block waiting for the AI,
+because the AI answers in comments, which is the thing worth showing. Nothing on
+any of them belongs to a real student.
 
-| Template | Stages | The AI's move |
-| --- | --- | --- |
-| **AI feedback demo: graph check** | A hand-drawn parabola with the roots marked at `-3` and `-1`, and the student's own arithmetic check disproving it | Comment the correction on the working, then explain with a video and an image |
-| **AI explain demo: moon phases** | Five sketched nights of a Moon shaded darker each night, a misconception sticky blaming the Earth's shadow, a classmate asking why there is no monthly eclipse, and a blank observation table | Comment on the shadow idea, then explain with a clip and a diagram |
+| Template | What it stages |
+| --- | --- |
+| **Graph check: one student's working** | A hand-drawn parabola with the roots marked at `-3` and `-1`, and the student's own arithmetic already disproving it |
+| **Need to know: eclipses** | Six students, a Section each, three questions apiece before the topic starts |
+| **Brainstorm: traffic near school** | Six students, a Section each, ideas and objections about a real school problem |
+| **Problem set: six students** | Six students working the same five order-of-operations problems, each with mistakes, one still on question five |
 
-Insert one, start `watch_board`, then use the board's **AI** action and the
-selection toolbar's **Ask AI** button to drive the three actions the board's own
-script names. Nothing on either board belongs to a real student.
+The three class boards give every student a Section of their own, which is what
+makes per-student feedback legible: a comment lands on one person's work while
+the rest of the class stays visible beside it. The graph board is the
+handwriting case, so a watch on it returns a picture rather than a description.
+
+Insert one, start `watch_board`, then use the board's **AI** action or the
+selection toolbar's **Ask AI** button. The replies arrive as object comments.
 
 ## Optional second story
 
