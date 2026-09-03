@@ -173,10 +173,40 @@ test("a board participant can use headless WebMCP tools with neutral board attri
       {
         action: "critique",
         note: "Not sure about the second step",
-        reply: { via: "comment", call: { tool: "insert_comment" } },
+        reply: {
+          via: "comment",
+          call: {
+            tool: "insert_comment",
+            input: { watchToken: watchStart.watchToken, stepAlias: expect.any(String) },
+          },
+        },
       },
     ],
   });
+
+  // The request covered every watched step and left no single selection behind, so the reply
+  // plan's watchToken and stepAlias are the only handle on what is being answered.
+  const stepAlias = String(
+    (requested.requests as Array<{ reply: { call: { input: { stepAlias: string } } } }>)[0]?.reply
+      .call.input.stepAlias,
+  );
+  const answered = await page.evaluate(
+    ({ watchToken, alias }) => {
+      const tool = window.__spaceScaleWebMcpTools.insert_comment;
+      if (!tool) throw new Error("The comment write was not registered.");
+      return tool.execute(
+        { watchToken, stepAlias: alias, body: "Check the division step: $6/2=3$, so $x=3$." },
+        { signal: new AbortController().signal },
+      );
+    },
+    { watchToken: String(watchStart.watchToken), alias: stepAlias },
+  );
+  expect(answered).toMatchObject({ status: "commented", stepAlias, writtenBy: "ai" });
+  await expect(page.locator("[data-comments-count]")).toHaveText("1");
+  await page.getByTestId("comments-button").click();
+  const answeredDrawer = page.getByTestId("comments-drawer");
+  await expect(answeredDrawer.locator(".comment-card .assistance-tag")).toHaveText("AI · Critique");
+  await page.getByTestId("comments-button").click();
 
   const watchResult = page.evaluate(
     ({ watchToken, afterSeq }) => {
@@ -283,11 +313,15 @@ test("a board participant can use headless WebMCP tools with neutral board attri
     );
   });
   expect(commented).toMatchObject({ status: "commented", objectKind: "sticky", writtenBy: "ai" });
-  await expect(page.locator("[data-comments-count]")).toHaveText("1");
+  await expect(page.locator("[data-comments-count]")).toHaveText("2");
   await page.getByTestId("comments-button").click();
   const commentsDrawer = page.getByTestId("comments-drawer");
-  await expect(commentsDrawer.locator(".comment-card")).toHaveCount(1);
-  await expect(commentsDrawer.locator(".comment-card .assistance-tag")).toHaveText("AI");
+  await expect(commentsDrawer.locator(".comment-card")).toHaveCount(2);
+  // The watch reply carries the action it answered; the coordinate-targeted one has none.
+  await expect(commentsDrawer.locator(".comment-card .assistance-tag")).toHaveText([
+    "AI",
+    "AI · Critique",
+  ]);
   await expect(commentsDrawer.locator(".comment-card strong").first()).not.toHaveText("AI");
   await page.getByTestId("comments-button").click();
 

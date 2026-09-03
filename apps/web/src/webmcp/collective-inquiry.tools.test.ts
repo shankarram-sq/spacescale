@@ -3,7 +3,7 @@ import type { BoardItem } from "../types";
 import { CollectiveInquiryWebMcp } from "./collective-inquiry";
 import { MAX_WATCHED_ITEMS } from "./problem-step-watch";
 import { webMcpRegistryState, webMcpToolDefinitions } from "./shared";
-import type { WebMcpRegisterToolOptions, WebMcpToolDefinition } from "./types";
+import type { RegisteredWebMcpTool, WebMcpRegisterToolOptions } from "./types";
 
 const ACTOR_ID = "018f0000-0000-7000-8000-0000000000a1";
 const STICKY_ID = "018f0000-0000-7000-8000-0000000000b1";
@@ -42,14 +42,14 @@ function fakeDialog(): HTMLDialogElement {
 
 function harness(options: { canComment?: boolean; canWrite?: boolean; board?: BoardItem[] } = {}) {
   /** What a linked host is actually offered. */
-  const exposed = new Map<string, WebMcpToolDefinition>();
+  const exposed = new Map<string, RegisteredWebMcpTool>();
   /** Every definition the module builds, including the ones this build withholds. */
   const tools = webMcpToolDefinitions();
   const board = options.board ?? [sticky()];
   vi.stubGlobal("document", {
     createElement: () => fakeDialog(),
     modelContext: {
-      registerTool(tool: WebMcpToolDefinition, registration?: WebMcpRegisterToolOptions) {
+      registerTool(tool: RegisteredWebMcpTool, registration?: WebMcpRegisterToolOptions) {
         exposed.set(tool.name, tool);
         registration?.signal?.addEventListener("abort", () => exposed.delete(tool.name), {
           once: true,
@@ -186,6 +186,28 @@ describe("watch reply tools", () => {
 
 describe("registered tool surface", () => {
   afterEach(() => vi.unstubAllGlobals());
+
+  it("starts a watch for a host that hands execute no AbortSignal", async () => {
+    // Codex's WebMCP shim passes an options object carrying only requestUserInteraction, so
+    // reaching for signal.throwIfAborted() threw a TypeError before the watch ever started.
+    const { inquiry, exposed } = harness();
+    await vi.waitFor(() => expect(exposed.has("watch_board")).toBe(true));
+    const watch = exposed.get("watch_board");
+    if (!watch) throw new Error("watch_board was not offered to the host.");
+
+    const started = (await watch.execute({ action: "start" }, {
+      requestUserInteraction: () => undefined,
+    } as never)) as Record<string, unknown>;
+    expect(started).toMatchObject({ status: "started", watchToken: expect.any(String) });
+
+    // And for a host that omits the options argument altogether.
+    const stopped = (await watch.execute({
+      action: "stop",
+      watchToken: started.watchToken,
+    })) as Record<string, unknown>;
+    expect(stopped).toMatchObject({ status: "stopped" });
+    inquiry.destroy();
+  });
 
   it("offers a host only the watch and drops it when the page tears down", async () => {
     const before = webMcpRegistryState().toolCount;

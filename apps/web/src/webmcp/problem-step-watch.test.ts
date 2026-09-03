@@ -636,8 +636,12 @@ describe("board-side assist requests", () => {
             via: "comment",
             call: {
               tool: "insert_comment",
-              input: { body: expect.any(String) },
-              note: expect.stringContaining("step_1"),
+              // The alias, not the live selection, is what the reply is aimed at.
+              input: {
+                watchToken: started.watchToken,
+                stepAlias: "step_1",
+                body: expect.any(String),
+              },
             },
           },
         },

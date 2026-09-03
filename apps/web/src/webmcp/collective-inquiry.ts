@@ -10,6 +10,7 @@ import {
   PROBLEM_STEP_WATCH_TOOL,
   ProblemStepWatchFeed,
   WATCHED_STEP_COMMENT_TOOL,
+  type WatchedStepCommentTarget,
   type WatchSelectionSource,
   type WatchState,
 } from "./problem-step-watch";
@@ -124,6 +125,14 @@ export class CollectiveInquiryWebMcp {
 
   getWatchState(): WatchState {
     return this.problemStepWatch.getState();
+  }
+
+  /**
+   * Resolves a watched step for the generic comment write. The watch reports steps by alias and
+   * returns no coordinates, so a reply plan has no other way to name what it is answering.
+   */
+  watchedStepCommentTarget(watchToken: string, stepAlias: string): WatchedStepCommentTarget {
+    return this.problemStepWatch.commentTarget(watchToken, stepAlias);
   }
 
   /** Board-side entry point: the AI button hands the participant's request to the live watch. */

@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { BoardItem, DurableOperation, NewBoardItem } from "../types";
-import { BoardWriteWebMcp } from "./board-writes";
+import { BoardWriteWebMcp, type WatchedStepTarget } from "./board-writes";
 import { webMcpToolDefinitions } from "./shared";
-import type { WebMcpRegisterToolOptions, WebMcpToolDefinition } from "./types";
+import type { RegisteredWebMcpTool, WebMcpRegisterToolOptions } from "./types";
 
 const ACTOR_ID = "018f0000-0000-7000-8000-0000000000a1";
 const STICKY_ID = "018f0000-0000-7000-8000-0000000000b1";
@@ -31,14 +31,15 @@ function harness(
     featureIssue?: (kind: "sticky" | "image" | "video") => string | null;
     itemAt?: BoardItem | undefined;
     selected?: BoardItem | null;
+    resolveWatchedStep?: (watchToken: string, stepAlias: string) => WatchedStepTarget;
     commit?: (operation: DurableOperation) => Promise<boolean>;
   } = {},
 ) {
-  const exposed = new Map<string, WebMcpToolDefinition>();
+  const exposed = new Map<string, RegisteredWebMcpTool>();
   const tools = webMcpToolDefinitions();
   vi.stubGlobal("document", {
     modelContext: {
-      registerTool(tool: WebMcpToolDefinition, registration?: WebMcpRegisterToolOptions) {
+      registerTool(tool: RegisteredWebMcpTool, registration?: WebMcpRegisterToolOptions) {
         exposed.set(tool.name, tool);
         registration?.signal?.addEventListener("abort", () => exposed.delete(tool.name), {
           once: true,
@@ -69,6 +70,7 @@ function harness(
     getPlacementCenter: () => [120, 80],
     itemAt: () => options.itemAt,
     getSelectedItem: () => options.selected ?? null,
+    ...(options.resolveWatchedStep ? { resolveWatchedStep: options.resolveWatchedStep } : {}),
     commit:
       options.commit ??
       (async (operation) => {
@@ -98,7 +100,17 @@ function harness(
       unknown
     >;
   };
-  return { writes, tools, exposed, committed, comments, revealed, notices, stored, call };
+  const styleFor = () => () => ({
+    stickyFill: "#ffe299",
+    stickyTextColor: "#1e1e1e",
+    stickyFontSize: 20,
+    stickyOpacity: 1,
+    textColor: "#1e1e1e",
+    textFontSize: 28,
+    textFontFamily: "sans" as const,
+    textOpacity: 1,
+  });
+  return { writes, tools, exposed, committed, comments, revealed, notices, stored, call, styleFor };
 }
 
 function createdItem(
@@ -258,7 +270,7 @@ describe("generic board writes", () => {
 
     const empty = await ready();
     await expect(empty.call("insert_comment", { body: "Say more?" })).rejects.toThrow(
-      "select exactly one saved object",
+      "Name the object to comment on",
     );
     empty.writes.destroy();
 
@@ -288,6 +300,111 @@ describe("generic board writes", () => {
   it("reports a write the board would not queue", async () => {
     const { writes, call } = await ready({ commit: async () => false });
     await expect(call("insert_sticky", { text: "a" })).rejects.toThrow("could not be queued");
+    writes.destroy();
+  });
+
+  it("comments on a watched step whatever the participant has selected now", async () => {
+    const released: boolean[] = [];
+    const resolveWatchedStep = vi.fn((watchToken: string, stepAlias: string) => {
+      if (watchToken !== "watch-1") throw new Error("This problem-step watch is missing.");
+      if (stepAlias !== "step_2") throw new Error("stepAlias is not part of this watch.");
+      return {
+        itemId: STICKY_ID,
+        action: "critique" as const,
+        release: (posted: boolean) => released.push(posted),
+      };
+    });
+    // No location and nothing selected: the alias is the only handle, which is the case a
+    // request over several steps, or none, leaves behind.
+    const { writes, comments, notices, call } = await ready({ resolveWatchedStep });
+    const result = await call("insert_comment", {
+      watchToken: "watch-1",
+      stepAlias: "step_2",
+      body: "Check the division step.",
+    });
+    expect(resolveWatchedStep).toHaveBeenCalledWith("watch-1", "step_2");
+    expect(comments).toEqual([
+      {
+        itemId: STICKY_ID,
+        body: "Check the division step.",
+        // The action the watch was answering rides along, so the board tags it "AI · Critique".
+        assistance: { tool: "insert_comment", action: "critique" },
+      },
+    ]);
+    expect(released).toEqual([true]);
+    expect(result).toMatchObject({ status: "commented", stepAlias: "step_2", writtenBy: "ai" });
+    expect(notices.some((notice) => notice.includes("step_2"))).toBe(true);
+    writes.destroy();
+  });
+
+  it("releases the watch's comment slot when the post fails, and reports a bad alias", async () => {
+    const released: boolean[] = [];
+    const resolveWatchedStep = (): WatchedStepTarget => ({
+      itemId: STICKY_ID,
+      release: (posted: boolean) => released.push(posted),
+    });
+    const context = harness({ resolveWatchedStep });
+    await vi.waitFor(() => expect(context.exposed.has("insert_comment")).toBe(true));
+    // A failed post must not spend the watch's comment budget.
+    const failing = new BoardWriteWebMcp({
+      canWrite: () => true,
+      canComment: () => true,
+      imagesEnabled: () => true,
+      featureIssue: () => null,
+      getStyle: context.styleFor(),
+      getPlacementCenter: () => [0, 0],
+      itemAt: () => undefined,
+      getSelectedItem: () => null,
+      resolveWatchedStep,
+      commit: async () => true,
+      createComment: async () => {
+        throw new Error("The board refused the comment.");
+      },
+      storeImage: async () => {
+        throw new Error("unused");
+      },
+      revealItems: () => undefined,
+      notify: () => undefined,
+    });
+    const tool = webMcpToolDefinitions().get("insert_comment");
+    if (!tool) throw new Error("insert_comment is not defined.");
+    await expect(
+      tool.execute(
+        { watchToken: "watch-1", stepAlias: "step_1", body: "hi" },
+        { signal: new AbortController().signal },
+      ),
+    ).rejects.toThrow("The board refused the comment.");
+    expect(released).toEqual([false]);
+    failing.destroy();
+    context.writes.destroy();
+
+    const plain = await ready();
+    await expect(
+      plain.call("insert_comment", { watchToken: "watch-1", stepAlias: "nope", body: "hi" }),
+    ).rejects.toThrow("stepAlias must look like step_1");
+    await expect(
+      plain.call("insert_comment", { watchToken: "watch-1", stepAlias: "step_1", body: "hi" }),
+    ).rejects.toThrow("cannot comment on a watched step");
+    plain.writes.destroy();
+  });
+
+  it("works on a host that hands execute no AbortSignal at all", async () => {
+    // Codex's WebMCP shim passes an options object carrying only requestUserInteraction. Reaching
+    // for signal.throwIfAborted() on that threw a TypeError before any tool did its work.
+    const { writes, exposed, committed } = await ready();
+    const sticky = exposed.get("insert_sticky");
+    if (!sticky) throw new Error("insert_sticky was not offered to the host.");
+
+    await sticky.execute({ text: "No signal here", location: { x: 10, y: 20 } }, {
+      requestUserInteraction: () => undefined,
+    } as never);
+    // Some hosts omit the second argument entirely.
+    await sticky.execute({ text: "None at all", location: { x: 30, y: 40 } });
+
+    expect(committed).toHaveLength(2);
+    const first = createdItem(committed[0]);
+    if (first.kind !== "sticky") throw new Error("Expected a sticky note.");
+    expect(first.geometry).toMatchObject({ x: 10, y: 20, text: "No signal here" });
     writes.destroy();
   });
 

@@ -738,7 +738,7 @@ export class ProblemStepWatchFeed {
         const request = this.refreshRequest(session, queued);
         return {
           ...request,
-          reply: replyPlan(request, { canComment, canWrite }),
+          reply: replyPlan(session.token, request, { canComment, canWrite }),
         };
       }),
       ...(droppedRequests > 0 ? { droppedRequests } : {}),
@@ -1069,6 +1069,7 @@ export function assistActionLabel(action: AssistAction): string {
  * names the exact next tool call so the host has nothing to infer.
  */
 function replyPlan(
+  watchToken: string,
   request: DeliveredAssistRequest,
   permissions: { canComment: boolean; canWrite: boolean },
 ): Record<string, unknown> {
@@ -1084,8 +1085,8 @@ function replyPlan(
       ? {
           call: {
             tool: "insert_comment",
-            input: { body: COMMENT_BODY_PLACEHOLDER },
-            note: `Comments attach to an object, so pass a location on the step or leave it out to comment on the one object selected in this browser. The watch reports the step as ${firstAlias}${request.action === undefined ? "" : ` and the request as ${request.action}`}; it does not return coordinates.`,
+            input: { watchToken, stepAlias: firstAlias, body: COMMENT_BODY_PLACEHOLDER },
+            note: "The watchToken and stepAlias name the step being answered, so the reply lands on it whatever the participant has selected now.",
           },
         }
       : via === "board"

@@ -1,5 +1,5 @@
 import { COORDINATE_LIMIT } from "@collab/geometry";
-import type { Assistance } from "@collab/protocol";
+import type { AssistAction, Assistance } from "@collab/protocol";
 import { MAX_IMAGE_ALT_CODE_POINTS, MAX_STICKY_TEXT_CODE_POINTS } from "@collab/protocol";
 import { VIDEO_EMBED_HEIGHT, VIDEO_EMBED_WIDTH, videoEmbedFromText } from "../board/links";
 import {
@@ -16,7 +16,7 @@ import type {
   TextFontFamily,
 } from "../types";
 import { createId, roundBoard } from "../types";
-import { isRecord, registerWebMcpTool, WEBMCP_MATHJAX_GUIDANCE } from "./shared";
+import { isRecord, registerWebMcpTool, requiredText, WEBMCP_MATHJAX_GUIDANCE } from "./shared";
 
 export const INSERT_COMMENT_TOOL = "insert_comment";
 export const INSERT_STICKY_TOOL = "insert_sticky";
@@ -56,6 +56,17 @@ export type BoardWriteStyle = {
   textOpacity: number;
 };
 
+/**
+ * A step of a live board watch, resolved to something a comment can attach to. The watch
+ * deliberately returns no coordinates, so this is how a reply plan names its target without one.
+ */
+export type WatchedStepTarget = {
+  itemId: string;
+  action?: AssistAction;
+  /** Must be called exactly once; `posted` counts the comment against the watch's cap. */
+  release: (posted: boolean) => void;
+};
+
 export type BoardWriteWebMcpOptions = {
   /** Whether this browser's participant may add objects to the board. */
   canWrite: () => boolean;
@@ -73,6 +84,8 @@ export type BoardWriteWebMcpOptions = {
   itemAt: (point: Point) => BoardItem | undefined;
   /** The one saved object selected in this browser, when exactly one is. */
   getSelectedItem: () => BoardItem | null;
+  /** Resolves a live watch's step alias to a comment target, or throws saying why it cannot. */
+  resolveWatchedStep?: (watchToken: string, stepAlias: string) => WatchedStepTarget;
   commit: (operation: DurableOperation) => Promise<boolean>;
   /** Posts a comment as this browser's participant, tagged with the writing tool. */
   createComment: (itemId: string, body: string, assistance: Assistance) => Promise<void>;
@@ -120,10 +133,21 @@ export class BoardWriteWebMcp {
         modelContext,
         {
           name: INSERT_COMMENT_TOOL,
-          description: `Post one comment on a saved object on this board. Name the object with location, a board coordinate the object covers; with no location the comment goes on the one object selected in this browser. The comment is attributed to this browser's participant, carries a small AI tag, renders MathJax, is limited to ${MAX_COMMENT_CODE_POINTS} characters, and can be resolved by the class like any other comment. Never grade, label, rank, or profile a participant. ${WEBMCP_MATHJAX_GUIDANCE}`,
+          description: `Post one comment on a saved object on this board. Name the object in one of three ways: pass watchToken and stepAlias to comment on a step of a live board watch, which is what a watch's reply plan asks for and the only way to answer a request the watch delivered; or pass location, a board coordinate the object covers; or pass neither, which comments on the one object selected in this browser. The comment is attributed to this browser's participant, carries a small AI tag, renders MathJax, is limited to ${MAX_COMMENT_CODE_POINTS} characters, and can be resolved by the class like any other comment. Never grade, label, rank, or profile a participant. ${WEBMCP_MATHJAX_GUIDANCE}`,
           inputSchema: {
             type: "object",
             properties: {
+              watchToken: {
+                type: "string",
+                maxLength: 128,
+                description:
+                  "Opaque token from watch_board, to comment on a step that watch reported. Pass stepAlias with it.",
+              },
+              stepAlias: {
+                type: "string",
+                pattern: "^step_(?:[1-9][0-9]{0,3}|10000)$",
+                description: "The step_N alias of the watched step to comment on.",
+              },
               location: LOCATION_SCHEMA,
               body: {
                 type: "string",
@@ -246,20 +270,58 @@ export class BoardWriteWebMcp {
     if (!this.options.canComment()) {
       throw new Error("This browser cannot comment on this Space.");
     }
-    const target = this.commentTarget(input.location);
+    const watched = this.watchedTarget(input);
     signal.throwIfAborted();
+    if (watched) {
+      // The watch counts this against its own comment cap either way, so release exactly once.
+      try {
+        await this.options.createComment(watched.target.itemId, body, {
+          tool: INSERT_COMMENT_TOOL,
+          ...(watched.target.action === undefined ? {} : { action: watched.target.action }),
+        });
+      } catch (error) {
+        watched.target.release(false);
+        throw error;
+      }
+      watched.target.release(true);
+      this.options.notify(`The AI assistant commented on ${watched.stepAlias}.`, "info");
+      return this.commentResult({ stepAlias: watched.stepAlias, characters });
+    }
+    const target = this.commentTarget(input.location);
     await this.options.createComment(target.id, body, { tool: INSERT_COMMENT_TOOL });
     this.options.notify("The AI assistant added a comment.", "info");
+    return this.commentResult({ objectKind: target.kind, characters });
+  }
+
+  private commentResult(extra: Record<string, unknown>): Record<string, unknown> {
     return {
       status: "commented",
-      objectKind: target.kind,
-      characters,
+      ...extra,
       writtenBy: "ai",
       attribution:
         "The comment shows this browser's participant as its author with a small AI tag, like every AI-written object on the board.",
       privacy:
         "Only the comment text left the conversation. No board, item, or participant identifiers were returned.",
     };
+  }
+
+  /**
+   * Resolves the watch-step form of a comment target, or undefined when the call does not use
+   * it. A watch reports steps by alias and returns no coordinates, so this is the only way to
+   * answer a request about a step the participant did not leave selected.
+   */
+  private watchedTarget(
+    input: Record<string, unknown>,
+  ): { target: WatchedStepTarget; stepAlias: string } | undefined {
+    if (input.watchToken === undefined && input.stepAlias === undefined) return undefined;
+    const watchToken = requiredText(input.watchToken, "watchToken", 128);
+    const stepAlias = requiredText(input.stepAlias, "stepAlias", 16);
+    if (!/^step_(?:[1-9][0-9]{0,3}|10000)$/u.test(stepAlias)) {
+      throw new Error("stepAlias must look like step_1.");
+    }
+    const resolve = this.options.resolveWatchedStep;
+    if (!resolve) throw new Error("This browser cannot comment on a watched step.");
+    return { target: resolve(watchToken, stepAlias), stepAlias };
   }
 
   /** The object a comment attaches to: the one under the given point, else the lone selection. */
@@ -277,7 +339,7 @@ export class BoardWriteWebMcp {
     const selected = this.options.getSelectedItem();
     if (!selected) {
       throw new Error(
-        "Pass a location on the object to comment on, or select exactly one saved object in this browser first.",
+        "Name the object to comment on: pass watchToken and stepAlias for a watched step, or a location on it, or select exactly one saved object in this browser first.",
       );
     }
     return selected;

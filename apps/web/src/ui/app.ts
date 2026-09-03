@@ -1482,6 +1482,11 @@ export class BoardApp {
       getPlacementCenter: () => this.imagePlacementCenter(),
       itemAt: (point) => this.savedItemAt(point),
       getSelectedItem: () => this.singleSavedSelection(),
+      resolveWatchedStep: (watchToken, stepAlias) => {
+        const inquiry = this.webMcp;
+        if (!inquiry) throw new Error("The board watch is not available in this browser.");
+        return inquiry.watchedStepCommentTarget(watchToken, stepAlias);
+      },
       commit: (operation) => this.commitAndWait(operation),
       createComment: (itemId, body, assistance) => this.commentFromWebMcp(itemId, body, assistance),
       storeImage: (imageDataUrl, signal) => this.storeWebMcpImage(imageDataUrl, signal),

@@ -1,4 +1,10 @@
-import type { WebMcpModelContext, WebMcpRegisterToolOptions, WebMcpToolDefinition } from "./types";
+import type {
+  RegisteredWebMcpTool,
+  WebMcpHostExecutionOptions,
+  WebMcpModelContext,
+  WebMcpRegisterToolOptions,
+  WebMcpToolDefinition,
+} from "./types";
 
 export type WebMcpRegistryState = {
   /** True when a WebMCP host exposed document.modelContext in this browser. */
@@ -88,9 +94,10 @@ export async function registerWebMcpTool(
 ): Promise<void> {
   if (options?.signal?.aborted) return;
   definedTools.set(tool.name, tool);
+  const exposed = withExecutionSignal(tool);
   options?.signal?.addEventListener("abort", () => definedTools.delete(tool.name), { once: true });
   if (!webMcpToolEnabled(tool.name)) return;
-  await modelContext.registerTool(tool, options);
+  await modelContext.registerTool(exposed, options);
   if (options?.signal?.aborted) return;
   registeredToolNames.add(tool.name);
   options?.signal?.addEventListener(
@@ -102,6 +109,27 @@ export async function registerWebMcpTool(
     { once: true },
   );
   announceRegistryChange();
+}
+
+/**
+ * Guarantees every tool an AbortSignal, whatever the host passes.
+ *
+ * The WebMCP execution contract is `execute(input, { signal })`, but hosts differ: one shim hands
+ * over an options object carrying only `requestUserInteraction`, and calling `signal.throwIfAborted()`
+ * on that throws a TypeError before the tool does any work. Substituting a signal that never
+ * aborts keeps the tools written against one shape while staying usable on a host that omits it;
+ * the cost is only that such a host cannot cancel a call it never offered to cancel. A fresh
+ * controller per call keeps one call's abort listeners out of the next one.
+ */
+function withExecutionSignal(tool: WebMcpToolDefinition): RegisteredWebMcpTool {
+  return {
+    ...tool,
+    execute: (input: unknown, options?: WebMcpHostExecutionOptions) =>
+      tool.execute(input, {
+        ...options,
+        signal: options?.signal ?? new AbortController().signal,
+      }),
+  };
 }
 
 export function requiredText(value: unknown, field: string, maxLength: number): string {
