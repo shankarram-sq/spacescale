@@ -135,6 +135,11 @@ import {
   unclosedOpeningAt,
 } from "./math-region";
 
+// The four-point glitter mark is the conventional "ask the AI" affordance: a sparkle rather than
+// an "AI" badge, so the button reads as a request you can make and twinkles under the pointer.
+const aiSparkleIcon = (extraClass = ""): string =>
+  `<span class="ai-sparkle${extraClass ? ` ${extraClass}` : ""}" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor" focusable="false" aria-hidden="true"><path class="ai-sparkle-core" d="M10.5 4Q10.5 12.5 19 12.5Q10.5 12.5 10.5 21Q10.5 12.5 2 12.5Q10.5 12.5 10.5 4Z"/><path class="ai-sparkle-spark" d="M18.5 1.5Q18.5 5 22 5Q18.5 5 18.5 8.5Q18.5 5 15 5Q18.5 5 18.5 1.5Z"/><path class="ai-sparkle-spark ai-sparkle-spark-late" d="M19.5 15.5Q19.5 18 22 18Q19.5 18 19.5 20.5Q19.5 18 17 18Q19.5 18 19.5 15.5Z"/></svg></span>`;
+
 const TOOL_DEFINITIONS: Array<{
   name: ToolName;
   label: string;
@@ -1784,7 +1789,7 @@ export class BoardApp {
               </div>
               <span class="selection-actions-divider" data-selection-style-divider aria-hidden="true" hidden></span>
               <div class="selection-ai-wrap" data-selection-ai-wrap hidden>
-                <button type="button" data-selection-ai data-testid="selection-ai" aria-label="Ask the AI assistant about the selection" aria-haspopup="menu" aria-controls="ai-assist-menu" aria-expanded="false"><span class="ai-mark" aria-hidden="true">AI</span><span>Ask AI</span></button>
+                <button type="button" data-selection-ai data-testid="selection-ai" aria-label="Ask the AI assistant about the selection" title="Ask AI" aria-haspopup="menu" aria-controls="ai-assist-menu" aria-expanded="false">${aiSparkleIcon()}<span>Ask AI</span></button>
                 <div class="arrange-menu ai-assist-menu" data-testid="ai-assist-menu" id="ai-assist-menu" role="menu" aria-label="Ask the AI assistant" hidden>
                   <span class="arrange-menu-label" data-ai-assist-scope>Selected steps</span>
                   ${ASSIST_ACTIONS.map(
@@ -1853,7 +1858,7 @@ export class BoardApp {
             <div class="shape-menu-grid ai-share-grid">
               ${ASSIST_ACTIONS.map(
                 (action) =>
-                  `<button type="button" role="menuitem" data-ai-share-action="${action}"><span class="shape-choice-glyph ai-mark" aria-hidden="true">AI</span><span>${ASSIST_GUIDANCE[action].label}</span></button>`,
+                  `<button type="button" role="menuitem" data-ai-share-action="${action}">${aiSparkleIcon("ai-sparkle-menu")}<span>${ASSIST_GUIDANCE[action].label}</span></button>`,
               ).join("")}
             </div>
             <label class="ai-assist-note"><span>Add a note (optional)</span><input type="text" maxlength="${ASSIST_NOTE_MAX_LENGTH}" data-ai-share-note placeholder="What should the assistant do?" autocomplete="off" /></label>
@@ -2010,8 +2015,7 @@ export class BoardApp {
     aiShare.setAttribute("aria-controls", "ai-share-menu");
     aiShare.setAttribute("aria-expanded", "false");
     aiShare.title = "Share the whole board with the AI assistant";
-    aiShare.innerHTML =
-      '<span class="tool-glyph ai-mark" aria-hidden="true">AI</span><span class="tool-label">AI</span>';
+    aiShare.innerHTML = `${aiSparkleIcon("tool-glyph")}<span class="tool-label">AI</span>`;
     rail.append(aiShare);
 
     const divider = document.createElement("span");
