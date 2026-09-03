@@ -81,6 +81,8 @@ test("sticky notes focus, converge, persist, export safely, and remain editable"
     await expect(collaborator.getByTestId("tool-sticky")).toHaveAttribute("aria-pressed", "true");
     const stickyStyle = collaborator.getByTestId("style-popover");
     await expect(stickyStyle).toBeVisible();
+    await expect(stickyStyle.locator("[data-style-opacity-row]")).toBeHidden();
+    await expect(stickyStyle.locator("[data-style-font-row]")).toBeHidden();
     await collaborator.getByRole("button", { name: "Use coral sticky notes" }).click();
     await expect(
       collaborator.getByRole("button", { name: "Use coral sticky notes" }),
@@ -143,8 +145,14 @@ test("sticky notes focus, converge, persist, export safely, and remain editable"
     await editEditor.press("Control+Enter");
     await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
     await expect
-      .poll(async () => ownerSticky.locator(".sticky-text").textContent())
-      .toBe(await collaboratorSticky.locator(".sticky-text").textContent());
+      .poll(async () => {
+        const [ownerText, collaboratorText] = await Promise.all([
+          ownerSticky.locator(".sticky-text").textContent(),
+          collaboratorSticky.locator(".sticky-text").textContent(),
+        ]);
+        return ownerText === collaboratorText && ownerText?.includes("studentupdateconnects");
+      })
+      .toBe(true);
 
     await page.reload();
     await waitForBoard(page);
@@ -182,7 +190,22 @@ test("sticky notes focus, converge, persist, export safely, and remain editable"
       persistedBounds.x + persistedBounds.width / 2,
       persistedBounds.y + persistedBounds.height / 2,
     );
-    await expect(page.getByTestId("selection-actions")).toBeVisible();
+    const selectionActions = page.getByTestId("selection-actions");
+    await expect(selectionActions).toBeVisible();
+    await expect(selectionActions.locator("[data-selection-font-controls]")).toBeHidden();
+    await expect(selectionActions.locator("[data-selection-current-colour]")).toHaveCSS(
+      "background-color",
+      "rgb(255, 175, 163)",
+    );
+    await expect(selectionActions.getByRole("button", { name: "Copy selected items" })).toHaveCount(
+      0,
+    );
+    await expect(
+      selectionActions.getByRole("button", { name: "Delete selected items" }),
+    ).toHaveCount(0);
+    await expect(
+      selectionActions.getByRole("button", { name: "Comment on selected object" }).locator("svg"),
+    ).toHaveCount(1);
     await page.keyboard.press("F2");
     const keyboardEditor = page.getByTestId("canvas-text-editor");
     await expect(keyboardEditor).toBeFocused();
@@ -194,7 +217,7 @@ test("sticky notes focus, converge, persist, export safely, and remain editable"
       persistedBounds.x + persistedBounds.width / 2,
       persistedBounds.y + persistedBounds.height / 2,
     );
-    await page.getByRole("button", { name: "Copy selected items" }).click();
+    await page.keyboard.press("Control+d");
     await expect(page.locator("#drawing-area .board-item-sticky")).toHaveCount(2);
     await expect(collaborator.locator("#drawing-area .board-item-sticky")).toHaveCount(2);
 
@@ -205,7 +228,7 @@ test("sticky notes focus, converge, persist, export safely, and remain editable"
     await expect(
       collaborator.locator(`#drawing-area [data-item-id="${copiedId}"]`),
     ).toHaveAttribute("transform", movedTransform);
-    await page.getByRole("button", { name: "Delete selected items" }).click();
+    await page.keyboard.press("Delete");
     await expect(page.locator("#drawing-area .board-item-sticky")).toHaveCount(1);
     await expect(collaborator.locator("#drawing-area .board-item-sticky")).toHaveCount(1);
   } finally {

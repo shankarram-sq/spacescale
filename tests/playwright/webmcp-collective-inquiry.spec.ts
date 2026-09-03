@@ -101,6 +101,16 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   await expect(webMcpStatus).toHaveAttribute("data-host", "linked");
   await expect(webMcpStatus).toContainText("MCP");
   await expect(webMcpStatusTime).toHaveText("Ready");
+  const [topbarBounds, mcpBounds] = await Promise.all([
+    page.locator(".topbar").boundingBox(),
+    webMcpStatus.boundingBox(),
+  ]);
+  expect(topbarBounds).not.toBeNull();
+  expect(mcpBounds).not.toBeNull();
+  if (!topbarBounds || !mcpBounds) throw new Error("The MCP header control has no layout bounds.");
+  expect(
+    Math.abs(topbarBounds.x + topbarBounds.width / 2 - (mcpBounds.x + mcpBounds.width / 2)),
+  ).toBeLessThan(1);
   await expect(page.getByTestId("save-status")).not.toContainText("·");
   await webMcpStatus.click();
   await expect(mcpActivity).toBeVisible();
@@ -168,6 +178,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   const askAi = page.getByTestId("selection-ai");
   await expect(askAi).toBeVisible();
   await expect(askAi).toBeEnabled();
+  await expect(askAi.locator(".ai-sparkle")).toHaveCSS("color", "rgb(201, 167, 255)");
 
   // A request from the board resolves the host's pending wait with a reply plan that names
   // the generic comment write.

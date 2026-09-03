@@ -81,12 +81,12 @@ test("tables insert, edit collaboratively, copy, delete, and reload", async ({
       ownerTables.first().locator('[data-table-cell][data-table-row="1"][data-table-column="1"]'),
     ).toHaveAttribute("aria-label", /Student evidence/u);
 
-    await page.getByRole("button", { name: "Copy selected items" }).click();
+    await page.keyboard.press("Control+d");
     await expect(ownerTables).toHaveCount(2);
     await expect(editorTables).toHaveCount(2);
     const copyId = await ownerTables.last().getAttribute("data-item-id");
     expect(copyId).toBeTruthy();
-    await page.getByRole("button", { name: "Delete selected items" }).click();
+    await page.keyboard.press("Delete");
     await expect(ownerTables).toHaveCount(1);
     await expect(editor.locator(`[data-item-id="${copyId}"]`)).toHaveCount(0);
 

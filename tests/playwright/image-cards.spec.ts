@@ -153,10 +153,10 @@ test("image cards converge, remain private, persist, and obey live classroom pol
 
     const moved = await moveItem(page, ownerImages.first(), 44, 24);
     await expect(editor.locator(`[data-item-id="${imageId}"]`)).toHaveAttribute("transform", moved);
-    await page.getByRole("button", { name: "Copy selected items" }).click();
+    await page.keyboard.press("Control+d");
     await expect(ownerImages).toHaveCount(2);
     await expect(editorImages).toHaveCount(2);
-    await page.getByRole("button", { name: "Delete selected items" }).click();
+    await page.keyboard.press("Delete");
     await expect(ownerImages).toHaveCount(1);
     await expect(editorImages).toHaveCount(1);
 

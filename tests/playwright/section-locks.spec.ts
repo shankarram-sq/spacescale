@@ -105,8 +105,11 @@ test("an owner lock freezes a Section and every participant's contents", async (
     };
     await editor.mouse.click(editorStickyCenter.x, editorStickyCenter.y);
     await expect(editor.getByTestId("selection-actions")).toBeVisible();
-    await expect(editor.getByRole("button", { name: "Copy selected items" })).toBeDisabled();
-    await expect(editor.getByRole("button", { name: "Delete selected items" })).toBeDisabled();
+    await expect(editor.getByRole("button", { name: "Copy selected items" })).toHaveCount(0);
+    await expect(editor.getByRole("button", { name: "Delete selected items" })).toHaveCount(0);
+    await editor.keyboard.press("Control+d");
+    await editor.keyboard.press("Delete");
+    await expect(editor.locator("#drawing-area .board-item-sticky")).toHaveCount(1);
     const lockedTransform = await editorSticky.getAttribute("transform");
     await drag(editor, editorStickyCenter, {
       x: editorStickyCenter.x + 55,
@@ -121,8 +124,8 @@ test("an owner lock freezes a Section and every participant's contents", async (
       ownerStickyBounds.x + ownerStickyBounds.width / 2,
       ownerStickyBounds.y + ownerStickyBounds.height / 2,
     );
-    await expect(page.getByRole("button", { name: "Copy selected items" })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "Delete selected items" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Copy selected items" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Delete selected items" })).toHaveCount(0);
 
     await page.mouse.click(
       sectionTitleBounds.x + sectionTitleBounds.width / 2,
@@ -136,8 +139,6 @@ test("an owner lock freezes a Section and every participant's contents", async (
     await expect(editorSection).not.toHaveAttribute("data-section-locked", "true");
 
     await editor.mouse.click(editorStickyCenter.x, editorStickyCenter.y);
-    await expect(editor.getByRole("button", { name: "Copy selected items" })).toBeEnabled();
-    await expect(editor.getByRole("button", { name: "Delete selected items" })).toBeEnabled();
     const unlockedTransform = await editorSticky.getAttribute("transform");
     await drag(editor, editorStickyCenter, {
       x: editorStickyCenter.x + 55,

@@ -358,10 +358,23 @@ test("the complete board remains usable at a 320px viewport", async ({ page }, t
   await expect.poll(async () => rail.evaluate((node) => node.scrollLeft)).toBe(0);
 
   const tools = page.getByTestId("tool-rail").locator("button[data-tool]");
-  await expect(tools).toHaveCount(8);
+  await expect(tools).toHaveCount(7);
   await expect(page.getByTestId("tool-image")).toHaveAttribute("aria-label", "Add image (I)");
   await expect(page.getByTestId("tool-image").locator("svg")).toHaveCount(1);
-  await expect(page.getByTestId("tool-eraser").locator("svg")).toHaveCount(1);
+  await expect(page.getByTestId("tool-rectangle").locator("svg")).toHaveCount(1);
+  await expect(page.getByTestId("tool-sticky").locator("svg")).toHaveCount(1);
+  await expect(page.getByTestId("tool-zone").locator("svg")).toHaveCount(1);
+  await expect(page.getByTestId("tool-rail").getByTestId("tool-eraser")).toHaveCount(0);
+  await page.getByTestId("tool-pencil").click();
+  const brushBar = page.getByTestId("quick-style-bar");
+  await expect(brushBar).toBeVisible();
+  await expect(brushBar.getByRole("button", { name: "Pen" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(brushBar.getByRole("button", { name: "Marker" }).locator("svg")).toHaveCount(1);
+  await expect(brushBar.getByRole("button", { name: "Highlighter" }).locator("svg")).toHaveCount(1);
+  await expect(brushBar.getByTestId("tool-eraser").locator("svg")).toHaveCount(1);
   await expect(page.getByTestId("tool-image")).toBeEnabled();
   await openMoreTools(page);
   const moreMenu = page.getByTestId("tools-menu");

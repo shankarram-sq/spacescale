@@ -229,6 +229,11 @@ button:is(:hover, :focus-visible) .ai-sparkle-spark-late {
   gap: 5px;
 }
 
+.selection-actions button[data-selection-ai] .ai-sparkle {
+  color: #c9a7ff;
+  filter: drop-shadow(0 0 5px rgb(174 118 255 / 48%));
+}
+
 .ai-assist-menu {
   width: 244px;
 }
@@ -279,6 +284,14 @@ button:is(:hover, :focus-visible) .ai-sparkle-spark-late {
 
 .mcp-status-wrap {
   display: flex;
+}
+
+.topbar .mcp-status-wrap {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 2;
+  translate: -50% -50%;
 }
 
 /* Compact site-tool indicator: white at rest, green while watching, blue during a call. */
