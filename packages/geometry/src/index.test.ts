@@ -28,6 +28,7 @@ import {
   polygonPoints,
   protractorSnapPoints,
   tableGeometryContainsPoint,
+  textLayoutEstimateSource,
   transformBounds,
   translateTransform,
   visibleOutlinePaths,
@@ -642,6 +643,18 @@ describe("bounds and transforms", () => {
         style: { kind: "text", fontSize: 20 },
       }),
     ).toEqual({ minX: 100, minY: 20, maxX: 460, maxY: 252 });
+  });
+
+  it("does not count zero-width TeX syntax in canonical text bounds", () => {
+    expect(textLayoutEstimateSource("Result: $$\\displaystyle x$$")).toBe("Result:  x");
+    expect(
+      itemBounds({
+        kind: "text",
+        geometry: { x: 100, y: 40, text: "$$\\displaystyle x$$" },
+        transform: [1, 0, 0, 1, 0, 0],
+        style: { kind: "text", fontSize: 20 },
+      }),
+    ).toEqual({ minX: 100, minY: 20, maxX: 124, maxY: 44 });
   });
 
   it("rejects transformed sticky bounds outside the finite world envelope", () => {

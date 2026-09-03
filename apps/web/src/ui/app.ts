@@ -944,7 +944,7 @@ export class BoardApp {
   private classDecisionWebMcp: ClassDecisionWebMcp | null = null;
   private educationPartnerWebMcp: EducationPartnerWebMcp | null = null;
   private readonly pendingWebMcpCommits = new PendingCommitTracker();
-  private readonly pendingRenderedTextSectionDetaches = new Set<string>();
+  private readonly pendingRenderedTextSectionUpdates = new Set<string>();
   private bootstrap: Bootstrap;
   private phase: ConnectionPhase = "idle";
   private history: HistoryState;
@@ -1209,7 +1209,7 @@ export class BoardApp {
       (assetId) => this.api.boardImage(this.bootstrap.board.id, assetId),
       (actorId) => this.creatorNames.get(actorId),
       (itemId, expectedVersion) =>
-        this.detachRenderedTextFromInvalidSection(itemId, expectedVersion),
+        this.reconcileRenderedTextSectionMembership(itemId, expectedVersion),
     );
     this.renderer.setVotingEnabled(this.bootstrap.board.features.voting);
     this.renderer.setObjectTransformsEnabled(this.bootstrap.board.features.objectTransforms);
@@ -3615,9 +3615,15 @@ export class BoardApp {
     return decorateCreatedItemsWithSections(operation, this.model.items.values());
   }
 
-  private detachRenderedTextFromInvalidSection(itemId: string, expectedVersion: number): void {
-    if (!this.canCommit() || this.pendingRenderedTextSectionDetaches.has(itemId)) return;
-    const operation = this.model.renderedTextSectionDetachOperation(itemId, expectedVersion);
+  private reconcileRenderedTextSectionMembership(itemId: string, expectedVersion: number): void {
+    if (
+      !this.bootstrap.board.features.grouping ||
+      !this.canCommit() ||
+      this.pendingRenderedTextSectionUpdates.has(itemId)
+    ) {
+      return;
+    }
+    const operation = this.model.renderedTextSectionMembershipOperation(itemId, expectedVersion);
     if (operation === null) return;
     if (
       !operationAllowedForActor(
@@ -3629,9 +3635,9 @@ export class BoardApp {
     ) {
       return;
     }
-    this.pendingRenderedTextSectionDetaches.add(itemId);
+    this.pendingRenderedTextSectionUpdates.add(itemId);
     void this.commit(operation).finally(() => {
-      this.pendingRenderedTextSectionDetaches.delete(itemId);
+      this.pendingRenderedTextSectionUpdates.delete(itemId);
     });
   }
 

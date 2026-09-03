@@ -137,6 +137,40 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   await expect(section).toHaveCount(1);
   const sectionBounds = await section.boundingBox();
   if (!sectionBounds) throw new Error("The MathJax Section has no rendered bounds.");
+  const sectionItemId = await section.getAttribute("data-item-id");
+  if (!sectionItemId) throw new Error("The MathJax Section has no item ID.");
+  await page.getByTestId("tool-text").click();
+  await page.mouse.click(
+    sectionBounds.x + sectionBounds.width - 80,
+    sectionBounds.y + sectionBounds.height / 2,
+  );
+  const compactSectionEditor = page.getByTestId("canvas-text-editor");
+  await compactSectionEditor.fill("$$\\displaystyle x$$");
+  await compactSectionEditor.press("Control+Enter");
+  const compactSectionMath = page.locator(".board-math-content").last();
+  await expect(compactSectionMath).toHaveAttribute("data-math-state", "ready");
+  const compactSectionItem = compactSectionMath.locator("xpath=ancestor::*[@data-item-id][1]");
+  const compactSectionItemId = await compactSectionItem.getAttribute("data-item-id");
+  if (!compactSectionItemId) throw new Error("The compact Section formula has no item ID.");
+  await expect
+    .poll(async () =>
+      page.evaluate(
+        async ({ url, itemId }) => {
+          const boardId = new URL(url).pathname.split("/").at(-1);
+          const response = await fetch(`/api/v1/boards/${boardId}/export.json`, {
+            credentials: "same-origin",
+            cache: "no-store",
+          });
+          const body = (await response.json()) as {
+            items: Array<{ id: string; sectionId?: string }>;
+          };
+          return body.items.find((candidate) => candidate.id === itemId)?.sectionId ?? null;
+        },
+        { url: boardUrl, itemId: compactSectionItemId },
+      ),
+    )
+    .toBe(sectionItemId);
+
   await page.getByTestId("tool-text").click();
   await page.getByTestId("style-button").click();
   await setRange(page, "[data-style-font]", 8);
@@ -238,7 +272,7 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   await expect(videoHeading).toHaveAttribute("data-clicked", "true");
 
   await page.reload();
-  await expect(page.locator("#drawing-area [data-math-state='ready']")).toHaveCount(6);
+  await expect(page.locator("#drawing-area [data-math-state='ready']")).toHaveCount(7);
   await expect(page.locator("#drawing-area .video-embed-item")).toHaveCount(1);
   await expect(page.locator("#drawing-area .board-text-link")).toHaveCount(2);
   const videoDragHandle = video.locator("[data-video-drag-handle]");

@@ -294,7 +294,7 @@ describe("BoardModel", () => {
     model.queue(command, ACTOR_ID);
 
     expect(model.setRenderedTextSize(ITEM_ID, 0, 240, 180)).toBe(true);
-    expect(model.renderedTextSectionDetachOperation(ITEM_ID, 0)).toBeNull();
+    expect(model.renderedTextSectionMembershipOperation(ITEM_ID, 0)).toBeNull();
     model.applyAction({
       v: 1,
       t: "server.action",
@@ -306,11 +306,29 @@ describe("BoardModel", () => {
       op: { kind: "item.create", item },
     } as unknown as ServerAction);
 
-    expect(model.renderedTextSectionDetachOperation(ITEM_ID, 1)).toEqual({
+    expect(model.renderedTextSectionMembershipOperation(ITEM_ID, 1)).toEqual({
       kind: "item.update",
       itemId: ITEM_ID,
       expectedVersion: 1,
       patch: { sectionId: null },
+    });
+  });
+
+  it("builds a durable attachment when measured MathJax bounds fit a Section", () => {
+    const section = zone();
+    section.geometry.width = 100;
+    section.geometry.height = 80;
+    const item = textItem();
+    item.geometry.text = "$$\\displaystyle x$$";
+    const model = new BoardModel();
+    model.load(snapshot([section, item], 1));
+
+    expect(model.setRenderedTextSize(ITEM_ID, 1, 40, 24)).toBe(true);
+    expect(model.renderedTextSectionMembershipOperation(ITEM_ID, 1)).toEqual({
+      kind: "item.update",
+      itemId: ITEM_ID,
+      expectedVersion: 1,
+      patch: { sectionId: section.id },
     });
   });
 

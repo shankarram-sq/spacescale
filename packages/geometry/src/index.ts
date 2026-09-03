@@ -1066,6 +1066,17 @@ function codePointLength(value: string): number {
   return Array.from(value).length;
 }
 
+const UNAMBIGUOUS_TEX_MARKUP = /\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\]|\$\$[\s\S]+?\$\$/gu;
+const ZERO_WIDTH_TEX_STYLE_COMMAND =
+  /\\(?:displaystyle|textstyle|scriptstyle|scriptscriptstyle)\b/gu;
+
+/** Removes only TeX syntax known not to contribute visible glyph width. */
+export function textLayoutEstimateSource(value: string): string {
+  return value.replace(UNAMBIGUOUS_TEX_MARKUP, (markup) =>
+    markup.slice(2, -2).replace(ZERO_WIDTH_TEX_STYLE_COMMAND, ""),
+  );
+}
+
 export type OutlineGeometryKind = "pencil" | "line" | "rectangle" | "ellipse" | "polygon";
 export type OutlineGeometry = PencilGeometry | LineGeometry | OutlineBoxGeometry | PolygonGeometry;
 
@@ -1287,7 +1298,7 @@ export function geometryBounds(
           maxY: text.y - textFontSize + VIDEO_EMBED_HEIGHT,
         };
       }
-      const lines = text.text.split(/\r\n?|\n/u);
+      const lines = textLayoutEstimateSource(text.text).split(/\r\n?|\n/u);
       const lineHeight = textFontSize * 1.2;
       const width = Math.max(...lines.map((line) => codePointLength(line) * textFontSize * 0.6));
       return {

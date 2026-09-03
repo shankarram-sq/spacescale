@@ -1,9 +1,11 @@
 import { applyAuthoritativeOperation } from "@collab/board-core";
 import {
+  itemBounds as canonicalItemBounds,
   lineArrowheadPoints,
   type OutlineGeometry,
   type OutlineGeometryKind,
   protractorSnapPoints,
+  textLayoutEstimateSource,
   VIDEO_EMBED_HEIGHT,
   VIDEO_EMBED_WIDTH,
   visibleOutlinePaths,
@@ -192,7 +194,7 @@ export class BoardModel {
     return true;
   }
 
-  renderedTextSectionDetachOperation(
+  renderedTextSectionMembershipOperation(
     id: string,
     expectedVersion: number,
   ): Extract<BatchItemOperation, { kind: "item.update" }> | null {
@@ -202,7 +204,6 @@ export class BoardModel {
       item?.kind !== "text" ||
       item.version <= 0 ||
       item.version !== expectedVersion ||
-      item.sectionId === undefined ||
       renderedTextMeasurement(item) === undefined ||
       authoritative?.kind !== "text" ||
       authoritative.version !== expectedVersion ||
@@ -211,15 +212,28 @@ export class BoardModel {
     ) {
       return null;
     }
-    const section = this.rendered.get(item.sectionId);
-    if (section?.kind !== "zone" || boundsContains(itemBounds(section), itemBounds(item))) {
-      return null;
+    let sectionId: string | undefined;
+    if (item.sectionId !== undefined) {
+      const section = this.rendered.get(item.sectionId);
+      if (section?.kind === "zone" && boundsContains(itemBounds(section), itemBounds(item))) {
+        return null;
+      }
+    } else {
+      sectionId = [...this.rendered.values()]
+        .filter(
+          (candidate): candidate is Extract<BoardItem, { kind: "zone" }> =>
+            candidate.kind === "zone" &&
+            boundsContains(itemBounds(candidate), itemBounds(item)) &&
+            boundsContains(canonicalBounds(candidate), canonicalBounds(item)),
+        )
+        .sort((left, right) => right.z - left.z || left.id.localeCompare(right.id))[0]?.id;
+      if (sectionId === undefined) return null;
     }
     return {
       kind: "item.update",
       itemId: item.id,
       expectedVersion: item.version,
-      patch: { sectionId: null },
+      patch: { sectionId: sectionId ?? null },
     };
   }
 
@@ -1006,7 +1020,7 @@ function geometryBounds(item: BoardItem): Bounds {
           maxY: item.geometry.y - item.style.fontSize + VIDEO_EMBED_HEIGHT,
         };
       }
-      const lines = item.geometry.text.split("\n");
+      const lines = textLayoutEstimateSource(item.geometry.text).split("\n");
       const estimatedWidth =
         Math.max(1, ...lines.map((line) => [...line].length)) * item.style.fontSize * 0.61;
       const estimatedHeight = Math.max(1, lines.length) * item.style.fontSize * 1.2;
@@ -1191,6 +1205,13 @@ function boundsContains(outer: Bounds, inner: Bounds): boolean {
     outer.maxX >= inner.maxX &&
     outer.maxY >= inner.maxY
   );
+}
+
+function canonicalBounds(item: BoardItem): Bounds {
+  return canonicalItemBounds({
+    ...item,
+    transform: [...item.transform],
+  } as Parameters<typeof canonicalItemBounds>[0]);
 }
 
 function unionBounds(a: Bounds, b: Bounds): Bounds {
