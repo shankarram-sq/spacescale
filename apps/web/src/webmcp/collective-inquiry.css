@@ -19,7 +19,7 @@
   margin: 0;
   color: #2d2240;
   font:
-    650 25px / 1.15 Georgia,
+    650 25px / 1.15 "Rubik Variable",
     serif;
 }
 
@@ -211,37 +211,217 @@
   vertical-align: middle;
 }
 
-/* Header chip: how many tools a visiting WebMCP host can see, and whether one is linked. */
+.mcp-status-wrap {
+  display: flex;
+}
+
+/* Compact site-tool indicator: white at rest, green while watching, blue during a call. */
 .webmcp-status {
+  appearance: none;
   height: 32px;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  padding: 0 9px;
-  border: 1px solid var(--line);
+  padding: 0 9px 0 8px;
+  border: 1px solid #d8d5cd;
   border-radius: 999px;
+  background: #fff;
+  box-shadow:
+    0 0 0 3px rgb(255 255 255 / 88%),
+    0 2px 9px rgb(38 37 34 / 12%);
+  color: #4f4c47;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease,
+    color 160ms ease;
+}
+
+.webmcp-status:hover {
+  border-color: #b9b5ab;
+  background: #fbfaf8;
+}
+
+.webmcp-status:focus-visible {
+  outline: 2px solid #3e63dd;
+  outline-offset: 2px;
+}
+
+.webmcp-status-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.webmcp-status-icon path:first-child {
+  fill: currentcolor;
+}
+
+.webmcp-status-icon path:last-child {
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-width: 1.8;
+}
+
+.webmcp-status[data-state="watch"] {
+  border-color: #6dce8c;
+  background: #effcf3;
+  box-shadow:
+    0 0 0 3px rgb(71 185 107 / 13%),
+    0 0 16px rgb(50 168 90 / 34%);
+  color: #18794e;
+}
+
+.webmcp-status[data-state="active"] {
+  border-color: #7aa2f7;
+  background: #eef4ff;
+  box-shadow:
+    0 0 0 3px rgb(62 99 221 / 14%),
+    0 0 17px rgb(62 99 221 / 40%);
+  color: #2b50c7;
+  animation: mcp-active-pulse 1.25s ease-in-out infinite;
+}
+
+@keyframes mcp-active-pulse {
+  50% {
+    box-shadow:
+      0 0 0 4px rgb(62 99 221 / 18%),
+      0 0 22px rgb(62 99 221 / 52%);
+  }
+}
+
+.mcp-activity-menu {
+  top: 43px;
+  right: 0;
+  width: min(360px, calc(100vw - 16px));
+  max-height: min(460px, calc(100dvh - 72px));
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.mcp-activity-menu[hidden] {
+  display: none;
+}
+
+.mcp-activity-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 9px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.mcp-activity-heading > span:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.mcp-activity-heading strong {
+  font-size: 12px;
+}
+
+.mcp-activity-heading small {
+  overflow: hidden;
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 650;
+  font-size: 10px;
+  font-weight: 520;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.webmcp-status-dot {
-  width: 7px;
-  height: 7px;
+.mcp-activity-live,
+.mcp-call-marker {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
   border-radius: 50%;
-  background: #b9b5ab;
+  background: #aaa69d;
 }
 
-.webmcp-status[data-state="linked"] {
-  border-color: #bad8c2;
-  background: rgb(245 255 247 / 72%);
-  color: #275d38;
-}
-
-.webmcp-status[data-state="linked"] .webmcp-status-dot {
+.mcp-activity-menu[data-state="watch"] .mcp-activity-live {
   background: #32a85a;
-  box-shadow: 0 0 0 3px rgb(50 168 90 / 13%);
+  box-shadow: 0 0 0 4px rgb(50 168 90 / 13%);
+}
+
+.mcp-activity-menu[data-state="active"] .mcp-activity-live {
+  background: #3e63dd;
+  box-shadow: 0 0 0 4px rgb(62 99 221 / 13%);
+}
+
+.mcp-activity-empty {
+  margin: 0;
+  padding: 22px 10px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+.mcp-activity-list {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 6px 0 0;
+  list-style: none;
+}
+
+.mcp-activity-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 9px;
+  border-radius: 10px;
+}
+
+.mcp-activity-row:hover {
+  background: #f6f4ef;
+}
+
+.mcp-activity-row[data-state="active"] .mcp-call-marker {
+  background: #3e63dd;
+  box-shadow: 0 0 0 3px rgb(62 99 221 / 12%);
+}
+
+.mcp-activity-row[data-state="succeeded"] .mcp-call-marker {
+  background: #32a85a;
+}
+
+.mcp-activity-row[data-state="failed"] .mcp-call-marker {
+  background: #d0443e;
+}
+
+.mcp-call-details {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.mcp-call-details strong {
+  overflow: hidden;
+  font:
+    10px / 1.25 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-call-details small {
+  color: var(--muted);
+  font-size: 9px;
 }
 
 .tool-rail button[data-ai-share] .ai-mark {
@@ -266,13 +446,16 @@
   padding-inline: 3px;
 }
 
-/* The topbar drops its labels before it runs out of room; the chip follows the same rule. */
-@media (max-width: 980px) {
-  .webmcp-status {
-    padding: 0 8px;
+@media (max-width: 650px) {
+  .ai-watch-indicator {
+    display: none;
   }
 
-  .webmcp-status [data-webmcp-status-text] {
-    display: none;
+  .mcp-activity-menu {
+    position: fixed;
+    top: 58px;
+    right: 8px;
+    width: min(360px, calc(100vw - 16px));
+    max-height: calc(100dvh - 66px);
   }
 }

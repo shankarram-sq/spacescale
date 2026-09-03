@@ -1048,7 +1048,10 @@ export function voteCountNode(table: TableItem, summary: VoteSummary): SVGGEleme
     count.setAttribute("text-anchor", "middle");
     count.setAttribute("fill", "#20201e");
     count.setAttribute("font-size", "12");
-    count.setAttribute("font-family", "Inter, ui-sans-serif, system-ui, sans-serif");
+    count.setAttribute(
+      "font-family",
+      "Rubik Variable, Rubik, ui-sans-serif, system-ui, sans-serif",
+    );
     count.setAttribute("font-weight", "750");
     count.textContent = label;
     badge.append(background, count);
@@ -1790,7 +1793,7 @@ export function creatorInitials(displayName: string): string {
   return `${first}${last}`.toLocaleUpperCase();
 }
 
-const BADGE_FONT_FAMILY = "Inter, ui-sans-serif, system-ui, sans-serif";
+const BADGE_FONT_FAMILY = "Rubik Variable, Rubik, ui-sans-serif, system-ui, sans-serif";
 const ASSISTANCE_MARK_FILL = "#2d2240";
 const ASSISTANCE_MARK_WIDTH = 14;
 const ASSISTANCE_MARK_HEIGHT = 10;

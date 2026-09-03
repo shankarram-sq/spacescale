@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { canvasPoint, createBoard } from "./helpers";
+import { canvasPoint, chooseMoreTool, createBoard } from "./helpers";
 
 async function setRange(page: import("@playwright/test").Page, selector: string, value: number) {
   await page.locator(selector).evaluate((node, nextValue) => {
@@ -213,7 +213,7 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
     )
     .toBeNull();
 
-  await page.getByTestId("tool-table").click();
+  await chooseMoreTool(page, "tool-table");
   const picker = page.getByTestId("table-picker");
   await picker.getByLabel("Table columns").selectOption("2");
   await picker.getByLabel("Table rows").selectOption("2");
@@ -241,7 +241,7 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   await expect(page.locator("#drawing-area .video-embed-item")).toHaveCount(0);
   await expect(page.locator("#drawing-area .board-text-link")).toHaveCount(2);
 
-  await page.getByTestId("tool-video").click();
+  await chooseMoreTool(page, "tool-video");
   const videoDialog = page.getByRole("dialog", { name: "Embed a video" });
   await videoDialog.getByLabel("Video URL").fill("https://example.com/not-supported");
   await videoDialog.getByRole("button", { name: "Embed video" }).click();
@@ -276,6 +276,7 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   await expect(page.locator("#drawing-area [data-math-state='ready']")).toHaveCount(7);
   await expect(page.locator("#drawing-area .video-embed-item")).toHaveCount(1);
   await expect(page.locator("#drawing-area .board-text-link")).toHaveCount(2);
+  await page.getByTestId("tool-select").click();
   const videoDragHandle = video.locator("[data-video-drag-handle]");
   await expect(videoDragHandle).toHaveCount(1);
   const handleBox = await videoDragHandle.boundingBox();

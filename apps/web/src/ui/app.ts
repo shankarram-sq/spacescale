@@ -148,13 +148,6 @@ const TOOL_DEFINITIONS: Array<{
   { name: "pencil", label: "Pencil", dockLabel: "Draw", shortcut: "P", glyph: "✎" },
   { name: "line", label: "Straight line", dockLabel: "Line", shortcut: "L", glyph: "╱" },
   { name: "rectangle", label: "Shapes", dockLabel: "Shape", shortcut: "R", glyph: "□" },
-  {
-    name: "protractor",
-    label: "Tools",
-    dockLabel: "Tools",
-    shortcut: "U",
-    glyph: "∠",
-  },
   { name: "text", label: "Text", dockLabel: "Text", shortcut: "T", glyph: "T" },
   { name: "sticky", label: "Sticky note", dockLabel: "Sticky", shortcut: "N", glyph: "▣" },
   {
@@ -179,6 +172,8 @@ const TOOL_DEFINITIONS: Array<{
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false" aria-hidden="true"><path d="m7 21-4-4a2.83 2.83 0 0 1 0-4L13.1 2.9a2.83 2.83 0 0 1 4 0l4 4a2.83 2.83 0 0 1 0 4L11 21"/><path d="m5 11 9 9"/><path d="M21 21H7"/></svg>',
   },
 ];
+
+const MORE_TOOL_NAMES = new Set<ToolName>(["stamp", "image", "table", "protractor"]);
 
 const DRAW_TOOLS = new Set<ToolName>([
   "pencil",
@@ -1025,6 +1020,7 @@ export class BoardApp {
   /** True until the board first becomes editable, when the landing tool is chosen. */
   private landingToolPending = true;
   private aiWatchState: WatchState = { phase: "idle", expiresAt: null, watchedItemIds: new Set() };
+  private webMcpState: WebMcpRegistryState = webMcpRegistryState();
   private stopObservingWebMcp: (() => void) | null = null;
   private mathFieldPanel: MathFieldPanel | null = null;
   private mathFieldTarget: {
@@ -1151,7 +1147,8 @@ export class BoardApp {
   private readonly shapeMenu: HTMLElement;
   private readonly toolsMenu: HTMLElement;
   private readonly stylePopover: HTMLElement;
-  private readonly exportMenu: HTMLElement;
+  private readonly moreToolsButton: HTMLButtonElement;
+  private toolRailResizeObserver: ResizeObserver | null = null;
   private readonly selectionActions: HTMLElement;
   private readonly aiAssistWrap: HTMLElement;
   private readonly aiAssistButton: HTMLButtonElement;
@@ -1160,8 +1157,12 @@ export class BoardApp {
   private readonly aiAssistNote: HTMLInputElement;
   private readonly aiWatchIndicator: HTMLElement;
   private readonly aiWatchIndicatorText: HTMLElement;
-  private readonly webMcpStatus: HTMLElement;
+  private readonly webMcpStatus: HTMLButtonElement;
   private readonly webMcpStatusText: HTMLElement;
+  private readonly mcpActivityMenu: HTMLElement;
+  private readonly mcpActivitySummary: HTMLElement;
+  private readonly mcpActivityList: HTMLOListElement;
+  private readonly mcpActivityEmpty: HTMLElement;
   private readonly aiShareButton: HTMLButtonElement;
   private readonly aiShareMenu: HTMLElement;
   private readonly aiShareNote: HTMLInputElement;
@@ -1255,8 +1256,8 @@ export class BoardApp {
     this.shapeMenu = query(this.root, "[data-testid='shape-menu']", HTMLElement);
     this.toolsMenu = query(this.root, "[data-testid='tools-menu']", HTMLElement);
     this.stylePopover = query(this.root, "[data-testid='style-popover']", HTMLElement);
-    this.exportMenu = query(this.root, "[data-testid='export-menu']", HTMLElement);
     this.selectionActions = query(this.root, "[data-testid='selection-actions']", HTMLElement);
+    this.moreToolsButton = query(this.root, "[data-testid='tool-more']", HTMLButtonElement);
     this.aiAssistWrap = query(this.selectionActions, "[data-selection-ai-wrap]", HTMLElement);
     this.aiAssistButton = query(this.selectionActions, "[data-selection-ai]", HTMLButtonElement);
     this.aiAssistMenu = query(this.selectionActions, "[data-testid='ai-assist-menu']", HTMLElement);
@@ -1264,8 +1265,20 @@ export class BoardApp {
     this.aiAssistNote = query(this.aiAssistMenu, "[data-ai-assist-note]", HTMLInputElement);
     this.aiWatchIndicator = query(this.root, "[data-ai-watch-indicator]", HTMLElement);
     this.aiWatchIndicatorText = query(this.root, "[data-ai-watch-indicator-text]", HTMLElement);
-    this.webMcpStatus = query(this.root, "[data-webmcp-status]", HTMLElement);
+    this.webMcpStatus = query(this.root, "[data-webmcp-status]", HTMLButtonElement);
     this.webMcpStatusText = query(this.root, "[data-webmcp-status-text]", HTMLElement);
+    this.mcpActivityMenu = query(this.root, "[data-testid='mcp-activity-menu']", HTMLElement);
+    this.mcpActivitySummary = query(
+      this.mcpActivityMenu,
+      "[data-mcp-activity-summary]",
+      HTMLElement,
+    );
+    this.mcpActivityList = query(
+      this.mcpActivityMenu,
+      "[data-mcp-activity-list]",
+      HTMLOListElement,
+    );
+    this.mcpActivityEmpty = query(this.mcpActivityMenu, "[data-mcp-activity-empty]", HTMLElement);
     this.aiShareButton = query(this.root, "[data-ai-share]", HTMLButtonElement);
     this.aiShareMenu = query(this.root, "[data-testid='ai-share-menu']", HTMLElement);
     this.aiShareNote = query(this.aiShareMenu, "[data-ai-share-note]", HTMLInputElement);
@@ -1367,7 +1380,7 @@ export class BoardApp {
       },
       onToolChanged: (tool) => {
         this.setActiveToolButton(tool);
-        if (tool === "stamp") this.setStylePopoverOpen(true);
+        if (tool === "stamp" || tool === "sticky") this.setStylePopoverOpen(true);
         this.setTablePickerOpen(tool === "table");
         if (tool === "image") {
           this.setStylePopoverOpen(false);
@@ -1425,8 +1438,11 @@ export class BoardApp {
       api.embedSessionToken,
     );
 
-    this.renderWebMcpStatus(webMcpRegistryState());
-    this.stopObservingWebMcp = observeWebMcpRegistry((state) => this.renderWebMcpStatus(state));
+    this.webMcpState = webMcpRegistryState();
+    this.renderWebMcpStatus(this.webMcpState);
+    this.stopObservingWebMcp = observeWebMcpRegistry((state) => {
+      this.renderWebMcpStatus(state);
+    });
 
     this.mathFieldPanel = new MathFieldPanel({
       root: this.root,
@@ -1582,6 +1598,8 @@ export class BoardApp {
 
   destroy(): void {
     window.clearInterval(this.previewExpiryTimer);
+    this.toolRailResizeObserver?.disconnect();
+    this.toolRailResizeObserver = null;
     this.stopBroadcastingSpotlight();
     this.clearFollowingSpotlight();
     this.unsubscribeViewport?.();
@@ -1637,23 +1655,40 @@ export class BoardApp {
             ${BRAND_MARK_HTML}
             <span class="wordmark-text">${PRODUCT_NAME}</span>
           </a>
-          <label class="board-title-wrap">
-            <span class="sr-only">Board title</span>
-            <input class="board-title" data-testid="board-title" maxlength="100" autocomplete="off" />
-          </label>
-          <div class="topbar-actions">
-            <div class="history-controls" aria-label="Board history">
-              <button class="icon-button" type="button" data-testid="undo-button" aria-label="Undo (Control or Command Z)" title="Undo · Ctrl/⌘ Z">↶</button>
-              <button class="icon-button" type="button" data-testid="redo-button" aria-label="Redo (Control or Command Shift Z)" title="Redo · Ctrl/⌘ Shift Z">↷</button>
-            </div>
+          <div class="board-identity">
+            <label class="board-title-wrap">
+              <span class="sr-only">Board title</span>
+              <input class="board-title" data-testid="board-title" maxlength="100" autocomplete="off" />
+            </label>
             <div class="save-status" data-testid="save-status" role="status" aria-live="polite">
-              <span class="status-dot" aria-hidden="true"></span>
+              <svg class="save-cloud-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7.6 18.2h9.3a4.1 4.1 0 0 0 .7-8.1A6 6 0 0 0 6.2 8.9a4.7 4.7 0 0 0 1.4 9.3Z"></path>
+                <path class="save-cloud-check" d="m9.2 13.4 1.9 1.9 3.9-4"></path>
+              </svg>
               <span data-save-status-text>Connecting…</span>
             </div>
-            <span class="webmcp-status" data-webmcp-status data-testid="webmcp-status" role="status" aria-live="polite" data-state="unlinked">
-              <span class="webmcp-status-dot" aria-hidden="true"></span>
-              <span data-webmcp-status-text>WebMCP</span>
-            </span>
+          </div>
+          <div class="topbar-actions">
+            <div class="menu-wrap mcp-status-wrap">
+              <button class="webmcp-status" type="button" data-webmcp-status data-testid="webmcp-status" data-state="ready" data-host="unlinked" aria-haspopup="dialog" aria-controls="mcp-activity-menu" aria-expanded="false">
+                <svg class="webmcp-status-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m5 4 14 7.2-6.1 2.1-2.2 6.2L5 4Z"></path>
+                  <path d="m12.9 13.3 4.4 4.4"></path>
+                </svg>
+                <span data-webmcp-status-text>MCP</span>
+              </button>
+              <section class="floating-menu mcp-activity-menu" data-testid="mcp-activity-menu" id="mcp-activity-menu" role="dialog" aria-label="MCP call activity" hidden>
+                <header class="mcp-activity-heading">
+                  <span>
+                    <strong>MCP activity</strong>
+                    <small data-mcp-activity-summary>Waiting for a compatible browser</small>
+                  </span>
+                  <span class="mcp-activity-live" aria-hidden="true"></span>
+                </header>
+                <p class="mcp-activity-empty" data-mcp-activity-empty>No MCP calls in this tab yet.</p>
+                <ol class="mcp-activity-list" data-mcp-activity-list aria-live="polite"></ol>
+              </section>
+            </div>
             <span class="ai-watch-indicator" data-ai-watch-indicator data-testid="ai-watch-indicator" role="status" aria-live="polite" hidden>
               <span class="ai-mark" aria-hidden="true">AI</span>
               <span data-ai-watch-indicator-text>AI watching</span>
@@ -1677,33 +1712,13 @@ export class BoardApp {
                 </section>
               </div>
             </div>
-            <button class="topbar-button spotlight-toggle" type="button" data-testid="spotlight-toggle" aria-label="Start Follow me" aria-pressed="false" hidden>
-              <span class="spotlight-toggle-mark" aria-hidden="true"></span>
-              <span class="spotlight-toggle-label">Follow me</span>
-            </button>
-            <button class="topbar-button comments-button" type="button" data-testid="comments-button" aria-label="Comments" aria-controls="comments-drawer" aria-expanded="false" title="Comments">
-              <span class="comments-button-mark" aria-hidden="true">●</span>
-              <span class="comments-button-label">Comments</span>
-              <span class="comments-count" data-comments-count>0</span>
-            </button>
             <button class="topbar-button people-button" type="button" data-testid="participants-button" aria-label="1 person here" aria-controls="participant-drawer" aria-expanded="false" title="1 person here">
               <span class="avatar-stack" aria-hidden="true"><i></i><i></i></span>
               <span data-participant-count>1</span>
               <span class="wide-label">here</span>
             </button>
-            <button class="topbar-button access-button" type="button" data-testid="access-button" aria-label="Share Space" aria-controls="access-drawer" aria-expanded="false" title="Share Space"><span class="access-button-mark" aria-hidden="true">↗</span><span class="access-button-label">Share</span></button>
+            <button class="topbar-button access-button" type="button" data-testid="access-button" aria-label="Share and export Space" aria-controls="access-drawer" aria-expanded="false" title="Share and export"><span class="access-button-mark" aria-hidden="true">↗</span><span class="access-button-label">Share</span></button>
             <button class="icon-button settings-button" type="button" data-testid="settings-button" aria-label="Space settings" aria-controls="settings-drawer" aria-expanded="false" title="Settings">⚙</button>
-            <div class="menu-wrap">
-              <button class="icon-button" type="button" data-testid="export-button" aria-label="Export board" aria-controls="export-menu" aria-expanded="false" title="Export">↓</button>
-              <div class="floating-menu export-menu" data-testid="export-menu" id="export-menu" hidden>
-                <p class="menu-eyebrow">Download current board</p>
-                <button type="button" data-export-attributed-json${attributedDataDownloadAllowed(this.bootstrap.actor.role) ? "" : " hidden"}>Attributed data JSON <span>people + text attribution</span></button>
-                <a data-export-svg download href="/api/v1/boards/${encodeURIComponent(this.bootstrap.board.id)}/export.svg">SVG image <span>authoritative</span></a>
-                <a data-export-json download href="/api/v1/boards/${encodeURIComponent(this.bootstrap.board.id)}/export.json">Canonical JSON <span>authoritative</span></a>
-                <button type="button" data-local-svg>Local SVG <span>includes pending edits</span></button>
-                <button type="button" data-local-json>Local recovery JSON <span>includes outbox</span></button>
-              </div>
-            </div>
           </div>
         </header>
 
@@ -1718,7 +1733,11 @@ export class BoardApp {
         </div>
 
         <main class="board-stage">
-          <nav class="tool-rail" aria-label="Drawing tools" data-testid="tool-rail"></nav>
+          <div class="tool-rail-shell" data-tool-rail-shell data-overflow="false">
+            <button class="tool-rail-scroll tool-rail-scroll-back" type="button" data-tool-rail-scroll="-1" aria-label="Scroll tools left" hidden>‹</button>
+            <nav class="tool-rail" aria-label="Drawing tools" data-testid="tool-rail"></nav>
+            <button class="tool-rail-scroll tool-rail-scroll-forward" type="button" data-tool-rail-scroll="1" aria-label="Scroll tools right" hidden>›</button>
+          </div>
           <section class="canvas-wrap" data-canvas-host>
             <p class="sr-only" id="canvas-help">Use the bottom toolbar to draw. Hold Space to pan. Scroll or pinch to zoom.</p>
             <div class="canvas-hint" data-canvas-hint aria-hidden="true">Draw or add an element to get started</div>
@@ -1843,8 +1862,8 @@ export class BoardApp {
           <section class="shape-menu" data-testid="shape-menu" id="shape-menu" role="menu" aria-label="Choose a shape" hidden>
             <div class="shape-menu-grid" data-shape-menu-grid></div>
           </section>
-          <section class="shape-menu tools-menu" data-testid="tools-menu" id="tools-menu" role="menu" aria-label="Choose a tool" hidden>
-            <div class="shape-menu-grid tools-menu-grid">
+          <section class="shape-menu tools-menu" data-testid="tools-menu" id="tools-menu" role="menu" aria-label="More tools" hidden>
+            <div class="shape-menu-grid tools-menu-grid" data-more-tools-grid>
               <button type="button" data-tools-tool="protractor" data-testid="tools-protractor" role="menuitemradio" aria-checked="false" aria-label="Protractor"><span class="shape-choice-glyph" aria-hidden="true">∠</span><span>Protractor</span></button>
             </div>
           </section>
@@ -1903,15 +1922,45 @@ export class BoardApp {
 
         <aside class="side-drawer participant-drawer" id="participant-drawer" data-testid="participant-drawer" aria-label="Participants" hidden>
           <div class="drawer-heading"><div><span class="eyebrow">Live Space</span><h2>Participants</h2></div><button type="button" data-close-drawer aria-label="Close participants">×</button></div>
+          <section class="drawer-action-section">
+            <button class="drawer-action-button spotlight-toggle" type="button" data-testid="spotlight-toggle" aria-label="Start Follow me" aria-pressed="false" hidden>
+              <span class="spotlight-toggle-mark" aria-hidden="true"></span>
+              <span class="spotlight-toggle-label">Follow me</span>
+            </button>
+          </section>
           <div class="participant-list" data-participant-list></div>
         </aside>
 
-        <aside class="side-drawer access-drawer" id="access-drawer" data-testid="access-drawer" aria-label="Board access" hidden>
-          <div class="drawer-heading"><div><span class="eyebrow">People</span><h2>Share & access</h2></div><button type="button" data-close-drawer aria-label="Close access panel">×</button></div>
+        <aside class="side-drawer access-drawer" id="access-drawer" data-testid="access-drawer" aria-label="Share and export" hidden>
+          <div class="drawer-heading"><div><span class="eyebrow">Collaborate</span><h2>Share & export</h2></div><button type="button" data-close-drawer aria-label="Close access panel">×</button></div>
           <div data-access-body></div>
+          <section class="access-section access-export-section">
+            <h3>Export Space</h3>
+            <div class="export-menu access-export-actions" data-testid="export-menu" id="export-menu">
+              <button type="button" data-export-attributed-json${attributedDataDownloadAllowed(this.bootstrap.actor.role) ? "" : " hidden"}>Attributed data JSON <span>people + text attribution</span></button>
+              <a data-export-svg download href="/api/v1/boards/${encodeURIComponent(this.bootstrap.board.id)}/export.svg">SVG image <span>authoritative</span></a>
+              <a data-export-json download href="/api/v1/boards/${encodeURIComponent(this.bootstrap.board.id)}/export.json">Canonical JSON <span>authoritative</span></a>
+              <button type="button" data-local-svg>Local SVG <span>includes pending edits</span></button>
+              <button type="button" data-local-json>Local recovery JSON <span>includes outbox</span></button>
+            </div>
+          </section>
         </aside>
         <aside class="side-drawer settings-drawer" id="settings-drawer" data-testid="settings-drawer" aria-label="Space settings" hidden>
-          <div class="drawer-heading"><div><span class="eyebrow">Owner controls</span><h2>Space settings</h2></div><button type="button" data-close-drawer aria-label="Close settings">×</button></div>
+          <div class="drawer-heading"><div><span class="eyebrow">Space</span><h2>Settings</h2></div><button type="button" data-close-drawer aria-label="Close settings">×</button></div>
+          <section class="drawer-action-section">
+            <div class="drawer-section-label">History</div>
+            <div class="settings-history-controls" aria-label="Board history">
+              <button class="drawer-action-button" type="button" data-testid="undo-button" aria-label="Undo (Control or Command Z)" title="Undo · Ctrl/⌘ Z"><span aria-hidden="true">↶</span> Undo</button>
+              <button class="drawer-action-button" type="button" data-testid="redo-button" aria-label="Redo (Control or Command Shift Z)" title="Redo · Ctrl/⌘ Shift Z"><span aria-hidden="true">↷</span> Redo</button>
+            </div>
+            <div class="drawer-section-label">Comments</div>
+            <button class="drawer-action-button comments-button" type="button" data-testid="comments-button" aria-label="View all comments" aria-controls="comments-drawer" aria-expanded="false">
+              <span class="comments-button-mark" aria-hidden="true">●</span>
+              <span class="comments-button-label">View all comments</span>
+              <span class="comments-count" data-comments-count>0</span>
+              <span class="drawer-action-arrow" aria-hidden="true">›</span>
+            </button>
+          </section>
           <div data-settings-body></div>
         </aside>
         <dialog class="claim-dialog organisation-template-dialog" data-testid="organisation-template-dialog" aria-labelledby="organisation-template-title">
@@ -1957,6 +2006,8 @@ export class BoardApp {
     `;
 
     const rail = query(this.root, "[data-testid='tool-rail']", HTMLElement);
+    const shapeGrid = query(this.root, "[data-shape-menu-grid]", HTMLElement);
+    const moreToolsGrid = query(this.root, "[data-more-tools-grid]", HTMLElement);
     for (const definition of TOOL_DEFINITIONS) {
       const button = document.createElement("button");
       button.type = "button";
@@ -1968,16 +2019,8 @@ export class BoardApp {
         button.setAttribute("aria-haspopup", "menu");
         button.setAttribute("aria-controls", "shape-menu");
         button.setAttribute("aria-expanded", "false");
-      } else if (definition.name === "protractor") {
-        button.setAttribute("aria-label", "Tools");
-        button.setAttribute("aria-haspopup", "menu");
-        button.setAttribute("aria-controls", "tools-menu");
-        button.setAttribute("aria-expanded", "false");
       }
-      button.title =
-        definition.name === "protractor"
-          ? `Tools · Protractor shortcut ${definition.shortcut}`
-          : `${definition.label} · ${definition.shortcut}`;
+      button.title = `${definition.label} · ${definition.shortcut}`;
       const glyph = document.createElement("span");
       glyph.className = `tool-glyph tool-glyph-${definition.name}`;
       glyph.setAttribute("aria-hidden", "true");
@@ -1987,7 +2030,19 @@ export class BoardApp {
       label.className = "tool-label";
       label.textContent = definition.dockLabel;
       button.append(glyph, label);
-      rail.append(button);
+      if (definition.name === "line") {
+        button.setAttribute("role", "menuitem");
+        button.classList.add("shape-menu-tool");
+        glyph.className = "shape-choice-glyph";
+        label.className = "";
+        shapeGrid.append(button);
+      } else if (MORE_TOOL_NAMES.has(definition.name)) {
+        button.setAttribute("role", "menuitem");
+        button.classList.add("more-tool-choice");
+        moreToolsGrid.append(button);
+      } else {
+        rail.append(button);
+      }
       if (definition.name === "image") {
         const video = document.createElement("button");
         video.type = "button";
@@ -1997,11 +2052,24 @@ export class BoardApp {
         video.title = "Embed a YouTube or Vimeo video";
         video.innerHTML =
           '<span class="tool-glyph tool-glyph-video" aria-hidden="true">▶</span><span class="tool-label">Video</span>';
-        rail.append(video);
+        moreToolsGrid.append(video);
       }
     }
     const aiShare = document.createElement("button");
     aiShare.type = "button";
+    const moreToolsButton = document.createElement("button");
+    moreToolsButton.type = "button";
+    moreToolsButton.dataset.moreTools = "true";
+    moreToolsButton.dataset.testid = "tool-more";
+    moreToolsButton.setAttribute("aria-label", "More tools");
+    moreToolsButton.setAttribute("aria-haspopup", "menu");
+    moreToolsButton.setAttribute("aria-controls", "tools-menu");
+    moreToolsButton.setAttribute("aria-expanded", "false");
+    moreToolsButton.setAttribute("aria-pressed", "false");
+    moreToolsButton.title = "More tools";
+    moreToolsButton.innerHTML =
+      '<span class="tool-glyph tool-glyph-more" aria-hidden="true">•••</span><span class="tool-label">More</span>';
+    rail.append(moreToolsButton);
     aiShare.dataset.aiShare = "true";
     aiShare.dataset.testid = "tool-ai";
     aiShare.hidden = true;
@@ -2013,6 +2081,24 @@ export class BoardApp {
     aiShare.innerHTML =
       '<span class="tool-glyph ai-mark" aria-hidden="true">AI</span><span class="tool-label">AI</span>';
     rail.append(aiShare);
+
+    // Templates are a secondary creation tool in More. Its fixed popover stays at workspace
+    // level so it is not clipped when the More menu closes.
+    const activitiesWrap = query(this.root, ".activities-wrap", HTMLElement);
+    const activitiesButton = query(
+      activitiesWrap,
+      "[data-testid='activities-button']",
+      HTMLElement,
+    );
+    const activitiesMenu = query(activitiesWrap, "[data-testid='activities-menu']", HTMLElement);
+    activitiesButton.classList.remove("topbar-button");
+    query(activitiesButton, ".activities-button-mark", HTMLElement).classList.add("tool-glyph");
+    query(activitiesButton, ".activities-button-label", HTMLElement).classList.add("tool-label");
+    activitiesButton.classList.add("more-tool-choice");
+    activitiesButton.setAttribute("role", "menuitem");
+    moreToolsGrid.append(activitiesButton);
+    query(this.root, ".workspace", HTMLElement).append(activitiesMenu);
+    activitiesWrap.remove();
 
     const divider = document.createElement("span");
     divider.className = "tool-divider";
@@ -2029,7 +2115,6 @@ export class BoardApp {
       '<span class="rail-color-dot" aria-hidden="true"></span><span class="tool-label">Style</span>';
     rail.append(styleShortcut);
 
-    const shapeGrid = query(this.root, "[data-shape-menu-grid]", HTMLElement);
     for (const choice of SHAPE_CHOICES) {
       const button = document.createElement("button");
       button.type = "button";
@@ -2651,6 +2736,28 @@ export class BoardApp {
   }
 
   private bindShellEvents(): void {
+    this.moreToolsButton.addEventListener("click", () => {
+      const opening = this.toolsMenu.hidden === true;
+      if (opening) this.tools.setTool("select");
+      this.setShapeMenuOpen(false);
+      this.setToolsMenuOpen(opening);
+      if (opening) this.toolsMenu.querySelector<HTMLButtonElement>("button:not([hidden])")?.focus();
+    });
+    const toolRail = query(this.root, "[data-testid='tool-rail']", HTMLElement);
+    toolRail.addEventListener("scroll", () => this.updateToolRailOverflow(), { passive: true });
+    for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-tool-rail-scroll]")) {
+      button.addEventListener("click", () => {
+        const direction = Number(button.dataset.toolRailScroll);
+        toolRail.scrollBy({
+          left: direction * Math.max(160, toolRail.clientWidth * 0.7),
+          behavior: "smooth",
+        });
+      });
+    }
+    this.toolRailResizeObserver = new ResizeObserver(() => this.updateToolRailOverflow());
+    this.toolRailResizeObserver.observe(toolRail);
+    window.requestAnimationFrame(() => this.updateToolRailOverflow());
+
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("button[data-tool]")) {
       button.addEventListener("click", () => this.activateTool(button.dataset.tool as ToolName));
     }
@@ -2990,9 +3097,10 @@ export class BoardApp {
       this.imageInput.value = "";
       if (image) void this.uploadImage(image, this.imagePlacementCenter());
     });
-    query(this.root, "[data-video-embed]", HTMLButtonElement).addEventListener("click", () =>
-      this.openVideoEmbedDialog(),
-    );
+    query(this.root, "[data-video-embed]", HTMLButtonElement).addEventListener("click", () => {
+      this.setToolsMenuOpen(false);
+      this.openVideoEmbedDialog();
+    });
     query(this.videoEmbedDialog, "[data-video-embed-form]", HTMLFormElement).addEventListener(
       "submit",
       (event) => {
@@ -3040,10 +3148,22 @@ export class BoardApp {
     this.renderer.svg.addEventListener("drop", this.onImageDrop);
     document.addEventListener("paste", this.onImagePaste);
 
+    this.webMcpStatus.addEventListener("click", () => {
+      this.togglePopover(this.mcpActivityMenu, this.webMcpStatus);
+    });
+    this.mcpActivityMenu.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeMcpActivityMenu();
+      this.webMcpStatus.focus();
+    });
+
     this.activitiesButton.addEventListener("click", () => {
       if (this.activitiesButton.disabled) return;
       const opening = this.activitiesMenu.hidden;
       this.togglePopover(this.activitiesMenu, this.activitiesButton);
+      if (opening) this.setToolsMenuOpen(false);
       if (opening) {
         void this.loadOrganisationTemplates();
         this.activitiesMenu.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
@@ -3158,8 +3278,6 @@ export class BoardApp {
       button.addEventListener("click", () => this.closeDrawers());
     }
 
-    const exportButton = query(this.root, "[data-testid='export-button']", HTMLButtonElement);
-    exportButton.addEventListener("click", () => this.togglePopover(this.exportMenu, exportButton));
     const attributedExportButton = query(
       this.root,
       "[data-export-attributed-json]",
@@ -3214,7 +3332,7 @@ export class BoardApp {
     document.addEventListener("pointerdown", (event) => {
       const target = event.target as Node;
       const shapeButton = query(this.root, "[data-testid='tool-rectangle']", HTMLElement);
-      const toolsButton = query(this.root, "[data-testid='tool-protractor']", HTMLElement);
+      const toolsButton = this.moreToolsButton;
       if (
         !this.shapeMenu.hidden &&
         !this.shapeMenu.contains(target) &&
@@ -3244,19 +3362,18 @@ export class BoardApp {
         this.setToolsMenuOpen(false);
       }
       if (
+        !this.mcpActivityMenu.hidden &&
+        !this.mcpActivityMenu.contains(target) &&
+        !this.webMcpStatus.contains(target)
+      ) {
+        this.closeMcpActivityMenu();
+      }
+      if (
         !this.stylePopover.hidden &&
         !this.stylePopover.contains(target) &&
         !query(this.root, "[data-testid='style-button']", HTMLElement).contains(target)
       ) {
         this.setStylePopoverOpen(false);
-      }
-      if (
-        !this.exportMenu.hidden &&
-        !this.exportMenu.contains(target) &&
-        !exportButton.contains(target)
-      ) {
-        this.exportMenu.hidden = true;
-        exportButton.setAttribute("aria-expanded", "false");
       }
       if (
         !this.activitiesMenu.hidden &&
@@ -4554,7 +4671,7 @@ export class BoardApp {
     switch (shortcut) {
       case "close-tools-menu":
         this.setToolsMenuOpen(false);
-        query(this.root, "[data-testid='tool-protractor']", HTMLButtonElement).focus();
+        this.moreToolsButton.focus();
         break;
       case "close-shape-menu":
         this.setShapeMenuOpen(false);
@@ -4980,7 +5097,10 @@ export class BoardApp {
   }
 
   private async loadAccessPanel(): Promise<void> {
-    if (this.bootstrap.actor.role !== "owner") return;
+    if (this.bootstrap.actor.role !== "owner") {
+      this.accessBody.replaceChildren();
+      return;
+    }
     this.accessBody.replaceChildren(loadingBlock("Loading access…"));
     try {
       this.accessMembers = await this.api.members(this.bootstrap.board.id);
@@ -5052,7 +5172,10 @@ export class BoardApp {
   }
 
   private async loadSettingsPanel(): Promise<void> {
-    if (this.bootstrap.actor.role !== "owner") return;
+    if (this.bootstrap.actor.role !== "owner") {
+      this.settingsBody.replaceChildren();
+      return;
+    }
     this.settingsBody.replaceChildren(loadingBlock("Loading settings…"));
     try {
       const [recoverySnapshots, accessMembers, organisationWebhookSettings] = await Promise.all([
@@ -5083,6 +5206,8 @@ export class BoardApp {
       this.clearOwnerSettings();
       return;
     }
+    const permissionsOpen =
+      this.settingsBody.querySelector<HTMLDetailsElement>(".settings-collapsible")?.open ?? false;
     this.settingsBody.replaceChildren();
     this.settingsBody.setAttribute(
       "aria-busy",
@@ -5126,12 +5251,17 @@ export class BoardApp {
     this.settingsBody.append(boardSection);
 
     const featureSection = document.createElement("section");
-    featureSection.className = "access-section";
+    featureSection.className = "access-section settings-permissions-section";
     featureSection.innerHTML = `
-      <div class="section-heading"><h3>Features</h3><span>${BOARD_FEATURE_KEYS.filter((key) => this.bootstrap.board.features[key]).length}/${BOARD_FEATURE_KEYS.length}</span></div>
-      <p class="section-note">Changes apply immediately to everyone in this Space. Existing objects remain visible and movable.</p>
-      <div class="feature-toggle-grid" data-feature-toggle-grid></div>
+      <details class="settings-collapsible">
+        <summary><span class="settings-collapsible-label">Tool permissions</span><span class="settings-collapsible-count">${BOARD_FEATURE_KEYS.filter((key) => this.bootstrap.board.features[key]).length}/${BOARD_FEATURE_KEYS.length} enabled</span></summary>
+        <div class="settings-collapsible-body">
+          <p class="section-note">Changes apply immediately to everyone in this Space. Existing objects remain visible and movable.</p>
+          <div class="feature-toggle-grid" data-feature-toggle-grid></div>
+        </div>
+      </details>
     `;
+    query(featureSection, ".settings-collapsible", HTMLDetailsElement).open = permissionsOpen;
     const featureGrid = query(featureSection, "[data-feature-toggle-grid]", HTMLElement);
     for (const key of BOARD_FEATURE_KEYS) {
       const metadata = FEATURE_LABELS[key];
@@ -5953,7 +6083,7 @@ export class BoardApp {
     this.commentsCount.hidden = openCount === 0;
     this.commentsButton.setAttribute(
       "aria-label",
-      openCount === 0 ? "Comments" : `Comments, ${openCount} open`,
+      openCount === 0 ? "View all comments" : `View all comments, ${openCount} open`,
     );
     // The card list is rebuilt when the drawer opens, so a hidden drawer only
     // needs the badge.
@@ -6328,7 +6458,8 @@ export class BoardApp {
       const name = button.dataset.tool as ToolName;
       const enabled =
         name === "rectangle"
-          ? SHAPE_CHOICES.some((choice) => this.isShapeVariantEnabled(choice.variant))
+          ? this.isToolEnabled("line") ||
+            SHAPE_CHOICES.some((choice) => this.isShapeVariantEnabled(choice.variant))
           : this.isToolEnabled(name);
       button.hidden = !enabled;
       button.disabled =
@@ -6341,11 +6472,22 @@ export class BoardApp {
     videoButton.disabled = !canEdit || !videoEnabled;
     if (videoButton.disabled && this.videoEmbedDialog.open) this.videoEmbedDialog.close();
     this.setShapeMenuOpen(!this.shapeMenu.hidden);
+    // Synchronize nested visibility before deciding whether the More trigger itself is useful.
     this.setToolsMenuOpen(!this.toolsMenu.hidden);
-    this.accessButton.hidden = this.bootstrap.actor.role !== "owner" || archived;
-    this.accessButton.disabled = archived || this.archivePending;
-    this.settingsButton.hidden = this.bootstrap.actor.role !== "owner" || archived;
-    this.settingsButton.disabled = archived || this.archivePending;
+    const moreToolsAvailable =
+      roleCanBroadcast &&
+      !archived &&
+      [...this.toolsMenu.querySelectorAll<HTMLButtonElement>("button")].some(
+        (button) => !button.hidden,
+      );
+    this.moreToolsButton.hidden = !moreToolsAvailable;
+    this.moreToolsButton.disabled = !canEdit;
+    if (this.moreToolsButton.hidden) this.setToolsMenuOpen(false);
+    window.requestAnimationFrame(() => this.updateToolRailOverflow());
+    this.accessButton.hidden = false;
+    this.accessButton.disabled = false;
+    this.settingsButton.hidden = false;
+    this.settingsButton.disabled = false;
     if (this.bootstrap.actor.role !== "owner") this.clearOwnerSettings();
     query(this.root, "[data-export-attributed-json]", HTMLButtonElement).hidden =
       !attributedDataDownloadAllowed(this.bootstrap.actor.role);
@@ -6359,7 +6501,7 @@ export class BoardApp {
       for (const control of this.root.querySelectorAll<
         HTMLButtonElement | HTMLInputElement | HTMLSelectElement
       >(
-        "[data-testid='access-drawer'] button, [data-testid='access-drawer'] input, [data-testid='access-drawer'] select, [data-testid='settings-drawer'] button, [data-testid='settings-drawer'] input, [data-testid='settings-drawer'] select",
+        "[data-access-body] button, [data-access-body] input, [data-access-body] select, [data-settings-body] button, [data-settings-body] input, [data-settings-body] select",
       )) {
         control.disabled = true;
       }
@@ -6522,23 +6664,28 @@ export class BoardApp {
   }
 
   private setActiveToolButton(tool: ToolName): void {
-    const activeButtonTool =
-      tool === "polygon" || tool === "ellipse" ? ("rectangle" satisfies ToolName) : tool;
+    const shapeActive =
+      tool === "line" || tool === "rectangle" || tool === "polygon" || tool === "ellipse";
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-tool]")) {
-      button.setAttribute("aria-pressed", String(button.dataset.tool === activeButtonTool));
+      const isShapeTrigger = button.dataset.testid === "tool-rectangle";
+      button.setAttribute(
+        "aria-pressed",
+        String(button.dataset.tool === tool || (isShapeTrigger && shapeActive)),
+      );
     }
     for (const button of this.shapeMenu.querySelectorAll<HTMLButtonElement>(
       "[data-shape-variant]",
     )) {
       button.setAttribute(
         "aria-pressed",
-        String(button.dataset.shapeVariant === this.style.shapeVariant),
+        String(tool !== "line" && button.dataset.shapeVariant === this.style.shapeVariant),
       );
     }
     query(this.toolsMenu, "[data-tools-tool='protractor']", HTMLButtonElement).setAttribute(
       "aria-checked",
       String(tool === "protractor"),
     );
+    this.moreToolsButton.setAttribute("aria-pressed", String(MORE_TOOL_NAMES.has(tool)));
     this.updateStyleControls();
   }
 
@@ -6807,6 +6954,24 @@ export class BoardApp {
     );
   }
 
+  private updateToolRailOverflow(): void {
+    const shell = query(this.root, "[data-tool-rail-shell]", HTMLElement);
+    const rail = query(this.root, "[data-testid='tool-rail']", HTMLElement);
+    const back = query(shell, "[data-tool-rail-scroll='-1']", HTMLButtonElement);
+    const forward = query(shell, "[data-tool-rail-scroll='1']", HTMLButtonElement);
+    const overflow = rail.scrollWidth - rail.clientWidth > 2;
+    shell.dataset.overflow = String(overflow);
+    back.hidden = !overflow;
+    forward.hidden = !overflow;
+    if (!overflow) {
+      rail.scrollLeft = 0;
+      return;
+    }
+    const maxScrollLeft = Math.max(0, rail.scrollWidth - rail.clientWidth);
+    back.disabled = rail.scrollLeft <= 2;
+    forward.disabled = rail.scrollLeft >= maxScrollLeft - 2;
+  }
+
   private activateTool(tool: ToolName): void {
     if (tool === "rectangle") {
       const opening = this.shapeMenu.hidden !== false;
@@ -6815,16 +6980,9 @@ export class BoardApp {
       this.setToolsMenuOpen(false);
       return;
     }
-    if (tool === "protractor") {
-      const opening = this.toolsMenu.hidden !== false;
-      if (opening) this.tools.setTool("select");
-      this.setShapeMenuOpen(false);
-      this.setToolsMenuOpen(opening);
-      return;
-    }
     this.setShapeMenuOpen(false);
+    this.setToolsMenuOpen(false);
     if (this.tools.tool === tool) {
-      this.setToolsMenuOpen(false);
       this.reactivateTool(tool);
       return;
     }
@@ -6832,10 +6990,10 @@ export class BoardApp {
   }
 
   private reactivateTool(tool: ToolName): void {
-    if (tool === "rectangle" || tool === "ellipse" || tool === "polygon") {
+    if (tool === "line" || tool === "rectangle" || tool === "ellipse" || tool === "polygon") {
       this.setShapeMenuOpen(true);
     }
-    if (tool === "stamp") this.setStylePopoverOpen(true);
+    if (tool === "stamp" || tool === "sticky") this.setStylePopoverOpen(true);
     if (tool === "image") this.openImagePicker();
     if (tool === "table") this.setTablePickerOpen(true);
   }
@@ -6844,7 +7002,7 @@ export class BoardApp {
     const enabledChoices = SHAPE_CHOICES.filter((choice) =>
       this.isShapeVariantEnabled(choice.variant),
     );
-    if (enabledChoices.length === 0) open = false;
+    if (enabledChoices.length === 0 && !this.isToolEnabled("line")) open = false;
     this.shapeMenu.hidden = !open;
     query(this.root, "[data-testid='tool-rectangle']", HTMLButtonElement).setAttribute(
       "aria-expanded",
@@ -6861,26 +7019,24 @@ export class BoardApp {
     this.setToolsMenuOpen(false);
     this.setStylePopoverOpen(false);
     this.closeActivitiesMenu();
-    this.exportMenu.hidden = true;
   }
 
   private setToolsMenuOpen(open: boolean): void {
-    const enabled = this.isToolEnabled("protractor");
-    if (!enabled) open = false;
-    this.toolsMenu.hidden = !open;
-    query(this.root, "[data-testid='tool-protractor']", HTMLButtonElement).setAttribute(
-      "aria-expanded",
-      String(open),
-    );
+    const protractorEnabled = this.isToolEnabled("protractor");
     const protractor = query(this.toolsMenu, "[data-tools-tool='protractor']", HTMLButtonElement);
-    protractor.hidden = !enabled;
-    protractor.disabled = !enabled || !this.canCommit();
+    protractor.hidden = !protractorEnabled;
+    protractor.disabled = !protractorEnabled || !this.canCommit();
     protractor.setAttribute("aria-checked", String(this.tools.tool === "protractor"));
+    const hasAvailableTool = [...this.toolsMenu.querySelectorAll<HTMLButtonElement>("button")].some(
+      (button) => !button.hidden,
+    );
+    if (!hasAvailableTool || this.moreToolsButton.hidden) open = false;
+    this.toolsMenu.hidden = !open;
+    this.moreToolsButton.setAttribute("aria-expanded", String(open));
     if (!open) return;
     this.setShapeMenuOpen(false);
     this.setStylePopoverOpen(false);
     this.closeActivitiesMenu();
-    this.exportMenu.hidden = true;
   }
 
   private isShapeVariantEnabled(variant: ShapeVariant): boolean {
@@ -6929,6 +7085,11 @@ export class BoardApp {
       case "eraser":
         return features.eraser;
     }
+  }
+
+  private closeMcpActivityMenu(): void {
+    this.mcpActivityMenu.hidden = true;
+    this.webMcpStatus.setAttribute("aria-expanded", "false");
   }
 
   private setTablePickerOpen(open: boolean): void {
@@ -6988,18 +7149,84 @@ export class BoardApp {
     if (this.aiAssistWrap.hidden || this.aiAssistButton.disabled) this.setAiAssistMenuOpen(false);
   }
 
-  /** Renders how many tools a visiting WebMCP host can see, and whether one is linked at all. */
+  /** Renders the compact MCP state and the page-session call history behind it. */
   private renderWebMcpStatus(state: WebMcpRegistryState): void {
-    const { hostPresent, toolCount } = state;
-    this.webMcpStatus.dataset.state = hostPresent ? "linked" : "unlinked";
-    this.webMcpStatusText.textContent = hostPresent
-      ? `WebMCP · ${toolCount} ${toolCount === 1 ? "tool" : "tools"}`
-      : "WebMCP · not linked";
-    const description = hostPresent
-      ? `An AI assistant is linked to this browser and can see ${toolCount} SpaceScale tools.`
-      : "No AI assistant is linked to this browser.";
+    this.webMcpState = state;
+    const { activeCallCount, calls, hostPresent, toolCount } = state;
+    const watching = this.aiWatchState.phase !== "idle";
+    const visualState = activeCallCount > 0 ? "active" : watching ? "watch" : "ready";
+    this.webMcpStatus.dataset.state = visualState;
+    this.webMcpStatus.dataset.host = hostPresent ? "linked" : "unlinked";
+    this.mcpActivityMenu.dataset.state = visualState;
+    this.webMcpStatusText.textContent = "MCP";
+
+    this.mcpActivitySummary.textContent =
+      activeCallCount > 0
+        ? `${activeCallCount} ${activeCallCount === 1 ? "call" : "calls"} running`
+        : watching
+          ? `Watching board · ${toolCount} site ${toolCount === 1 ? "tool" : "tools"}`
+          : hostPresent
+            ? `${toolCount} site ${toolCount === 1 ? "tool" : "tools"} ready`
+            : "Waiting for an MCP-capable browser";
+    this.mcpActivityEmpty.hidden = calls.length > 0;
+    this.mcpActivityList.replaceChildren(
+      ...calls.map((call) => {
+        const row = document.createElement("li");
+        row.className = "mcp-activity-row";
+        row.dataset.state = call.status;
+
+        const marker = document.createElement("span");
+        marker.className = "mcp-call-marker";
+        marker.setAttribute("aria-hidden", "true");
+
+        const details = document.createElement("span");
+        details.className = "mcp-call-details";
+        const name = document.createElement("strong");
+        name.textContent = call.toolName;
+        const meta = document.createElement("small");
+        const statusLabel =
+          call.status === "active"
+            ? "Running"
+            : call.status === "succeeded"
+              ? "Completed"
+              : "Failed";
+        const started = new Date(call.startedAt);
+        const timeLabel = started.toLocaleTimeString([], {
+          hour: "numeric",
+          minute: "2-digit",
+          second: "2-digit",
+        });
+        const duration =
+          call.completedAt === null
+            ? "now"
+            : (() => {
+                const elapsed = Math.max(0, call.completedAt - call.startedAt);
+                return elapsed < 1_000
+                  ? `${elapsed} ms`
+                  : `${(elapsed / 1_000).toFixed(elapsed < 10_000 ? 1 : 0)} s`;
+              })();
+        meta.textContent = `${statusLabel} · ${timeLabel} · ${duration}`;
+        details.append(name, meta);
+        row.append(marker, details);
+        return row;
+      }),
+    );
+
+    const stateDescription =
+      visualState === "active"
+        ? `${activeCallCount} MCP ${activeCallCount === 1 ? "call is" : "calls are"} active.`
+        : visualState === "watch"
+          ? "MCP is watching this board."
+          : "MCP is ready.";
+    const connectionDescription = hostPresent
+      ? `${toolCount} site ${toolCount === 1 ? "tool is" : "tools are"} available.`
+      : "No MCP host is linked to this browser.";
+    const callDescription =
+      calls.length === 0
+        ? "No calls in this tab yet."
+        : `${calls.length} ${calls.length === 1 ? "call" : "calls"} in this tab.`;
+    const description = `${stateDescription} ${connectionDescription} ${callDescription} Click to view activity.`;
     this.webMcpStatus.title = description;
-    // Narrow headers hide the label, so the chip names itself for assistive technology.
     this.webMcpStatus.setAttribute("aria-label", description);
   }
 
@@ -7052,6 +7279,7 @@ export class BoardApp {
 
   private setAiWatchState(state: WatchState): void {
     this.aiWatchState = state;
+    this.renderWebMcpStatus(this.webMcpState);
     const watching = state.phase !== "idle";
     this.aiWatchIndicator.hidden = !watching;
     this.aiShareButton.hidden = !watching;
@@ -7131,12 +7359,8 @@ export class BoardApp {
   private togglePopover(popover: HTMLElement, trigger: HTMLButtonElement): void {
     const open = popover.hidden;
     this.setStylePopoverOpen(false);
+    if (popover !== this.mcpActivityMenu) this.closeMcpActivityMenu();
     if (popover !== this.activitiesMenu) this.closeActivitiesMenu();
-    this.exportMenu.hidden = true;
-    query(this.root, "[data-testid='export-button']", HTMLButtonElement).setAttribute(
-      "aria-expanded",
-      "false",
-    );
     popover.hidden = !open;
     trigger.setAttribute("aria-expanded", String(open));
   }
@@ -7156,14 +7380,10 @@ export class BoardApp {
       String(open),
     );
     if (!open) return;
+    this.closeMcpActivityMenu();
     this.setShapeMenuOpen(false);
     this.setToolsMenuOpen(false);
     this.closeActivitiesMenu();
-    this.exportMenu.hidden = true;
-    query(this.root, "[data-testid='export-button']", HTMLButtonElement).setAttribute(
-      "aria-expanded",
-      "false",
-    );
   }
 
   private toggleDrawer(drawer: HTMLElement, trigger: HTMLButtonElement): void {
@@ -7187,10 +7407,7 @@ export class BoardApp {
     this.settingsButton.setAttribute("aria-expanded", "false");
   }
   private clearOwnerSettings(): void {
-    this.accessDrawer.hidden = true;
-    this.settingsDrawer.hidden = true;
-    this.accessButton.setAttribute("aria-expanded", "false");
-    this.settingsButton.setAttribute("aria-expanded", "false");
+    this.accessBody.replaceChildren();
     this.organisationWebhookSettings = null;
     this.organisationWebhookIdempotencyKey = null;
     this.settingsBody.removeAttribute("aria-busy");
@@ -7233,11 +7450,6 @@ export class BoardApp {
         attributedDataFilename(this.bootstrap.board.title),
         "application/json",
         serializeAttributedData(data),
-      );
-      this.exportMenu.hidden = true;
-      query(this.root, "[data-testid='export-button']", HTMLButtonElement).setAttribute(
-        "aria-expanded",
-        "false",
       );
       this.notify("Attributed data JSON downloaded.");
     } catch (error) {

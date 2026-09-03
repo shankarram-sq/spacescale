@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { canvasPoint, createBoard, drawShape, moveItem } from "./helpers";
+import { canvasPoint, createBoard, drawShape, moveItem, openSettingsDrawer } from "./helpers";
 
 test("object comments follow moves, hide after orphaning, and resolve", async ({
   page,
@@ -66,6 +66,7 @@ test("object comments follow moves, hide after orphaning, and resolve", async ({
   await page.getByRole("button", { name: "Delete selected items" }).click();
   await expect(shape).toHaveCount(0);
   await expect(marker).toHaveCount(0);
+  await openSettingsDrawer(page);
   await page.getByTestId("comments-button").click();
   await expect(drawer).toBeVisible();
   await expect(drawer.locator(".comment-card")).toHaveCount(0);

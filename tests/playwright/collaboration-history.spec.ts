@@ -8,6 +8,7 @@ import {
   isolatedContextOptions,
   moveItem,
   openInvite,
+  openSettingsDrawer,
   waitForBoard,
 } from "./helpers";
 
@@ -38,6 +39,7 @@ test("a collaborator edit produces an undo conflict without changing authoritati
     const movedTransform = await moveItem(page, ownerItem, 48, 26);
     await expect(collaboratorItem).toHaveAttribute("transform", movedTransform);
 
+    await openSettingsDrawer(collaborator);
     const undo = collaborator.getByTestId("undo-button");
     await expect(undo).toBeEnabled();
     await undo.click();
@@ -66,6 +68,8 @@ test("two tabs share history state and a new action invalidates redo everywhere"
   try {
     await second.goto(boardUrl);
     await waitForBoard(second);
+    await openSettingsDrawer(page);
+    await openSettingsDrawer(second);
     await expect(page.getByTestId("undo-button")).toBeDisabled();
     await expect(second.getByTestId("undo-button")).toBeDisabled();
 
