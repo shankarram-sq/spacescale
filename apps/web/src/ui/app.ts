@@ -1033,6 +1033,7 @@ export class BoardApp {
   private readonly titleInput: HTMLInputElement;
   private readonly saveStatus: HTMLElement;
   private readonly saveStatusText: HTMLElement;
+  private readonly participantsButton: HTMLButtonElement;
   private readonly participantCount: HTMLElement;
   private readonly participantDrawer: HTMLElement;
   private readonly participantList: HTMLElement;
@@ -1103,6 +1104,11 @@ export class BoardApp {
     this.titleInput = query(this.root, "[data-testid='board-title']", HTMLInputElement);
     this.saveStatus = query(this.root, "[data-testid='save-status']", HTMLElement);
     this.saveStatusText = query(this.root, "[data-save-status-text]", HTMLElement);
+    this.participantsButton = query(
+      this.root,
+      "[data-testid='participants-button']",
+      HTMLButtonElement,
+    );
     this.participantCount = query(this.root, "[data-participant-count]", HTMLElement);
     this.participantDrawer = query(this.root, "[data-testid='participant-drawer']", HTMLElement);
     this.participantList = query(this.root, "[data-participant-list]", HTMLElement);
@@ -1479,7 +1485,7 @@ export class BoardApp {
               <span class="comments-button-label">Comments</span>
               <span class="comments-count" data-comments-count>0</span>
             </button>
-            <button class="topbar-button people-button" type="button" data-testid="participants-button" aria-label="People here" aria-controls="participant-drawer" aria-expanded="false" title="People here">
+            <button class="topbar-button people-button" type="button" data-testid="participants-button" aria-label="1 person here" aria-controls="participant-drawer" aria-expanded="false" title="1 person here">
               <span class="avatar-stack" aria-hidden="true"><i></i><i></i></span>
               <span data-participant-count>1</span>
               <span class="wide-label">here</span>
@@ -5680,7 +5686,11 @@ export class BoardApp {
     this.participantRenderPending = false;
     this.participantList.replaceChildren();
     const entries = [...this.presences.values()];
-    this.participantCount.textContent = String(Math.max(1, entries.length));
+    const participantTotal = Math.max(1, entries.length);
+    const participantLabel = `${participantTotal} ${participantTotal === 1 ? "person" : "people"} here`;
+    this.participantCount.textContent = String(participantTotal);
+    this.participantsButton.setAttribute("aria-label", participantLabel);
+    this.participantsButton.title = participantLabel;
     for (const participant of entries) {
       const row = document.createElement("div");
       row.className = "participant-row";

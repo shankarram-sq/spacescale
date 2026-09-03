@@ -83,7 +83,7 @@ describe("canvas text rendering", () => {
   });
 });
 
-describe("video movement previews", () => {
+describe("lightweight movement previews", () => {
   beforeEach(() => {
     vi.stubGlobal("document", {
       createElement: (name: string) => fakeSvgNode(name),
@@ -136,6 +136,42 @@ describe("video movement previews", () => {
     expect(card?.children[1]?.className).toBe("video-embed-preview");
     expect(card?.children[1]?.textContent).toBe("Video preview");
     expect(setSelection).toHaveBeenCalledWith([item.id], { x: 24, y: 12 });
+  });
+
+  it("renders formula source without queueing MathJax work", () => {
+    const item: Extract<BoardItem, { kind: "text" }> = {
+      id: "math-item",
+      kind: "text",
+      z: 1,
+      version: 1,
+      createdBy: "owner",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "text",
+        color: "#111827",
+        fontSize: 20,
+        fontFamily: "sans",
+        opacity: 1,
+      },
+      geometry: { x: 20, y: 40, text: "$x^2$" },
+    };
+    const localLayer = fakeSvgNode("g");
+    const renderer = {
+      clearLocalLayer: () => localLayer.replaceChildren(),
+      imageAssets: { load: vi.fn() },
+      localLayer,
+      model: { getItem: (id: string) => (id === item.id ? item : undefined) },
+      setSelection: vi.fn(),
+    } as unknown as BoardRenderer;
+
+    BoardRenderer.prototype.showMovePreview.call(renderer, [item.id], 24, 12);
+
+    const preview = localLayer.children[0];
+    expect(preview?.classList.values.has("move-preview")).toBe(true);
+    expect(preview?.classList.values.has("board-math-preview")).toBe(true);
+    expect(preview?.attributes.get("aria-hidden")).toBe("true");
+    expect(preview?.dataset.mathState).toBeUndefined();
+    expect(preview?.children[0]?.textContent).toBe("$x^2$");
   });
 });
 

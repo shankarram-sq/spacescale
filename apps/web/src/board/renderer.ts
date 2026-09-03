@@ -1326,7 +1326,9 @@ function itemNode(
       node = video
         ? videoEmbedNode(item.geometry, item.style, video, options.preview === true)
         : containsMathMarkup(item.geometry.text)
-          ? mathTextNode(item.geometry, item.style, options.onTextSize)
+          ? options.preview === true
+            ? mathTextPreviewNode(item.geometry, item.style)
+            : mathTextNode(item.geometry, item.style, options.onTextSize)
           : textNode(item.geometry, item.style);
       break;
     }
@@ -1416,6 +1418,13 @@ export function textNode(geometry: TextGeometry, style: TextStyle): SVGTextEleme
     appendLinkifiedLine(text, line, geometry.x, index > 0 ? "1.2em" : undefined);
   });
   return text;
+}
+
+function mathTextPreviewNode(geometry: TextGeometry, style: TextStyle): SVGTextElement {
+  const preview = textNode(geometry, style);
+  preview.classList.add("board-math-preview");
+  preview.setAttribute("aria-hidden", "true");
+  return preview;
 }
 
 function mathTextNode(
