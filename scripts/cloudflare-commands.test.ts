@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  environment: "staging" as "staging" | "production",
+  environment: "staging" as "development" | "staging" | "production",
   assetScenario: "existing" as "existing" | "missing" | "conflict",
   assetLookupCount: 0,
   wafScenario: "existing" as "existing" | "missing-ruleset" | "missing-rule" | "drifted",
@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
     body: string | undefined;
   }>,
   output: [] as string[],
+  loadedEnvFiles: [] as string[],
+  assertPublicConfiguration: vi.fn(),
   assertTurnstileSiteKeyForEnvironment: vi.fn(),
   writeGeneratedWranglerConfig: vi.fn(
     (configuration: { environment: string }) =>
@@ -50,9 +52,12 @@ function configuredValue(name: string): string {
 }
 
 vi.mock("./env.ts", () => ({
-  assertPublicConfiguration: vi.fn(),
+  assertPublicConfiguration: mocks.assertPublicConfiguration,
   assertTurnstileSiteKeyForEnvironment: mocks.assertTurnstileSiteKeyForEnvironment,
-  loadLocalEnv: vi.fn(),
+  loadLocalEnv: vi.fn((path = ".env") => {
+    mocks.loadedEnvFiles.push(path);
+  }),
+  readLocalEnv: vi.fn(() => ({})),
   requireEnvironment: vi.fn((names: readonly string[]) => {
     mocks.requiredCalls.push([...names]);
     if (mocks.requiredFailure) throw new Error("Missing configured environment variables");
@@ -187,7 +192,8 @@ vi.mock("./env.ts", () => ({
   }),
 }));
 
-vi.mock("./deployment-config.ts", () => ({
+vi.mock("./deployment-config.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./deployment-config.ts")>()),
   deploymentConfigurationFromEnvironment: vi.fn(
     (environment: "development" | "staging" | "production") => {
       mocks.environment = environment === "development" ? "staging" : environment;
@@ -225,6 +231,8 @@ beforeEach(() => {
   mocks.requestPaths.length = 0;
   mocks.requestCalls.length = 0;
   mocks.output.length = 0;
+  mocks.loadedEnvFiles.length = 0;
+  mocks.assertPublicConfiguration.mockReset();
   mocks.assertTurnstileSiteKeyForEnvironment.mockReset();
   mocks.writeGeneratedWranglerConfig.mockClear();
   mocks.spawnSync.mockReset();
@@ -253,6 +261,7 @@ beforeEach(() => {
 afterEach(() => {
   process.argv = [...originalArgv];
   process.exitCode = originalExitCode;
+  delete process.env.DEPLOYMENT_ENVIRONMENT;
   delete process.env.ALLOWED_ORIGINS;
   delete process.env.DEPLOYMENT_NAME;
   delete process.env.APP_HOSTNAME;
@@ -262,6 +271,7 @@ afterEach(() => {
 
 describe.sequential("Cloudflare command Turnstile configuration", () => {
   it("initializes development locally without Cloudflare credentials", async () => {
+    mocks.environment = "development";
     process.argv = ["node", "bootstrap-cloudflare.ts", "--env", "development"];
 
     await import("./bootstrap-cloudflare.ts");
@@ -457,6 +467,37 @@ describe.sequential("Cloudflare command Turnstile configuration", () => {
       JSON.stringify({ check: "turnstile", enabled: false, skipped: true }),
     );
     expect(mocks.output.join("")).toContain('"configuredAssetBucketExists":true');
+  });
+
+  it("loads the resolved environment file before .env when --env is omitted", async () => {
+    process.env.DEPLOYMENT_ENVIRONMENT = "staging";
+    process.argv = ["node", "check-cloudflare-access.ts"];
+
+    await import("./check-cloudflare-access.ts");
+
+    expect(mocks.loadedEnvFiles).toEqual([".env.staging", ".env"]);
+  });
+
+  it("loads the requested environment file before .env", async () => {
+    mocks.environment = "production";
+    process.argv = ["node", "check-cloudflare-access.ts", "--env", "production"];
+
+    await import("./check-cloudflare-access.ts");
+
+    expect(mocks.loadedEnvFiles).toEqual([".env.production", ".env"]);
+  });
+
+  it("validates the account identifier and session key with the public configuration", async () => {
+    await import("./check-cloudflare-access.ts");
+
+    expect(mocks.assertPublicConfiguration).toHaveBeenCalledWith(
+      expect.objectContaining({
+        CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
+        SESSION_SIGNING_KEY_CURRENT: "s".repeat(32),
+        ALLOWED_ORIGINS: "*",
+        APP_HOSTNAME: "staging.example.test",
+      }),
+    );
   });
 
   it("keeps production access checks strict and probes both Turnstile credentials", async () => {

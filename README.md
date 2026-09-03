@@ -156,7 +156,10 @@ npm run check
 
 Run the focused checks relevant to a change during normal development. The full
 `npm run check` and Playwright suites are available on demand and are not release
-gates.
+gates. `npm run build` verifies the production bundle with `wrangler deploy --dry-run`;
+on a checkout without deployment details it substitutes non-deployable `dry-run`
+placeholders for `DEPLOYMENT_NAME`, `APP_HOSTNAME`, and `TURNSTILE_SITE_KEY`, while
+`deployment:init` keeps strict validation.
 
 ## Cloudflare setup
 
@@ -268,8 +271,9 @@ without printing credential values:
 npm run cf:check
 ```
 
-`cf:check` first generates the ignored configuration from the current process
-environment and then verifies that exact mapping. For production, a token that can read Turnstile Sites
+`cf:check` first loads `.env.<environment>` and then `.env` (defaulting to
+production unless `--env` or `DEPLOYMENT_ENVIRONMENT` selects another
+environment), generates the ignored configuration, and then verifies that exact mapping. For production, a token that can read Turnstile Sites
 also checks the widget site key, hostname allowlist, and returned secret pairing
 without printing any of those values. The documented least-privilege
 Workers/R2 token cannot read widgets, so a production

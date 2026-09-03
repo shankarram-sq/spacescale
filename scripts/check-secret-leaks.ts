@@ -1,6 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  derivedResourceNames,
+  isConfiguredValue,
+  validDeploymentName,
+} from "./deployment-config.ts";
 import { loadLocalEnv } from "./env.ts";
 
 const SECRET_NAMES = [
@@ -36,18 +41,18 @@ const protectedValues: Array<{ name: string; value: string }> = [
   ...PRIVATE_CONFIGURATION_NAMES,
 ].flatMap((name) => {
   const value = process.env[name];
-  return value !== undefined && value.length >= 12 && !value.startsWith("replace-with-")
+  return value !== undefined && value.length >= 12 && isConfiguredValue(value)
     ? [{ name, value }]
     : [];
 });
 const deploymentName = process.env.DEPLOYMENT_NAME?.trim();
-if (deploymentName !== undefined && /^[a-z0-9][a-z0-9-]{1,40}[a-z0-9]$/u.test(deploymentName)) {
+if (deploymentName !== undefined && validDeploymentName(deploymentName)) {
   for (const environment of ["staging", "production"] as const) {
-    const prefix = `${deploymentName}-${environment}`;
+    const names = derivedResourceNames(deploymentName, environment);
     protectedValues.push(
-      { name: "DERIVED_WORKER_NAME", value: prefix },
-      { name: "DERIVED_SNAPSHOT_BUCKET_NAME", value: `${prefix}-snapshots` },
-      { name: "DERIVED_ASSET_BUCKET_NAME", value: `${prefix}-assets` },
+      { name: "DERIVED_WORKER_NAME", value: names.workerName },
+      { name: "DERIVED_SNAPSHOT_BUCKET_NAME", value: names.bucketName },
+      { name: "DERIVED_ASSET_BUCKET_NAME", value: names.assetBucketName },
     );
   }
 }

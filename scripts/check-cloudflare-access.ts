@@ -1,6 +1,7 @@
 import {
   deploymentConfigurationFromEnvironment,
   parseDeploymentEnvironment,
+  requestedEnvironment,
   writeGeneratedWranglerConfig,
 } from "./deployment-config.ts";
 import {
@@ -8,6 +9,7 @@ import {
   assertTurnstileSiteKeyForEnvironment,
   cloudflareRequest,
   loadLocalEnv,
+  readLocalEnv,
   requireEnvironment,
 } from "./env.ts";
 
@@ -20,20 +22,19 @@ type TurnstileWidget = {
 };
 type WorkerDomain = { hostname?: string; service?: string; cert_id?: string };
 
-function requestedEnvironment(args: string[]): string | undefined {
-  const index = args.indexOf("--env");
-  return index < 0 ? undefined : args[index + 1];
-}
-
+// Without `--env`, the environment comes from DEPLOYMENT_ENVIRONMENT (process
+// or `.env`) and defaults to production. `.env.<environment>` is always loaded
+// before `.env` so environment-specific values win, matching deployment:init.
 const requested = requestedEnvironment(process.argv.slice(2));
-if (requested === undefined) loadLocalEnv();
 const environmentName = parseDeploymentEnvironment(
-  (requested ?? process.env.DEPLOYMENT_ENVIRONMENT?.trim()) || "production",
+  (
+    requested ??
+    process.env.DEPLOYMENT_ENVIRONMENT ??
+    readLocalEnv().DEPLOYMENT_ENVIRONMENT
+  )?.trim() || "production",
 );
-if (requested !== undefined) {
-  loadLocalEnv(`.env.${environmentName}`);
-  loadLocalEnv();
-}
+loadLocalEnv(`.env.${environmentName}`);
+loadLocalEnv();
 const environmentConfiguration = deploymentConfigurationFromEnvironment(
   environmentName,
   process.env,
@@ -45,6 +46,7 @@ const env = requireEnvironment([
   "SESSION_SIGNING_KEY_CURRENT",
 ] as const);
 assertPublicConfiguration({
+  ...env,
   ALLOWED_ORIGINS: environmentConfiguration.allowedOrigins,
   APP_HOSTNAME: environmentConfiguration.hostname,
 });

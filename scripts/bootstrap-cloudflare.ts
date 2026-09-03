@@ -2,6 +2,8 @@ import { spawnSync } from "node:child_process";
 import {
   deploymentConfigurationFromEnvironment,
   type DeploymentConfiguration as EnvironmentConfiguration,
+  type DeploymentEnvironment as EnvironmentName,
+  parseDeploymentEnvironment,
   writeGeneratedWranglerConfig,
 } from "./deployment-config.ts";
 import {
@@ -13,7 +15,6 @@ import {
   requireEnvironment,
 } from "./env.ts";
 
-type EnvironmentName = "development" | "staging" | "production";
 type Bucket = {
   name: string;
   jurisdiction?: string;
@@ -76,13 +77,13 @@ function parseArguments(args: string[]): {
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index];
     if (value === "--env") {
-      const candidate = args[index + 1];
-      if (candidate === "development" || candidate === "staging" || candidate === "production") {
-        environment = candidate;
-        index += 1;
-        continue;
+      try {
+        environment = parseDeploymentEnvironment(args[index + 1]);
+      } catch {
+        throw new Error("--env must be development, staging, or production.");
       }
-      throw new Error("--env must be development, staging, or production.");
+      index += 1;
+      continue;
     }
     if (value === "--deploy") {
       deploy = true;

@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { parseEnv } from "node:util";
+import { isConfiguredValue } from "./deployment-config.ts";
 import { assertPublicConfiguration } from "./env.ts";
 
 export const LOCAL_DEVELOPMENT_SECRETS_PATH = ".generated/.dev.vars";
@@ -43,7 +44,7 @@ export function ensureLocalDevelopmentSecrets(
 
   const values = parseEnv(readFileSync(path, "utf8"));
   const missing = ["SESSION_SIGNING_KEY_CURRENT", "ORGANISATION_SIGNING_KEYS"].filter(
-    (name) => !values[name]?.trim() || values[name]?.startsWith("replace-with-"),
+    (name) => !isConfiguredValue(values[name]),
   );
   if (missing.length > 0) {
     throw new Error(
