@@ -97,18 +97,18 @@ End on the product name and public URL.
 
 If the host does not choose the tools automatically:
 
-- Visual reasoning: “Call `inspect_selected_board_visual` on my current
-  selection and check the graph against the equation.”
-- Correction card: “Call `read_selected_class_ideas`, then call
-  `add_collective_reasoning` in `counterexample_challenge` mode. Include a
-  claim card and a counterexample card checking `x = -4`, connected with the
-  label `checks`.”
-- Capability discovery: “Call `list_class_collaboration_modes` and find the
-  smallest reasoning mode for correcting a visual misconception.”
+- Visual reasoning: “Call `watch_board` with action `start`, read the
+  `boardImage` it returns, and check the graph against the equation.”
+- Correction comment: “Answer the request the watch delivered by calling
+  `insert_comment` with the `watchToken`, `stepAlias` and `action` from its
+  reply plan. Say what is already right, then point at `x = -4`.”
+- Correction card: “Call `insert_sticky` with a `location` beside the plot, a
+  counterexample checking `x = -4`, and a question the class can act on.”
 
 If a write fails unexpectedly, confirm that the participant has edit access,
-the sticky finished saving, and the selection token came from the same browser
-session.
+that the Space has that object kind enabled, and that the step finished saving.
+A comment needs a target: pass the watch's `watchToken` and `stepAlias`, or a
+`location` on the object, or leave exactly one object selected.
 
 ## Demo boards
 
