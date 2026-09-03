@@ -6448,9 +6448,13 @@ function assertOperationFeaturesEnabled(
     if (child.kind !== "item.copy") continue;
     const source = records.get(child.sourceItemId);
     const sourceItem = source !== undefined && !source.deleted ? source.item : undefined;
-    // A copy reproduces the source's existing linear transform verbatim. It
-    // never introduces one, so a disabled objectTransforms feature does not
-    // block it; creates and updates that add a linear component are gated above.
+    if (
+      sourceItem !== undefined &&
+      !features.objectTransforms &&
+      transformLinearPartChanged([1, 0, 0, 1, 0, 0], sourceItem.transform)
+    ) {
+      throw new BoardDomainError("FORBIDDEN", "Object transforms are disabled for this board.");
+    }
     const effectiveGroupId =
       child.newGroupId === undefined ? sourceItem?.groupId : child.newGroupId;
     const effectiveSectionId =

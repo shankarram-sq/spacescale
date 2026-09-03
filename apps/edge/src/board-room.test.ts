@@ -1110,7 +1110,7 @@ describe("BoardRoom initialization", () => {
     connected.socket.close(1000, "done");
   });
 
-  it("allows copies that preserve transformed sources after transforms are disabled", async () => {
+  it("rejects copies that preserve transformed sources after transforms are disabled", async () => {
     const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
     await initializeBoard(stub);
     const connected = await connect(stub, actorId);
@@ -1157,12 +1157,9 @@ describe("BoardRoom initialization", () => {
     connected.socket.send(JSON.stringify(copy));
     expect(
       await connected.next(
-        (frame) => frame.t === "server.action" && frame.commandId === copy.commandId,
+        (frame) => frame.t === "server.rejected" && frame.commandId === copy.commandId,
       ),
-    ).toMatchObject({
-      seq: 2,
-      op: { kind: "item.copy", item: { id: copy.op.newItemId, transform: [0, 1, -1, 0, 40, 50] } },
-    });
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 1 });
     connected.socket.close(1000, "done");
   });
 

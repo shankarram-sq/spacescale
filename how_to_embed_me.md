@@ -419,7 +419,7 @@ are broadcast to participants in real time.
 | `protractor` | `true` | Movable 180° digital protractor; rotation also requires `objectTransforms`. |
 | `eraser` | `true` | Eraser tool. |
 | `partialEraser` | `true` | Cutting only touched portions of pencil, line, rectangle, ellipse, and polygon outlines. Requires `eraser`; the Settings UI disables this control while `eraser` is off. |
-| `objectTransforms` | `true` | Proportional corner scaling for shapes and images, plus center-pivot rotation for shapes, images, and the protractor. Hold Shift while rotating to snap to 15° steps. Moving and copying remain available when disabled; a copy keeps its source's existing transform. |
+| `objectTransforms` | `true` | Proportional corner scaling for shapes and images, plus center-pivot rotation for shapes, images, and the protractor. Hold Shift while rotating to snap to 15° steps. Moving remains available when disabled. |
 | `templates` | `true` | Built-in starter templates. A template is unavailable if it contains an item whose feature is disabled. |
 | `organisationTemplates` | `true` | Organisation-owned reusable templates. Independent of built-in `templates`. |
 | `voting` | `true` | Voting template and vote overlays/actions. |
