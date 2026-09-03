@@ -52,24 +52,6 @@ board or item IDs, access tokens, session data, presence data, activity history,
 or unselected item content. Images and file metadata are excluded unless a
 separately reviewed image use case is approved and visibly selected.
 
-### Selected problem-step watch
-
-`watch_selected_problem_steps` lets a visiting WebMCP host follow the exact saved
-text-bearing items selected when the watch starts for at most 15 minutes. It
-reports only authoritative saved changes to selected canvas text, sticky notes,
-table cells, or a Section title. Selecting a Section does not include its child
-items. Video embeds and all unselected board content are excluded.
-
-The watch is a bounded sequence of cancelable long-poll tool calls rather than a
-background SpaceScale model connection. Its page-memory token expires after 15
-minutes, the participant can ask the host to stop it immediately, and navigating
-away destroys it. Results use ephemeral `step_N` aliases and board-visible display
-names only; they exclude stable participant, board, and item IDs, coordinates,
-presence, history, contact details, and authentication data. Unsaved keystrokes
-are never observed. Step text is marked as untrusted content, and the host is
-instructed to comment briefly on the reasoning without grading, profiling, or
-inferring ability.
-
 ### Selected handwritten visual inspection
 
 `inspect_selected_board_visual` is a separately bounded visual-input use case for
