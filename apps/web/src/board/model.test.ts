@@ -229,20 +229,45 @@ describe("BoardModel", () => {
     expect(model.hitTest([400, 300])).toBeUndefined();
   });
 
-  it("finds connector anchors on transformed world AABB cardinal points", () => {
+  it("finds connector anchors on transformed local edges", () => {
     const item = rectangle();
     item.transform = [0, 1, -1, 0, 200, 10];
     const model = new BoardModel();
     model.load(snapshot([item], 1));
 
     expect(itemBounds(item)).toEqual({ minX: 118, minY: 18, maxX: 182, maxY: 122 });
-    expect(model.nearestConnectorAnchor([151, 17], 2)).toEqual({
+    expect(model.nearestConnectorAnchor([151, 19], 2)).toMatchObject({
       itemId: ITEM_ID,
-      point: [150, 18],
+      point: [151, 20],
       z: 1,
-      distance: Math.SQRT2,
+      distance: 1,
+      source: "edge",
     });
-    expect(model.nearestConnectorAnchor([151, 17], 1)).toBeUndefined();
+    expect(model.nearestConnectorAnchor([151, 19], 0.5)).toBeUndefined();
+  });
+
+  it("does not expose empty AABB midpoints as anchors on rotated box items", () => {
+    const item = image();
+    const rotation = Math.PI / 4;
+    const cosine = Math.cos(rotation);
+    const sine = Math.sin(rotation);
+    item.transform = [cosine, sine, -sine, cosine, 200, 10];
+    const model = new BoardModel();
+    model.load(snapshot([item], 1));
+
+    const bounds = itemBounds(item);
+    const emptyAabbMidpoint = [(bounds.minX + bounds.maxX) / 2, bounds.minY] as const;
+    expect(model.nearestConnectorAnchor(emptyAabbMidpoint, 1)).toBeUndefined();
+
+    const transformedTopMidpoint = [
+      cosine * 220 - sine * 50 + 200,
+      sine * 220 + cosine * 50 + 10,
+    ] as const;
+    const anchor = model.nearestConnectorAnchor(transformedTopMidpoint, 1);
+    expect(anchor?.itemId).toBe(ITEM_ID);
+    expect(anchor?.point[0]).toBeCloseTo(transformedTopMidpoint[0], 3);
+    expect(anchor?.point[1]).toBeCloseTo(transformedTopMidpoint[1], 3);
+    expect(anchor?.distance).toBeLessThan(0.001);
   });
 
   it("breaks equally near connector anchors by topmost z and excludes stamps", () => {
@@ -260,7 +285,7 @@ describe("BoardModel", () => {
     const model = new BoardModel();
     model.load(snapshot([lower, higher, excluded], 1));
 
-    expect(model.nearestConnectorAnchor([60, 17], 2)?.itemId).toBe(REMOTE_ID);
+    expect(model.nearestConnectorAnchor([60, 19], 2)?.itemId).toBe(REMOTE_ID);
   });
 
   it("snaps to transformed line endpoints and finite segment projections", () => {

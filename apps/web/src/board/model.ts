@@ -232,7 +232,7 @@ export class BoardModel {
       const hasVisibleFragments =
         isPartiallyErasableItem(item) && item.geometry.visiblePaths !== undefined;
       if (supportsConnectorAnchors(item) && !hasVisibleFragments) {
-        for (const anchorPoint of cardinalAnchorPoints(bounds)) {
+        for (const anchorPoint of transformedCardinalAnchorPoints(item)) {
           nearest = nearerAnchor(
             nearest,
             {
@@ -610,6 +610,10 @@ function applyOperation(
         operation.translate.x,
         operation.translate.y,
       );
+      if (operation.newGroupId === null) delete copy.groupId;
+      else if (operation.newGroupId !== undefined) copy.groupId = operation.newGroupId;
+      if (operation.newSectionId === null) delete copy.sectionId;
+      else if (operation.newSectionId !== undefined) copy.sectionId = operation.newSectionId;
       target.set(copy.id, copy);
       changed.add(copy.id);
       return;
@@ -699,6 +703,10 @@ function patchItem(item: BoardItem, patch: ItemPatch, version: number): BoardIte
   if (patch.geometry) {
     (next as { geometry: typeof patch.geometry }).geometry = structuredClone(patch.geometry);
   }
+  if (patch.groupId === null) delete next.groupId;
+  else if (patch.groupId !== undefined) next.groupId = patch.groupId;
+  if (patch.sectionId === null) delete next.sectionId;
+  else if (patch.sectionId !== undefined) next.sectionId = patch.sectionId;
   next.version = version;
   return next;
 }
@@ -769,6 +777,17 @@ export function cardinalAnchorPoints(bounds: Bounds): readonly Point[] {
     [centerX, bounds.maxY],
     [bounds.minX, centerY],
   ];
+}
+
+function transformedCardinalAnchorPoints(
+  item: Extract<
+    BoardItem,
+    { kind: "rectangle" | "ellipse" | "sticky" | "table" | "image" | "zone" }
+  >,
+): readonly Point[] {
+  return cardinalAnchorPoints(geometryBounds(item)).map((point) =>
+    transformPoint(point, item.transform),
+  );
 }
 
 function nearerAnchor(

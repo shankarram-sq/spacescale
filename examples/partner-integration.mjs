@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createHmac, randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
 
 function required(name) {
   const value = process.env[name]?.trim();
@@ -33,6 +34,7 @@ export function createLaunchToken({
   displayName,
   participantId,
   features,
+  organisationAdmin,
   expiresInSeconds = 60 * 60,
 }) {
   if (!["owner", "editor", "viewer"].includes(role)) throw new Error("Invalid role");
@@ -52,6 +54,7 @@ export function createLaunchToken({
     iat: now,
     exp: now + expiresInSeconds,
     ...(features === undefined ? {} : { features }),
+    ...(organisationAdmin === undefined ? {} : { organisation_admin: organisationAdmin }),
   };
   const encodedPayload = base64urlJson(payload);
   const signed = `el1.${encodedPayload}`;
@@ -67,7 +70,8 @@ export function createEmbedUrl({ origin, launchToken, initialTemplate }) {
   return `${origin.replace(/\/$/u, "")}/embed#${fragment}`;
 }
 
-function sampleItems(version) {
+function sampleItems(version, { lockSections = false } = {}) {
+  const responseSectionId = randomUUID();
   return [
     {
       id: randomUUID(),
@@ -90,11 +94,36 @@ function sampleItems(version) {
       },
     },
     {
-      id: randomUUID(),
-      kind: "sticky",
+      id: responseSectionId,
+      kind: "zone",
       z: 2,
       version,
       createdBy: SYNTHETIC_TEMPLATE_AUTHOR,
+      style: {
+        kind: "zone",
+        borderColor: "#60a5fa",
+        fill: "#eff6ff",
+        textColor: "#1e3a8a",
+        fontSize: 20,
+        opacity: 0.8,
+      },
+      transform: [1, 0, 0, 1, 0, 0],
+      geometry: {
+        x: 80,
+        y: 130,
+        width: 700,
+        height: 360,
+        title: "Participant responses",
+        locked: lockSections,
+      },
+    },
+    {
+      id: randomUUID(),
+      kind: "sticky",
+      z: 3,
+      version,
+      createdBy: SYNTHETIC_TEMPLATE_AUTHOR,
+      sectionId: responseSectionId,
       style: {
         kind: "sticky",
         fill: "#FFE7A8",
@@ -114,7 +143,7 @@ function sampleItems(version) {
   ];
 }
 
-export function createInitialTemplate(title) {
+export function createInitialTemplate(title, { lockSections = false } = {}) {
   return {
     format: "cf-whiteboard-json",
     version: 1,
@@ -122,7 +151,7 @@ export function createInitialTemplate(title) {
     seq: 0,
     createdAt: Date.now(),
     settings: { title },
-    items: sampleItems(0),
+    items: sampleItems(0, { lockSections }),
   };
 }
 
@@ -193,7 +222,7 @@ export function deleteBoard(ownerToken, boardId) {
 }
 
 async function main() {
-  const initialTemplate = createInitialTemplate("Notice and wonder");
+  const initialTemplate = createInitialTemplate("Notice and wonder", { lockSections: true });
   const common = {
     hostname: config.hostname,
     organisationId: config.organisationId,
@@ -214,11 +243,21 @@ async function main() {
     displayName: "Student Sample",
     participantId: "student:sample-001",
   });
+  const adminToken = createLaunchToken({
+    ...common,
+    role: "owner",
+    displayName: "Organisation administrator",
+    participantId: "service:organisation-admin",
+    organisationAdmin: true,
+    expiresInSeconds: 15 * 60,
+  });
 
   console.log("Owner iframe URL:");
   console.log(createEmbedUrl({ origin: config.origin, launchToken: ownerToken, initialTemplate }));
   console.log("\nStudent iframe URL:");
   console.log(createEmbedUrl({ origin: config.origin, launchToken: editorToken }));
+  console.log("\nOrganisation admin URL:");
+  console.log(`${config.origin}/organisation/admin#launch=${encodeURIComponent(adminToken)}`);
 
   // Optional backend preflight: creates the Space and atomically applies the
   // initial template before any iframe is rendered.
@@ -266,4 +305,6 @@ async function main() {
   // await deleteBoard(apiToken, boardId);
 }
 
-await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main();
+}

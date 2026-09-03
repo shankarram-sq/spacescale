@@ -2,13 +2,23 @@ import {
   lineArrowheadPoints,
   type OutlineGeometry,
   polygonPoints,
+  transformPoint,
   visibleOutlinePaths,
   ZONE_TITLE_PADDING,
   zoneTitleBandHeight,
 } from "@collab/geometry";
-import { textFontStack } from "@collab/protocol";
+import { resolveTextFontWeight, textFontStack } from "@collab/protocol";
 import { STAMP_SVG_PATHS } from "@collab/svg-export";
 import { summarizeBoardVotes, type VoteSummary } from "../activities/voting";
+import {
+  isRotatableObjectItem,
+  isScalableObjectItem,
+  objectLocalBounds,
+  objectLocalCenter,
+  objectScaleCorner,
+  type RotatableObjectItem,
+  type ScalableObjectItem,
+} from "../tools/transform";
 import type {
   BoardItem,
   BoxGeometry,
@@ -39,6 +49,7 @@ import type {
   ZoneGeometry,
   ZoneStyle,
 } from "../types";
+import { tokenizeSafeLinks } from "./links";
 import { type BoardModel, type Bounds, itemBounds as boardItemBounds } from "./model";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -104,24 +115,69 @@ export function selectionProtractorRotateHandle(
   item: Extract<BoardItem, { kind: "protractor" }>,
   zoom: number,
 ): SVGGElement {
-  const safeZoom = Math.max(0.1, zoom);
-  const point = transformedPoint(
-    item,
-    [0, -item.geometry.radius - ROTATE_HANDLE_OFFSET_CSS_PX / safeZoom],
-    { x: 0, y: 0 },
+  return selectionObjectRotateHandle(item, zoom);
+}
+
+export function selectionObjectScaleHandle(
+  item: ScalableObjectItem,
+  zoom: number,
+  translated: { x: number; y: number } = { x: 0, y: 0 },
+): SVGGElement {
+  const point = transformPoint(objectScaleCorner(item), item.transform);
+  return selectionTransformKnob(
+    "scale",
+    item.id,
+    [point[0] + translated.x, point[1] + translated.y],
+    zoom,
   );
+}
+
+export function selectionObjectRotateHandle(
+  item: RotatableObjectItem,
+  zoom: number,
+  translated: { x: number; y: number } = { x: 0, y: 0 },
+): SVGGElement {
+  const safeZoom = Math.max(0.1, zoom);
+  const bounds = objectLocalBounds(item);
+  const center = transformPoint(objectLocalCenter(item), item.transform);
+  const top = transformPoint([(bounds.minX + bounds.maxX) / 2, bounds.minY], item.transform);
+  const distance = Math.hypot(top[0] - center[0], top[1] - center[1]);
+  const direction: Point =
+    distance > 1e-9 ? [(top[0] - center[0]) / distance, (top[1] - center[1]) / distance] : [0, -1];
+  const point: Point = [
+    top[0] + direction[0] * (ROTATE_HANDLE_OFFSET_CSS_PX / safeZoom) + translated.x,
+    top[1] + direction[1] * (ROTATE_HANDLE_OFFSET_CSS_PX / safeZoom) + translated.y,
+  ];
+  return selectionTransformKnob(
+    "rotate",
+    item.id,
+    point,
+    zoom,
+    item.kind === "protractor" ? "protractor" : "object",
+  );
+}
+
+function selectionTransformKnob(
+  kind: "scale" | "rotate",
+  itemId: string,
+  point: Point,
+  zoom: number,
+  handleValue?: string,
+): SVGGElement {
+  const safeZoom = Math.max(0.1, zoom);
   const group = svgElement("g");
-  group.classList.add("selection-rotate-handle");
-  group.dataset.rotateHandle = "protractor";
-  group.dataset.itemId = item.id;
+  group.classList.add(`selection-${kind}-handle`);
+  if (kind === "scale") group.dataset.scaleHandle = "southeast";
+  else group.dataset.rotateHandle = handleValue ?? "object";
+  group.dataset.itemId = itemId;
   group.setAttribute("aria-hidden", "true");
   const hitTarget = svgElement("circle");
-  hitTarget.classList.add("selection-rotate-hit-target");
+  hitTarget.classList.add(`selection-${kind}-hit-target`);
   hitTarget.setAttribute("cx", String(point[0]));
   hitTarget.setAttribute("cy", String(point[1]));
   hitTarget.setAttribute("r", String(RESIZE_HANDLE_HIT_RADIUS_CSS_PX / safeZoom));
   const knob = svgElement("circle");
-  knob.classList.add("selection-rotate-knob");
+  knob.classList.add(`selection-${kind}-knob`);
   knob.setAttribute("cx", String(point[0]));
   knob.setAttribute("cy", String(point[1]));
   knob.setAttribute("r", String(RESIZE_HANDLE_RADIUS_CSS_PX / safeZoom));
@@ -261,6 +317,7 @@ export class BoardRenderer {
   private readonly imageAssets: ImageAssetCache;
   private selectedIds = new Set<string>();
   private resizeHandlesEnabled = true;
+  private objectTransformsEnabled = true;
   private votingEnabled = true;
 
   constructor(
@@ -339,6 +396,12 @@ export class BoardRenderer {
     this.resizeHandlesEnabled = enabled;
   }
 
+  setObjectTransformsEnabled(enabled: boolean): void {
+    if (this.objectTransformsEnabled === enabled) return;
+    this.objectTransformsEnabled = enabled;
+    this.refreshSelection();
+  }
+
   setVotingEnabled(enabled: boolean): void {
     if (this.votingEnabled === enabled) return;
     this.votingEnabled = enabled;
@@ -359,24 +422,40 @@ export class BoardRenderer {
       return item ? [item] : [];
     });
     const selected = selectedItems.length === 1 ? selectedItems[0] : undefined;
+    const selectedSection =
+      selected?.sectionId === undefined ? undefined : this.model.getItem(selected.sectionId);
+    const selectedLocked =
+      selected !== undefined &&
+      (selected.kind === "zone" && selected.geometry.locked === true
+        ? true
+        : selectedSection?.kind === "zone" && selectedSection.geometry.locked === true);
     const resizeHandles =
       selected &&
+      !selectedLocked &&
       this.resizeHandlesEnabled &&
       selected.version > 0 &&
       (selected.kind === "sticky" ||
-        selected.kind === "image" ||
         selected.kind === "table" ||
-        selected.kind === "zone")
+        selected.kind === "zone" ||
+        (selected.kind === "image" && !this.objectTransformsEnabled))
         ? selectionResizeHandles(selected, this.viewport.zoom, { x, y })
         : [];
-    const handles =
-      selected?.kind === "protractor" &&
+    const transformHandles =
+      selected &&
+      !selectedLocked &&
       this.resizeHandlesEnabled &&
-      selected.version > 0 &&
-      x === 0 &&
-      y === 0
-        ? [...resizeHandles, selectionProtractorRotateHandle(selected, this.viewport.zoom)]
-        : resizeHandles;
+      this.objectTransformsEnabled &&
+      selected.version > 0
+        ? [
+            ...(isScalableObjectItem(selected)
+              ? [selectionObjectScaleHandle(selected, this.viewport.zoom, { x, y })]
+              : []),
+            ...(isRotatableObjectItem(selected)
+              ? [selectionObjectRotateHandle(selected, this.viewport.zoom, { x, y })]
+              : []),
+          ]
+        : [];
+    const handles = [...resizeHandles, ...transformHandles];
     this.renderSelectionBounds(
       {
         minX: bounds.minX + x,
@@ -523,7 +602,7 @@ export class BoardRenderer {
     this.localLayer.append(zone);
   }
 
-  showMovePreview(ids: Iterable<string>, x: number, y: number, snapPoint?: Point): void {
+  showMovePreview(ids: readonly string[], x: number, y: number, snapPoint?: Point): void {
     this.localLayer.replaceChildren();
     for (const id of ids) {
       const item = this.model.getItem(id);
@@ -547,14 +626,29 @@ export class BoardRenderer {
     this.setSelection(ids, { x, y });
   }
 
-  showRotationPreview(item: Extract<BoardItem, { kind: "protractor" }>, transform: Matrix): void {
+  showRotationPreview(item: RotatableObjectItem, transform: Matrix): void {
+    this.showObjectTransformPreview(item, transform, "rotation-preview");
+  }
+
+  showObjectScalePreview(item: ScalableObjectItem, transform: Matrix): void {
+    this.showObjectTransformPreview(item, transform, "scale-preview");
+  }
+
+  private showObjectTransformPreview(
+    item: RotatableObjectItem,
+    transform: Matrix,
+    className: "rotation-preview" | "scale-preview",
+  ): void {
     this.localLayer.replaceChildren();
-    const preview = { ...item, transform };
+    const preview = { ...item, transform } as RotatableObjectItem;
     const node = itemNode(preview, (assetId) => this.imageAssets.load(assetId));
-    node.classList.add("local-preview", "rotation-preview");
+    node.classList.add("local-preview", className);
     this.localLayer.append(node);
     this.renderSelectionBounds(boardItemBounds(preview), [
-      selectionProtractorRotateHandle(preview, this.viewport.zoom),
+      ...(isScalableObjectItem(preview)
+        ? [selectionObjectScaleHandle(preview, this.viewport.zoom)]
+        : []),
+      selectionObjectRotateHandle(preview, this.viewport.zoom),
     ]);
   }
 
@@ -1114,6 +1208,49 @@ function itemNode(
   return node;
 }
 
+type TextBearingStyle = Pick<
+  TextStyle | StickyStyle | TableStyle | ZoneStyle,
+  "fontFamily" | "fontWeight" | "fontStyle" | "textDecoration"
+>;
+
+function applyTypography(
+  text: SVGTextElement,
+  style: TextBearingStyle,
+  defaultWeight = "normal",
+): void {
+  text.setAttribute("font-family", textFontStack(style.fontFamily ?? "sans"));
+  text.setAttribute("font-weight", resolveTextFontWeight(style.fontWeight, defaultWeight));
+  text.setAttribute("font-style", style.fontStyle ?? "normal");
+  text.setAttribute("text-decoration", style.textDecoration ?? "none");
+}
+
+function appendLinkifiedLine(text: SVGTextElement, line: string, x: number, dy?: string): void {
+  const tokens = tokenizeSafeLinks(line);
+  if (tokens.length === 0) tokens.push({ kind: "text", text: " " });
+  tokens.forEach((token, index) => {
+    const span = svgElement("tspan");
+    if (index === 0) {
+      span.setAttribute("x", String(x));
+      if (dy) span.setAttribute("dy", dy);
+    }
+    span.textContent = token.text || " ";
+    if (token.kind === "link") {
+      text.classList.add("has-board-text-link");
+      const anchor = svgElement("a");
+      anchor.classList.add("board-text-link");
+      anchor.dataset.boardLink = "true";
+      anchor.setAttribute("href", token.href);
+      anchor.setAttribute("target", "_blank");
+      anchor.setAttribute("rel", "noopener noreferrer");
+      anchor.setAttribute("referrerpolicy", "no-referrer");
+      anchor.append(span);
+      text.append(anchor);
+    } else {
+      text.append(span);
+    }
+  });
+}
+
 export function textNode(geometry: TextGeometry, style: TextStyle): SVGTextElement {
   const text = svgElement("text");
   text.setAttribute("x", String(geometry.x));
@@ -1121,15 +1258,11 @@ export function textNode(geometry: TextGeometry, style: TextStyle): SVGTextEleme
   text.setAttribute("fill", style.color);
   text.setAttribute("fill-opacity", String(style.opacity));
   text.setAttribute("font-size", String(style.fontSize));
-  text.setAttribute("font-family", textFontStack(style.fontFamily));
+  applyTypography(text, style);
   text.setAttribute("xml:space", "preserve");
   const lines = geometry.text.split("\n");
   lines.forEach((line, index) => {
-    const span = svgElement("tspan");
-    span.setAttribute("x", String(geometry.x));
-    if (index > 0) span.setAttribute("dy", "1.2em");
-    span.textContent = line || " ";
-    text.append(span);
+    appendLinkifiedLine(text, line, geometry.x, index > 0 ? "1.2em" : undefined);
   });
   return text;
 }
@@ -1207,8 +1340,13 @@ export function zoneNode(itemId: string, geometry: ZoneGeometry, style: ZoneStyl
   const node = svgElement("g");
   node.classList.add("zone-item");
   node.dataset.zoneTitle = geometry.title;
+  const locked = geometry.locked === true;
+  if (locked) node.dataset.sectionLocked = "true";
   node.setAttribute("role", "group");
-  node.setAttribute("aria-label", `Section: ${geometry.title}`);
+  node.setAttribute(
+    "aria-label",
+    locked ? `Locked Section: ${geometry.title}` : `Section: ${geometry.title}`,
+  );
 
   const safeId = itemId.replace(/[^A-Za-z0-9_-]/gu, "-");
   const titleClipId = `zone-title-clip-${safeId}`;
@@ -1254,13 +1392,61 @@ export function zoneNode(itemId: string, geometry: ZoneGeometry, style: ZoneStyl
   title.setAttribute("y", String(geometry.y + ZONE_TITLE_PADDING + style.fontSize));
   title.setAttribute("fill", style.textColor);
   title.setAttribute("font-size", String(style.fontSize));
-  title.setAttribute("font-family", "Inter, ui-sans-serif, system-ui, sans-serif");
-  title.setAttribute("font-weight", "700");
+  applyTypography(title, style, "700");
   title.setAttribute("clip-path", `url(#${titleClipId})`);
   title.setAttribute("xml:space", "preserve");
-  title.textContent = geometry.title.replace(/\r\n?|\n/gu, " ");
+  appendLinkifiedLine(
+    title,
+    geometry.title.replace(/\r\n?|\n/gu, " "),
+    geometry.x + ZONE_TITLE_PADDING,
+  );
 
-  node.append(accessibleTitle, definitions, fill, border, title);
+  const lockBadge = svgElement("g");
+  lockBadge.classList.add("zone-lock-badge");
+  lockBadge.setAttribute("aria-hidden", "true");
+  lockBadge.setAttribute("pointer-events", "none");
+  if (locked) {
+    const badgeX = geometry.x + geometry.width - 28;
+    const badgeY = geometry.y + 10;
+    const background = svgElement("circle");
+    background.setAttribute("cx", String(badgeX + 9));
+    background.setAttribute("cy", String(badgeY + 9));
+    background.setAttribute("r", "9");
+    background.setAttribute("fill", style.borderColor);
+    background.setAttribute("fill-opacity", "0.14");
+    const shackle = svgElement("path");
+    shackle.setAttribute(
+      "d",
+      [
+        "M ",
+        badgeX + 6,
+        " ",
+        badgeY + 9,
+        " V ",
+        badgeY + 6,
+        " A 3 3 0 0 1 ",
+        badgeX + 12,
+        " ",
+        badgeY + 6,
+        " V ",
+        badgeY + 9,
+      ].join(""),
+    );
+    shackle.setAttribute("fill", "none");
+    shackle.setAttribute("stroke", style.textColor);
+    shackle.setAttribute("stroke-width", "1.6");
+    shackle.setAttribute("stroke-linecap", "round");
+    const body = svgElement("rect");
+    body.setAttribute("x", String(badgeX + 4.5));
+    body.setAttribute("y", String(badgeY + 8));
+    body.setAttribute("width", "9");
+    body.setAttribute("height", "7");
+    body.setAttribute("rx", "1.5");
+    body.setAttribute("fill", style.textColor);
+    lockBadge.append(background, shackle, body);
+  }
+
+  node.append(accessibleTitle, definitions, fill, border, title, lockBadge);
   return node;
 }
 
@@ -1338,16 +1524,16 @@ export function tableNode(itemId: string, geometry: TableGeometry, style: TableS
         text.setAttribute("y", String(y + TABLE_CELL_PADDING + style.fontSize));
         text.setAttribute("fill", style.textColor);
         text.setAttribute("font-size", String(style.fontSize));
-        text.setAttribute("font-family", "Inter, ui-sans-serif, system-ui, sans-serif");
-        text.setAttribute("font-weight", isHeader ? "700" : "500");
+        applyTypography(text, style, isHeader ? "700" : "500");
         text.setAttribute("clip-path", `url(#${clipId})`);
         text.setAttribute("xml:space", "preserve");
         lines.forEach((line, index) => {
-          const span = svgElement("tspan");
-          span.setAttribute("x", String(x + TABLE_CELL_PADDING));
-          if (index > 0) span.setAttribute("dy", `${TABLE_LINE_HEIGHT}em`);
-          span.textContent = line || " ";
-          text.append(span);
+          appendLinkifiedLine(
+            text,
+            line,
+            x + TABLE_CELL_PADDING,
+            index > 0 ? `${TABLE_LINE_HEIGHT}em` : undefined,
+          );
         });
         cell.append(text);
       }
@@ -1389,9 +1575,11 @@ export function wrapTableCellText(
     let current = "";
     for (const word of words) {
       const points = [...word];
-      const chunks: string[] = [];
-      for (let index = 0; index < points.length; index += maxCharacters) {
-        chunks.push(points.slice(index, index + maxCharacters).join(""));
+      const chunks: string[] = /^https?:\/\/\S+$/iu.test(word) ? [word] : [];
+      if (chunks.length === 0) {
+        for (let index = 0; index < points.length; index += maxCharacters) {
+          chunks.push(points.slice(index, index + maxCharacters).join(""));
+        }
       }
       for (const chunk of chunks) {
         const candidate = current ? `${current} ${chunk}` : chunk;
@@ -1534,7 +1722,7 @@ function stickyNode(geometry: StickyGeometry, style: StickyStyle): SVGSVGElement
   text.setAttribute("y", String(STICKY_PADDING + style.fontSize));
   text.setAttribute("fill", style.textColor);
   text.setAttribute("font-size", String(style.fontSize));
-  text.setAttribute("font-family", "Inter, ui-sans-serif, system-ui, sans-serif");
+  applyTypography(text, style);
   text.setAttribute("xml:space", "preserve");
   for (const [index, line] of wrapStickyText(
     geometry.text,
@@ -1542,11 +1730,12 @@ function stickyNode(geometry: StickyGeometry, style: StickyStyle): SVGSVGElement
     geometry.height,
     style.fontSize,
   ).entries()) {
-    const span = svgElement("tspan");
-    span.setAttribute("x", String(STICKY_PADDING));
-    if (index > 0) span.setAttribute("dy", `${STICKY_LINE_HEIGHT}em`);
-    span.textContent = line || " ";
-    text.append(span);
+    appendLinkifiedLine(
+      text,
+      line,
+      STICKY_PADDING,
+      index > 0 ? `${STICKY_LINE_HEIGHT}em` : undefined,
+    );
   }
   node.setAttribute("opacity", String(style.opacity));
   node.append(background, text);
@@ -1671,9 +1860,11 @@ export function wrapStickyText(
     let current = "";
     for (const word of words) {
       const codePoints = [...word];
-      const chunks: string[] = [];
-      for (let index = 0; index < codePoints.length; index += maxCharacters) {
-        chunks.push(codePoints.slice(index, index + maxCharacters).join(""));
+      const chunks: string[] = /^https?:\/\/\S+$/iu.test(word) ? [word] : [];
+      if (chunks.length === 0) {
+        for (let index = 0; index < codePoints.length; index += maxCharacters) {
+          chunks.push(codePoints.slice(index, index + maxCharacters).join(""));
+        }
       }
       for (const chunk of chunks) {
         const candidate = current ? `${current} ${chunk}` : chunk;

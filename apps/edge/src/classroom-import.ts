@@ -39,9 +39,8 @@ export function decodeClassroomBoardImport(encodedSnapshot: unknown): ClassroomB
     throw invalidImport("The Space import is not valid UTF-8 JSON.");
   }
   assertSafeJson(raw, 0);
-  if (
-    !isExactRecord(raw, ["format", "version", "boardId", "seq", "createdAt", "settings", "items"])
-  ) {
+  const canonicalKeys = ["format", "version", "boardId", "seq", "createdAt", "settings", "items"];
+  if (!isExactRecord(raw, canonicalKeys) && !isExactRecord(raw, [...canonicalKeys, "sections"])) {
     throw invalidImport("The Space import is not a canonical whiteboard export.");
   }
   if (

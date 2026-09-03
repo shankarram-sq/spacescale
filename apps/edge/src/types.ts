@@ -174,7 +174,7 @@ export type TableGeometry = {
   cells: string[][];
   headerRow?: boolean;
 };
-export type ZoneGeometry = BoxGeometry & { title: string };
+export type ZoneGeometry = BoxGeometry & { title: string; locked?: boolean };
 export type ItemGeometry =
   | PencilGeometry
   | LineGeometry
@@ -197,6 +197,8 @@ export type BoardItemKind =
 
 export interface BoardItem {
   id: string;
+  groupId?: string;
+  sectionId?: string;
   kind: BoardItemKind;
   z: number;
   version: number;

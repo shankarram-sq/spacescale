@@ -3,6 +3,7 @@
 import { evictDurableObject, reset, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { canonicalSnapshotByteLengthFromParts } from "@collab/board-core";
+import { DEFAULT_BOARD_FEATURES } from "@collab/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_CLASSROOM_IMPORT_ENCODED_CHARS, MAX_CLASSROOM_IMPORT_ITEMS } from "./classroom-import";
 import { bytesToBase64Url, hmacSha256, sha256, sha256Base64Url, utf8 } from "./crypto";
@@ -119,6 +120,14 @@ async function addEditor(stub: DurableObjectStub): Promise<void> {
   });
 }
 
+function legacyBoardFeatures(): Record<string, boolean> {
+  return Object.fromEntries(
+    Object.entries(DEFAULT_BOARD_FEATURES).filter(
+      ([key]) => key !== "objectTransforms" && key !== "grouping",
+    ),
+  );
+}
+
 function socketRequest(actor: string, since = 0, publicId = boardId): Request {
   const request = internalRequest(
     `/api/v1/boards/${publicId}/socket?since=${since}&client=018f0000-0000-7000-8000-000000000099`,
@@ -209,6 +218,62 @@ function createCommit(commandId: string, actionId: string, itemId: string) {
         transform: [1, 0, 0, 1, 0, 0],
         geometry: { x: 1, y: 2, width: 3, height: 4 },
       },
+    },
+  };
+}
+
+function createSectionMemberCommit(
+  commandId: string,
+  actionId: string,
+  sectionId: string,
+  memberId: string,
+  memberGroupId?: string,
+) {
+  return {
+    v: 1,
+    t: "client.commit",
+    commandId,
+    actionId,
+    baseSeq: 0,
+    op: {
+      kind: "items.batch",
+      operations: [
+        {
+          kind: "item.create",
+          item: {
+            id: sectionId,
+            kind: "zone",
+            style: {
+              kind: "zone",
+              borderColor: "#60a5fa",
+              fill: "#eff6ff",
+              textColor: "#1e3a8a",
+              fontSize: 20,
+              opacity: 0.8,
+            },
+            transform: [1, 0, 0, 1, 0, 0],
+            geometry: { x: 0, y: 0, width: 600, height: 400, title: "Review" },
+          },
+        },
+        {
+          kind: "item.create",
+          item: {
+            id: memberId,
+            sectionId,
+            ...(memberGroupId === undefined ? {} : { groupId: memberGroupId }),
+            kind: "sticky",
+            style: {
+              kind: "sticky",
+              fill: "#fff2a8",
+              textColor: "#2f2a1f",
+              fontSize: 20,
+              opacity: 1,
+            },
+            transform: [1, 0, 0, 1, 0, 0],
+            geometry: { x: 10, y: 20, width: 180, height: 140, text: "Question" },
+          },
+        },
+      ],
     },
   };
 }
@@ -492,6 +557,28 @@ describe("BoardRoom initialization", () => {
     });
   });
 
+  it("fills additive feature defaults for boards written by older workers", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await runInDurableObject(stub, (_instance, durableState) => {
+      durableState.storage.sql.exec(
+        "UPDATE board SET features_json = ? WHERE singleton = 1",
+        JSON.stringify({ ...legacyBoardFeatures(), rectangle: false }),
+      );
+    });
+    await evictDurableObject(stub);
+
+    const bootstrap = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/bootstrap`, { method: "GET" }),
+    );
+    expect(bootstrap.status, await bootstrap.clone().text()).toBe(200);
+    expect(await bootstrap.json()).toMatchObject({
+      board: {
+        features: { rectangle: false, objectTransforms: true, grouping: true },
+      },
+    });
+  });
+
   it("persists feature settings and rejects disabled item creation", async () => {
     const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
     await initializeBoard(stub);
@@ -681,6 +768,398 @@ describe("BoardRoom initialization", () => {
         (frame) => frame.t === "server.action" && frame.commandId === transformOnly.commandId,
       ),
     ).toMatchObject({ seq: 2 });
+    connected.socket.close(1000, "done");
+  });
+
+  it("allows relationship cleanup but not assignment when grouping is disabled", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const connected = await connect(stub, actorId);
+    const sectionId = "018f0000-0000-7000-8000-000000000201";
+    const memberId = "018f0000-0000-7000-8000-000000000202";
+    const groupId = "018f0000-0000-7000-8000-000000000221";
+    const created = createSectionMemberCommit(
+      "018f0000-0000-7000-8000-000000000203",
+      "018f0000-0000-7000-8000-000000000204",
+      sectionId,
+      memberId,
+      groupId,
+    );
+    connected.socket.send(JSON.stringify(created));
+    await connected.next(
+      (frame) => frame.t === "server.action" && frame.commandId === created.commandId,
+    );
+
+    const disabled = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ features: { grouping: false }, expectedAclVersion: 1 }),
+      }),
+    );
+    expect(disabled.status).toBe(200);
+    await disabled.arrayBuffer();
+    await connected.next(
+      (frame) =>
+        frame.t === "access.changed" &&
+        (frame.features as Record<string, unknown> | undefined)?.grouping === false,
+    );
+
+    const inheritedCopy = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-000000000223",
+      actionId: "018f0000-0000-7000-8000-000000000224",
+      baseSeq: 1,
+      op: {
+        kind: "item.copy",
+        sourceItemId: memberId,
+        expectedVersion: 1,
+        newItemId: "018f0000-0000-7000-8000-000000000222",
+        translate: { x: 20, y: 20 },
+      },
+    };
+    connected.socket.send(JSON.stringify(inheritedCopy));
+    expect(
+      await connected.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === inheritedCopy.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 1 });
+
+    const partiallyClearedCopy = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-000000000226",
+      actionId: "018f0000-0000-7000-8000-000000000227",
+      baseSeq: 1,
+      op: {
+        kind: "item.copy",
+        sourceItemId: memberId,
+        expectedVersion: 1,
+        newItemId: "018f0000-0000-7000-8000-000000000225",
+        translate: { x: 20, y: 20 },
+        newSectionId: null,
+      },
+    };
+    connected.socket.send(JSON.stringify(partiallyClearedCopy));
+    expect(
+      await connected.next(
+        (frame) =>
+          frame.t === "server.rejected" && frame.commandId === partiallyClearedCopy.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 1 });
+
+    const assignedCopy = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-000000000216",
+      actionId: "018f0000-0000-7000-8000-000000000217",
+      baseSeq: 1,
+      op: {
+        kind: "item.copy",
+        sourceItemId: memberId,
+        expectedVersion: 1,
+        newItemId: "018f0000-0000-7000-8000-000000000215",
+        translate: { x: 20, y: 20 },
+        newSectionId: sectionId,
+      },
+    };
+    connected.socket.send(JSON.stringify(assignedCopy));
+    expect(
+      await connected.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === assignedCopy.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 1 });
+
+    const relationFreeCopyId = "018f0000-0000-7000-8000-000000000218";
+    const relationFreeCopy = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-000000000219",
+      actionId: "018f0000-0000-7000-8000-000000000220",
+      baseSeq: 1,
+      op: {
+        kind: "item.copy",
+        sourceItemId: memberId,
+        expectedVersion: 1,
+        newItemId: relationFreeCopyId,
+        translate: { x: 20, y: 20 },
+        newGroupId: null,
+        newSectionId: null,
+      },
+    };
+    connected.socket.send(JSON.stringify(relationFreeCopy));
+    await connected.next(
+      (frame) => frame.t === "server.action" && frame.commandId === relationFreeCopy.commandId,
+    );
+
+    const copiedItem = await runInDurableObject(stub, (_instance, durableState) => {
+      const row = durableState.storage.sql
+        .exec<{ data_json: string }>(
+          "SELECT data_json FROM items WHERE item_id = ?",
+          relationFreeCopyId,
+        )
+        .one();
+      return JSON.parse(row.data_json) as Record<string, unknown>;
+    });
+    expect(copiedItem).not.toHaveProperty("groupId");
+    expect(copiedItem).not.toHaveProperty("sectionId");
+
+    const cleanup = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-000000000205",
+      actionId: "018f0000-0000-7000-8000-000000000206",
+      baseSeq: 2,
+      op: {
+        kind: "items.batch",
+        operations: [
+          { kind: "item.delete", itemId: sectionId, expectedVersion: 1 },
+          {
+            kind: "item.update",
+            itemId: memberId,
+            expectedVersion: 1,
+            patch: { sectionId: null },
+          },
+        ],
+      },
+    };
+    connected.socket.send(JSON.stringify(cleanup));
+    await connected.next(
+      (frame) => frame.t === "server.action" && frame.commandId === cleanup.commandId,
+    );
+
+    const member = await runInDurableObject(stub, (_instance, durableState) => {
+      const row = durableState.storage.sql
+        .exec<{ data_json: string }>("SELECT data_json FROM items WHERE item_id = ?", memberId)
+        .one();
+      return JSON.parse(row.data_json) as Record<string, unknown>;
+    });
+    expect(member).not.toHaveProperty("sectionId");
+
+    const assignment = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-000000000207",
+      actionId: "018f0000-0000-7000-8000-000000000208",
+      baseSeq: 3,
+      op: {
+        kind: "item.update",
+        itemId: memberId,
+        expectedVersion: 3,
+        patch: { sectionId },
+      },
+    };
+    connected.socket.send(JSON.stringify(assignment));
+    expect(
+      await connected.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === assignment.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 3 });
+    connected.socket.close(1000, "done");
+  });
+
+  it("atomically rejects deleting a Section while a surviving member still references it", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const connected = await connect(stub, actorId);
+    const sectionId = "018f0000-0000-7000-8000-000000000209";
+    const memberId = "018f0000-0000-7000-8000-000000000210";
+    const created = createSectionMemberCommit(
+      "018f0000-0000-7000-8000-000000000211",
+      "018f0000-0000-7000-8000-000000000212",
+      sectionId,
+      memberId,
+    );
+    connected.socket.send(JSON.stringify(created));
+    await connected.next(
+      (frame) => frame.t === "server.action" && frame.commandId === created.commandId,
+    );
+
+    const bareDelete = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-000000000213",
+      actionId: "018f0000-0000-7000-8000-000000000214",
+      baseSeq: 1,
+      op: { kind: "item.delete", itemId: sectionId, expectedVersion: 1 },
+    };
+    connected.socket.send(JSON.stringify(bareDelete));
+    expect(
+      await connected.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === bareDelete.commandId,
+      ),
+    ).toMatchObject({
+      code: "INVALID_FRAME",
+      latestSeq: 1,
+      sectionId,
+      itemId: memberId,
+    });
+
+    const state = await runInDurableObject(stub, (_instance, durableState) => {
+      const section = durableState.storage.sql
+        .exec<{ deleted: number }>("SELECT deleted FROM items WHERE item_id = ?", sectionId)
+        .one();
+      const member = durableState.storage.sql
+        .exec<{ data_json: string }>("SELECT data_json FROM items WHERE item_id = ?", memberId)
+        .one();
+      return {
+        latestSeq: durableState.storage.sql
+          .exec<{ latest_seq: number }>("SELECT latest_seq FROM board")
+          .one().latest_seq,
+        actions: durableState.storage.sql
+          .exec<{ count: number }>("SELECT COUNT(*) AS count FROM actions")
+          .one().count,
+        history: durableState.storage.sql
+          .exec<{ count: number }>("SELECT COUNT(*) AS count FROM history_entries")
+          .one().count,
+        sectionDeleted: section.deleted,
+        member: JSON.parse(member.data_json) as Record<string, unknown>,
+      };
+    });
+    expect(state).toMatchObject({
+      latestSeq: 1,
+      actions: 1,
+      history: 1,
+      sectionDeleted: 0,
+      member: { id: memberId, sectionId },
+    });
+    connected.socket.close(1000, "done");
+  });
+
+  it("allows translation but rejects scale and rotation when object transforms are disabled", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const connected = await connect(stub, actorId);
+    const created = createCommit(
+      "018f0000-0000-7000-8000-000000000111",
+      "018f0000-0000-7000-8000-000000000112",
+      "018f0000-0000-7000-8000-000000000113",
+    );
+    connected.socket.send(JSON.stringify(created));
+    await connected.next(
+      (frame) => frame.t === "server.action" && frame.commandId === created.commandId,
+    );
+
+    const disabled = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ features: { objectTransforms: false }, expectedAclVersion: 1 }),
+      }),
+    );
+    expect(disabled.status).toBe(200);
+    await disabled.arrayBuffer();
+    await connected.next(
+      (frame) =>
+        frame.t === "access.changed" &&
+        (frame.features as Record<string, unknown> | undefined)?.objectTransforms === false,
+    );
+
+    const scaledCreate = createCommit(
+      "018f0000-0000-7000-8000-00000000011a",
+      "018f0000-0000-7000-8000-00000000011b",
+      "018f0000-0000-7000-8000-00000000011c",
+    );
+    scaledCreate.baseSeq = 1;
+    scaledCreate.op.item.transform = [1.5, 0, 0, 1.5, 0, 0];
+    connected.socket.send(JSON.stringify(scaledCreate));
+    expect(
+      await connected.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === scaledCreate.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 1 });
+
+    const translated = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-000000000114",
+      actionId: "018f0000-0000-7000-8000-000000000115",
+      baseSeq: 1,
+      op: {
+        kind: "item.update",
+        itemId: created.op.item.id,
+        expectedVersion: 1,
+        patch: { transform: [1, 0, 0, 1, 25, 30] },
+      },
+    };
+    connected.socket.send(JSON.stringify(translated));
+    await connected.next(
+      (frame) => frame.t === "server.action" && frame.commandId === translated.commandId,
+    );
+
+    const scaled = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-000000000116",
+      actionId: "018f0000-0000-7000-8000-000000000117",
+      baseSeq: 2,
+      op: {
+        kind: "item.update",
+        itemId: created.op.item.id,
+        expectedVersion: 2,
+        patch: { transform: [1.5, 0, 0, 1.5, 25, 30] },
+      },
+    };
+    connected.socket.send(JSON.stringify(scaled));
+    expect(
+      await connected.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === scaled.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 2 });
+    connected.socket.close(1000, "done");
+  });
+
+  it("rejects copies that preserve transformed sources after transforms are disabled", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const connected = await connect(stub, actorId);
+    const created = createCommit(
+      "018f0000-0000-7000-8000-00000000012a",
+      "018f0000-0000-7000-8000-00000000012b",
+      "018f0000-0000-7000-8000-00000000012c",
+    );
+    created.op.item.transform = [0, 1, -1, 0, 20, 30];
+    connected.socket.send(JSON.stringify(created));
+    await connected.next(
+      (frame) => frame.t === "server.action" && frame.commandId === created.commandId,
+    );
+
+    const disabled = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ features: { objectTransforms: false }, expectedAclVersion: 1 }),
+      }),
+    );
+    expect(disabled.status).toBe(200);
+    await disabled.arrayBuffer();
+    await connected.next(
+      (frame) =>
+        frame.t === "access.changed" &&
+        (frame.features as Record<string, unknown> | undefined)?.objectTransforms === false,
+    );
+
+    const copy = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-00000000012d",
+      actionId: "018f0000-0000-7000-8000-00000000012e",
+      baseSeq: 1,
+      op: {
+        kind: "item.copy",
+        sourceItemId: created.op.item.id,
+        expectedVersion: 1,
+        newItemId: "018f0000-0000-7000-8000-00000000012f",
+        translate: { x: 20, y: 20 },
+      },
+    };
+    connected.socket.send(JSON.stringify(copy));
+    expect(
+      await connected.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === copy.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 1 });
     connected.socket.close(1000, "done");
   });
 
@@ -900,6 +1379,87 @@ describe("BoardRoom initialization", () => {
     expect(replayActions[2]?.creators).toEqual([{ id: editorId, displayName: "Editor" }]);
     replayed.socket.close(1000, "done");
   }, 45_000);
+
+  it("rejects restoring a foreign item after its deleting owner is demoted", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    await runInDurableObject(stub, (_instance, durableState) => {
+      durableState.storage.sql.exec(
+        "UPDATE members SET role = 'owner', updated_at_ms = ? WHERE actor_id = ?",
+        Date.now(),
+        editorId,
+      );
+    });
+    const primaryOwner = await connect(stub, actorId);
+    const formerOwner = await connect(stub, editorId);
+    const itemId = "018f0000-0000-7000-8000-000000000a10";
+    const create = createCommit(
+      "018f0000-0000-7000-8000-000000000a11",
+      "018f0000-0000-7000-8000-000000000a12",
+      itemId,
+    );
+    primaryOwner.socket.send(JSON.stringify(create));
+    await Promise.all([
+      primaryOwner.next((frame) => frame.t === "server.action" && frame.seq === 1),
+      formerOwner.next((frame) => frame.t === "server.action" && frame.seq === 1),
+    ]);
+
+    const deleteActionId = "018f0000-0000-7000-8000-000000000a14";
+    formerOwner.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000a13",
+        actionId: deleteActionId,
+        baseSeq: 1,
+        op: { kind: "item.delete", itemId, expectedVersion: 1 },
+      }),
+    );
+    await Promise.all([
+      primaryOwner.next((frame) => frame.t === "server.action" && frame.seq === 2),
+      formerOwner.next((frame) => frame.t === "server.action" && frame.seq === 2),
+    ]);
+    await runInDurableObject(stub, (_instance, durableState) => {
+      durableState.storage.sql.exec(
+        "UPDATE members SET role = 'editor', updated_at_ms = ? WHERE actor_id = ?",
+        Date.now(),
+        editorId,
+      );
+    });
+
+    const undoCommandId = "018f0000-0000-7000-8000-000000000a15";
+    formerOwner.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: undoCommandId,
+        actionId: "018f0000-0000-7000-8000-000000000a16",
+        baseSeq: 2,
+        op: {
+          kind: "history.undo",
+          expectedHistoryVersion: 1,
+          targetActionId: deleteActionId,
+        },
+      }),
+    );
+    expect(
+      await formerOwner.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === undoCommandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 2 });
+    const state = await runInDurableObject(stub, (_instance, durableState) => ({
+      deleted: durableState.storage.sql
+        .exec<{ deleted: number }>("SELECT deleted FROM items WHERE item_id = ?", itemId)
+        .one().deleted,
+      latestSeq: durableState.storage.sql
+        .exec<{ latest_seq: number }>("SELECT latest_seq FROM board")
+        .one().latest_seq,
+    }));
+    expect(state).toEqual({ deleted: 1, latestSeq: 2 });
+    primaryOwner.socket.close(1000, "done");
+    formerOwner.socket.close(1000, "done");
+  });
 
   it("migrates existing boards to multiple active owners", async () => {
     const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
@@ -4959,6 +5519,1743 @@ describe("BoardRoom table collaboration", () => {
 
     replayed.socket.close(1000, "done");
   }, 45_000);
+});
+
+describe("BoardRoom move/copy closure admission", () => {
+  afterEach(async () => reset());
+
+  const topologyId = (index: number): string =>
+    `018f0000-0000-7000-8000-${index.toString(16).padStart(12, "0")}`;
+
+  const importedSection = (id: string, z: number) => ({
+    id,
+    kind: "zone",
+    z,
+    version: 0,
+    createdBy: actorId,
+    style: {
+      kind: "zone",
+      borderColor: "#60a5fa",
+      fill: "#eff6ff",
+      textColor: "#1e3a8a",
+      fontSize: 20,
+      opacity: 0.8,
+    },
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: { x: 20, y: 30, width: 600, height: 400, title: "Bounded Section" },
+  });
+
+  const importedRectangle = (
+    id: string,
+    z: number,
+    relationships: { groupId?: string; sectionId?: string } = {},
+  ) => ({
+    id,
+    ...relationships,
+    kind: "rectangle",
+    z,
+    version: 0,
+    createdBy: actorId,
+    style: { kind: "stroke", color: "#112233", width: 2, opacity: 1 },
+    transform: [1, 0, 0, 1, 0, 0],
+    geometry: { x: 1, y: 2, width: 3, height: 4 },
+  });
+
+  const encodeImport = (items: readonly unknown[]): string =>
+    bytesToBase64Url(
+      utf8(
+        JSON.stringify({
+          format: "cf-whiteboard-json",
+          version: 1,
+          boardId,
+          seq: 0,
+          createdAt: Date.now(),
+          settings: { title: "Closure admission" },
+          items,
+        }),
+      ),
+    );
+
+  it("atomically rejects a live item with a missing Section target", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const connected = await connect(stub, actorId);
+    const itemId = topologyId(950);
+    const sectionId = topologyId(951);
+    const commandId = topologyId(952);
+    connected.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId,
+        actionId: topologyId(953),
+        baseSeq: 0,
+        op: {
+          kind: "item.create",
+          item: {
+            id: itemId,
+            sectionId,
+            kind: "rectangle",
+            style: { kind: "stroke", color: "#112233", width: 2, opacity: 1 },
+            transform: [1, 0, 0, 1, 0, 0],
+            geometry: { x: 1, y: 2, width: 3, height: 4 },
+          },
+        },
+      }),
+    );
+    expect(
+      await connected.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === commandId,
+      ),
+    ).toMatchObject({ code: "INVALID_FRAME", latestSeq: 0, sectionId, itemId });
+
+    const state = await runInDurableObject(stub, (_instance, durableState) => ({
+      latestSeq: durableState.storage.sql
+        .exec<{ latest_seq: number }>("SELECT latest_seq FROM board")
+        .one().latest_seq,
+      liveItems: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM items WHERE deleted = 0")
+        .one().count,
+      actions: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM actions")
+        .one().count,
+    }));
+    expect(state).toEqual({ latestSeq: 0, liveItems: 0, actions: 0 });
+    connected.socket.close(1000, "done");
+  });
+  it("detaches later members when history removes their Section and restores them on redo", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    const owner = await connect(stub, actorId);
+    const editor = await connect(stub, editorId);
+    const sectionId = topologyId(910);
+    const memberId = topologyId(911);
+    const createSection = {
+      v: 1,
+      t: "client.commit",
+      commandId: topologyId(912),
+      actionId: topologyId(913),
+      baseSeq: 0,
+      op: {
+        kind: "item.create",
+        item: {
+          id: sectionId,
+          kind: "zone",
+          style: {
+            kind: "zone",
+            borderColor: "#60a5fa",
+            fill: "#eff6ff",
+            textColor: "#1e3a8a",
+            fontSize: 20,
+            opacity: 0.8,
+          },
+          transform: [1, 0, 0, 1, 0, 0],
+          geometry: { x: 20, y: 30, width: 600, height: 400, title: "History" },
+        },
+      },
+    };
+    owner.socket.send(JSON.stringify(createSection));
+    await owner.next(
+      (frame) => frame.t === "server.action" && frame.commandId === createSection.commandId,
+    );
+    await editor.next(
+      (frame) => frame.t === "server.action" && frame.commandId === createSection.commandId,
+    );
+
+    const createMember = {
+      v: 1,
+      t: "client.commit",
+      commandId: topologyId(914),
+      actionId: topologyId(915),
+      baseSeq: 1,
+      op: {
+        kind: "item.create",
+        item: {
+          id: memberId,
+          sectionId,
+          kind: "rectangle",
+          style: { kind: "stroke", color: "#112233", width: 2, opacity: 1 },
+          transform: [1, 0, 0, 1, 0, 0],
+          geometry: { x: 40, y: 50, width: 120, height: 80 },
+        },
+      },
+    };
+    editor.socket.send(JSON.stringify(createMember));
+    await editor.next(
+      (frame) => frame.t === "server.action" && frame.commandId === createMember.commandId,
+    );
+    await owner.next(
+      (frame) => frame.t === "server.action" && frame.commandId === createMember.commandId,
+    );
+
+    const undo = {
+      v: 1,
+      t: "client.commit",
+      commandId: topologyId(916),
+      actionId: topologyId(917),
+      baseSeq: 2,
+      op: {
+        kind: "history.undo",
+        expectedHistoryVersion: 1,
+        targetActionId: createSection.actionId,
+      },
+    };
+    owner.socket.send(JSON.stringify(undo));
+    expect(
+      await owner.next(
+        (frame) => frame.t === "server.action" && frame.commandId === undo.commandId,
+      ),
+    ).toMatchObject({
+      seq: 3,
+      op: {
+        changes: expect.arrayContaining([
+          { kind: "item.remove", itemId: sectionId, version: 3 },
+          { kind: "item.replace", item: expect.objectContaining({ id: memberId, version: 3 }) },
+        ]),
+      },
+    });
+
+    const detachedState = await runInDurableObject(stub, (_instance, durableState) => {
+      const item = durableState.storage.sql
+        .exec<{ data_json: string }>("SELECT data_json FROM items WHERE item_id = ?", memberId)
+        .one();
+      const attribution = durableState.storage.sql
+        .exec<{ data_json: string }>(
+          "SELECT data_json FROM item_attribution WHERE item_id = ?",
+          memberId,
+        )
+        .one();
+      return {
+        item: JSON.parse(item.data_json) as Record<string, unknown>,
+        attribution: JSON.parse(attribution.data_json) as Record<string, unknown>,
+      };
+    });
+    expect(detachedState.item).not.toHaveProperty("sectionId");
+    expect(detachedState.attribution).toMatchObject({ lastModifiedBy: actorId, updatedSeq: 3 });
+
+    const redo = {
+      ...undo,
+      commandId: topologyId(918),
+      actionId: topologyId(919),
+      baseSeq: 3,
+      op: {
+        kind: "history.redo",
+        expectedHistoryVersion: 2,
+        targetActionId: createSection.actionId,
+      },
+    };
+    owner.socket.send(JSON.stringify(redo));
+    expect(
+      await owner.next(
+        (frame) => frame.t === "server.action" && frame.commandId === redo.commandId,
+      ),
+    ).toMatchObject({
+      seq: 4,
+      op: {
+        changes: expect.arrayContaining([
+          { kind: "item.replace", item: expect.objectContaining({ id: sectionId, version: 4 }) },
+          {
+            kind: "item.replace",
+            item: expect.objectContaining({ id: memberId, sectionId, version: 4 }),
+          },
+        ]),
+      },
+    });
+
+    const restoredAttribution = await runInDurableObject(stub, (_instance, durableState) => {
+      const row = durableState.storage.sql
+        .exec<{ data_json: string }>(
+          "SELECT data_json FROM item_attribution WHERE item_id = ?",
+          memberId,
+        )
+        .one();
+      return JSON.parse(row.data_json) as Record<string, unknown>;
+    });
+    expect(restoredAttribution).toMatchObject({ lastModifiedBy: actorId, updatedSeq: 4 });
+
+    owner.socket.close(1000, "done");
+    editor.socket.close(1000, "done");
+  });
+
+  it("lets a Section creator's history cleanup detach another participant's item", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    const owner = await connect(stub, actorId);
+    const editor = await connect(stub, editorId);
+    const sectionId = topologyId(920);
+    const memberId = topologyId(921);
+    const sectionTemplate = createSectionMemberCommit(
+      topologyId(922),
+      topologyId(923),
+      sectionId,
+      memberId,
+    );
+    const createSection = {
+      ...sectionTemplate,
+      op: sectionTemplate.op.operations[0],
+    };
+    editor.socket.send(JSON.stringify(createSection));
+    await editor.next(
+      (frame) => frame.t === "server.action" && frame.commandId === createSection.commandId,
+    );
+    await owner.next(
+      (frame) => frame.t === "server.action" && frame.commandId === createSection.commandId,
+    );
+
+    const memberTemplate = createSectionMemberCommit(
+      topologyId(924),
+      topologyId(925),
+      sectionId,
+      memberId,
+    );
+    const createMember = {
+      ...memberTemplate,
+      baseSeq: 1,
+      op: memberTemplate.op.operations[1],
+    };
+    owner.socket.send(JSON.stringify(createMember));
+    await owner.next(
+      (frame) => frame.t === "server.action" && frame.commandId === createMember.commandId,
+    );
+    await editor.next(
+      (frame) => frame.t === "server.action" && frame.commandId === createMember.commandId,
+    );
+
+    const undo = {
+      v: 1,
+      t: "client.commit",
+      commandId: topologyId(926),
+      actionId: topologyId(927),
+      baseSeq: 2,
+      op: {
+        kind: "history.undo",
+        expectedHistoryVersion: 1,
+        targetActionId: createSection.actionId,
+      },
+    };
+    editor.socket.send(JSON.stringify(undo));
+    // Membership was assigned by geometry when the owner drew inside the
+    // editor's Section, so removing it is the editor's right; the member is
+    // otherwise untouched.
+    expect(
+      await editor.next(
+        (frame) => frame.t === "server.action" && frame.commandId === undo.commandId,
+      ),
+    ).toMatchObject({
+      seq: 3,
+      op: {
+        changes: [
+          { kind: "item.remove", itemId: sectionId },
+          { kind: "item.replace", item: { id: memberId, createdBy: actorId } },
+        ],
+      },
+    });
+
+    const state = await runInDurableObject(stub, (_instance, durableState) => {
+      const section = durableState.storage.sql
+        .exec<{ deleted: number }>("SELECT deleted FROM items WHERE item_id = ?", sectionId)
+        .one();
+      const member = durableState.storage.sql
+        .exec<{ data_json: string }>("SELECT data_json FROM items WHERE item_id = ?", memberId)
+        .one();
+      return {
+        latestSeq: durableState.storage.sql
+          .exec<{ latest_seq: number }>("SELECT latest_seq FROM board")
+          .one().latest_seq,
+        actions: durableState.storage.sql
+          .exec<{ count: number }>("SELECT COUNT(*) AS count FROM actions")
+          .one().count,
+        sectionDeleted: section.deleted,
+        member: JSON.parse(member.data_json) as Record<string, unknown>,
+      };
+    });
+    expect(state).toMatchObject({
+      latestSeq: 3,
+      actions: 3,
+      sectionDeleted: 1,
+      member: { id: memberId, createdBy: actorId },
+    });
+    expect(state.member.sectionId).toBeUndefined();
+
+    owner.socket.close(1000, "done");
+    editor.socket.close(1000, "done");
+  });
+
+  it.each(["missing", "non-Section"] as const)(
+    "rejects a first-launch import with a %s Section target",
+    async (targetKind) => {
+      const destinationBoardId = `b_${(targetKind === "missing" ? "P" : "Q").repeat(21)}A`;
+      const stub = (env as unknown as Env).BOARD_ROOMS.getByName(destinationBoardId);
+      const sectionId = topologyId(954);
+      const itemId = topologyId(955);
+      const member = importedRectangle(itemId, targetKind === "missing" ? 1 : 2, { sectionId });
+      const items = targetKind === "missing" ? [member] : [importedRectangle(sectionId, 1), member];
+
+      const launch = await launchClassroom(
+        stub,
+        actorId,
+        "owner",
+        Date.now(),
+        "Coach",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        encodeImport(items),
+        destinationBoardId,
+      );
+      expect(launch.status).toBe(400);
+      expect(await launch.json()).toMatchObject({
+        error: {
+          code: "INVALID_FRAME",
+          details: { sectionId, itemId },
+        },
+      });
+    },
+  );
+
+  it("rejects a first-launch import that nests a Section inside another Section", async () => {
+    const destinationBoardId = `b_${"R".repeat(21)}A`;
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(destinationBoardId);
+    const sectionId = topologyId(958);
+    const itemId = topologyId(959);
+    const nestedSection = { ...importedSection(itemId, 2), sectionId };
+
+    const launch = await launchClassroom(
+      stub,
+      actorId,
+      "owner",
+      Date.now(),
+      "Coach",
+      "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      encodeImport([importedSection(sectionId, 1), nestedSection]),
+      destinationBoardId,
+    );
+    expect(launch.status).toBe(400);
+    expect(await launch.json()).toMatchObject({
+      error: {
+        code: "INVALID_FRAME",
+        details: { sectionId, itemId },
+      },
+    });
+  });
+
+  it("rejects restoring a snapshot with a missing Section target", async () => {
+    const typedEnv = env as unknown as Env;
+    const stub = typedEnv.BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const sectionId = topologyId(956);
+    const itemId = topologyId(957);
+    const snapshotBytes = new TextEncoder().encode(
+      JSON.stringify({
+        format: "cf-whiteboard-json",
+        version: 1,
+        boardId,
+        seq: 0,
+        createdAt: Date.now(),
+        settings: { title: "Invalid Section restore" },
+        items: [importedRectangle(itemId, 1, { sectionId })],
+      }),
+    );
+    const digest = await sha256Base64Url(snapshotBytes);
+    const key = "tests/invalid-section-relationship/snapshot.json";
+    await typedEnv.BOARD_SNAPSHOTS.put(key, snapshotBytes, {
+      customMetadata: { sha256: digest },
+    });
+    await runInDurableObject(stub, (_instance, durableState) => {
+      durableState.storage.sql.exec(
+        `INSERT INTO snapshots(
+          seq, r2_json_key, sha256, item_count, byte_count, kind, label,
+          created_by, created_at_ms
+        ) VALUES (0, ?, ?, 1, ?, 'named', 'Invalid relationship', ?, ?)`,
+        key,
+        digest,
+        snapshotBytes.byteLength,
+        actorId,
+        Date.now(),
+      );
+    });
+
+    const response = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/restore/0`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "invalid-section-restore-0001",
+        },
+        body: JSON.stringify({ expectedBoardSeq: 0 }),
+      }),
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: {
+        code: "INVALID_FRAME",
+        details: { sectionId, itemId },
+      },
+    });
+
+    const state = await runInDurableObject(stub, (_instance, durableState) => ({
+      latestSeq: durableState.storage.sql
+        .exec<{ latest_seq: number }>("SELECT latest_seq FROM board")
+        .one().latest_seq,
+      actions: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM actions")
+        .one().count,
+      receipts: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM http_receipts")
+        .one().count,
+    }));
+    expect(state).toEqual({ latestSeq: 0, actions: 0, receipts: 0 });
+  });
+
+  it("accepts a 100-object Section closure and atomically rejects its 101st direct member", async () => {
+    const destinationBoardId = `b_${"M".repeat(21)}A`;
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(destinationBoardId);
+    const sectionId = topologyId(1);
+    const members = Array.from({ length: 99 }, (_, index) =>
+      importedRectangle(topologyId(index + 2), index + 2, { sectionId }),
+    );
+    const launch = await launchClassroom(
+      stub,
+      actorId,
+      "owner",
+      Date.now(),
+      "Coach",
+      "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      encodeImport([importedSection(sectionId, 1), ...members]),
+      destinationBoardId,
+    );
+    expect(launch.status, await launch.clone().text()).toBe(201);
+
+    const owner = await connect(stub, actorId, 1, destinationBoardId);
+    const candidateId = topologyId(101);
+    const commandId = topologyId(102);
+    owner.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId,
+        actionId: topologyId(103),
+        baseSeq: 1,
+        op: {
+          kind: "item.create",
+          item: {
+            id: candidateId,
+            sectionId,
+            kind: "rectangle",
+            style: { kind: "stroke", color: "#112233", width: 2, opacity: 1 },
+            transform: [1, 0, 0, 1, 0, 0],
+            geometry: { x: 1, y: 2, width: 3, height: 4 },
+          },
+        },
+      }),
+    );
+    expect(
+      await owner.next((frame) => frame.t === "server.rejected" && frame.commandId === commandId),
+    ).toMatchObject({
+      code: "BOARD_LIMIT_REACHED",
+      latestSeq: 1,
+      seedItemId: sectionId,
+      itemCount: 101,
+      limit: 100,
+    });
+
+    const state = await runInDurableObject(stub, (_instance, durableState) => ({
+      latestSeq: durableState.storage.sql
+        .exec<{ latest_seq: number }>("SELECT latest_seq FROM board")
+        .one().latest_seq,
+      liveItems: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM items WHERE deleted = 0")
+        .one().count,
+      candidateRows: durableState.storage.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM items WHERE item_id = ?",
+          candidateId,
+        )
+        .one().count,
+      actions: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM actions")
+        .one().count,
+      history: durableState.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM history_entries")
+        .one().count,
+    }));
+    expect(state).toEqual({
+      latestSeq: 1,
+      liveItems: 100,
+      candidateRows: 0,
+      actions: 0,
+      history: 0,
+    });
+    owner.socket.close(1000, "done");
+  });
+
+  it("rejects a relationship edge whose group expansion makes a Section closure exceed 100", async () => {
+    const destinationBoardId = `b_${"N".repeat(21)}A`;
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(destinationBoardId);
+    const sectionId = topologyId(200);
+    const bridgeId = topologyId(201);
+    const groupId = topologyId(900);
+    const sectionMembers = Array.from({ length: 59 }, (_, index) =>
+      importedRectangle(topologyId(index + 201), index + 2, { sectionId }),
+    );
+    const groupMembers = Array.from({ length: 41 }, (_, index) =>
+      importedRectangle(topologyId(index + 300), index + 61, { groupId }),
+    );
+    const launch = await launchClassroom(
+      stub,
+      actorId,
+      "owner",
+      Date.now(),
+      "Coach",
+      "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      encodeImport([importedSection(sectionId, 1), ...sectionMembers, ...groupMembers]),
+      destinationBoardId,
+    );
+    expect(launch.status, await launch.clone().text()).toBe(201);
+
+    const owner = await connect(stub, actorId, 1, destinationBoardId);
+    const commandId = topologyId(901);
+    owner.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId,
+        actionId: topologyId(902),
+        baseSeq: 1,
+        op: {
+          kind: "item.update",
+          itemId: bridgeId,
+          expectedVersion: 1,
+          patch: { groupId },
+        },
+      }),
+    );
+    expect(
+      await owner.next((frame) => frame.t === "server.rejected" && frame.commandId === commandId),
+    ).toMatchObject({
+      code: "BOARD_LIMIT_REACHED",
+      latestSeq: 1,
+      seedItemId: sectionId,
+      itemCount: 101,
+      limit: 100,
+    });
+
+    const state = await runInDurableObject(stub, (_instance, durableState) => {
+      const row = durableState.storage.sql
+        .exec<{ data_json: string }>("SELECT data_json FROM items WHERE item_id = ?", bridgeId)
+        .one();
+      return {
+        latestSeq: durableState.storage.sql
+          .exec<{ latest_seq: number }>("SELECT latest_seq FROM board")
+          .one().latest_seq,
+        actions: durableState.storage.sql
+          .exec<{ count: number }>("SELECT COUNT(*) AS count FROM actions")
+          .one().count,
+        bridge: JSON.parse(row.data_json) as Record<string, unknown>,
+      };
+    });
+    expect(state).toMatchObject({ latestSeq: 1, actions: 0 });
+    expect(state.bridge).not.toHaveProperty("groupId");
+    owner.socket.close(1000, "done");
+  });
+});
+
+describe("BoardRoom Section locks", () => {
+  afterEach(async () => reset());
+
+  it("applies locked Sections atomically during the first owner launch", async () => {
+    const binding = (env as unknown as Env).BOARD_ROOMS;
+    const destinationBoardId = `b_${"L".repeat(21)}A`;
+    const stub = binding.getByName(destinationBoardId);
+    const sectionId = "018f0000-0000-7000-8000-0000000009a0";
+    const stickyId = "018f0000-0000-7000-8000-0000000009a1";
+    const importSnapshot = bytesToBase64Url(
+      utf8(
+        JSON.stringify({
+          format: "cf-whiteboard-json",
+          version: 1,
+          boardId,
+          seq: 0,
+          createdAt: Date.now(),
+          settings: { title: "Initially locked workshop" },
+          items: [
+            {
+              id: sectionId,
+              kind: "zone",
+              z: 1,
+              version: 0,
+              createdBy: actorId,
+              style: {
+                kind: "zone",
+                borderColor: "#60a5fa",
+                fill: "#eff6ff",
+                textColor: "#1e3a8a",
+                fontSize: 20,
+                opacity: 0.8,
+              },
+              transform: [1, 0, 0, 1, 0, 0],
+              geometry: {
+                x: 20,
+                y: 30,
+                width: 600,
+                height: 400,
+                title: "Prepared responses",
+                locked: true,
+              },
+            },
+            {
+              id: stickyId,
+              kind: "sticky",
+              z: 2,
+              version: 0,
+              createdBy: actorId,
+              sectionId,
+              style: {
+                kind: "sticky",
+                fill: "#fde68a",
+                textColor: "#292524",
+                fontSize: 20,
+                opacity: 1,
+              },
+              transform: [1, 0, 0, 1, 0, 0],
+              geometry: { x: 80, y: 120, width: 180, height: 140, text: "Prepared prompt" },
+            },
+          ],
+        }),
+      ),
+    );
+
+    const launch = await launchClassroom(
+      stub,
+      actorId,
+      "owner",
+      Date.now(),
+      "Coach",
+      "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      importSnapshot,
+      destinationBoardId,
+      organisationId,
+    );
+    expect(launch.status, await launch.clone().text()).toBe(201);
+
+    const bootstrap = await stub.fetch(
+      internalActorRequest(actorId, `/api/v1/boards/${destinationBoardId}/bootstrap`),
+    );
+    expect(bootstrap.status).toBe(200);
+    expect(await bootstrap.json()).toMatchObject({
+      board: { latestSeq: 1, title: "Initially locked workshop" },
+      snapshot: {
+        items: expect.arrayContaining([
+          expect.objectContaining({
+            id: sectionId,
+            version: 1,
+            geometry: expect.objectContaining({ locked: true }),
+          }),
+          expect.objectContaining({ id: stickyId, version: 1, sectionId }),
+        ]),
+      },
+    });
+
+    const exportedResponse = await stub.fetch(
+      internalActorRequest(actorId, `/api/v1/boards/${destinationBoardId}/export.json`),
+    );
+    expect(exportedResponse.status).toBe(200);
+    expect(await exportedResponse.json()).toMatchObject({
+      sections: [
+        {
+          id: sectionId,
+          name: "Prepared responses",
+          locked: true,
+          memberItemIds: [stickyId],
+        },
+      ],
+    });
+
+    const namedSnapshot = await stub.fetch(
+      internalActorRequest(actorId, `/api/v1/boards/${destinationBoardId}/snapshots`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "locked-section-recovery-snapshot-0001",
+        },
+        body: JSON.stringify({ label: "Locked workshop recovery" }),
+      }),
+    );
+    expect(namedSnapshot.status, await namedSnapshot.clone().text()).toBe(201);
+    expect(await namedSnapshot.json()).toMatchObject({
+      snapshot: {
+        seq: 1,
+        kind: "named",
+        label: "Locked workshop recovery",
+        itemCount: 2,
+      },
+    });
+
+    const owner = await connect(stub, actorId, 1, destinationBoardId);
+    const blockedUpdate = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-0000000009a2",
+      actionId: "018f0000-0000-7000-8000-0000000009a3",
+      baseSeq: 1,
+      op: {
+        kind: "item.update",
+        itemId: stickyId,
+        expectedVersion: 1,
+        patch: {
+          geometry: { x: 80, y: 120, width: 180, height: 140, text: "Blocked owner edit" },
+        },
+      },
+    };
+    owner.socket.send(JSON.stringify(blockedUpdate));
+    expect(
+      await owner.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === blockedUpdate.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 1 });
+    owner.socket.close(1000, "done");
+  });
+
+  it("freezes every participant's Section contents until an owner explicitly unlocks it", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    const owner = await connect(stub, actorId);
+    const editor = await connect(stub, editorId);
+    const sectionId = "018f0000-0000-7000-8000-000000000980";
+    const stickyId = "018f0000-0000-7000-8000-000000000981";
+    const sectionGeometry = {
+      x: 20,
+      y: 30,
+      width: 600,
+      height: 400,
+      title: "Frozen review",
+    };
+
+    const createSection = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-000000000982",
+      actionId: "018f0000-0000-7000-8000-000000000983",
+      baseSeq: 0,
+      op: {
+        kind: "item.create",
+        item: {
+          id: sectionId,
+          kind: "zone",
+          style: {
+            kind: "zone",
+            borderColor: "#60a5fa",
+            fill: "#eff6ff",
+            textColor: "#1e3a8a",
+            fontSize: 20,
+            opacity: 0.8,
+          },
+          transform: [1, 0, 0, 1, 0, 0],
+          geometry: sectionGeometry,
+        },
+      },
+    };
+    owner.socket.send(JSON.stringify(createSection));
+    expect(
+      await owner.next(
+        (frame) => frame.t === "server.action" && frame.commandId === createSection.commandId,
+      ),
+    ).toMatchObject({ seq: 1, op: { item: { id: sectionId } } });
+
+    const createSticky = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-000000000984",
+      actionId: "018f0000-0000-7000-8000-000000000985",
+      baseSeq: 1,
+      op: {
+        kind: "item.create",
+        item: {
+          id: stickyId,
+          sectionId,
+          kind: "sticky",
+          style: {
+            kind: "sticky",
+            fill: "#fde68a",
+            textColor: "#292524",
+            fontSize: 20,
+            opacity: 1,
+          },
+          transform: [1, 0, 0, 1, 0, 0],
+          geometry: { x: 80, y: 120, width: 180, height: 140, text: "Editor work" },
+        },
+      },
+    };
+    editor.socket.send(JSON.stringify(createSticky));
+    expect(
+      await editor.next(
+        (frame) => frame.t === "server.action" && frame.commandId === createSticky.commandId,
+      ),
+    ).toMatchObject({ seq: 2, actor: { id: editorId }, op: { item: { sectionId } } });
+
+    const preLockSnapshot = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/snapshots`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "pre-lock-restore-snapshot-0001",
+        },
+        body: JSON.stringify({ label: "Before Section lock" }),
+      }),
+    );
+    expect(preLockSnapshot.status).toBe(201);
+    await preLockSnapshot.arrayBuffer();
+
+    const lockSection = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-000000000986",
+      actionId: "018f0000-0000-7000-8000-000000000987",
+      baseSeq: 2,
+      op: {
+        kind: "item.update",
+        itemId: sectionId,
+        expectedVersion: 1,
+        patch: { geometry: { ...sectionGeometry, locked: true } },
+      },
+    };
+    owner.socket.send(JSON.stringify(lockSection));
+    expect(
+      await owner.next(
+        (frame) => frame.t === "server.action" && frame.commandId === lockSection.commandId,
+      ),
+    ).toMatchObject({ seq: 3, op: { item: { geometry: { locked: true } } } });
+    await editor.next(
+      (frame) => frame.t === "server.action" && frame.commandId === lockSection.commandId,
+    );
+
+    const blockedHistoryUndo = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-0000000009b1",
+      actionId: "018f0000-0000-7000-8000-0000000009b2",
+      baseSeq: 3,
+      op: {
+        kind: "history.undo",
+        expectedHistoryVersion: 1,
+        targetActionId: createSticky.actionId,
+      },
+    };
+    editor.socket.send(JSON.stringify(blockedHistoryUndo));
+    expect(
+      await editor.next(
+        (frame) =>
+          frame.t === "server.rejected" && frame.commandId === blockedHistoryUndo.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 3 });
+
+    const blockedRestore = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/restore/2`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "locked-section-restore-0002",
+        },
+        body: JSON.stringify({ expectedBoardSeq: 3 }),
+      }),
+    );
+    expect(blockedRestore.status).toBe(403);
+    expect(await blockedRestore.json()).toMatchObject({ error: { code: "FORBIDDEN" } });
+
+    const blockedOwnerUpdate = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-000000000988",
+      actionId: "018f0000-0000-7000-8000-000000000989",
+      baseSeq: 3,
+      op: {
+        kind: "item.update",
+        itemId: stickyId,
+        expectedVersion: 2,
+        patch: {
+          geometry: { x: 80, y: 120, width: 180, height: 140, text: "Owner edit" },
+        },
+      },
+    };
+    owner.socket.send(JSON.stringify(blockedOwnerUpdate));
+    expect(
+      await owner.next(
+        (frame) =>
+          frame.t === "server.rejected" && frame.commandId === blockedOwnerUpdate.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 3 });
+
+    const blockedEditorUpdate = {
+      ...blockedOwnerUpdate,
+      commandId: "018f0000-0000-7000-8000-00000000098a",
+      actionId: "018f0000-0000-7000-8000-00000000098b",
+      op: {
+        ...blockedOwnerUpdate.op,
+        patch: {
+          geometry: { x: 80, y: 120, width: 180, height: 140, text: "Editor edit" },
+        },
+      },
+    };
+    editor.socket.send(JSON.stringify(blockedEditorUpdate));
+    expect(
+      await editor.next(
+        (frame) =>
+          frame.t === "server.rejected" && frame.commandId === blockedEditorUpdate.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 3 });
+
+    const blockedClear = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-00000000098c",
+      actionId: "018f0000-0000-7000-8000-00000000098d",
+      baseSeq: 3,
+      op: { kind: "board.clear", expectedBoardSeq: 3 },
+    };
+    owner.socket.send(JSON.stringify(blockedClear));
+    expect(
+      await owner.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === blockedClear.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 3 });
+
+    const exportedResponse = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/export.json`),
+    );
+    expect(exportedResponse.status).toBe(200);
+    const exported = (await exportedResponse.json()) as {
+      sections: Array<{ id: string; name: string; locked: boolean; memberItemIds: string[] }>;
+    };
+    expect(exported.sections).toContainEqual({
+      id: sectionId,
+      locked: true,
+      name: "Frozen review",
+      memberItemIds: [stickyId],
+    });
+
+    const unlockSection = {
+      ...lockSection,
+      commandId: "018f0000-0000-7000-8000-00000000098e",
+      actionId: "018f0000-0000-7000-8000-00000000098f",
+      baseSeq: 3,
+      op: {
+        ...lockSection.op,
+        expectedVersion: 3,
+        patch: { geometry: { ...sectionGeometry, locked: false } },
+      },
+    };
+    owner.socket.send(JSON.stringify(unlockSection));
+    expect(
+      await owner.next(
+        (frame) => frame.t === "server.action" && frame.commandId === unlockSection.commandId,
+      ),
+    ).toMatchObject({ seq: 4, op: { item: { geometry: sectionGeometry } } });
+    await editor.next(
+      (frame) => frame.t === "server.action" && frame.commandId === unlockSection.commandId,
+    );
+
+    const acceptedEditorUpdate = {
+      ...blockedEditorUpdate,
+      commandId: "018f0000-0000-7000-8000-000000000990",
+      actionId: "018f0000-0000-7000-8000-000000000991",
+      baseSeq: 4,
+    };
+    editor.socket.send(JSON.stringify(acceptedEditorUpdate));
+    expect(
+      await editor.next(
+        (frame) =>
+          frame.t === "server.action" && frame.commandId === acceptedEditorUpdate.commandId,
+      ),
+    ).toMatchObject({ seq: 5, op: { item: { geometry: { text: "Editor edit" } } } });
+
+    owner.socket.close(1000, "done");
+    editor.socket.close(1000, "done");
+  });
+
+  it("rejects Section lock history after an owner is demoted", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    await runInDurableObject(stub, (_instance, durableState) => {
+      durableState.storage.sql.exec(
+        "UPDATE members SET role = 'owner', updated_at_ms = ? WHERE actor_id = ?",
+        Date.now(),
+        editorId,
+      );
+    });
+    const formerOwner = await connect(stub, editorId);
+    const sectionId = "018f0000-0000-7000-8000-000000000a20";
+    const sectionGeometry = { x: 20, y: 30, width: 600, height: 400, title: "Locked history" };
+    const createSection = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-000000000a21",
+      actionId: "018f0000-0000-7000-8000-000000000a22",
+      baseSeq: 0,
+      op: {
+        kind: "item.create",
+        item: {
+          id: sectionId,
+          kind: "zone",
+          style: {
+            kind: "zone",
+            borderColor: "#60a5fa",
+            fill: "#eff6ff",
+            textColor: "#1e3a8a",
+            fontSize: 20,
+            opacity: 0.8,
+          },
+          transform: [1, 0, 0, 1, 0, 0],
+          geometry: sectionGeometry,
+        },
+      },
+    };
+    formerOwner.socket.send(JSON.stringify(createSection));
+    await formerOwner.next((frame) => frame.t === "server.action" && frame.seq === 1);
+    const lockActionId = "018f0000-0000-7000-8000-000000000a24";
+    formerOwner.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000a23",
+        actionId: lockActionId,
+        baseSeq: 1,
+        op: {
+          kind: "item.update",
+          itemId: sectionId,
+          expectedVersion: 1,
+          patch: { geometry: { ...sectionGeometry, locked: true } },
+        },
+      }),
+    );
+    await formerOwner.next((frame) => frame.t === "server.action" && frame.seq === 2);
+    await runInDurableObject(stub, (_instance, durableState) => {
+      durableState.storage.sql.exec(
+        "UPDATE members SET role = 'editor', updated_at_ms = ? WHERE actor_id = ?",
+        Date.now(),
+        editorId,
+      );
+    });
+
+    const undoCommandId = "018f0000-0000-7000-8000-000000000a25";
+    formerOwner.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: undoCommandId,
+        actionId: "018f0000-0000-7000-8000-000000000a26",
+        baseSeq: 2,
+        op: {
+          kind: "history.undo",
+          expectedHistoryVersion: 2,
+          targetActionId: lockActionId,
+        },
+      }),
+    );
+    expect(
+      await formerOwner.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === undoCommandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 2 });
+    formerOwner.socket.close(1000, "done");
+  });
+
+  it("keeps Section lock history undoable and redoable", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const owner = await connect(stub, actorId);
+    const sectionId = "018f0000-0000-7000-8000-0000000009b0";
+    const sectionGeometry = { x: 20, y: 30, width: 600, height: 400, title: "History" };
+    const createSection = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-000000000992",
+      actionId: "018f0000-0000-7000-8000-000000000993",
+      baseSeq: 0,
+      op: {
+        kind: "item.create",
+        item: {
+          id: sectionId,
+          kind: "zone",
+          style: {
+            kind: "zone",
+            borderColor: "#60a5fa",
+            fill: "#eff6ff",
+            textColor: "#1e3a8a",
+            fontSize: 20,
+            opacity: 0.8,
+          },
+          transform: [1, 0, 0, 1, 0, 0],
+          geometry: sectionGeometry,
+        },
+      },
+    };
+    owner.socket.send(JSON.stringify(createSection));
+    await owner.next(
+      (frame) => frame.t === "server.action" && frame.commandId === createSection.commandId,
+    );
+
+    const lockSection = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-000000000994",
+      actionId: "018f0000-0000-7000-8000-000000000995",
+      baseSeq: 1,
+      op: {
+        kind: "item.update",
+        itemId: sectionId,
+        expectedVersion: 1,
+        patch: { geometry: { ...sectionGeometry, locked: true } },
+      },
+    };
+    owner.socket.send(JSON.stringify(lockSection));
+    await owner.next(
+      (frame) => frame.t === "server.action" && frame.commandId === lockSection.commandId,
+    );
+
+    const applyHistory = async (
+      kind: "history.undo" | "history.redo",
+      commandId: string,
+      actionId: string,
+      baseSeq: number,
+      expectedHistoryVersion: number,
+      targetActionId: string,
+    ) => {
+      owner.socket.send(
+        JSON.stringify({
+          v: 1,
+          t: "client.commit",
+          commandId,
+          actionId,
+          baseSeq,
+          op: { kind, expectedHistoryVersion, targetActionId },
+        }),
+      );
+      return owner.next((frame) => frame.t === "server.action" && frame.commandId === commandId);
+    };
+
+    expect(
+      await applyHistory(
+        "history.undo",
+        "018f0000-0000-7000-8000-000000000996",
+        "018f0000-0000-7000-8000-000000000997",
+        2,
+        2,
+        lockSection.actionId,
+      ),
+    ).toMatchObject({
+      seq: 3,
+      op: {
+        changes: [{ kind: "item.replace", item: { id: sectionId, geometry: sectionGeometry } }],
+      },
+    });
+    expect(
+      await applyHistory(
+        "history.undo",
+        "018f0000-0000-7000-8000-000000000998",
+        "018f0000-0000-7000-8000-000000000999",
+        3,
+        3,
+        createSection.actionId,
+      ),
+    ).toMatchObject({ seq: 4, op: { changes: [{ kind: "item.remove", itemId: sectionId }] } });
+    expect(
+      await applyHistory(
+        "history.redo",
+        "018f0000-0000-7000-8000-00000000099a",
+        "018f0000-0000-7000-8000-00000000099b",
+        4,
+        4,
+        createSection.actionId,
+      ),
+    ).toMatchObject({
+      seq: 5,
+      op: {
+        changes: [{ kind: "item.replace", item: { id: sectionId, geometry: sectionGeometry } }],
+      },
+    });
+    expect(
+      await applyHistory(
+        "history.redo",
+        "018f0000-0000-7000-8000-00000000099c",
+        "018f0000-0000-7000-8000-00000000099d",
+        5,
+        5,
+        lockSection.actionId,
+      ),
+    ).toMatchObject({
+      seq: 6,
+      op: {
+        changes: [{ kind: "item.replace", item: { id: sectionId, geometry: { locked: true } } }],
+      },
+    });
+
+    owner.socket.close(1000, "done");
+  });
+});
+
+describe("BoardRoom Section membership history", () => {
+  afterEach(async () => reset());
+
+  const zoneStyle = {
+    kind: "zone",
+    borderColor: "#60a5fa",
+    fill: "#eff6ff",
+    textColor: "#1e3a8a",
+    fontSize: 20,
+    opacity: 0.8,
+  };
+  const stickyStyle = {
+    kind: "sticky",
+    fill: "#fff2a8",
+    textColor: "#2f2a1f",
+    fontSize: 20,
+    opacity: 1,
+  };
+
+  function sectionCreate(commandId: string, actionId: string, sectionId: string, baseSeq: number) {
+    return {
+      v: 1,
+      t: "client.commit",
+      commandId,
+      actionId,
+      baseSeq,
+      op: {
+        kind: "item.create",
+        item: {
+          id: sectionId,
+          kind: "zone",
+          style: zoneStyle,
+          transform: [1, 0, 0, 1, 0, 0],
+          geometry: { x: 0, y: 0, width: 600, height: 400, title: "Members" },
+        },
+      },
+    };
+  }
+
+  function memberCreate(
+    commandId: string,
+    actionId: string,
+    memberId: string,
+    sectionId: string,
+    baseSeq: number,
+  ) {
+    return {
+      v: 1,
+      t: "client.commit",
+      commandId,
+      actionId,
+      baseSeq,
+      op: {
+        kind: "item.create",
+        item: {
+          id: memberId,
+          sectionId,
+          kind: "sticky",
+          style: stickyStyle,
+          transform: [1, 0, 0, 1, 0, 0],
+          geometry: { x: 10, y: 20, width: 180, height: 140, text: "Question" },
+        },
+      },
+    };
+  }
+
+  function historyCommit(
+    kind: "history.undo" | "history.redo",
+    commandId: string,
+    actionId: string,
+    baseSeq: number,
+    expectedHistoryVersion: number,
+    targetActionId: string,
+  ) {
+    return {
+      v: 1,
+      t: "client.commit",
+      commandId,
+      actionId,
+      baseSeq,
+      op: { kind, expectedHistoryVersion, targetActionId },
+    };
+  }
+
+  async function send(socket: TestSocket, frame: { commandId: string; [key: string]: unknown }) {
+    socket.socket.send(JSON.stringify(frame));
+    return socket.next(
+      (received) =>
+        (received.t === "server.action" || received.t === "server.rejected") &&
+        received.commandId === frame.commandId,
+    );
+  }
+
+  it("redoes a Section deletion after another participant attached a member", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    const owner = await connect(stub, actorId);
+    const editor = await connect(stub, editorId);
+    const sectionId = "018f0000-0000-7000-8000-00000000a010";
+    const memberId = "018f0000-0000-7000-8000-00000000a011";
+
+    const created = sectionCreate(
+      "018f0000-0000-7000-8000-00000000a012",
+      "018f0000-0000-7000-8000-00000000a013",
+      sectionId,
+      0,
+    );
+    expect(await send(owner, created)).toMatchObject({ t: "server.action", seq: 1 });
+    const deleted = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-00000000a014",
+      actionId: "018f0000-0000-7000-8000-00000000a015",
+      baseSeq: 1,
+      op: { kind: "item.delete", itemId: sectionId, expectedVersion: 1 },
+    };
+    expect(await send(owner, deleted)).toMatchObject({ t: "server.action", seq: 2 });
+    expect(
+      await send(
+        owner,
+        historyCommit(
+          "history.undo",
+          "018f0000-0000-7000-8000-00000000a016",
+          "018f0000-0000-7000-8000-00000000a017",
+          2,
+          2,
+          deleted.actionId,
+        ),
+      ),
+    ).toMatchObject({ t: "server.action", seq: 3 });
+
+    // A different participant attaches a member while the Section is restored;
+    // this does not invalidate the owner's redo stack.
+    expect(
+      await send(
+        editor,
+        memberCreate(
+          "018f0000-0000-7000-8000-00000000a018",
+          "018f0000-0000-7000-8000-00000000a019",
+          memberId,
+          sectionId,
+          3,
+        ),
+      ),
+    ).toMatchObject({ t: "server.action", seq: 4 });
+
+    const redone = await send(
+      owner,
+      historyCommit(
+        "history.redo",
+        "018f0000-0000-7000-8000-00000000a01a",
+        "018f0000-0000-7000-8000-00000000a01b",
+        4,
+        3,
+        deleted.actionId,
+      ),
+    );
+    expect(redone).toMatchObject({
+      t: "server.action",
+      seq: 5,
+      op: {
+        changes: [
+          { kind: "item.remove", itemId: sectionId },
+          { kind: "item.replace", item: { id: memberId } },
+        ],
+      },
+    });
+    const changes = (redone as { op: { changes: Array<{ item?: { sectionId?: string } }> } }).op
+      .changes;
+    expect(changes[1]?.item?.sectionId).toBeUndefined();
+
+    owner.socket.close(1000, "done");
+    editor.socket.close(1000, "done");
+  });
+
+  it("makes another participant's history conflict once a Section undo detached their member", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    const owner = await connect(stub, actorId);
+    const editor = await connect(stub, editorId);
+    const sectionId = "018f0000-0000-7000-8000-00000000a020";
+    const memberId = "018f0000-0000-7000-8000-00000000a021";
+
+    const created = sectionCreate(
+      "018f0000-0000-7000-8000-00000000a022",
+      "018f0000-0000-7000-8000-00000000a023",
+      sectionId,
+      0,
+    );
+    expect(await send(owner, created)).toMatchObject({ t: "server.action", seq: 1 });
+    const memberCreated = memberCreate(
+      "018f0000-0000-7000-8000-00000000a024",
+      "018f0000-0000-7000-8000-00000000a025",
+      memberId,
+      sectionId,
+      1,
+    );
+    expect(await send(editor, memberCreated)).toMatchObject({ t: "server.action", seq: 2 });
+
+    // Undoing the Section create detaches the editor's member under a fresh
+    // state token: the member's logical state changed.
+    expect(
+      await send(
+        owner,
+        historyCommit(
+          "history.undo",
+          "018f0000-0000-7000-8000-00000000a026",
+          "018f0000-0000-7000-8000-00000000a027",
+          2,
+          1,
+          created.actionId,
+        ),
+      ),
+    ).toMatchObject({
+      t: "server.action",
+      seq: 3,
+      op: {
+        changes: [
+          { kind: "item.remove", itemId: sectionId },
+          { kind: "item.replace", item: { id: memberId } },
+        ],
+      },
+    });
+
+    // The editor's own entry recorded the attached member, so it must now
+    // conflict rather than replay a Section relationship that no longer exists.
+    expect(
+      await send(
+        editor,
+        historyCommit(
+          "history.undo",
+          "018f0000-0000-7000-8000-00000000a028",
+          "018f0000-0000-7000-8000-00000000a029",
+          3,
+          1,
+          memberCreated.actionId,
+        ),
+      ),
+    ).toMatchObject({ t: "server.rejected", code: "UNDO_CONFLICT" });
+
+    owner.socket.close(1000, "done");
+    editor.socket.close(1000, "done");
+  });
+
+  it("lets a Section's creator delete or undo it after the owner attached an item", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    const owner = await connect(stub, actorId);
+    const editor = await connect(stub, editorId);
+    const sectionId = "018f0000-0000-7000-8000-00000000a030";
+    const memberId = "018f0000-0000-7000-8000-00000000a031";
+
+    const created = sectionCreate(
+      "018f0000-0000-7000-8000-00000000a032",
+      "018f0000-0000-7000-8000-00000000a033",
+      sectionId,
+      0,
+    );
+    expect(await send(editor, created)).toMatchObject({ t: "server.action", seq: 1 });
+    expect(
+      await send(
+        owner,
+        memberCreate(
+          "018f0000-0000-7000-8000-00000000a034",
+          "018f0000-0000-7000-8000-00000000a035",
+          memberId,
+          sectionId,
+          1,
+        ),
+      ),
+    ).toMatchObject({ t: "server.action", seq: 2 });
+
+    // The editor cannot edit the owner's sticky, but may detach it from the
+    // editor's own Section as part of deleting that Section.
+    const deleteWithDetach = {
+      v: 1,
+      t: "client.commit",
+      commandId: "018f0000-0000-7000-8000-00000000a036",
+      actionId: "018f0000-0000-7000-8000-00000000a037",
+      baseSeq: 2,
+      op: {
+        kind: "items.batch",
+        operations: [
+          { kind: "item.delete", itemId: sectionId, expectedVersion: 1 },
+          { kind: "item.update", itemId: memberId, expectedVersion: 2, patch: { sectionId: null } },
+        ],
+      },
+    };
+    expect(await send(editor, deleteWithDetach)).toMatchObject({ t: "server.action", seq: 3 });
+    const afterDelete = await runInDurableObject(stub, (_instance, durableState) => ({
+      sectionDeleted: durableState.storage.sql
+        .exec<{ deleted: number }>("SELECT deleted FROM items WHERE item_id = ?", sectionId)
+        .one().deleted,
+      member: JSON.parse(
+        durableState.storage.sql
+          .exec<{ data_json: string }>("SELECT data_json FROM items WHERE item_id = ?", memberId)
+          .one().data_json,
+      ) as Record<string, unknown>,
+    }));
+    expect(afterDelete.sectionDeleted).toBe(1);
+    expect(afterDelete.member).toMatchObject({ id: memberId, createdBy: actorId });
+    expect(afterDelete.member.sectionId).toBeUndefined();
+
+    // Moving the owner's sticky is still not the editor's to do.
+    expect(
+      await send(editor, {
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-00000000a038",
+        actionId: "018f0000-0000-7000-8000-00000000a039",
+        baseSeq: 3,
+        op: {
+          kind: "item.update",
+          itemId: memberId,
+          expectedVersion: 3,
+          patch: { transform: [1, 0, 0, 1, 5, 5] },
+        },
+      }),
+    ).toMatchObject({ t: "server.rejected", code: "FORBIDDEN" });
+
+    // Undoing the deletion re-creates the Section and re-attaches the member
+    // (its recorded before-state), which is the creator's right for a
+    // relationship-only change. Undoing the Section's creation afterwards
+    // detaches that foreign member again as a synthesized dependent change.
+    expect(
+      await send(
+        editor,
+        historyCommit(
+          "history.undo",
+          "018f0000-0000-7000-8000-00000000a03a",
+          "018f0000-0000-7000-8000-00000000a03b",
+          3,
+          2,
+          deleteWithDetach.actionId,
+        ),
+      ),
+    ).toMatchObject({ t: "server.action", seq: 4 });
+    expect(
+      await send(
+        editor,
+        historyCommit(
+          "history.undo",
+          "018f0000-0000-7000-8000-00000000a03c",
+          "018f0000-0000-7000-8000-00000000a03d",
+          4,
+          3,
+          created.actionId,
+        ),
+      ),
+    ).toMatchObject({
+      t: "server.action",
+      seq: 5,
+      op: {
+        changes: [
+          { kind: "item.remove", itemId: sectionId },
+          { kind: "item.replace", item: { id: memberId, createdBy: actorId } },
+        ],
+      },
+    });
+
+    owner.socket.close(1000, "done");
+    editor.socket.close(1000, "done");
+  });
+
+  it("keeps a Section's lock through a recovery snapshot and restore", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const owner = await connect(stub, actorId);
+    const sectionId = "018f0000-0000-7000-8000-00000000a040";
+    const geometry = { x: 0, y: 0, width: 600, height: 400, title: "Members" };
+
+    expect(
+      await send(
+        owner,
+        sectionCreate(
+          "018f0000-0000-7000-8000-00000000a041",
+          "018f0000-0000-7000-8000-00000000a042",
+          sectionId,
+          0,
+        ),
+      ),
+    ).toMatchObject({ t: "server.action", seq: 1 });
+    const lock = (commandId: string, actionId: string, baseSeq: number, locked: boolean) => ({
+      v: 1,
+      t: "client.commit",
+      commandId,
+      actionId,
+      baseSeq,
+      op: {
+        kind: "item.update",
+        itemId: sectionId,
+        expectedVersion: baseSeq,
+        patch: { geometry: { ...geometry, locked } },
+      },
+    });
+    expect(
+      await send(
+        owner,
+        lock(
+          "018f0000-0000-7000-8000-00000000a043",
+          "018f0000-0000-7000-8000-00000000a044",
+          1,
+          true,
+        ),
+      ),
+    ).toMatchObject({ t: "server.action", seq: 2, op: { item: { geometry: { locked: true } } } });
+
+    // Snapshot the locked state, unlock so restore is permitted, then restore.
+    const snapshot = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/snapshots`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "locked-section-snapshot-a045",
+        },
+        body: JSON.stringify({ label: "While locked" }),
+      }),
+    );
+    expect(snapshot.status).toBe(201);
+    await snapshot.arrayBuffer();
+    expect(
+      await send(
+        owner,
+        lock(
+          "018f0000-0000-7000-8000-00000000a046",
+          "018f0000-0000-7000-8000-00000000a047",
+          2,
+          false,
+        ),
+      ),
+    ).toMatchObject({ t: "server.action", seq: 3 });
+
+    const restored = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/restore/2`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "locked-section-restore-a048",
+        },
+        body: JSON.stringify({ expectedBoardSeq: 3 }),
+      }),
+    );
+    expect(restored.status).toBe(200);
+    await restored.arrayBuffer();
+
+    const stored = await runInDurableObject(
+      stub,
+      (_instance, durableState) =>
+        JSON.parse(
+          durableState.storage.sql
+            .exec<{ data_json: string }>("SELECT data_json FROM items WHERE item_id = ?", sectionId)
+            .one().data_json,
+        ) as { geometry: { locked?: boolean } },
+    );
+    expect(stored.geometry.locked).toBe(true);
+
+    owner.socket.close(1000, "done");
+  });
 });
 
 describe("BoardRoom facilitation spotlight", () => {

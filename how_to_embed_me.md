@@ -156,6 +156,7 @@ The signature covers the literal bytes of `el1.<base64url JSON payload>`.
 | `iat` | yes | Issued-at Unix time in seconds. Up to five minutes of positive clock skew is accepted. |
 | `exp` | yes | Expiry Unix time in seconds; later than `iat`, in the future, and no more than 24 hours after `iat`. |
 | `features` | no | Partial object of the feature booleans in section 5. It seeds a new Space only. |
+| `organisation_admin` | no | Boolean. `true`, together with `role: "owner"`, authorises Organisation administration and trusted-backend webhook settings. Never add it to an ordinary participant launch. |
 
 Unknown claims and unknown feature keys are rejected. The complete assertion,
 including a feature patch, is limited to 8 KiB.
@@ -181,6 +182,7 @@ export function createLaunchToken({
   displayName,
   participantId,
   features,
+  organisationAdmin,
   expiresInSeconds = 60 * 60,
 }) {
   if (expiresInSeconds <= 0 || expiresInSeconds > 24 * 60 * 60) {
@@ -200,6 +202,9 @@ export function createLaunchToken({
     iat: now,
     exp: now + expiresInSeconds,
     ...(features === undefined ? {} : { features }),
+    ...(organisationAdmin === undefined
+      ? {}
+      : { organisation_admin: organisationAdmin }),
   };
 
   const encodedPayload = base64url(JSON.stringify(payload));
@@ -282,10 +287,11 @@ Both examples:
 
 1. create owner and editor assertions using `key_id`;
 2. produce participant-specific iframe URLs;
-3. attach a canonical initial template to the owner URL;
-4. optionally pre-create the Space and apply that template atomically;
-5. call canonical and attributed export APIs;
-6. list, create, and edit Organisation templates.
+3. create a separate short-lived Organisation administrator assertion;
+4. attach a canonical initial template to the owner URL;
+5. optionally pre-create the Space and apply that template atomically;
+6. call canonical and attributed export APIs;
+7. list, create, and edit Organisation templates.
 
 Run either with the same parent-server configuration:
 
@@ -409,9 +415,11 @@ are broadcast to participants in real time.
 | `images` | `false` | Private board image uploads and image cards. |
 | `tables` | `true` | Resizable tables, rows, and columns. |
 | `sections` | `true` | Resizable named Sections (`zone` items in JSON). |
-| `protractor` | `true` | Movable and rotatable 180° digital protractor. |
+| `grouping` | `true` | Explicit multi-item groups and automatic Section membership for grouped move/copy behavior. |
+| `protractor` | `true` | Movable 180° digital protractor; rotation also requires `objectTransforms`. |
 | `eraser` | `true` | Eraser tool. |
 | `partialEraser` | `true` | Cutting only touched portions of pencil, line, rectangle, ellipse, and polygon outlines. Requires `eraser`; the Settings UI disables this control while `eraser` is off. |
+| `objectTransforms` | `true` | Proportional corner scaling for shapes and images, plus center-pivot rotation for shapes, images, and the protractor. Hold Shift while rotating to snap to 15° steps. Moving remains available when disabled. |
 | `templates` | `true` | Built-in starter templates. A template is unavailable if it contains an item whose feature is disabled. |
 | `organisationTemplates` | `true` | Organisation-owned reusable templates. Independent of built-in `templates`. |
 | `voting` | `true` | Voting template and vote overlays/actions. |
@@ -453,7 +461,7 @@ necessarily client behavior rather than a distinct stored operation.
 | Role | Behavior |
 | --- | --- |
 | `owner` | Can manage settings, features, locks, members, co-owners, exports, Organisation templates, and webhook delivery. Can modify any participant's object. |
-| `editor` | Can create work and modify or delete only objects that participant created. |
+| `editor` | Can create work and modify or delete only objects that participant created. May also detach any participant's object from a Section the editor created (a bare `sectionId: null` update), which is what lets the editor delete or undo that Section. |
 | `viewer` | Can view and follow live work but cannot commit canvas changes. |
 
 There may be multiple owners. The board also retains one primary owner for
@@ -521,6 +529,14 @@ Limits:
   synthetic initial-state revision;
 - imported `settings.title` becomes the new Space title. Without an import,
   `space_id` is the initial title.
+
+Initial Section locks are part of the template itself, not the signed launch
+assertion. Set `geometry.locked` to `true` on any `zone` item that should begin
+locked, and give every contained item that Section's ID as its `sectionId`.
+The first owner launch persists and enforces those locks before any participant
+opens the Space. The checked-in JavaScript and Python partner samples expose
+this as `lockSections: true` and `lock_sections=True`, respectively. It remains
+initial-state-only: a later launch cannot relock or unlock an existing Space.
 
 A small valid initial template is:
 
@@ -678,9 +694,69 @@ Response body:
   "settings": {
     "title": "Geometry reflection"
   },
-  "items": []
+  "items": [
+    {
+      "id": "018f0000-0000-7000-8000-000000000113",
+      "kind": "zone",
+      "z": 1,
+      "version": 1,
+      "createdBy": "a_AAAAAAAAAAAAAAAAAAAAAA",
+      "style": {
+        "kind": "zone",
+        "borderColor": "#60a5fa",
+        "fill": "#eff6ff",
+        "textColor": "#1e3a8a",
+        "fontSize": 20,
+        "opacity": 0.8
+      },
+      "transform": [1, 0, 0, 1, 0, 0],
+      "geometry": {
+        "x": 40,
+        "y": 40,
+        "width": 760,
+        "height": 420,
+        "title": "Group A"
+      }
+    },
+    {
+      "id": "018f0000-0000-7000-8000-000000000109",
+      "kind": "sticky",
+      "z": 2,
+      "version": 1,
+      "createdBy": "a_AAAAAAAAAAAAAAAAAAAAAA",
+      "sectionId": "018f0000-0000-7000-8000-000000000113",
+      "style": {
+        "kind": "sticky",
+        "fill": "#fde68a",
+        "textColor": "#1f2937",
+        "fontSize": 18,
+        "opacity": 1
+      },
+      "transform": [1, 0, 0, 1, 0, 0],
+      "geometry": {
+        "x": 80,
+        "y": 120,
+        "width": 220,
+        "height": 160,
+        "text": "Explain your construction"
+      }
+    }
+  ],
+  "sections": [
+    {
+      "id": "018f0000-0000-7000-8000-000000000113",
+      "name": "Group A",
+      "locked": false,
+      "memberItemIds": ["018f0000-0000-7000-8000-000000000109"]
+    }
+  ]
 }
 ```
+
+Each contained item carries its Section ID in `sectionId`, while the derived
+top-level `sections` index makes the same relationship easy to consume without
+scanning all items. Imports may include the `sections` index, but `sectionId`
+on each item is authoritative and the index is recalculated on export.
 
 The response is an authoritative snapshot suitable for storage or a later
 first-launch import, subject to the smaller URL-import limits and the image
@@ -741,6 +817,14 @@ ledger:
       "status": "active"
     }
   ],
+  "sections": [
+    {
+      "id": "018f0000-0000-7000-8000-000000000113",
+      "name": "Peer review",
+      "locked": true,
+      "memberItemIds": ["018f0000-0000-7000-8000-000000000010"]
+    }
+  ],
   "objects": [
     {
       "item": {
@@ -749,6 +833,7 @@ ledger:
         "z": 1,
         "version": 3,
         "createdBy": "a_AAAAAAAAAAAAAAAAAAAAAA",
+        "sectionId": "018f0000-0000-7000-8000-000000000113",
         "style": {
           "kind": "sticky",
           "fill": "#fde68a",
@@ -962,10 +1047,21 @@ standard placeholder.
 
 ### Open Organisation administration
 
-Create a standard owner assertion for any Space in the Organisation and use:
+Create a separate, short-lived owner assertion with `organisation_admin: true`.
+Do not reuse a coach or participant's ordinary Space launch:
 
-```text
-https://spacescale.net/organisation/admin#launch=<owner-el1-assertion>
+```js
+const adminToken = createLaunchToken({
+  ...common,
+  role: "owner",
+  displayName: "Organisation administrator",
+  participantId: "service:organisation-admin",
+  organisationAdmin: true,
+  expiresInSeconds: 15 * 60,
+});
+
+const adminUrl =
+  `https://spacescale.net/organisation/admin#launch=${encodeURIComponent(adminToken)}`;
 ```
 
 The admin application removes the fragment before loading. It shows every
@@ -986,7 +1082,8 @@ POST /api/v1/organisation-admin/session
 POST /api/v1/organisation-admin/webhook
 ```
 
-Both accept the signed owner assertion as `token` in same-origin JSON. The
+Both accept the signed owner assertion as `token` in same-origin JSON and
+require `organisation_admin: true`; otherwise they return `403 FORBIDDEN`. The
 second also accepts `webhookUrl` as a public HTTPS URL or `null`. They are
 browser implementation endpoints, not a substitute for the bearer-authenticated
 server export and webhook APIs in sections 8 and 11. Admin-generated viewer
@@ -1148,8 +1245,9 @@ destination used by every Space in that Organisation.
 ### Configure from a trusted partner backend
 
 The partner backend can read or replace the Organisation-wide setting using a
-fresh owner-signed `el1` assertion. The assertion's Organisation must match the
-URL path. URL-encode the external Organisation key when constructing the path.
+fresh owner-signed `el1` assertion with `organisation_admin: true`. The
+assertion's Organisation must match the URL path. URL-encode the external
+Organisation key when constructing the path.
 
 ```text
 GET /api/v1/organisations/<organisation-key>/webhook
@@ -1159,7 +1257,7 @@ PUT /api/v1/organisations/<organisation-key>/webhook
 ```http
 PUT /api/v1/organisations/acme-learning/webhook
 Host: spacescale.net
-Authorization: Bearer <fresh-owner-el1-assertion>
+Authorization: Bearer <fresh-owner-admin-el1-assertion>
 Content-Type: application/json
 
 {"webhookUrl":"https://partner.example/webhooks/spacescale"}
@@ -1354,7 +1452,8 @@ Organisation templates contains the following discriminated union.
 
 Every item has the server fields `id`, `kind`, `z`, `version`, `createdBy`,
 `style`, `transform`, and `geometry`. The valid style and geometry are selected
-by the item's `kind`, as shown in the complete examples below.
+by the item's `kind`, as shown in the complete examples below. Items may also
+carry `groupId` and `sectionId` relationship fields.
 
 - `id` is a canonical UUID or canonical lowercase-prefixed base64url ID.
   SpaceScale-produced `createdBy` values are opaque Participant IDs in the form
@@ -1363,13 +1462,30 @@ by the item's `kind`, as shown in the complete examples below.
 - `z` is a unique non-negative safe integer paint order; higher values paint on
   top. `version` is a non-negative safe integer.
 - `transform` is the SVG affine matrix `[a,b,c,d,e,f]`. Identity is
-  `[1,0,0,1,0,0]`; translation uses `e,f`; rotation may be represented by
-  `[cosθ,sinθ,-sinθ,cosθ,e,f]`.
+  `[1,0,0,1,0,0]`; translation uses `e,f`; uniform scale may be represented by
+  `[s,0,0,s,e,f]`; rotation may be represented by
+  `[cosθ,sinθ,-sinθ,cosθ,e,f]`. SpaceScale composes these values around the
+  selected object pivot, so exports preserve combined scale, rotation, and
+  translation without changing immutable image asset metadata.
 - Colors are lowercase `#rrggbb`; opacity is `0.1..1`; stroke width is
   `1..100`; text sizes are `8..256`.
 - Coordinates/dimensions are finite, canonicalised to two decimal places, and
   bounded by the protocol. Widths/heights are non-negative.
 - Text font family is `sans`, `serif`, `handwritten`, or `mono`.
+- Text-bearing styles may use `fontWeight` (`normal` or `bold`), `fontStyle`
+  (`normal` or `italic`), and `textDecoration` (`none` or `underline`). Text,
+  sticky, table, and Section styles support these fields. Sticky, table, and
+  Section styles also support `fontFamily`.
+- `groupId` identifies an explicit user-created group. Grouped items move and
+  copy together; copying creates a fresh group ID for the copies.
+- `sectionId` identifies the containing Section (`zone` item). Moving or copying
+  a Section includes its current members. Resizing changes the Section frame
+  only, then membership is recalculated from complete geometric containment.
+  When nested Sections overlap, a newly created item joins the highest painted
+  (`z`) containing Section.
+- Explicit `http://` and `https://` URLs in rendered text are clickable in the
+  editor and view-only viewer. Links are derived from ordinary text at render
+  time; no separate link object is stored.
 - `visiblePaths`, when present on an outline, is the surviving geometry after a
   partial erase. It contains 1–256 paths, at least two distinct adjacent points
   per path, and at most 10,000 points in total.
@@ -1514,7 +1630,7 @@ The protractor is centred at local `[0,0]`, has a 180° baseline, and exposes
   "z": 8,
   "version": 1,
   "createdBy": "a_AAAAAAAAAAAAAAAAAAAAAA",
-  "style": { "kind": "text", "color": "#1f2937", "fontSize": 28, "fontFamily": "handwritten", "opacity": 1 },
+  "style": { "kind": "text", "color": "#1f2937", "fontSize": 28, "fontFamily": "handwritten", "fontWeight": "bold", "fontStyle": "italic", "textDecoration": "underline", "opacity": 1 },
   "transform": [1, 0, 0, 1, 0, 0],
   "geometry": { "x": 80, "y": 740, "text": "Explain your construction" }
 }
@@ -1531,7 +1647,7 @@ Canvas text is limited to 5,000 Unicode code points.
   "z": 9,
   "version": 1,
   "createdBy": "a_AAAAAAAAAAAAAAAAAAAAAA",
-  "style": { "kind": "sticky", "fill": "#fde68a", "textColor": "#1f2937", "fontSize": 18, "opacity": 1 },
+  "style": { "kind": "sticky", "fill": "#fde68a", "textColor": "#1f2937", "fontSize": 18, "fontFamily": "serif", "fontWeight": "bold", "fontStyle": "normal", "textDecoration": "none", "opacity": 1 },
   "transform": [1, 0, 0, 1, 0, 0],
   "geometry": { "x": 80, "y": 790, "width": 220, "height": 160, "text": "My question" }
 }
@@ -1645,12 +1761,31 @@ array lengths exactly. A cell is limited to 500 code points and the table to
     "opacity": 0.8
   },
   "transform": [1, 0, 0, 1, 0, 0],
-  "geometry": { "x": 40, "y": 1220, "width": 760, "height": 420, "title": "Group A" }
+  "geometry": {
+    "x": 40,
+    "y": 1220,
+    "width": 760,
+    "height": 420,
+    "title": "Group A",
+    "locked": false
+  }
 }
 ```
 
 The UI calls this a **Section**; its durable JSON kind remains `zone`. Titles are
-limited to 120 Unicode code points.
+limited to 120 Unicode code points and are always rendered on the Section.
+Contained items point back to this item's `id` through `sectionId`; canonical
+and attributed exports also provide the derived top-level `sections` index with
+the visible `name`, `locked` state, and `memberItemIds`.
+
+An owner can set `geometry.locked` to `true` from the selected Section toolbar.
+A locked Section and every item whose `sectionId` points to it are read-only for
+all participants, including owners, regardless of who created each item. The
+lock prevents edits, moves, transforms, copies, deletes, new items assigned to
+the Section, history operations affecting it, and clearing the Space. An owner
+must perform a pure unlock before any of those changes can continue. Only an
+owner may change the lock state. Omitting `locked`, or setting it to `false`,
+means the Section is unlocked.
 
 ## 13. HTTP errors and operational behavior
 

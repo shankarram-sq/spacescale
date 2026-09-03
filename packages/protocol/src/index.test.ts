@@ -187,6 +187,63 @@ describe("durable operation validation", () => {
     ).toThrow(/Unknown field/);
   });
 
+  it("normalizes explicit groups, Section membership, copy remapping, and block typography", () => {
+    const groupedSticky = {
+      ...sticky(),
+      groupId: ID_2,
+      sectionId: ID_3,
+      style: {
+        ...sticky().style,
+        fontFamily: "serif",
+        fontWeight: "bold",
+        fontStyle: "italic",
+        textDecoration: "underline",
+      },
+    };
+    expect(validateDurableOperation({ kind: "item.create", item: groupedSticky })).toMatchObject({
+      item: {
+        groupId: ID_2,
+        sectionId: ID_3,
+        style: {
+          fontFamily: "serif",
+          fontWeight: "bold",
+          fontStyle: "italic",
+          textDecoration: "underline",
+        },
+      },
+    });
+    expect(
+      validateDurableOperation({
+        kind: "item.create",
+        item: { ...zone(), geometry: { ...zone().geometry, locked: true } },
+      }),
+    ).toMatchObject({ item: { kind: "zone", geometry: { locked: true } } });
+    expect(
+      validateDurableOperation({
+        kind: "item.update",
+        itemId: ID_1,
+        expectedVersion: 4,
+        patch: { groupId: null, sectionId: ID_3 },
+      }),
+    ).toEqual({
+      kind: "item.update",
+      itemId: ID_1,
+      expectedVersion: 4,
+      patch: { groupId: null, sectionId: ID_3 },
+    });
+    expect(
+      validateDurableOperation({
+        kind: "item.copy",
+        sourceItemId: ID_1,
+        expectedVersion: 4,
+        newItemId: ID_2,
+        translate: { x: 20, y: 20 },
+        newGroupId: ID_3,
+        newSectionId: null,
+      }),
+    ).toMatchObject({ newGroupId: ID_3, newSectionId: null });
+  });
+
   it("persists an explicit square subtype while canonicalizing legacy rectangles", () => {
     expect(
       validateDurableOperation({
@@ -738,7 +795,7 @@ describe("durable operation validation", () => {
   });
 
   it("normalizes an exact, complete board feature map with safe image defaults", () => {
-    expect(BOARD_FEATURE_KEYS).toHaveLength(23);
+    expect(BOARD_FEATURE_KEYS).toHaveLength(25);
     expect(DEFAULT_BOARD_FEATURES.images).toBe(false);
     expect(normalizeBoardFeatures(DEFAULT_BOARD_FEATURES)).toEqual(DEFAULT_BOARD_FEATURES);
     expect(() => normalizeBoardFeatures({ ...DEFAULT_BOARD_FEATURES, protractor: "yes" })).toThrow(

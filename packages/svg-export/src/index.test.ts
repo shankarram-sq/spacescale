@@ -354,7 +354,7 @@ describe("safe SVG serialization", () => {
       '<clipPath id="sticky-clip-018f0000-0000-7000-8000-000000000004" clipPathUnits="userSpaceOnUse"><rect x="24" y="34" width="152" height="112" /></clipPath>',
     );
     expect(first.svg).toContain(
-      'x="24" y="54" fill="#27231b" font-size="20" font-family="Inter, ui-sans-serif, system-ui, sans-serif"',
+      'x="24" y="54" fill="#27231b" font-size="20" font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif" font-weight="normal" font-style="normal" text-decoration="none"',
     );
     expect(first.svg).toContain('<tspan x="24" dy="0">one two three</tspan>');
     expect(first.svg).toContain('<tspan x="24" dy="24">four five</tspan>');
@@ -372,6 +372,26 @@ describe("safe SVG serialization", () => {
     expect(svg).toContain('<tspan x="14" dy="0">😀😀😀😀</tspan>');
     expect(svg).toContain('<tspan x="14" dy="12">😀</tspan>');
     expect(svg.match(/<tspan /gu)).toHaveLength(2);
+  });
+
+  it("keeps HTTP URLs intact in sticky and table exports", () => {
+    const url = "https://example.com/a/long/copyable/path";
+    const stickyItem = sticky("018f0000-0000-7000-8000-000000000005", url);
+    const stickySvg = serializeSvg({ boardId: BOARD, seq: 5, items: [stickyItem] });
+    expect(stickySvg).toContain(`<tspan x="24" dy="0">${url}</tspan>`);
+    expect(stickySvg.match(/<tspan /gu)).toHaveLength(1);
+
+    const table = tableItem("018f0000-0000-7000-8000-00000000000a");
+    table.geometry = {
+      ...table.geometry,
+      columnWidths: [80],
+      rowHeights: [40],
+      cells: [[url]],
+      headerRow: false,
+    };
+    const tableSvg = serializeSvg({ boardId: BOARD, seq: 11, items: [table] });
+    expect(tableSvg).toContain(`<tspan x="18" dy="0">${url}</tspan>`);
+    expect(tableSvg.match(/<tspan /gu)).toHaveLength(1);
   });
 
   it("bounds a max-length hard split to the one visible line of a tiny sticky", () => {
@@ -501,6 +521,75 @@ describe("safe SVG serialization", () => {
     );
     expect(first.svg).not.toContain("<script>");
     expect(first.svg).not.toContain("foreignObject");
+  });
+
+  it("preserves rich typography across text, sticky, table, and section exports", () => {
+    const text: Extract<BoardItem, { kind: "text" }> = {
+      id: "018f0000-0000-7000-8000-000000000010",
+      kind: "text",
+      z: 1,
+      version: 1,
+      createdBy: ACTOR,
+      style: {
+        kind: "text",
+        color: "#112233",
+        fontSize: 16,
+        fontFamily: "serif",
+        fontWeight: "bold",
+        fontStyle: "italic",
+        textDecoration: "underline",
+        opacity: 1,
+      },
+      transform: [1, 0, 0, 1, 0, 0],
+      geometry: { x: 10, y: 20, text: "Rich text" },
+    };
+    const stickyNote = sticky("018f0000-0000-7000-8000-000000000011", "Rich sticky");
+    const table = tableItem("018f0000-0000-7000-8000-000000000012");
+    const section = zoneItem("018f0000-0000-7000-8000-000000000013");
+    for (const item of [stickyNote, table, section]) {
+      item.style = {
+        ...item.style,
+        fontFamily: "serif",
+        fontWeight: "bold",
+        fontStyle: "italic",
+        textDecoration: "underline",
+      };
+    }
+    const typography =
+      'font-family="Georgia, &quot;Times New Roman&quot;, Times, serif" font-weight="700" font-style="italic" text-decoration="underline"';
+
+    for (const item of [text, stickyNote, table, section]) {
+      const svg = serializeSvg({ boardId: BOARD, seq: 13, items: [item] });
+      expect(svg, item.kind).toContain(typography);
+    }
+  });
+
+  it("uses table and Section weight defaults only when font weight is omitted", () => {
+    const table = tableItem("018f0000-0000-7000-8000-000000000014");
+    const defaultTableSvg = serializeSvg({ boardId: BOARD, seq: 14, items: [table] });
+    const normalTableSvg = serializeSvg({
+      boardId: BOARD,
+      seq: 14,
+      items: [{ ...table, style: { ...table.style, fontWeight: "normal" } }],
+    });
+
+    expect(defaultTableSvg.match(/font-weight="700"/gu)).toHaveLength(2);
+    expect(defaultTableSvg.match(/font-weight="500"/gu)).toHaveLength(2);
+    expect(normalTableSvg.match(/font-weight="normal"/gu)).toHaveLength(4);
+    expect(normalTableSvg).not.toContain('font-weight="700"');
+    expect(normalTableSvg).not.toContain('font-weight="500"');
+
+    const section = zoneItem("018f0000-0000-7000-8000-000000000015");
+    const defaultSectionSvg = serializeSvg({ boardId: BOARD, seq: 15, items: [section] });
+    const normalSectionSvg = serializeSvg({
+      boardId: BOARD,
+      seq: 15,
+      items: [{ ...section, style: { ...section.style, fontWeight: "normal" } }],
+    });
+
+    expect(defaultSectionSvg).toContain('font-weight="700"');
+    expect(normalSectionSvg).toContain('font-weight="normal"');
+    expect(normalSectionSvg).not.toContain('font-weight="700"');
   });
 
   it("rejects unrecognized/non-canonical items rather than serializing arbitrary data", () => {

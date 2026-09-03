@@ -120,7 +120,7 @@ export function resizedStructuredGeometry(
 export function buildCapturedStructuredResizeOperation(
   capture: CapturedStructuredResize,
   geometry: TableGeometry | ZoneGeometry,
-): BatchItemOperation {
+): Extract<BatchItemOperation, { kind: "item.update" }> {
   return {
     kind: "item.update",
     itemId: capture.item.id,

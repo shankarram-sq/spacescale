@@ -57,6 +57,66 @@ describe("buildArrangeUpdates", () => {
     expect(updates[1]?.patch.transform?.slice(0, 4)).toEqual([0, 1, -1, 0]);
   });
 
+  it("treats an explicit group as one rigid Arrange unit", () => {
+    const groupId = "018f47a1-7a2b-7c3d-8e4f-123456789ac0";
+    const leftMember = {
+      ...rectangle("group-a", 20, 0, 20, 10),
+      groupId,
+    };
+    const rightMember = {
+      ...rectangle("group-b", 100, 0, 20, 10),
+      groupId,
+    };
+    const anchor = rectangle("anchor", 0, 0, 10, 10);
+
+    const updates = buildArrangeUpdates("align-left", [rightMember, anchor, leftMember]);
+    expect(
+      Object.fromEntries(updates.map((update) => [update.itemId, translation(update)])),
+    ).toEqual({
+      anchor: [0, 0],
+      "group-a": [-20, 0],
+      "group-b": [-20, 0],
+    });
+    expect(buildArrangeUpdates("align-left", [leftMember, rightMember])).toEqual([]);
+  });
+
+  it("ignores legacy group IDs when grouping is disabled", () => {
+    const groupId = "018f47a1-7a2b-7c3d-8e4f-123456789ac0";
+    const left = {
+      ...rectangle("legacy-left", 20, 0, 20, 10),
+      groupId,
+    };
+    const right = {
+      ...rectangle("legacy-right", 100, 0, 20, 10),
+      groupId,
+    };
+
+    const updates = buildArrangeUpdates("align-left", [left, right], false);
+    expect(
+      Object.fromEntries(updates.map((update) => [update.itemId, translation(update)])),
+    ).toEqual({
+      "legacy-left": [0, 0],
+      "legacy-right": [-80, 0],
+    });
+  });
+
+  it("includes non-sticky group members in the shared Tidy translation", () => {
+    const groupId = "018f47a1-7a2b-7c3d-8e4f-123456789ac1";
+    const groupedSticky = { ...sticky("grouped-sticky", 500, 0), groupId };
+    const groupedShape = { ...rectangle("grouped-shape", 620, 0, 40, 40), groupId };
+    const independent = sticky("independent", 0, 0);
+    const updates = buildArrangeUpdates("tidy-stickies", [
+      groupedShape,
+      groupedSticky,
+      independent,
+    ]);
+    const translations = Object.fromEntries(
+      updates.map((update) => [update.itemId, translation(update)]),
+    );
+    expect(translations[groupedSticky.id]).toEqual(translations[groupedShape.id]);
+    expect(translations[groupedSticky.id]).not.toEqual([0, 0]);
+  });
+
   it("aligns horizontal centers at the selection union center with two-decimal transforms", () => {
     const updates = buildArrangeUpdates("align-horizontal-center", [
       rectangle("a", 0, 0, 10, 10),

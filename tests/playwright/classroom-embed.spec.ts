@@ -350,7 +350,9 @@ test("canonical export is faithfully reproduced by the signed read-only viewer",
     fullPage: false,
   });
 
-  const adminSource = ownerSource.replace("/embed#", "/organisation/admin#");
+  const adminSource = launchUrl(LOCAL_WORKER_ORIGIN, "demo", spaceId, demo, owner, now, {
+    organisationAdmin: true,
+  }).replace("/embed#", "/organisation/admin#");
   await page.goto(adminSource);
   await expect(page).toHaveURL(/\/organisation\/admin$/u);
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
@@ -659,6 +661,7 @@ function launchUrl(
   signing: { current: { key_id: string; key: string } },
   participant: Participant,
   issuedAt: number,
+  options: { organisationAdmin?: boolean } = {},
 ): string {
   const payload = {
     v: 1,
@@ -671,6 +674,7 @@ function launchUrl(
     participant_id: participant.participantId,
     iat: issuedAt,
     exp: issuedAt + 60 * 60,
+    ...(options.organisationAdmin ? { organisation_admin: true } : {}),
   };
   const payloadPart = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
   const signed = `el1.${payloadPart}`;

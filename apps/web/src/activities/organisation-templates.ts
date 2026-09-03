@@ -27,6 +27,7 @@ export function buildOrganisationTemplateBatch(
   template: Pick<OrganisationTemplate, "items">,
   center: Point,
   idFactory: () => string,
+  groupingEnabled = true,
 ): OrganisationTemplateBatch {
   if (template.items.length === 0) {
     throw new OrganisationTemplateError("This organisation template has no objects to add.");
@@ -42,18 +43,30 @@ export function buildOrganisationTemplateBatch(
     );
   }
 
-  const sourceIds = new Set<string>();
+  const sourceItems = new Map<string, BoardItem>();
   const idMap = new Map<string, string>();
-  for (const item of template.items) {
-    if (sourceIds.has(item.id)) {
-      throw new OrganisationTemplateError("This organisation template contains duplicate IDs.");
-    }
-    sourceIds.add(item.id);
+  const allocatedIds = new Set<string>();
+  const allocateId = (): string => {
     const nextId = idFactory();
-    if (idMapHasValue(idMap, nextId)) {
+    if (allocatedIds.has(nextId)) {
       throw new OrganisationTemplateError("Could not allocate unique IDs for this template.");
     }
-    idMap.set(item.id, nextId);
+    allocatedIds.add(nextId);
+    return nextId;
+  };
+  for (const item of template.items) {
+    if (sourceItems.has(item.id)) {
+      throw new OrganisationTemplateError("This organisation template contains duplicate IDs.");
+    }
+    sourceItems.set(item.id, item);
+    idMap.set(item.id, allocateId());
+  }
+
+  const groupIdMap = new Map<string, string>();
+  for (const item of groupingEnabled ? template.items : []) {
+    if (item.groupId && !groupIdMap.has(item.groupId)) {
+      groupIdMap.set(item.groupId, allocateId());
+    }
   }
 
   const bounds = boundsForItems(template.items as unknown as Parameters<typeof boundsForItems>[0]);
@@ -67,14 +80,35 @@ export function buildOrganisationTemplateBatch(
   const itemIds: string[] = [];
   const operations = template.items.map((source): { kind: "item.create"; item: NewBoardItem } => {
     const remapped = remapExactItemReferences(source, idMap);
-    const { z: _z, version: _version, createdBy: _createdBy, ...withoutServerFields } = remapped;
+    const {
+      z: _z,
+      version: _version,
+      createdBy: _createdBy,
+      groupId: _groupId,
+      sectionId: _sectionId,
+      ...withoutServerFields
+    } = remapped;
     const nextId = idMap.get(source.id);
     if (!nextId)
       throw new OrganisationTemplateError("This template contains an invalid object ID.");
+    const nextGroupId =
+      groupingEnabled && source.groupId ? groupIdMap.get(source.groupId) : undefined;
+    const sectionTarget = source.sectionId ? sourceItems.get(source.sectionId) : undefined;
+    const nextSectionId =
+      groupingEnabled && source.sectionId && sectionTarget?.kind === "zone"
+        ? idMap.get(source.sectionId)
+        : undefined;
     const transform = withoutServerFields.transform;
+    const geometry =
+      withoutServerFields.kind === "zone" && withoutServerFields.geometry.locked === true
+        ? { ...withoutServerFields.geometry, locked: false }
+        : withoutServerFields.geometry;
     const item = {
       ...withoutServerFields,
       id: nextId,
+      geometry,
+      ...(nextGroupId ? { groupId: nextGroupId } : {}),
+      ...(nextSectionId ? { sectionId: nextSectionId } : {}),
       transform: [
         transform[0],
         transform[1],
@@ -106,11 +140,6 @@ export function organisationTemplateSelectionIssue(
     return "Image cards cannot be saved in organisation templates yet.";
   }
   return null;
-}
-
-function idMapHasValue(values: ReadonlyMap<string, string>, candidate: string): boolean {
-  for (const value of values.values()) if (value === candidate) return true;
-  return false;
 }
 
 /** Remap exact ID-valued fields, including connector references added by newer protocols. */

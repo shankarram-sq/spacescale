@@ -29,6 +29,26 @@ function sticky(id: string, x: number): BoardItem {
   };
 }
 
+function section(id: string): BoardItem {
+  return {
+    id,
+    kind: "zone",
+    z: 1,
+    version: 7,
+    createdBy: actorId,
+    transform: [1, 0, 0, 1, 0, 0],
+    style: {
+      kind: "zone",
+      borderColor: "#a8a59d",
+      fill: "#e8edff",
+      textColor: "#4f5b75",
+      fontSize: 18,
+      opacity: 0.18,
+    },
+    geometry: { x: 0, y: 0, width: 520, height: 320, title: "Evidence" },
+  };
+}
+
 describe("organisation template insertion", () => {
   it("remaps IDs, drops server metadata, and centres one valid atomic create batch", () => {
     const source = [
@@ -109,6 +129,123 @@ describe("organisation template insertion", () => {
         () => "018f0000-0000-7000-8000-000000000099",
       ),
     ).toThrow(/unique IDs/u);
+  });
+
+  it("allocates fresh group IDs for every insertion", () => {
+    const sourceGroupId = "018f0000-0000-7000-8000-000000000201";
+    const source = [
+      { ...sticky("018f0000-0000-7000-8000-000000000211", 0), groupId: sourceGroupId },
+      { ...sticky("018f0000-0000-7000-8000-000000000212", 220), groupId: sourceGroupId },
+    ];
+    const build = (ids: string[]) =>
+      buildOrganisationTemplateBatch({ items: source }, [500, 300], () => {
+        const id = ids.shift();
+        if (!id) throw new Error("No deterministic ID remains.");
+        return id;
+      }).operation.operations.map((operation) =>
+        operation.kind === "item.create" ? operation.item.groupId : undefined,
+      );
+
+    const firstGroups = build([
+      "018f0000-0000-7000-8000-000000000221",
+      "018f0000-0000-7000-8000-000000000222",
+      "018f0000-0000-7000-8000-000000000223",
+    ]);
+    const secondGroups = build([
+      "018f0000-0000-7000-8000-000000000231",
+      "018f0000-0000-7000-8000-000000000232",
+      "018f0000-0000-7000-8000-000000000233",
+    ]);
+
+    expect(firstGroups).toEqual([
+      "018f0000-0000-7000-8000-000000000223",
+      "018f0000-0000-7000-8000-000000000223",
+    ]);
+    expect(secondGroups).toEqual([
+      "018f0000-0000-7000-8000-000000000233",
+      "018f0000-0000-7000-8000-000000000233",
+    ]);
+    expect(firstGroups[0]).not.toBe(sourceGroupId);
+    expect(secondGroups[0]).not.toBe(firstGroups[0]);
+  });
+
+  it("remaps included Sections and clears relationships to omitted Sections", () => {
+    const sourceSection = section("018f0000-0000-7000-8000-000000000301");
+    const includedMember = {
+      ...sticky("018f0000-0000-7000-8000-000000000302", 20),
+      sectionId: sourceSection.id,
+    };
+    const omittedMember = {
+      ...sticky("018f0000-0000-7000-8000-000000000303", 240),
+      sectionId: "018f0000-0000-7000-8000-000000000399",
+    };
+    const ids = [
+      "018f0000-0000-7000-8000-000000000311",
+      "018f0000-0000-7000-8000-000000000312",
+      "018f0000-0000-7000-8000-000000000313",
+    ];
+    const batch = buildOrganisationTemplateBatch(
+      { items: [sourceSection, includedMember, omittedMember] },
+      [500, 300],
+      () => {
+        const id = ids.shift();
+        if (!id) throw new Error("No deterministic ID remains.");
+        return id;
+      },
+    );
+    const created = batch.operation.operations.map((operation) =>
+      operation.kind === "item.create" ? operation.item : undefined,
+    );
+
+    expect(created[1]?.sectionId).toBe("018f0000-0000-7000-8000-000000000311");
+    expect(created[2]).not.toHaveProperty("sectionId");
+  });
+
+  it("unlocks Sections when inserting a reusable template", () => {
+    const lockedSection = section("018f0000-0000-7000-8000-000000000401");
+    if (lockedSection.kind !== "zone") throw new Error("Expected a Section.");
+    lockedSection.geometry.locked = true;
+    const batch = buildOrganisationTemplateBatch(
+      { items: [lockedSection] },
+      [500, 300],
+      () => "018f0000-0000-7000-8000-000000000411",
+    );
+    const [operation] = batch.operation.operations;
+
+    expect(operation?.kind).toBe("item.create");
+    if (operation?.kind !== "item.create" || operation.item.kind !== "zone") {
+      throw new Error("Expected a Section create.");
+    }
+    expect(operation.item.geometry.locked).toBeUndefined();
+  });
+
+  it("strips saved relationships when destination grouping is disabled", () => {
+    const sourceSection = {
+      ...section("018f0000-0000-7000-8000-000000000501"),
+      groupId: "018f0000-0000-7000-8000-000000000599",
+    };
+    const sourceMember = {
+      ...sticky("018f0000-0000-7000-8000-000000000502", 20),
+      groupId: sourceSection.groupId,
+      sectionId: sourceSection.id,
+    };
+    const ids = ["018f0000-0000-7000-8000-000000000511", "018f0000-0000-7000-8000-000000000512"];
+    const batch = buildOrganisationTemplateBatch(
+      { items: [sourceSection, sourceMember] },
+      [500, 300],
+      () => {
+        const id = ids.shift();
+        if (!id) throw new Error("No deterministic ID remains.");
+        return id;
+      },
+      false,
+    );
+
+    for (const operation of batch.operation.operations) {
+      if (operation.kind !== "item.create") throw new Error("Expected item creates.");
+      expect(operation.item).not.toHaveProperty("groupId");
+      expect(operation.item).not.toHaveProperty("sectionId");
+    }
   });
 });
 
