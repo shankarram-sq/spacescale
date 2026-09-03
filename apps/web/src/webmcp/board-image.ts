@@ -4,7 +4,7 @@ import { renderSvgItem, type SvgItemOptions } from "@collab/svg-export";
 import { mathExportOptions } from "../board/math-export";
 import type { BoardItem } from "../types";
 
-export function visualAlias(index: number): string {
+function visualAlias(index: number): string {
   return `visual_${index + 1}`;
 }
 
@@ -84,8 +84,8 @@ export function hasVisualContent(items: readonly BoardItem[]): boolean {
 
 /**
  * Rasterizes saved board objects to a PNG so a host can see handwriting and sketches instead of
- * reading a description of them. Uses the same selected-only serializer the visual inspector
- * does, so private image assets stay placeholders rather than pixels.
+ * reading a description of them. The serializer replaces private image assets with placeholders,
+ * so their pixels never leave the page.
  */
 export async function captureBoardImage(
   items: readonly BoardItem[],

@@ -8066,7 +8066,7 @@ describe("object comments", () => {
           itemId,
           body: "Step 2 drops the negative sign.",
           assistedBy: "ai",
-          assistance: { tool: "comment_on_watched_step", action: "critique" },
+          assistance: { tool: "insert_comment", action: "critique" },
         }),
       }),
     );
@@ -8077,7 +8077,7 @@ describe("object comments", () => {
       state: "open",
       author: { id: actorId, displayName: "Owner 1" },
       assistedBy: "ai",
-      assistance: { tool: "comment_on_watched_step", action: "critique" },
+      assistance: { tool: "insert_comment", action: "critique" },
     });
     await owner.next((frame) => frame.t === "server.comments.refresh");
 
@@ -8101,7 +8101,7 @@ describe("object comments", () => {
     expect(listed.comments[0]).toMatchObject({
       id: assisted.id,
       assistedBy: "ai",
-      assistance: { tool: "comment_on_watched_step", action: "critique" },
+      assistance: { tool: "insert_comment", action: "critique" },
     });
     expect(listed.comments[1]).not.toHaveProperty("assistedBy");
     expect(listed.comments[1]).not.toHaveProperty("assistance");
@@ -8119,7 +8119,7 @@ describe("object comments", () => {
       state: "resolved",
       resolvedBy: { id: actorId, displayName: "Owner 1" },
       assistedBy: "ai",
-      assistance: { tool: "comment_on_watched_step", action: "critique" },
+      assistance: { tool: "insert_comment", action: "critique" },
     });
     owner.socket.close(1000, "done");
   });
@@ -8149,15 +8149,15 @@ describe("object comments", () => {
         }),
       );
     const cases: Record<string, unknown>[] = [
-      { assistance: { tool: "comment_on_watched_step" } },
+      { assistance: { tool: "insert_comment" } },
       { assistedBy: "ai" },
-      { assistedBy: "human", assistance: { tool: "comment_on_watched_step" } },
-      { assistedBy: "ai", assistance: "comment_on_watched_step" },
+      { assistedBy: "human", assistance: { tool: "insert_comment" } },
+      { assistedBy: "ai", assistance: "insert_comment" },
       { assistedBy: "ai", assistance: {} },
-      { assistedBy: "ai", assistance: { tool: "Comment-On-Watched-Step" } },
+      { assistedBy: "ai", assistance: { tool: "Insert-Comment" } },
       { assistedBy: "ai", assistance: { tool: `t${"o".repeat(64)}` } },
-      { assistedBy: "ai", assistance: { tool: "comment_on_watched_step", action: "grade" } },
-      { assistedBy: "ai", assistance: { tool: "comment_on_watched_step", stepAlias: "step_1" } },
+      { assistedBy: "ai", assistance: { tool: "insert_comment", action: "grade" } },
+      { assistedBy: "ai", assistance: { tool: "insert_comment", stepAlias: "step_1" } },
     ];
     for (const extra of cases) {
       const response = await post(extra);

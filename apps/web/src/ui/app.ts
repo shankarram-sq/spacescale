@@ -70,7 +70,6 @@ import {
   type ApiClient,
   ApiError,
   type AttributedDataExport,
-  type BoardImageAsset,
   type FragmentClaim,
   type ManagedInvitation,
   type OrganisationTemplate,
@@ -115,8 +114,6 @@ import { ActivityTemplateWebMcp } from "../webmcp/activity-templates";
 import { BoardWriteWebMcp, type StickyMove } from "../webmcp/board-writes";
 import { ClassDecisionWebMcp } from "../webmcp/class-decision";
 import { CollectiveInquiryWebMcp } from "../webmcp/collective-inquiry";
-import { EducationPartnerWebMcp, type EducationVisualSource } from "../webmcp/education-partner";
-import { InquiryMapWebMcp } from "../webmcp/inquiry-map";
 import {
   ASSIST_GUIDANCE,
   ASSIST_NOTE_MAX_LENGTH,
@@ -530,21 +527,6 @@ async function privacySafeImageUpload(image: Blob): Promise<Blob> {
   }
 }
 
-const MEME_CANVAS_WIDTH = 1_200;
-const MEME_CANVAS_HEIGHT = 675;
-
-const MEME_PALETTES: Record<
-  Extract<EducationVisualSource, { format: "meme_card" }>["palette"],
-  readonly [string, string, string]
-> = {
-  sunset: ["#ff7657", "#ffbd59", "#642b73"],
-  ocean: ["#006d77", "#00b4d8", "#caf0f8"],
-  lime: ["#1b4332", "#70e000", "#d8f3dc"],
-  violet: ["#3c096c", "#9d4edd", "#ff9eeb"],
-  chalkboard: ["#172a24", "#315c4c", "#f4e8c1"],
-  confetti: ["#ff4d6d", "#4361ee", "#ffd60a"],
-};
-
 function inlineImageDataUrlBlob(value: string): Blob {
   const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/]+={0,2})$/u.exec(value);
   if (!match?.[1] || !match[2]) {
@@ -566,86 +548,6 @@ function inlineImageDataUrlBlob(value: string): Blob {
   const issue = imageUploadIssue(blob);
   if (issue) throw new ImagePreparationError(issue);
   return blob;
-}
-
-async function educationVisualBlob(source: EducationVisualSource): Promise<Blob> {
-  if (source.format === "inline_image") return inlineImageDataUrlBlob(source.imageDataUrl);
-  const canvas = document.createElement("canvas");
-  canvas.width = MEME_CANVAS_WIDTH;
-  canvas.height = MEME_CANVAS_HEIGHT;
-  const context = canvas.getContext("2d");
-  if (!context) throw new ImagePreparationError("The class meme could not be rendered.");
-  const colors = MEME_PALETTES[source.palette];
-  const gradient = context.createLinearGradient(0, 0, MEME_CANVAS_WIDTH, MEME_CANVAS_HEIGHT);
-  gradient.addColorStop(0, colors[0]);
-  gradient.addColorStop(0.58, colors[1]);
-  gradient.addColorStop(1, colors[2]);
-  context.fillStyle = gradient;
-  context.fillRect(0, 0, MEME_CANVAS_WIDTH, MEME_CANVAS_HEIGHT);
-
-  context.fillStyle = "rgba(12, 10, 22, 0.3)";
-  context.fillRect(0, 0, MEME_CANVAS_WIDTH, 172);
-  context.fillRect(0, MEME_CANVAS_HEIGHT - 196, MEME_CANVAS_WIDTH, 196);
-  context.textAlign = "center";
-  context.textBaseline = "middle";
-  context.font = "180px sans-serif";
-  context.fillStyle = "rgba(255, 255, 255, 0.95)";
-  context.fillText(source.emoji, MEME_CANVAS_WIDTH / 2, MEME_CANVAS_HEIGHT / 2 + 4);
-  drawMemeCopy(context, source.headline.toLocaleUpperCase(), 82, 56, 2);
-  drawMemeCopy(context, source.punchline.toLocaleUpperCase(), MEME_CANVAS_HEIGHT - 98, 50, 3);
-
-  const rendered = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
-  if (!rendered) throw new ImagePreparationError("The class meme could not be rendered.");
-  return rendered;
-}
-
-function drawMemeCopy(
-  context: CanvasRenderingContext2D,
-  text: string,
-  centerY: number,
-  initialFontSize: number,
-  maxLines: number,
-): void {
-  let fontSize = initialFontSize;
-  let lines: string[] = [];
-  while (fontSize >= 30) {
-    context.font = `800 ${fontSize}px sans-serif`;
-    lines = wrapCanvasText(context, text, MEME_CANVAS_WIDTH - 100);
-    if (lines.length <= maxLines) break;
-    fontSize -= 4;
-  }
-  lines = lines.slice(0, maxLines);
-  const lineHeight = fontSize * 1.08;
-  const firstY = centerY - ((lines.length - 1) * lineHeight) / 2;
-  context.lineJoin = "round";
-  context.lineWidth = Math.max(5, fontSize / 9);
-  context.strokeStyle = "rgba(18, 13, 28, 0.94)";
-  context.fillStyle = "#ffffff";
-  lines.forEach((line, index) => {
-    const y = firstY + index * lineHeight;
-    context.strokeText(line, MEME_CANVAS_WIDTH / 2, y);
-    context.fillText(line, MEME_CANVAS_WIDTH / 2, y);
-  });
-}
-
-function wrapCanvasText(
-  context: CanvasRenderingContext2D,
-  text: string,
-  maxWidth: number,
-): string[] {
-  const lines: string[] = [];
-  let line = "";
-  for (const word of text.split(/\s+/u)) {
-    const candidate = line ? `${line} ${word}` : word;
-    if (line && context.measureText(candidate).width > maxWidth) {
-      lines.push(line);
-      line = word;
-    } else {
-      line = candidate;
-    }
-  }
-  if (line) lines.push(line);
-  return lines;
 }
 
 export function clampImageAlt(value: string): string {
@@ -1107,9 +1009,7 @@ export class BoardApp {
   private readonly tools: ToolController;
   private readonly socket: BoardSocket;
   private webMcp: CollectiveInquiryWebMcp | null = null;
-  private inquiryMapWebMcp: InquiryMapWebMcp | null = null;
   private classDecisionWebMcp: ClassDecisionWebMcp | null = null;
-  private educationPartnerWebMcp: EducationPartnerWebMcp | null = null;
   private activityTemplateWebMcp: ActivityTemplateWebMcp | null = null;
   private boardWriteWebMcp: BoardWriteWebMcp | null = null;
   private readonly pendingWebMcpCommits = new PendingCommitTracker();
@@ -1581,7 +1481,6 @@ export class BoardApp {
     });
 
     this.webMcp = new CollectiveInquiryWebMcp({
-      root: this.root,
       getSelectedItems: () =>
         savedAuthoritativeItems(
           [...this.tools.selection],
@@ -1595,24 +1494,7 @@ export class BoardApp {
       notify: (message, kind) => this.notify(message, kind),
       canComment: () => this.canComment(),
       canWrite: () => this.canCommit(),
-      createComment: (itemId, body, assistance) => this.commentFromWebMcp(itemId, body, assistance),
       onWatchStateChanged: (state) => this.setAiWatchState(state),
-    });
-
-    this.educationPartnerWebMcp = new EducationPartnerWebMcp({
-      canWrite: () => this.canCommit(),
-      getSnapshot: (token) => this.webMcp?.getSnapshot(token),
-      getItemVersion: (itemId) => this.model.authoritativeItems.get(itemId)?.version,
-      getItemBounds: (itemId) => this.model.getBounds(itemId),
-      getPlacementBounds: () => this.model.boundsFor(this.model.items.keys()),
-      imagesEnabled: () => this.bootstrap.board.imagesEnabled,
-      storeVisualImages: (sources, signal) => this.storeEducationVisualImages(sources, signal),
-      commit: (operation) => this.commitAndWait(operation),
-      selectItems: (itemIds) => {
-        this.tools.setTool("select");
-        this.tools.selectOnly(itemIds);
-      },
-      notify: (message, kind) => this.notify(message, kind),
     });
 
     this.activityTemplateWebMcp = new ActivityTemplateWebMcp({
@@ -1672,37 +1554,14 @@ export class BoardApp {
       notify: (message, kind) => this.notify(message, kind),
     });
 
-    this.inquiryMapWebMcp = new InquiryMapWebMcp({
-      root: this.root,
-      canWrite: () => this.canCommit(),
-      getSnapshot: (token) => this.webMcp?.getSnapshot(token),
-      getItemVersion: (itemId) => this.model.authoritativeItems.get(itemId)?.version,
-      getItemBounds: (itemId) => this.model.getBounds(itemId),
-      commit: (operation) => this.commitAndWait(operation),
-      selectItems: (itemIds) => {
-        this.tools.setTool("select");
-        this.tools.selectOnly(itemIds);
-      },
-      notify: (message, kind) => this.notify(message, kind),
-    });
-
     this.classDecisionWebMcp = new ClassDecisionWebMcp({
-      root: this.root,
-      canWrite: () => this.canCommit(),
       getSelectedItems: () =>
         savedAuthoritativeItems(
           [...this.tools.selection],
           this.model.items,
           this.model.authoritativeItems,
         ),
-      getItem: (itemId) => this.model.authoritativeItems.get(itemId),
       getItems: () => this.model.items.values(),
-      getItemBounds: (itemId) => this.model.getBounds(itemId),
-      commit: (operation) => this.commitAndWait(operation),
-      selectItems: (itemIds) => {
-        this.tools.setTool("select");
-        this.tools.selectOnly(itemIds);
-      },
       notify: (message, kind) => this.notify(message, kind),
     });
 
@@ -1770,12 +1629,8 @@ export class BoardApp {
     this.activityTemplateWebMcp = null;
     this.boardWriteWebMcp?.destroy();
     this.boardWriteWebMcp = null;
-    this.educationPartnerWebMcp?.destroy();
-    this.educationPartnerWebMcp = null;
     this.classDecisionWebMcp?.destroy();
     this.classDecisionWebMcp = null;
-    this.inquiryMapWebMcp?.destroy();
-    this.inquiryMapWebMcp = null;
     this.webMcp?.destroy();
     this.webMcp = null;
     this.stopObservingWebMcp?.();
@@ -3759,12 +3614,32 @@ export class BoardApp {
     imageDataUrl: string,
     signal: AbortSignal,
   ): Promise<ImageAssetMetadata> {
-    const [asset] = await this.storeEducationVisualImages(
-      [{ format: "inline_image", imageDataUrl }],
-      signal,
-    );
-    if (!asset) throw new Error("The image could not be stored.");
-    return asset;
+    if (!this.bootstrap.board.imagesEnabled) {
+      throw new Error("Image cards are disabled for this Space.");
+    }
+    if (!navigator.onLine || this.phase !== "ready") {
+      throw new Error("Reconnect before adding generated visuals.");
+    }
+    if (!this.canCommit()) throw new Error("This drawing is read only.");
+    if (this.imageUploadInFlight) throw new Error("Another image is already uploading.");
+
+    this.imageUploadInFlight = true;
+    this.updatePermissions();
+    try {
+      signal.throwIfAborted();
+      const prepared = await privacySafeImageUpload(inlineImageDataUrlBlob(imageDataUrl));
+      signal.throwIfAborted();
+      return await this.api.uploadBoardImage(this.bootstrap.board.id, prepared);
+    } catch (error) {
+      if (signal.aborted || isAbortError(error)) throw error;
+      if (error instanceof ApiError || error instanceof ImagePreparationError) throw error;
+      throw new Error("The generated visual could not be prepared or stored.", {
+        cause: error,
+      });
+    } finally {
+      this.imageUploadInFlight = false;
+      this.updatePermissions();
+    }
   }
 
   /**
@@ -3843,43 +3718,6 @@ export class BoardApp {
       this.model.authoritativeItems,
     );
     return saved?.[0] ?? null;
-  }
-
-  private async storeEducationVisualImages(
-    sources: readonly EducationVisualSource[],
-    signal: AbortSignal,
-  ): Promise<readonly BoardImageAsset[]> {
-    if (!this.bootstrap.board.imagesEnabled) {
-      throw new Error("Image cards are disabled for this Space.");
-    }
-    if (!navigator.onLine || this.phase !== "ready") {
-      throw new Error("Reconnect before adding generated visuals.");
-    }
-    if (!this.canCommit()) throw new Error("This drawing is read only.");
-    if (this.imageUploadInFlight) throw new Error("Another image is already uploading.");
-
-    this.imageUploadInFlight = true;
-    this.updatePermissions();
-    try {
-      const assets: BoardImageAsset[] = [];
-      for (const source of sources) {
-        signal.throwIfAborted();
-        const image = await educationVisualBlob(source);
-        const prepared = await privacySafeImageUpload(image);
-        signal.throwIfAborted();
-        assets.push(await this.api.uploadBoardImage(this.bootstrap.board.id, prepared));
-      }
-      return assets;
-    } catch (error) {
-      if (signal.aborted || isAbortError(error)) throw error;
-      if (error instanceof ApiError || error instanceof ImagePreparationError) throw error;
-      throw new Error("The generated visual could not be prepared or stored.", {
-        cause: error,
-      });
-    } finally {
-      this.imageUploadInFlight = false;
-      this.updatePermissions();
-    }
   }
 
   private openImageAltEditor(item: Extract<BoardItem, { kind: "image" }>): void {
