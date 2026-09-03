@@ -24,6 +24,11 @@ import type { Bounds } from "../board/model";
 import type { DurableOperation } from "../types";
 import type { CollectiveInquirySnapshot } from "./collective-inquiry";
 import {
+  PROBLEM_STEP_WATCH_DURATION_MS,
+  PROBLEM_STEP_WATCH_MAX_WAIT_MS,
+  PROBLEM_STEP_WATCH_TOOL,
+} from "./problem-step-watch";
+import {
   enumValue,
   isRecord,
   optionalText,
@@ -732,6 +737,16 @@ export class EducationPartnerWebMcp {
         externalImageUrlsAccepted: false,
         requiresAltText: true,
         requiresDiscussionPrompt: true,
+      },
+      problemStepWatch: {
+        tool: PROBLEM_STEP_WATCH_TOOL,
+        scope: "exact_saved_browser_selection",
+        durationSeconds: PROBLEM_STEP_WATCH_DURATION_MS / 1_000,
+        maximumWaitMs: PROBLEM_STEP_WATCH_MAX_WAIT_MS,
+        reports: "authoritative_saved_changes",
+        unsavedKeystrokesIncluded: false,
+        sectionContentsExpanded: false,
+        stableItemIdentifiersReturned: false,
       },
       textRendering: WEBMCP_TEXT_RENDERING_CAPABILITY,
       guardrails: {
