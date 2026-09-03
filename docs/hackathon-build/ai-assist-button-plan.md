@@ -19,7 +19,12 @@ host's chat (Codex). This change adds a second, board-native entry point:
    inserted cards through the existing `add_*` education tools using a
    `selectionToken` the watch now issues. The host conversation stays available
    as a fallback when the participant cannot comment.
-5. Chat-driven WebMCP keeps working unchanged. The board button is an
+5. Everything the agent writes — cards, visuals, comments — carries
+   `assistedBy` metadata and a small, consistent **AI** mark, so tool and
+   human are always distinguishable at a glance and in exports.
+6. `add_content_visuals` stops requiring alt text; the title is the fallback.
+   This removes the slowest part of the visual-generation round trip.
+7. Chat-driven WebMCP keeps working unchanged. The board button is an
    additional, more direct way to invoke the same watch.
 
 ## The constraint that shapes the design
@@ -107,7 +112,7 @@ participant-confirmed write.
 
 | Channel                       | Exists today                                                                                                                                                                                                                                     | Gap for this feature                                                                                                                                                                        |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Comment on the step**       | Per-item object comments: `ApiClient.createComment` (`apps/web/src/transport/api.ts:318`), edge route `POST /comments` with a 2,000-code-point limit (`apps/edge/src/board-room.ts:444`, `:6551`), `canComment()` role gating, MathJax rendering, `server.comments.refresh` broadcast so every client redraws. | No WebMCP tool can post a comment. Add `comment_on_watched_step` (step 2b below). Comments have no writer metadata; decision 4b adds `origin` and a visible tag.                              |
+| **Comment on the step**       | Per-item object comments: `ApiClient.createComment` (`apps/web/src/transport/api.ts:318`), edge route `POST /comments` with a 2,000-code-point limit (`apps/edge/src/board-room.ts:444`, `:6551`), `canComment()` role gating, MathJax rendering, `server.comments.refresh` broadcast so every client redraws. | No WebMCP tool can post a comment. Add `comment_on_watched_step` (step 2b below). Comments have no writer metadata; decision 4b adds `assistedBy`/`assistance` and a visible tag.             |
 | **Insert cards near the work** | `add_thinking_expansion`, `add_idea_sensemaking`, `add_collective_reasoning`, `add_learning_action_plan`, `add_group_decision_scaffold`, `add_content_visuals`, `stage_collective_inquiry`. All resolve `sourceAliases` by name against a `CollectiveInquirySnapshot` looked up by `selectionToken` and version-check every source (`education-partner.ts:955-1005`). | Only `read_selected_class_ideas` mints tokens, and only for sticky notes. The watch should mint a compatible token for its sticky steps so the agent can insert without a second read call. |
 | **Host conversation**         | Every `wait` result already tells the agent to comment in the conversation.                                                                                                                                                                        | Keep as fallback; the result now says which channel to prefer.                                                                                                                              |
 
@@ -124,57 +129,75 @@ and is exactly what the safety doc allows ("confirmed output is ordinary board
 content"). The card tools place output to the right of all board content, which
 suits new ideas but not an answer to "explain step 2".
 
-### 4b. Every comment is tagged with who wrote it — decided
+### 4b. Everything AI-written is tagged and visibly marked — decided
 
-Two facts are recorded on every comment and both are visible:
+Two facts are recorded on every AI-written object, and both are visible:
 
-- **Accountable participant** — the existing `author: Actor`. For an
-  AI-written comment this is the participant whose browser ran the tool, the
-  same rule the card tools use. Unchanged.
-- **Writer** — new `origin` metadata saying whether the participant typed the
-  comment or the visiting agent wrote it through WebMCP, and if so which tool
-  and which requested action.
+- **Accountable participant** — the existing `author` on comments and
+  `createdBy` on items. For AI-written content this is the participant whose
+  browser ran the tool. Unchanged.
+- **Writer** — whether a person wrote it or the visiting agent did, and for
+  the agent, which tool and which requested action.
 
-Shape (web `BoardComment.origin`, always present in API responses; rows
-created before the migration read back as `participant`):
+**What already exists for items.** `BoardItemBase.assistedBy?: "ai"`
+(`packages/protocol/src/index.ts:206-213, 333`) is validated by
+`normalizeBoardItem`, round-tripped by board-core (`index.ts:1310`), typed on
+the edge (`apps/edge/src/types.ts:211`), and set on **every** item the write
+tools create through `createItem` in `apps/web/src/activities/batch.ts:12`.
+So tracking for items is done; only the visible mark is missing, and it is
+missing on purpose: `renderer.test.ts:465` ("keeps the responsible author's
+normal badge for assisted content") asserts that no `creator-badge-ai` class
+is rendered. That test flips.
+
+**One vocabulary for items and comments.** Comments reuse the same field
+rather than inventing `origin`:
 
 ```ts
-export type CommentOrigin =
-  | { kind: "participant" }
-  | { kind: "webmcp"; tool: string; action?: AssistAction; stepAlias?: string };
+// packages/protocol (shared by web and edge)
+export const ITEM_ASSISTANCE = ["ai"] as const;              // exists
+export type Assistance = { tool: string; action?: AssistAction }; // new
+
+// apps/web/src/types.ts
+export type BoardComment = {
+  …existing fields…
+  assistedBy?: "ai";
+  assistance?: Assistance;   // present iff assistedBy === "ai"
+};
 ```
 
-Storage: three nullable-safe columns on `comments`:
+Storage for comments, three columns:
 
-| Column           | Type                                                              | Set by                                            |
-| ---------------- | ----------------------------------------------------------------- | ------------------------------------------------- |
-| `origin`         | `TEXT NOT NULL DEFAULT 'participant' CHECK (origin IN ('participant','webmcp'))` | `POST /comments` from the request body, default otherwise |
-| `origin_tool`    | `TEXT` (≤ 64, `^[a-z][a-z0-9_]{0,63}$`)                            | only when `origin = 'webmcp'`                     |
-| `origin_action`  | `TEXT` (one of `ASSIST_ACTIONS`)                                  | optional, only when `origin = 'webmcp'`           |
+| Column              | Type                                                                | Set by                                        |
+| ------------------- | ------------------------------------------------------------------- | --------------------------------------------- |
+| `assisted_by`       | `TEXT CHECK (assisted_by IS NULL OR assisted_by = 'ai')`            | `POST /comments` body; NULL for typed comments |
+| `assistance_tool`   | `TEXT CHECK (… length BETWEEN 1 AND 64)`                            | required when `assisted_by = 'ai'`             |
+| `assistance_action` | `TEXT` (one of `ASSIST_ACTIONS`)                                    | optional when `assisted_by = 'ai'`             |
 
 `stepAlias` is returned to the agent but **not stored** — aliases are
 per-watch and meaningless after the session ends.
 
-Display: the comment card heading in the drawer already shows the author
-name. Add a small tag next to it for `webmcp` comments:
-**"AI · Critique"** (tool label + action label), with
-`title="Written by the AI assistant through {tool} on behalf of {author}"`.
-Participant-written comments get no tag, so the drawer looks as it does today
-for every existing comment. The canvas comment marker rendered by
-`BoardRenderer.setComments` is unchanged — the tag lives in the drawer only.
+**The mark — one small "AI" glyph, everywhere assisted content appears:**
 
-**Policy note.** `docs/classroom-ai-safety.md` currently says SpaceScale adds
-"no AI-specific chrome or board labels". A visible AI tag on a comment is a
-deliberate change to that rule for comments: a reader must be able to tell a
-peer's remark from the assistant's. Step 7 updates the doc; the rule stays as
-it is for board items.
+| Surface                                | Mark                                                                                                                                                                        |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Canvas item with a creator badge (sticky, image, stamp) | The existing initials badge gains class `creator-badge-ai`: a second, smaller circle overlapping its top-left reading "AI" in 6–7 px bold, same white stroke. `<title>` becomes "Created by {name} with AI assistance". |
+| Canvas item without a creator badge (text, table, zone, shape, line, pencil, video) | A standalone `assistance-mark` group at the top-right of the item's local bounds: 14 px pill, "AI" text, `pointer-events="none"`, `aria-hidden`; the node's `aria-description` carries the same sentence. |
+| Comment card in the drawer             | Pill after the author name: **"AI · Critique"** (action label when known, else "AI"), `title="Written by the AI assistant through {tool} on behalf of {author}"`. Typed comments get nothing, so existing comments look as they do today. |
+| Canvas comment marker                  | Unchanged; the drawer carries the detail.                                                                                                                                  |
+| Attributed export (`export.attributed.json`) | Items already carry `assistedBy`; verify the export projects it and add it if the projection is explicit. Comments are not exported today (follow-up).                |
+| SVG export                              | No creator badges are exported today, so no AI mark either — consistent. Follow-up if wanted.                                                                              |
 
-**Pre-existing gap, out of scope.** README and `spec.md` state that generated
-*items* "retain internal origin metadata for MCP context and auditing". No such
-field exists on `BoardItem`, `DurableOperation`, the protocol, or board-core —
-grep for `origin`/`provenance`/`generatedBy` finds nothing. Comments will be
-the first object with a real origin marker. Fixing the item side is a separate
-piece of work; the docs should stop claiming it until then.
+Sizing rule: the mark must be smaller than the initials badge (radius 9) and
+never overlap text, so it uses the same corner anchoring and clamps to a
+minimum 6 px glyph. It is decorative; the accessible name lives in
+`<title>`/`aria-description`.
+
+**Policy change.** README, `spec.md`, and `docs/classroom-ai-safety.md` all
+say assisted content renders "with no AI-specific board label". That rule is
+reversed by this plan: every AI-written item and comment shows a small,
+consistent AI mark so a reader can always tell tool from human. Step 7 rewrites
+those sentences. The other half of the rule — attribution to the responsible
+participant, never to a synthetic AI actor — stays exactly as it is.
 
 ### 3. Optional note
 
@@ -248,8 +271,10 @@ Result shape:
 
 ## Implementation steps
 
-Each step is independently reviewable; steps 1, 2, and 2b have no UI and can
-merge first behind the existing tools.
+Each step is independently reviewable. Steps 1, 2, and 2b have no UI and can
+merge first behind the existing tools; 2c (AI mark) and 2d (alt text) are
+independent of the watch work and can ship in any order, 2d first if the
+visual tool's slowness is the most pressing complaint.
 
 ### Step 1 — Feed: state, request queue, `requested` result
 
@@ -361,14 +386,14 @@ merge first behind the existing tools.
 
 4. Options added to `CollectiveInquiryWebMcpOptions`:
    `canComment: () => boolean` and
-   `createComment: (itemId: string, body: string, origin: CommentOrigin) => Promise<void>`.
+   `createComment: (itemId: string, body: string, assistance: Assistance) => Promise<void>`.
    In `app.ts` wire them to `this.canComment()` and to a new
-   `commentFromWebMcp(itemId, body, origin)` that calls
-   `this.api.createComment(boardId, itemId, body, origin)`, upserts into
+   `commentFromWebMcp(itemId, body, assistance)` that calls
+   `this.api.createComment(boardId, itemId, body, assistance)`, upserts into
    `this.comments`, and calls `applyCommentChange()` — the same three lines
    `submitComment` runs after its own request (line ~5567). `submitComment`
-   itself passes `{ kind: "participant" }` (or omits `origin`; the edge
-   defaults it).
+   itself keeps calling `createComment` without assistance, so typed comments
+   are stored with `assisted_by = NULL`.
 5. Register the tool:
 
    ```ts
@@ -387,53 +412,119 @@ merge first behind the existing tools.
    `ProblemStepWatchFeed.resolveStep(token, alias)` that throws the same
    "missing or expired" message as `execute`, check `canComment()` (throw
    "This browser cannot comment on this Space."), call `createComment` with
-   `origin: { kind: "webmcp", tool: "comment_on_watched_step", action, stepAlias }`
+   `assistance: { tool: "comment_on_watched_step", action }`
    where `action` is the most recent requested action for that alias if one is
    pending or was delivered in the last result, else omitted. Return
    `{ status: "commented", stepAlias, characters, writtenBy: "webmcp", onBehalfOf: { displayName }, privacy: "…" }`.
    Rate-limit to one in flight per session and at most 20 comments per watch,
    so a looping host cannot flood the 10,000-comment board cap.
-6. **Edge — writer metadata** (`apps/edge/src/migrations.ts`, `board-room.ts`):
-   - Board migration `version: 14, name: "comment_origin"`:
+6. **Edge — writer metadata on comments** (`apps/edge/src/migrations.ts`, `board-room.ts`):
+   - Board migration `version: 14, name: "comment_assistance"`:
      ```sql
-     ALTER TABLE comments ADD COLUMN origin TEXT NOT NULL DEFAULT 'participant'
-       CHECK (origin IN ('participant', 'webmcp'));
-     ALTER TABLE comments ADD COLUMN origin_tool TEXT
-       CHECK (origin_tool IS NULL OR (length(origin_tool) BETWEEN 1 AND 64));
-     ALTER TABLE comments ADD COLUMN origin_action TEXT
-       CHECK (origin_action IS NULL OR length(origin_action) <= 32);
+     ALTER TABLE comments ADD COLUMN assisted_by TEXT
+       CHECK (assisted_by IS NULL OR assisted_by = 'ai');
+     ALTER TABLE comments ADD COLUMN assistance_tool TEXT
+       CHECK (assistance_tool IS NULL OR (length(assistance_tool) BETWEEN 1 AND 64));
+     ALTER TABLE comments ADD COLUMN assistance_action TEXT
+       CHECK (assistance_action IS NULL OR length(assistance_action) <= 32);
      ```
-     Existing rows become `participant` with no tool or action.
-   - `CommentRow` gains `origin`, `origin_tool`, `origin_action`. Check the
-     `readComment` / `listComments` SELECTs project them (they join
-     `members` for `author_name`; add the three columns explicitly if the
-     select is not `c.*`).
-   - `createComment`: `assertExactKeys(body, ["itemId", "body"], ["itemId", "body", "origin"])`;
-     new `requireCommentOrigin(value)` returns `{ kind: "participant" }` for
-     `undefined`, validates `kind`, `tool` against `^[a-z][a-z0-9_]{0,63}$`,
-     `action` against the assist enum (shared via `@collab/protocol` so web
-     and edge cannot drift), and rejects `tool`/`action` when
-     `kind !== "webmcp"`. INSERT writes the three columns.
-   - `commentFromRow` emits `origin` as the `CommentOrigin` union; a row with
-     `origin = 'webmcp'` and `origin_tool IS NULL` is invalid stored data, same
-     as the existing resolved/resolver consistency check.
+     Existing rows read back as typed comments (all three NULL).
+   - `CommentRow` gains the three columns. Check the `readComment` /
+     `listComments` SELECTs project them (they join `members` for
+     `author_name`; add the columns explicitly if the select is not `c.*`).
+   - `createComment`: `assertExactKeys(body, ["itemId", "body"], ["itemId", "body", "assistedBy", "assistance"])`;
+     new `requireCommentAssistance(body)` accepts either nothing, or
+     `assistedBy: "ai"` (validated against `ITEM_ASSISTANCE` from
+     `@collab/protocol`) with `assistance.tool` against
+     `^[a-z][a-z0-9_]{0,63}$` and optional `assistance.action` against
+     `ASSIST_ACTIONS` (move the enum into `@collab/protocol` so web and edge
+     cannot drift). `assistance` without `assistedBy`, or vice versa, is 400.
+   - `commentFromRow` emits `assistedBy`/`assistance` only when set; a row
+     with `assisted_by = 'ai'` and `assistance_tool IS NULL` is invalid stored
+     data, same as the existing resolved/resolver consistency check.
    - Comments are not part of `export.json` / `export.attributed.json` today,
-     so no export change; add a follow-up if comment export is wanted.
-7. **Web — type, parser, drawer** (`types.ts`, `transport/api.ts`, `ui/app.ts`, `styles.css`):
-   - `BoardComment.origin: CommentOrigin` (required; `parseBoardComment`
-     defaults a missing field to `{ kind: "participant" }` so the web stays
-     compatible with an edge that has not migrated yet, and validates the
-     `webmcp` variant's fields).
-   - `ApiClient.createComment(boardId, itemId, body, origin?)` sends `origin`
-     only when provided.
+     so no export change; follow-up if comment export is wanted.
+7. **Web — comment type, parser, drawer** (`types.ts`, `transport/api.ts`, `ui/app.ts`, `styles.css`):
+   - `BoardComment.assistedBy?: "ai"`, `assistance?: Assistance`;
+     `parseBoardComment` passes both through when present and validates the
+     pair (so an edge that has not migrated yet still parses).
+   - `ApiClient.createComment(boardId, itemId, body, assistance?)` sends
+     `assistedBy: "ai"` plus `assistance` only when provided.
    - `renderComments` (line ~5655, where `author.textContent` is set): after
      the author `<strong>`, append
-     `<span class="comment-origin-tag" title="…">AI · Critique</span>` for
-     `webmcp` comments. Label table: tool `comment_on_watched_step` → "AI";
-     action → the toolbar label from the action catalog; unknown tool → "AI".
-   - CSS: `.comment-origin-tag` as a small pill matching `.comment-state`;
-     add it after the existing `.comment-*` rules to keep specificity lint clean.
-   - `CommentStore.upsert`/`reconcile` need no change; `origin` is inert data.
+     `<span class="assistance-tag" title="…">AI · Critique</span>` for
+     assisted comments. Label: action → the toolbar label from the action
+     catalog; no action → "AI".
+   - CSS: `.assistance-tag` as a small pill matching `.comment-state`; add it
+     after the existing `.comment-*` rules to keep specificity lint clean.
+   - `CommentStore.upsert`/`reconcile` need no change; the fields are inert.
+
+### Step 2c — The AI mark on every assisted board item
+
+`apps/web/src/board/renderer.ts`
+
+1. `creatorBadge(item, displayName)` (line ~1741): when
+   `item.assistedBy === "ai"`, add class `creator-badge-ai` and append a
+   second circle + text at `(x - radius * 0.9, y - radius * 0.9)` with radius
+   `max(5, radius * 0.6)`, fill `#2d2240`, white stroke 1.5, text "AI" at
+   `font-size max(6, radius * 0.6)`, weight 800. Same `pointer-events="none"`.
+2. `appendCreatorAttribution` (line ~1728): label becomes
+   `Created by {name} with AI assistance` when assisted. Also set
+   `node.dataset.assistedBy = "ai"` so Playwright and CSS can target it.
+3. New `assistanceMark(item)` for kinds that get no creator badge. Anchor at
+   the top-right of the item's local geometry (`x + width - 10, y + 4` for
+   boxed kinds; for `line`/`pencil` use the max-x/min-y of their points;
+   for `zone` the title bar's right end). A 14 × 10 rounded rect with "AI"
+   text, class `assistance-mark`, `aria-hidden`, `pointer-events="none"`.
+   Append it from `itemNode` whenever `item.assistedBy === "ai"` and no
+   creator badge was added.
+4. `reuseItemNode` / `updateVideoEmbedNode` paths must not lose the mark:
+   `assistedBy` is immutable after create, so a reused node keeps it — add a
+   test that a re-render of an assisted item still has one mark, not two.
+5. `styles.css`: `.assistance-mark`, `.creator-badge-ai` (no colour changes to
+   the initials circle itself). The mark is decorative and scales with the
+   canvas like the initials badge does.
+6. `renderer.test.ts:465`: flip the assertion to expect `creator-badge-ai` and
+   the "AI" text, keep the initials assertion ("CM" still present). Add a
+   case per un-badged kind (text, table, zone, shape, line, pencil) asserting
+   exactly one `assistance-mark`.
+7. Edge attributed export (`board-room.ts`, `attributedExportObject`): confirm
+   items are emitted whole (then `assistedBy` is already there) or add the
+   field to the projection. Test: an assisted sticky exports with
+   `assistedBy: "ai"`.
+
+Nothing changes in the write tools or in `activities/batch.ts` — every
+generated item is already tagged.
+
+### Step 2d — Alt text becomes optional for generated visuals
+
+`alt` is already optional on image geometry
+(`packages/geometry/src/index.ts:172, 787`) and in the upload dialog
+("Alt text *optional*", `app.ts:1723`). Only `add_content_visuals` forces it,
+and the agent spends a full generation pass writing 500-character
+descriptions for every meme.
+
+`apps/web/src/webmcp/education-partner.ts`
+
+1. `contentVisualsToolSchema()` (line ~1019): keep the `altText` property but
+   drop it from both `required` lists (lines ~1077 and ~1102). Description
+   becomes "Optional. Describe meaningful visual content and visible words; if
+   omitted the title is used."
+2. `parseContentVisuals` (line ~1393): `altText: optionalText(entry.altText, …, 500)`.
+3. Tool description (line ~621): replace "include accessible alt text and a
+   discussion question" with "include a discussion question; alt text is
+   optional".
+4. `apps/web/src/activities/education-partner.ts:111, 533`: `altText?: string`
+   and `alt: visual.altText ?? visual.title`. The title is already required
+   (1–60 chars) and is the same words a screen reader would want, so
+   accessibility does not regress to an empty `alt`.
+5. Tests: `webmcp/education-partner.test.ts:167, 218` and
+   `activities/education-partner.test.ts` — add a case with `altText` omitted
+   asserting the image item's `alt` equals the title; keep one case with
+   explicit `altText`. Playwright `webmcp-collective-inquiry.spec.ts:424`:
+   drop `altText` from one visual.
+6. `list_class_collaboration_modes` catalog entry for the visual tool: mark
+   `altText` optional so hosts stop generating it.
 
 **Guidance** (`problem-step-watch.ts`)
 
@@ -555,18 +646,20 @@ pointed at the inquiry instance and call `add_thinking_expansion` with
 `sourceAliases: ["step_1"]`).
 
 `apps/edge/src/board-room.test.ts` (next to the existing comment tests at
-~7808): `origin` round-trips through create → list for `webmcp` with tool and
-action; an omitted `origin` reads back as `{ kind: "participant" }`; `tool`
-without `kind: "webmcp"`, a bad tool name, and an unknown action are rejected
-with 400; a legacy row inserted before the migration reads back as
-`participant`; `PATCH` resolve preserves `origin`.
+~7808): `assistedBy`/`assistance` round-trip through create → list; an
+omitted pair reads back with neither field; `assistance` without
+`assistedBy`, a bad tool name, and an unknown action are rejected with 400; a
+legacy row inserted before the migration reads back as a typed comment;
+`PATCH` resolve preserves the fields.
 
 `apps/web/src/transport/api.test.ts` (or wherever `parseBoardComment` is
-covered): missing `origin` defaults to participant; malformed `webmcp` origin
-throws `INVALID_RESPONSE`.
+covered): absent fields parse; `assistedBy` without `assistance` throws
+`INVALID_RESPONSE`.
 
-`apps/web/src/ui/app.test.ts`: drawer renders the "AI · Critique" tag for a
-`webmcp` comment and no tag for a participant comment.
+`apps/web/src/ui/app.test.ts`: drawer renders the "AI · Critique" tag for an
+assisted comment and no tag for a typed comment.
+
+Renderer and alt-text tests are listed under steps 2c and 2d.
 
 `apps/web/src/ui/app.test.ts`: if a `BoardApp` harness exists there for
 selection actions, add: button hidden when idle; visible and enabled with a
@@ -594,7 +687,9 @@ Add a test:
    refresh broadcast with the same tag. Type a comment by hand in the
    composer and assert it has no tag.
 5. Call `add_thinking_expansion` with the result's `selectionToken` and
-   `sourceAliases: ["step_1"]`; assert two new cards appear.
+   `sourceAliases: ["step_1"]`; assert two new cards appear and each carries
+   `[data-assisted-by="ai"]` with a visible `.creator-badge-ai`; assert the
+   participant's own stickies have none.
 6. Deselect, select an unwatched sticky → button disabled with the title.
 7. Call `stop` → button and indicator hidden.
 
@@ -615,15 +710,18 @@ build is unavailable (`launchOptions.executablePath`).
   while a watch is live; that `check_work` deliberately replaces grading; and
   that replies land as ordinary comments or cards attributed to the
   participant under the existing "Safety, review, and board mutations" rules.
-  Amend the "no AI-specific chrome or board labels" sentence: comments carry
-  writer metadata and a visible "AI" tag in the comments drawer so a peer's
-  remark is never mistaken for the assistant's; board items are unchanged.
-  Note that the caller's WebMCP permission is the confirmation for a comment,
-  as it already is for the five headless card tools. Add `origin` to the
-  metadata-only audit record list.
-- README tool count: fifteen becomes sixteen. Also correct the sentence that
-  generated items "retain internal origin metadata" (see the gap in 4b) or
-  link it to the follow-up.
+  Rewrite the three "no AI-specific chrome or board labels" sentences (lines
+  ~34-35, ~105, ~131-132): assisted items and comments carry `assistedBy`
+  metadata **and** a small consistent AI mark so tool and human are always
+  distinguishable; attribution still goes to the responsible participant, never
+  a synthetic AI actor. Note that the caller's WebMCP permission is the
+  confirmation for a comment, as it already is for the five headless card
+  tools. Add `assistedBy`/`assistance` to the metadata-only audit record list.
+- README (lines ~116-117) and `spec.md` (lines ~5, ~113-114): same rewrite —
+  "retain internal `assistedBy` metadata and render a small AI mark beside the
+  responsible participant's initials".
+- README tool count: fifteen becomes sixteen.
+- `spec.md` `add_content_visuals` section: alt text optional, title fallback.
 
 ### Step 8 — Optional follow-ups (not in v1)
 
@@ -637,10 +735,12 @@ build is unavailable (`launchOptions.executablePath`).
   `read_selected_class_ideas`'s contract and deserves its own review.
 - Auto-opening the comments drawer on the step when an AI comment arrives in
   the requesting browser (match `requestId` to the next `server.comments.refresh`).
-- Origin metadata for generated board items, so the README's existing claim
-  becomes true and items and comments share one `origin` shape.
-- Including comments (with `origin`) in `export.attributed.json`.
-- Filtering the comments drawer by writer (participant vs AI).
+- Including comments (with `assistedBy`) in `export.attributed.json`, and
+  the AI mark in SVG export alongside creator badges if those are ever added.
+- Filtering the comments drawer, and a canvas toggle, by writer (person vs AI).
+- Recording `assistance.tool`/`action` on generated *items* too (today items
+  only carry the `"ai"` literal; the comment side records which tool and
+  action). Needs a protocol field and a board-core round-trip test.
 
 ## Verification
 
@@ -660,15 +760,20 @@ inserted, ask the host to stop, confirm the button disappears.
 
 - **Grade vs check_work** — decision needed (see Design decision 2). Default in
   this plan is `check_work`.
-- **Self-declared origin** — the edge cannot verify that a `webmcp` origin
-  really came from an agent, or that a comment without one was typed by hand;
-  it trusts the page, exactly as it trusts everything else the page sends.
-  The tag is an honest-client record, not a security boundary.
-- **Migration ordering** — the web defaults a missing `origin` to
-  `participant`, so a web deploy ahead of the edge migration is safe; an edge
-  deploy ahead of the web is also safe because the extra field is ignored by
-  the old parser only if `parseBoardComment` is not strict about unknown
-  keys — it is not, so both orders work.
+- **Self-declared assistance** — the edge cannot verify that `assistedBy`
+  really came from an agent, or that content without it was made by hand; it
+  trusts the page, exactly as it already does for items. The mark is an
+  honest-client record, not a security boundary.
+- **Migration ordering** — the web treats absent comment fields as a typed
+  comment, so a web deploy ahead of the edge migration is safe; an edge deploy
+  ahead of the web is safe because `parseBoardComment` ignores unknown keys.
+  Both orders work.
+- **Mark legibility at low zoom** — a 6 px glyph vanishes below ~50% zoom, as
+  the initials badge already does. Acceptable: the `<title>` and drawer tag
+  remain, and the mark is for at-a-glance reading, not the only signal.
+- **Alt-text fallback quality** — a title like "Gravity meme" is a weaker
+  description than a written alt, but it is never empty. Hosts can still
+  supply `altText` when they have one.
 - **Viewer-role participants** — a browser that can read but not comment gets
   `replyVia: "conversation"`; the button still works, the answer just stays in
   chat. The card tools already refuse without edit access.
