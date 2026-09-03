@@ -1706,6 +1706,12 @@ function appendLinkifiedHtml(container: HTMLElement, value: string): void {
   }
 }
 
+/**
+ * Slack added to a measured formula box. Layout widths come back as whole pixels, and italic math
+ * overhangs its own advance width, so a box measured exactly cuts the last glyph.
+ */
+const MATH_FIT_PADDING = 3;
+
 function mathForeignObject(
   x: number,
   y: number,
@@ -1737,16 +1743,34 @@ function mathForeignObject(
     content.style.minHeight = "0";
   }
   foreign.append(content);
+  const fitToTypesetMath = (): void => {
+    if (!options.fitContent || !foreign.isConnected) return;
+    // Measure at full width. The box was sized from an estimate of the source text, and a formula
+    // typesets wider than its source, so measuring inside the old box would report the width the
+    // foreignObject had already clipped it to and keep that clip forever.
+    foreign.setAttribute("width", String(MAX_MATH_TEXT_WIDTH));
+    const measured = Math.max(1, content.scrollWidth) + MATH_FIT_PADDING;
+    const renderedWidth = Math.ceil(Math.min(MAX_MATH_TEXT_WIDTH, measured));
+    const renderedHeight = Math.ceil(Math.max(1, content.scrollHeight));
+    foreign.setAttribute("width", String(renderedWidth));
+    foreign.setAttribute("height", String(renderedHeight));
+    options.onSize?.(renderedWidth, renderedHeight);
+  };
+
   typesetMath(content, {
     onReady: () => {
-      if (!options.fitContent || !foreign.isConnected) return;
-      const renderedWidth = Math.ceil(
-        Math.min(MAX_MATH_TEXT_WIDTH, Math.max(1, content.scrollWidth)),
-      );
-      const renderedHeight = Math.ceil(Math.max(1, content.scrollHeight));
-      foreign.setAttribute("width", String(renderedWidth));
-      foreign.setAttribute("height", String(renderedHeight));
-      options.onSize?.(renderedWidth, renderedHeight);
+      fitToTypesetMath();
+      // MathJax sizes its output in ex units, which resolve against the font actually in use, so
+      // a box measured before the maths font is ready comes out short and clips the last glyph.
+      // Measuring again once the fonts have settled is what makes the fit final.
+      const remeasure = (): void => {
+        requestAnimationFrame(() => fitToTypesetMath());
+      };
+      if (typeof document !== "undefined" && document.fonts?.ready) {
+        void document.fonts.ready.then(remeasure, remeasure);
+      } else {
+        remeasure();
+      }
     },
     // Falling back to plain text would flatten the safe-link anchors, so rebuild them.
     restore: (target) => {

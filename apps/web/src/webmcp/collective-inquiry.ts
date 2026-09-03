@@ -1,6 +1,7 @@
 import "./collective-inquiry.css";
 
 import { ASSIST_ACTIONS, type AssistAction, type Assistance } from "@collab/protocol";
+import { mathExportOptions } from "../board/math-export";
 import type { BoardItem, ServerAction } from "../types";
 import { captureBoardImage, serializeVisualPreview, visualAlias } from "./board-image";
 import {
@@ -546,7 +547,7 @@ export class CollectiveInquiryWebMcp {
       throw new Error("Finish the current visual review before sharing another selection.");
     }
     this.clearVisualReview();
-    const preview = buildVisualPreview(items);
+    const preview = await buildVisualPreview(items);
     this.visualObjectUrl = preview.objectUrl;
     surface.replaceChildren(preview.image);
     const count = this.visualReviewDialog.querySelector<HTMLElement>(
@@ -614,11 +615,12 @@ export class CollectiveInquiryWebMcp {
   }
 }
 
-function buildVisualPreview(items: readonly BoardItem[]): {
+async function buildVisualPreview(items: readonly BoardItem[]): Promise<{
   image: HTMLImageElement;
   objectUrl: string;
-} {
-  const preview = serializeVisualPreview(items);
+}> {
+  // The review surface shows formulas, not their source, like every other view of the board.
+  const preview = serializeVisualPreview(items, await mathExportOptions(items));
   const markup = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${preview.viewBox}" role="img" aria-label="${preview.ariaLabel}">${preview.content}</svg>`;
   const objectUrl = URL.createObjectURL(new Blob([markup], { type: "image/svg+xml" }));
   const image = document.createElement("img");

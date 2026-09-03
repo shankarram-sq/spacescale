@@ -296,7 +296,7 @@ describe("lightweight movement previews", () => {
         fontFamily: "sans",
         opacity: 1,
       },
-      geometry: { x: 20, y: 40, text: "$x^2$" },
+      geometry: { x: 20, y: 40, text: "$$x^2$$" },
     };
     const localLayer = fakeSvgNode("g");
     const renderer = {
@@ -314,7 +314,7 @@ describe("lightweight movement previews", () => {
     expect(preview?.classList.values.has("board-math-preview")).toBe(true);
     expect(preview?.attributes.get("aria-hidden")).toBe("true");
     expect(preview?.dataset.mathState).toBeUndefined();
-    expect(preview?.children[0]?.textContent).toBe("$x^2$");
+    expect(preview?.children[0]?.textContent).toBe("$$x^2$$");
   });
 
   it("keeps sticky, table, and Section formula previews free of MathJax work", () => {
@@ -333,7 +333,7 @@ describe("lightweight movement previews", () => {
           fontSize: 20,
           opacity: 1,
         },
-        geometry: { x: 10, y: 20, width: 180, height: 140, text: "$x^2$" },
+        geometry: { x: 10, y: 20, width: 180, height: 140, text: "$$x^2$$" },
       },
       {
         id: "math-table",
@@ -356,7 +356,7 @@ describe("lightweight movement previews", () => {
           y: 20,
           columnWidths: [180],
           rowHeights: [60],
-          cells: [["$x^2$"]],
+          cells: [["$$x^2$$"]],
           headerRow: false,
         },
       },
@@ -375,7 +375,7 @@ describe("lightweight movement previews", () => {
           fontSize: 18,
           opacity: 0.18,
         },
-        geometry: { x: 20, y: 30, width: 520, height: 320, title: "$x^2$" },
+        geometry: { x: 20, y: 30, width: 520, height: 320, title: "$$x^2$$" },
       },
     ];
     const localLayer = fakeSvgNode("g");
@@ -406,7 +406,7 @@ describe("lightweight movement previews", () => {
         item.kind,
       ).toBe(true);
       expect(
-        descendants.some((node) => node.textContent?.includes("$x^2$")),
+        descendants.some((node) => node.textContent?.includes("$$x^2$$")),
         item.kind,
       ).toBe(true);
     }

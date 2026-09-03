@@ -18,7 +18,7 @@ import {
   validateClientFrame,
   validateDurableOperation,
 } from "@collab/protocol";
-import { boundsForSvgItems, renderSvgItem } from "@collab/svg-export";
+import { boundsForSvgItems, renderSvgItem, type SvgItemOptions } from "@collab/svg-export";
 import {
   buildOrganisationTemplateBatch,
   OrganisationTemplateError,
@@ -32,6 +32,7 @@ import {
 } from "../activities/templates";
 import { buildClearVoteDeletes, isVoteTable, summarizeVotes } from "../activities/voting";
 import { VIDEO_EMBED_HEIGHT, VIDEO_EMBED_WIDTH, videoEmbedFromText } from "../board/links";
+import { mathExportOptions } from "../board/math-export";
 import { BoardModel, SequenceError } from "../board/model";
 import { BoardRenderer, STICKY_PADDING } from "../board/renderer";
 import { randomBoardName } from "../board-name";
@@ -3092,9 +3093,9 @@ export class BoardApp {
     query(this.root, "[data-local-json]", HTMLButtonElement).addEventListener("click", () =>
       this.downloadLocalJson(),
     );
-    query(this.root, "[data-local-svg]", HTMLButtonElement).addEventListener("click", () =>
-      this.downloadLocalSvg(),
-    );
+    query(this.root, "[data-local-svg]", HTMLButtonElement).addEventListener("click", () => {
+      void this.downloadLocalSvg();
+    });
 
     query(this.root, "[data-zoom-out]", HTMLButtonElement).addEventListener("click", () =>
       this.zoomBy(0.8),
@@ -7109,10 +7110,13 @@ export class BoardApp {
     }
   }
 
-  private downloadLocalSvg(): void {
+  private async downloadLocalSvg(): Promise<void> {
+    const snapshot = this.model.toSnapshot(this.bootstrap.board.id);
+    // A downloaded picture should hold the formulas the board shows, not their source.
     const svg = localSvg(
-      this.model.toSnapshot(this.bootstrap.board.id),
+      snapshot,
       this.bootstrap.board.title,
+      await mathExportOptions(snapshot.items),
     );
     downloadBlob(`${safeFilename(this.bootstrap.board.title)}-local.svg`, "image/svg+xml", svg);
   }
@@ -7558,7 +7562,11 @@ function turnstileWhenReady(client: TurnstileClient): Promise<TurnstileClient> {
   });
 }
 
-export function localSvg(snapshot: BoardSnapshot, title: string): string {
+export function localSvg(
+  snapshot: BoardSnapshot,
+  title: string,
+  options: SvgItemOptions = {},
+): string {
   const items = [...snapshot.items]
     .map((item) => normalizeBoardItem(item))
     .sort((a, b) => a.z - b.z);
@@ -7567,7 +7575,7 @@ export function localSvg(snapshot: BoardSnapshot, title: string): string {
   const viewBox = bounds
     ? `${bounds.minX - pad} ${bounds.minY - pad} ${Math.max(1, bounds.maxX - bounds.minX + pad * 2)} ${Math.max(1, bounds.maxY - bounds.minY + pad * 2)}`
     : "0 0 1200 800";
-  const content = items.map(renderSvgItem).join("");
+  const content = items.map((item) => renderSvgItem(item, options)).join("");
   return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" role="img" aria-label="${escapeXml(title)}"><metadata>{&quot;format&quot;:&quot;cf-whiteboard-json&quot;,&quot;seq&quot;:${snapshot.seq}}</metadata><rect x="-1000000" y="-1000000" width="2000000" height="2000000" fill="#ffffff"/>${content}</svg>`;
 }
 
