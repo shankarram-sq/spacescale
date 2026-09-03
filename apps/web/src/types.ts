@@ -500,6 +500,11 @@ export function canRoleDraw(role: Role, policy: DrawingPolicy): boolean {
   return role === "owner" || role === "editor";
 }
 
+/** Comments follow the drawing policy's role rules but are not blocked by a lock. */
+export function canRoleComment(role: Role, policy: DrawingPolicy): boolean {
+  return canRoleDraw(role, policy === "locked" ? "editors_enabled" : policy);
+}
+
 export function createId(): string {
   return crypto.randomUUID();
 }

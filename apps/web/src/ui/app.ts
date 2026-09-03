@@ -100,7 +100,7 @@ import type {
   TextFontWeight,
   ToolName,
 } from "../types";
-import { canRoleDraw, createId, PROTOCOL_VERSION } from "../types";
+import { canRoleComment, canRoleDraw, createId, PROTOCOL_VERSION } from "../types";
 import { ClassDecisionWebMcp } from "../webmcp/class-decision";
 import { CollectiveInquiryWebMcp } from "../webmcp/collective-inquiry";
 import { EducationPartnerWebMcp, type EducationVisualSource } from "../webmcp/education-partner";
@@ -7370,7 +7370,7 @@ export function canActorComment(
     phase !== "archived" &&
     phase !== "reload_required" &&
     phase !== "stopped" &&
-    canRoleDraw(role, drawingPolicy)
+    canRoleComment(role, drawingPolicy)
   );
 }
 

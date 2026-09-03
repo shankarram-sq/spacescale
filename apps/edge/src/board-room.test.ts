@@ -7923,6 +7923,20 @@ describe("object comments", () => {
       state: "resolved",
       resolvedBy: { id: actorId, displayName: "Owner 1" },
     });
+
+    // A locked board keeps accepting comments from drawing roles, never from viewers.
+    await runInDurableObject(stub, (_instance, durableState) => {
+      durableState.storage.sql.exec("UPDATE board SET drawing_policy = 'locked'");
+    });
+    const lockedEditor = await createAs(editorId, "Editors comment on a locked board.");
+    expect(lockedEditor.status).toBe(201);
+    await lockedEditor.arrayBuffer();
+    const lockedOwner = await createAs(actorId, "Owners comment on a locked board.");
+    expect(lockedOwner.status).toBe(201);
+    await lockedOwner.arrayBuffer();
+    const lockedViewer = await createAs(coOwnerId, "Viewers still cannot comment.");
+    expect(lockedViewer.status).toBe(403);
+    expect(await lockedViewer.json()).toMatchObject({ error: { code: "FORBIDDEN" } });
     owner.socket.close(1000, "done");
   });
 

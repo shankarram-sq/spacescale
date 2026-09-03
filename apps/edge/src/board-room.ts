@@ -601,7 +601,9 @@ export class BoardRoom extends DurableObject<Env> {
     this.ctx.storage.transactionSync(() => {
       const board = readBoard(this.#sql) ?? capturedBoard;
       const access = this.requireView(board, actor.actorId);
-      this.requireContentMutationAllowed(board, access.role);
+      if (!canComment(board.drawing_policy, access.role)) {
+        throw new BoardDomainError("FORBIDDEN", "Commenting is not allowed for your role.");
+      }
       const target = readItem(this.#sql, itemId);
       if (target === undefined || target.deleted) {
         throw new HttpError(404, "NOT_FOUND", "The comment target no longer exists.");
@@ -7555,4 +7557,12 @@ function canDraw(policy: DrawingPolicy, role: BoardRole): boolean {
   if (policy === "locked" || role === "viewer") return false;
   if (policy === "owner_only") return role === "owner";
   return role === "editor" || role === "owner";
+}
+
+/**
+ * Comments follow the drawing policy's role rules but ignore a lock: a locked
+ * board still accepts comments from participants who could otherwise draw.
+ */
+function canComment(policy: DrawingPolicy, role: BoardRole): boolean {
+  return canDraw(policy === "locked" ? "editors_enabled" : policy, role);
 }

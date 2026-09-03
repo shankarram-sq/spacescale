@@ -1047,12 +1047,14 @@ describe("object comment visibility", () => {
 });
 
 describe("object comment permissions", () => {
-  it("mirrors the server gate by requiring drawing rights on a live Space", () => {
+  it("mirrors the server gate: drawing roles may comment, and a lock does not block them", () => {
     expect(canActorComment("ready", "owner", "editors_enabled")).toBe(true);
     expect(canActorComment("connecting", "editor", "editors_enabled")).toBe(true);
     expect(canActorComment("ready", "viewer", "editors_enabled")).toBe(false);
     expect(canActorComment("ready", "editor", "owner_only")).toBe(false);
-    expect(canActorComment("ready", "owner", "locked")).toBe(false);
+    expect(canActorComment("ready", "owner", "locked")).toBe(true);
+    expect(canActorComment("ready", "editor", "locked")).toBe(true);
+    expect(canActorComment("ready", "viewer", "locked")).toBe(false);
     expect(canActorComment("archived", "owner", "editors_enabled")).toBe(false);
     expect(canActorComment("reload_required", "owner", "editors_enabled")).toBe(false);
     expect(canActorComment("stopped", "owner", "editors_enabled")).toBe(false);
