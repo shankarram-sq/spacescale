@@ -3,7 +3,8 @@ import "./collective-inquiry.css";
 import { boundsForItems, boundsHeight, boundsWidth } from "@collab/geometry";
 import { normalizeBoardItem } from "@collab/protocol";
 import { renderSvgItem } from "@collab/svg-export";
-import type { BoardItem } from "../types";
+import type { BoardItem, ServerAction } from "../types";
+import { PROBLEM_STEP_WATCH_TOOL, ProblemStepWatchFeed } from "./problem-step-watch";
 import { trimSnapshots, WEBMCP_MATHJAX_GUIDANCE, WEBMCP_TEXT_RENDERING_CAPABILITY } from "./shared";
 
 const READ_SELECTION_TOOL = "read_selected_class_ideas";
@@ -47,18 +48,27 @@ export type CollectiveInquirySnapshot = {
 export type CollectiveInquiryWebMcpOptions = {
   root: HTMLElement;
   getSelectedItems: () => BoardItem[] | null;
+  getAuthoritativeItem: (itemId: string) => BoardItem | undefined;
+  getSequence: () => number;
   getParticipantDisplayName: (participantId: string) => string | null;
   notify: (message: string, kind: "info" | "warning" | "error") => void;
 };
 
 export class CollectiveInquiryWebMcp {
   private readonly visualReviewDialog: HTMLDialogElement;
+  private readonly problemStepWatch: ProblemStepWatchFeed;
   private readonly snapshots = new Map<string, CollectiveInquirySnapshot>();
   private readonly registration = new AbortController();
   private destroyed = false;
   private visualObjectUrl: string | null = null;
 
   constructor(private readonly options: CollectiveInquiryWebMcpOptions) {
+    this.problemStepWatch = new ProblemStepWatchFeed({
+      getSelectedItems: options.getSelectedItems,
+      getAuthoritativeItem: options.getAuthoritativeItem,
+      getSequence: options.getSequence,
+      getParticipantDisplayName: options.getParticipantDisplayName,
+    });
     this.visualReviewDialog = this.buildVisualReviewDialog();
     options.root.append(this.visualReviewDialog);
     this.visualReviewDialog.addEventListener("close", this.clearVisualReview);
@@ -69,9 +79,14 @@ export class CollectiveInquiryWebMcp {
     return this.snapshots.get(token);
   }
 
+  recordAuthoritativeAction(action: ServerAction, changedIds: ReadonlySet<string>): void {
+    this.problemStepWatch.recordAuthoritativeAction(action, changedIds);
+  }
+
   destroy(): void {
     this.destroyed = true;
     this.registration.abort();
+    this.problemStepWatch.destroy();
     this.visualReviewDialog.removeEventListener("close", this.clearVisualReview);
     this.clearVisualReview();
     this.visualReviewDialog.close();
@@ -108,6 +123,46 @@ export class CollectiveInquiryWebMcp {
           inputSchema: { type: "object", properties: {}, additionalProperties: false },
           annotations: { readOnlyHint: true, untrustedContentHint: true },
           execute: async (_input, { signal }) => this.readSelectedIdeas(signal, "inspire"),
+        },
+        { signal: this.registration.signal },
+      );
+      await modelContext.registerTool(
+        {
+          name: PROBLEM_STEP_WATCH_TOOL,
+          description: `Start, continue, or stop a 15-minute read-only watch of the exact saved text items selected in this browser. Use this when a participant asks for real-time feedback while working through a problem. First call with action start. Briefly comment on every returned change, then call action wait again with the returned watchToken and nextSeq; repeat after timeouts until the watch expires or the participant asks to stop. Each wait returns once and lasts at most 20 seconds. The watch never includes unsaved keystrokes, other contents of a selected Section, unselected content, stable item IDs, coordinates, presence, or history. ${WEBMCP_MATHJAX_GUIDANCE}`,
+          inputSchema: {
+            type: "object",
+            properties: {
+              action: {
+                type: "string",
+                enum: ["start", "wait", "stop"],
+                description:
+                  "Start from the current saved browser selection, wait for the next saved change, or stop the watch.",
+              },
+              watchToken: {
+                type: "string",
+                maxLength: 128,
+                description: "Opaque token returned by action start. Required for wait and stop.",
+              },
+              afterSeq: {
+                type: "integer",
+                minimum: 0,
+                description: "The nextSeq returned by the previous start or wait result.",
+              },
+              waitMs: {
+                type: "integer",
+                minimum: 1_000,
+                maximum: 20_000,
+                default: 15_000,
+                description:
+                  "How long one wait call may remain pending before returning a timeout.",
+              },
+            },
+            required: ["action"],
+            additionalProperties: false,
+          },
+          annotations: { readOnlyHint: true, untrustedContentHint: true },
+          execute: (input, { signal }) => this.problemStepWatch.execute(input, signal),
         },
         { signal: this.registration.signal },
       );

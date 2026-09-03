@@ -65,6 +65,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
       "read_selected_class_ideas",
       "stage_class_decision",
       "stage_collective_inquiry",
+      "watch_selected_problem_steps",
     ]);
   await expect(page.locator("[data-webmcp-status]")).toHaveCount(0);
   await expect(page.locator("[data-selection-ai]")).toHaveCount(0);
@@ -104,6 +105,16 @@ test("a board participant can use headless WebMCP tools with neutral board attri
       svgAccepted: false,
       externalImageUrlsAccepted: false,
     },
+    problemStepWatch: {
+      tool: "watch_selected_problem_steps",
+      scope: "exact_saved_browser_selection",
+      durationSeconds: 900,
+      maximumWaitMs: 20_000,
+      reports: "authoritative_saved_changes",
+      unsavedKeystrokesIncluded: false,
+      sectionContentsExpanded: false,
+      stableItemIdentifiersReturned: false,
+    },
     guardrails: {
       boundedAdditions: true,
       studentDecisionsRemainBlank: true,
@@ -114,6 +125,11 @@ test("a board participant can use headless WebMCP tools with neutral board attri
       reservedMode: "cross_group_jigsaw",
     },
   });
+  expect(
+    await page.evaluate(
+      () => window.__spaceScaleWebMcpTools.watch_selected_problem_steps?.annotations,
+    ),
+  ).toEqual({ readOnlyHint: true, untrustedContentHint: true });
   const capabilityModes = (
     capabilities.families as Array<{
       modes: Array<{ requirements: string[]; inputContract: Record<string, unknown> }>;
@@ -150,6 +166,63 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
   const canvasItems = page.locator("#drawing-area [data-item-id]");
   await expect(canvasItems).toHaveCount(13);
+
+  const watchStart = await page.evaluate(() => {
+    const tool = window.__spaceScaleWebMcpTools.watch_selected_problem_steps;
+    if (!tool) throw new Error("The problem-step watch was not registered.");
+    return tool.execute({ action: "start" }, { signal: new AbortController().signal });
+  });
+  expect(watchStart).toMatchObject({
+    status: "started",
+    durationSeconds: 900,
+    nextSeq: expect.any(Number),
+    steps: expect.arrayContaining([expect.objectContaining({ kind: "sticky" })]),
+  });
+  const watchResult = page.evaluate(
+    ({ watchToken, afterSeq }) => {
+      const tool = window.__spaceScaleWebMcpTools.watch_selected_problem_steps;
+      if (!tool) throw new Error("The problem-step watch was not registered.");
+      return tool.execute(
+        { action: "wait", watchToken, afterSeq, waitMs: 20_000 },
+        { signal: new AbortController().signal },
+      );
+    },
+    { watchToken: String(watchStart.watchToken), afterSeq: Number(watchStart.nextSeq) },
+  );
+  const firstSticky = page.locator("#drawing-area .board-item-sticky").first();
+  const firstStickyBounds = await firstSticky.boundingBox();
+  expect(firstStickyBounds).not.toBeNull();
+  if (!firstStickyBounds) throw new Error("The watched sticky has no layout bounds.");
+  await page.getByRole("button", { name: /^Select/u }).click();
+  await page.mouse.dblclick(
+    firstStickyBounds.x + firstStickyBounds.width / 2,
+    firstStickyBounds.y + firstStickyBounds.height / 2,
+  );
+  const stickyEditor = page.getByTestId("canvas-text-editor");
+  await expect(stickyEditor).toHaveAttribute("aria-label", "Edit sticky note");
+  await stickyEditor.fill(`${await stickyEditor.inputValue()}\nA newly saved problem step.`);
+  await stickyEditor.press("Control+Enter");
+  await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+  await expect(watchResult).resolves.toMatchObject({
+    status: "changed",
+    changes: [
+      {
+        steps: [
+          {
+            alias: expect.any(String),
+            kind: "sticky",
+            change: "updated",
+            text: expect.stringContaining("A newly saved problem step."),
+          },
+        ],
+      },
+    ],
+  });
+  await page.evaluate((watchToken) => {
+    const tool = window.__spaceScaleWebMcpTools.watch_selected_problem_steps;
+    if (!tool) throw new Error("The problem-step watch was not registered.");
+    return tool.execute({ action: "stop", watchToken }, { signal: new AbortController().signal });
+  }, String(watchStart.watchToken));
 
   const readResult = await page.evaluate(() => {
     const tool = window.__spaceScaleWebMcpTools.read_selected_class_ideas;
