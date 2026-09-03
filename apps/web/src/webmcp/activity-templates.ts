@@ -42,15 +42,21 @@ const MAX_FILLS = 120;
  */
 export const MAX_CATALOGUE_PREVIEW_CHARACTERS = 2_000_000;
 
-/** Where a template's text lives, and the longest fill the board will accept there. */
-const SLOT_LIMITS = {
-  text: MAX_TEXT_CODE_POINTS,
-  sticky: MAX_STICKY_TEXT_CODE_POINTS,
-  table_cell: MAX_TABLE_CELL_TEXT_CODE_POINTS,
-  zone_title: MAX_ZONE_TITLE_CODE_POINTS,
+/**
+ * Where a template's text lives, the longest fill the board will accept there, and whether the
+ * board accepts an empty one. A sticky note or a table cell may stand empty for a student to
+ * complete; a canvas text object or a Section title may not, because an empty one would be an
+ * object nobody can see or select. The board rejects those, so this tool refuses them first with
+ * an answer a host can act on.
+ */
+const SLOT_RULES = {
+  text: { maxLength: MAX_TEXT_CODE_POINTS, allowsEmpty: false },
+  sticky: { maxLength: MAX_STICKY_TEXT_CODE_POINTS, allowsEmpty: true },
+  table_cell: { maxLength: MAX_TABLE_CELL_TEXT_CODE_POINTS, allowsEmpty: true },
+  zone_title: { maxLength: MAX_ZONE_TITLE_CODE_POINTS, allowsEmpty: false },
 } as const;
 
-export type TemplateSlotTarget = keyof typeof SLOT_LIMITS;
+export type TemplateSlotTarget = keyof typeof SLOT_RULES;
 
 export type TemplateSlot = {
   /** Stable within one template definition: slot_1, slot_2, ... in template order. */
@@ -64,6 +70,8 @@ export type TemplateSlot = {
   /** The placeholder the template ships with. Empty when the slot is blank for students. */
   current: string;
   maxLength: number;
+  /** Whether an empty fill is accepted here, clearing the slot for a student to complete. */
+  allowsEmpty: boolean;
 };
 
 export type ActivityTemplateWebMcpOptions = {
@@ -101,7 +109,7 @@ export class ActivityTemplateWebMcp {
         modelContext,
         {
           name: READ_TEMPLATES_TOOL,
-          description: `List the activity templates this board can insert, with the text slots each one takes. Templates are whole-board scaffolds such as an exit ticket, a K-W-L table, a sort, a pair share, or a stamp vote; they do not use the browser selection. Each template reports its templateId, label, description, the objects it creates, and its slots. A slot is one place the template holds text: a canvas text object, a sticky note, a table cell, or a Section title. Every slot carries a slot alias, its current placeholder, and the longest fill the board accepts there. When a template draws shapes, stamps or images, the result also carries preview, a PNG of the template as it would appear, so you can see the layout rather than infer it from the object list. Pass templateId to read one template and always get its picture. Use this before ${INSERT_FILLED_TEMPLATE_TOOL} to choose a template and learn its slot aliases. Board IDs, item IDs, coordinates, presence, and existing board content are not returned. ${WEBMCP_MATHJAX_GUIDANCE}`,
+          description: `List the activity templates this board can insert, with the text slots each one takes. Templates are whole-board scaffolds such as an exit ticket, a K-W-L table, a sort, a pair share, or a stamp vote; they do not use the browser selection. Each template reports its templateId, label, description, the objects it creates, and its slots. A slot is one place the template holds text: a canvas text object, a sticky note, a table cell, or a Section title. Every slot carries a slot alias, its current placeholder, the longest fill the board accepts there, and whether it accepts an empty fill. A sticky note or table cell may be cleared for a student to complete; a canvas text object or Section title may not. When a template draws shapes, stamps or images, the result also carries preview, a PNG of the template as it would appear, so you can see the layout rather than infer it from the object list. Pass templateId to read one template and always get its picture. Use this before ${INSERT_FILLED_TEMPLATE_TOOL} to choose a template and learn its slot aliases. Board IDs, item IDs, coordinates, presence, and existing board content are not returned. ${WEBMCP_MATHJAX_GUIDANCE}`,
           inputSchema: {
             type: "object",
             properties: {
@@ -123,7 +131,7 @@ export class ActivityTemplateWebMcp {
         modelContext,
         {
           name: INSERT_FILLED_TEMPLATE_TOOL,
-          description: `Insert one activity template on this board with its text slots already filled in. First call ${READ_TEMPLATES_TOOL} to choose a template and read its slot aliases, then pass templateId and a fills list of slot and text pairs. Unlisted slots keep the placeholder the template ships with, so pass only what you mean to write; pass an empty string to clear a slot for students to complete. The template lands at the centre of this participant's view as one normal realtime batch, tagged as written by AI, with ordinary undo. The caller's WebMCP permission is the approval. Fill the prompts, questions, headings and categories that frame the work; leave the students' own answers, votes, ratings and choices blank. ${WEBMCP_MATHJAX_GUIDANCE}`,
+          description: `Insert one activity template on this board with its text slots already filled in. First call ${READ_TEMPLATES_TOOL} to choose a template and read its slot aliases, then pass templateId and a fills list of slot and text pairs. Unlisted slots keep the placeholder the template ships with, so pass only what you mean to write; pass an empty string to clear a slot whose allowsEmpty is true, leaving it for students to complete. The template lands at the centre of this participant's view as one normal realtime batch, tagged as written by AI, with ordinary undo. The caller's WebMCP permission is the approval. Fill the prompts, questions, headings and categories that frame the work; leave the students' own answers, votes, ratings and choices blank. ${WEBMCP_MATHJAX_GUIDANCE}`,
           inputSchema: {
             type: "object",
             properties: {
@@ -149,7 +157,7 @@ export class ActivityTemplateWebMcp {
                       type: "string",
                       maxLength: MAX_TEXT_CODE_POINTS,
                       description:
-                        "The text to place there. Plain text with optional TeX; no HTML. Empty clears the slot.",
+                        "The text to place there. Plain text with optional TeX; no HTML. Empty clears a slot whose allowsEmpty is true.",
                     },
                   },
                   required: ["slot", "text"],
@@ -324,11 +332,11 @@ function previewItems(template: ActivityTemplate): BoardItem[] {
 /** Every place a template holds text, aliased in template order. */
 export function templateSlots(template: ActivityTemplate): TemplateSlot[] {
   const slots: TemplateSlot[] = [];
-  const push = (slot: Omit<TemplateSlot, "slot" | "maxLength">): void => {
+  const push = (slot: Omit<TemplateSlot, "slot" | "maxLength" | "allowsEmpty">): void => {
     slots.push({
       ...slot,
+      ...SLOT_RULES[slot.target],
       slot: `slot_${slots.length + 1}`,
-      maxLength: SLOT_LIMITS[slot.target],
     });
   };
   template.items.forEach((item, itemIndex) => {
@@ -369,13 +377,16 @@ function describeTemplate(
     description: template.description,
     objectCount: template.items.length,
     objectKinds,
-    slots: templateSlots(template).map(({ slot, target, current, maxLength, row, column }) => ({
-      slot,
-      target,
-      current,
-      maxLength,
-      ...(row === undefined ? {} : { row, column }),
-    })),
+    slots: templateSlots(template).map(
+      ({ slot, target, current, maxLength, allowsEmpty, row, column }) => ({
+        slot,
+        target,
+        current,
+        maxLength,
+        allowsEmpty,
+        ...(row === undefined ? {} : { row, column }),
+      }),
+    ),
     ...(preview === undefined
       ? {}
       : {
@@ -408,6 +419,11 @@ function parseFills(value: unknown, slots: readonly TemplateSlot[]): ParsedFill[
     seen.add(alias);
     if (typeof entry.text !== "string") throw new Error(`fills[${index}].text must be text.`);
     const text = entry.text.trim();
+    if (text.length === 0 && !slot.allowsEmpty) {
+      throw new Error(
+        `${alias} is a ${slot.target === "text" ? "canvas text object" : "Section title"} and cannot be left empty. Write it, or omit it to keep its placeholder.`,
+      );
+    }
     if ([...text].length > slot.maxLength) {
       throw new Error(
         `fills[${index}].text holds more than the ${slot.maxLength} characters ${alias} accepts.`,

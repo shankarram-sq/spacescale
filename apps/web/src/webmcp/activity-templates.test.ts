@@ -109,7 +109,13 @@ describe("templateSlots", () => {
     if (!kwl) throw new Error("The K-W-L template is missing.");
     const slots = templateSlots(kwl);
 
-    expect(slots[0]).toMatchObject({ slot: "slot_1", target: "text", current: "K-W-L" });
+    expect(slots[0]).toMatchObject({
+      slot: "slot_1",
+      target: "text",
+      current: "K-W-L",
+      // A canvas text object the board can never save empty.
+      allowsEmpty: false,
+    });
     expect(slots[1]).toMatchObject({
       slot: "slot_2",
       target: "table_cell",
@@ -117,6 +123,7 @@ describe("templateSlots", () => {
       column: 0,
       current: "What I know",
       maxLength: 500,
+      allowsEmpty: true,
     });
     // One title plus a 3-column, 4-row table.
     expect(slots).toHaveLength(1 + 12);
@@ -131,6 +138,8 @@ describe("templateSlots", () => {
     expect(slots.find(({ target }) => target === "sticky")).toMatchObject({
       maxLength: 1_000,
       current: "I learned…",
+      // A sticky may stand empty, waiting for a student.
+      allowsEmpty: true,
     });
   });
 });
@@ -277,7 +286,7 @@ describe("insert_filled_template", () => {
     templates.destroy();
   });
 
-  it("clears a slot when the fill is empty", async () => {
+  it("clears a slot the board lets stand empty, and refuses one it does not", async () => {
     const { templates, committed, call } = await ready();
     await call("insert_filled_template", {
       templateId: "kwl",
@@ -286,6 +295,34 @@ describe("insert_filled_template", () => {
     const table = createdItems(committed[0]).find((item) => item.kind === "table");
     if (table?.kind !== "table") throw new Error("The K-W-L lost its table.");
     expect(table.geometry.cells[0]?.[0]).toBe("");
+
+    // The board rejects an empty canvas text object, so the tool says so instead of failing
+    // validation halfway through a batch.
+    await expect(
+      call("insert_filled_template", {
+        templateId: "kwl",
+        fills: [{ slot: "slot_1", text: "   " }],
+      }),
+    ).rejects.toThrow("cannot be left empty");
+    // The refused call changed nothing.
+    expect(committed).toHaveLength(1);
+    templates.destroy();
+  });
+
+  it("never offers a fill the board would reject when it commits", async () => {
+    // Every slot the tool reports as clearable must survive a real insert of that template.
+    const { templates, committed, call } = await ready();
+    const catalogue = await call("read_templates", {});
+    for (const entry of catalogue.templates as Array<Record<string, unknown>>) {
+      const slots = entry.slots as Array<Record<string, unknown>>;
+      const clearable = slots.filter((slot) => slot.allowsEmpty === true);
+      if (clearable.length === 0) continue;
+      await call("insert_filled_template", {
+        templateId: entry.templateId,
+        fills: clearable.map((slot) => ({ slot: slot.slot, text: "" })),
+      });
+    }
+    expect(committed.length).toBeGreaterThan(0);
     templates.destroy();
   });
 

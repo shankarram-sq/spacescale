@@ -120,17 +120,20 @@ browser selection.
   description, object count and kinds, and its text slots.
 - A slot is one place a template holds text: a canvas text object, a sticky note,
   a table cell, or a Section title. Slots are aliased `slot_1`, `slot_2`, … in
-  template order and carry the placeholder the template ships with plus the
-  longest fill the board accepts there, so a host never has to guess a limit.
+  template order and carry the placeholder the template ships with, the longest
+  fill the board accepts there, and whether an empty fill is accepted, so a host
+  never has to guess a limit.
 - When a template draws shapes, stamps or images, the entry also carries a
   `preview` PNG of the template as it would land, rendered in the page from the
   template definition alone. A catalogue read stops rendering pictures once it
   has spent 2,000,000 encoded characters and says how many it left out; reading a
   single `templateId` always renders that one.
 - `insert_filled_template` inserts one template with its slots already filled.
-  Unlisted slots keep their placeholder; an empty string clears one for students.
-  Fills are bounded by each slot's own board limit and rejected for unknown or
-  repeated aliases, so a bad call changes nothing.
+  Unlisted slots keep their placeholder. An empty string clears a sticky note or
+  table cell for students to complete; a canvas text object and a Section title
+  cannot stand empty, so the tool refuses that rather than letting the board
+  reject the batch. Fills are bounded by each slot's own board limit and rejected
+  for unknown or repeated aliases, so a bad call changes nothing.
 - The template lands centred on the requesting participant's view as one
   acknowledged realtime batch, carries AI-assistance metadata like every other
   AI-written object, and undoes in one step. The tool refuses without board edit

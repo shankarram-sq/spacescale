@@ -112,7 +112,9 @@ identifier is involved, so the read carries nothing about a class at all.
 
 The write inserts one template with text already in its slots. It refuses
 without edit access and refuses any template this board's features disable, so
-the AI cannot reach past what the Space owner turned on. Every object it creates
+the AI cannot reach past what the Space owner turned on. It also refuses a fill
+the board itself would reject, such as emptying a canvas text object or a Section
+title, rather than letting a batch fail partway. Every object it creates
 carries the same AI-assistance metadata as any other AI-written object, lands as
 one acknowledged batch, and undoes in one step. The tool is instructed to fill
 the framing of an activity, the prompts, questions, headings and category
