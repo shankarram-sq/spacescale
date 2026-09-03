@@ -715,19 +715,19 @@ describe("comment API responses", () => {
       parseBoardComment({
         ...base,
         assistedBy: "ai",
-        assistance: { tool: "comment_on_watched_step", action: "critique" },
+        assistance: { tool: "insert_comment", action: "critique" },
       }),
     ).toMatchObject({
       assistedBy: "ai",
-      assistance: { tool: "comment_on_watched_step", action: "critique" },
+      assistance: { tool: "insert_comment", action: "critique" },
     });
     expect(
       parseBoardComment({
         ...base,
         assistedBy: "ai",
-        assistance: { tool: "comment_on_watched_step" },
+        assistance: { tool: "insert_comment" },
       }).assistance,
-    ).toEqual({ tool: "comment_on_watched_step" });
+    ).toEqual({ tool: "insert_comment" });
 
     expect(() => parseBoardComment({ ...base, assistedBy: "ai" })).toThrow(
       expect.objectContaining({ code: "INVALID_RESPONSE" }),
@@ -837,7 +837,7 @@ describe("comment API responses", () => {
     const responses: unknown[] = [
       { csrfToken: "csrf-token" },
       comment,
-      { ...comment, assistedBy: "ai", assistance: { tool: "comment_on_watched_step" } },
+      { ...comment, assistedBy: "ai", assistance: { tool: "insert_comment" } },
     ];
     vi.stubGlobal(
       "fetch",
@@ -852,7 +852,7 @@ describe("comment API responses", () => {
     const boardId = "b_1234567890123456789012";
     await api.createComment(boardId, comment.itemId, comment.body);
     const assisted = await api.createComment(boardId, comment.itemId, comment.body, {
-      tool: "comment_on_watched_step",
+      tool: "insert_comment",
     });
 
     expect(requests[1]?.init.body).toBe(
@@ -863,12 +863,12 @@ describe("comment API responses", () => {
         itemId: comment.itemId,
         body: comment.body,
         assistedBy: "ai",
-        assistance: { tool: "comment_on_watched_step" },
+        assistance: { tool: "insert_comment" },
       }),
     );
     expect(assisted).toMatchObject({
       assistedBy: "ai",
-      assistance: { tool: "comment_on_watched_step" },
+      assistance: { tool: "insert_comment" },
     });
   });
 });

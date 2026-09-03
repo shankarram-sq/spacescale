@@ -571,7 +571,6 @@ describe("problem-step WebMCP watch", () => {
 describe("board-side assist requests", () => {
   function watching(board: BoardItem[] = [sticky(), canvasText()]) {
     const states: Array<ReturnType<ProblemStepWatchFeed["getState"]>> = [];
-    const minted: unknown[] = [];
     let canComment = true;
     let canWrite = true;
     const context = setup(board);
@@ -583,15 +582,10 @@ describe("board-side assist requests", () => {
       onStateChanged: (state) => states.push(state),
       canComment: () => canComment,
       canWrite: () => canWrite,
-      mintSelectionToken: (sources) => {
-        minted.push(sources);
-        return `token_${minted.length}`;
-      },
     });
     return {
       feed,
       states,
-      minted,
       items: context.items,
       setCanComment(value: boolean) {
         canComment = value;
@@ -611,8 +605,6 @@ describe("board-side assist requests", () => {
     expect(states.at(-1)).toMatchObject({ phase: "watching" });
     expect(states.at(-1)?.watchedItemIds).toEqual(new Set([STICKY_ID, TEXT_ID]));
     expect(started).toMatchObject({
-      selectionToken: "token_1",
-      selectionSources: [{ stepAlias: "step_1", sourceAlias: "idea_1" }],
       canComment: true,
       canWrite: true,
       participantRequests: { actions: expect.arrayContaining(["explain", "check_work"]) },
@@ -691,8 +683,8 @@ describe("board-side assist requests", () => {
     expect(feed.getState().phase).toBe("idle");
   });
 
-  it("resolves a pending wait with the request, its reply plan and a fresh selection token", async () => {
-    const { feed, minted } = watching();
+  it("resolves a pending wait with the request and its reply plan", async () => {
+    const { feed } = watching();
     const started = await feed.execute({ action: "start" }, new AbortController().signal);
     const wait = feed.execute(
       { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
@@ -709,7 +701,6 @@ describe("board-side assist requests", () => {
       status: "requested",
       continueWatching: true,
       nextSeq: started.nextSeq,
-      selectionToken: "token_2",
       canComment: true,
       requests: [
         {
@@ -734,9 +725,6 @@ describe("board-side assist requests", () => {
         },
       ],
     });
-    expect(minted).toHaveLength(2);
-    // The writers' schemas only accept idea_N aliases, so the snapshot never uses step_N.
-    expect(minted[1]).toMatchObject([{ alias: "idea_1", itemId: STICKY_ID, version: 1 }]);
     expect(JSON.stringify(result)).not.toContain(STICKY_ID);
     expect(JSON.stringify(result)).not.toContain(ACTOR_ID);
   });
@@ -770,13 +758,12 @@ describe("board-side assist requests", () => {
     expect(second).toMatchObject({
       status: "changed",
       changes: [{ seq: 8 }],
-      selectionToken: expect.stringMatching(/^token_/u),
     });
     expect(second).not.toHaveProperty("droppedRequests");
   });
 
   it("delivers queued requests with the step text current at delivery, flagging deleted steps", async () => {
-    const { feed, items, minted } = watching();
+    const { feed, items } = watching();
     const started = await feed.execute({ action: "start" }, new AbortController().signal);
     feed.requestAssistance({ itemIds: [STICKY_ID, TEXT_ID], action: "ideate" });
 
@@ -803,8 +790,6 @@ describe("board-side assist requests", () => {
         },
       ],
     });
-    // The token minted at delivery and the delivered text describe the same version.
-    expect(minted.at(-1)).toMatchObject([{ alias: "idea_1", itemId: STICKY_ID, version: 2 }]);
   });
 
   it("keeps queued requests when a wait is aborted, and answers every action in a comment", async () => {

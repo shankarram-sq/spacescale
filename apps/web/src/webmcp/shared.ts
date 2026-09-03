@@ -30,9 +30,10 @@ export type WebMcpCallRecord = {
 /**
  * The tools this build exposes to a WebMCP host, by name.
  *
- * Every withdrawn tool keeps its definition and its execute path in place; only its name is
- * absent here, so `registerWebMcpTool` skips it and no host ever sees it. Restoring one is a
- * single entry in this list rather than a rebuild of the module that owns it.
+ * `registerWebMcpTool` skips a definition whose name is absent here, so adding a tool means
+ * listing it explicitly: no module can widen the surface a host sees on its own. A tool that
+ * describes another reads this through `webMcpToolEnabled`, so a contract never names a tool
+ * the host cannot call.
  */
 export const ENABLED_WEBMCP_TOOLS: ReadonlySet<string> = new Set([
   // Reads: one reading of a scope
@@ -76,11 +77,7 @@ function hostPresent(): boolean {
   );
 }
 
-/**
- * Every tool this page defines, whether or not it is exposed. A tool absent from
- * ENABLED_WEBMCP_TOOLS still lands here, so the withheld half of the surface stays inspectable
- * and testable rather than becoming code nothing can reach.
- */
+/** Every tool this page has defined and not yet withdrawn, whether or not it is exposed. */
 export function webMcpToolDefinitions(): ReadonlyMap<string, WebMcpToolDefinition> {
   return definedTools;
 }
@@ -159,9 +156,8 @@ function trimCompletedCalls(): void {
 /**
  * Registers one tool and keeps a page-wide count of what is currently exposed, so the board can
  * show how many tools a visiting host can see. A tool missing from ENABLED_WEBMCP_TOOLS is
- * skipped here, which is how a withdrawn tool keeps its code without reaching a host. Withdrawal
- * is otherwise driven by the same abort signal the caller already passes, so a destroyed module
- * drops its tools from the count without extra bookkeeping.
+ * skipped here. Withdrawal is driven by the same abort signal the caller already passes, so a
+ * destroyed module drops its tools from the count without extra bookkeeping.
  */
 export async function registerWebMcpTool(
   modelContext: WebMcpModelContext,
@@ -273,49 +269,3 @@ export const WEBMCP_TEXT_RENDERING_CAPABILITY = {
   displayDelimiters: ["$$...$$", "\\[...\\]"],
   surfaces: ["canvas_text", "sticky_notes", "table_cells", "section_titles", "comments"],
 } as const;
-
-/** Drops the oldest entries (insertion order) until the map holds at most `limit`. */
-export function trimSnapshots<T>(snapshots: Map<string, T>, limit: number): void {
-  while (snapshots.size > limit) {
-    const oldest = snapshots.keys().next().value as string | undefined;
-    if (!oldest) break;
-    snapshots.delete(oldest);
-  }
-}
-
-/**
- * Opens a preview dialog and resolves with whether the participant chose "apply".
- * Only one proposal may wait on a dialog at a time; `populate` runs after that
- * guard so a rejected proposal never overwrites the pending preview. Aborting the
- * signal closes the dialog and rejects with the abort reason.
- */
-export function awaitDialogDecision(
-  dialog: HTMLDialogElement,
-  signal: AbortSignal,
-  populate: () => void,
-): Promise<boolean> {
-  signal.throwIfAborted();
-  if (dialog.open) {
-    return Promise.reject(new Error("Another proposal is already waiting for review."));
-  }
-  populate();
-  dialog.returnValue = "";
-  dialog.showModal();
-  return new Promise((resolve, reject) => {
-    const cleanup = (): void => {
-      signal.removeEventListener("abort", onAbort);
-      dialog.removeEventListener("close", onClose);
-    };
-    const onClose = (): void => {
-      cleanup();
-      resolve(dialog.returnValue === "apply");
-    };
-    const onAbort = (): void => {
-      cleanup();
-      if (dialog.open) dialog.close("cancel");
-      reject(signal.reason);
-    };
-    dialog.addEventListener("close", onClose, { once: true });
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-}
