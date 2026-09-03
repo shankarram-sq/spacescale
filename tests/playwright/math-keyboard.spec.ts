@@ -60,3 +60,25 @@ test("a delimiter opens the maths field, and its TeX lands back in the text", as
   await editor.click();
   await expect(panel).toBeHidden();
 });
+
+test("clicking away from the maths field saves the text instead of losing it", async ({ page }) => {
+  await createBoard(page, "Maths keyboard focus");
+  await page.getByTestId("tool-text").click();
+  await page.locator("#board-canvas").click({ position: { x: 400, y: 300 } });
+  const editor = page.getByTestId("canvas-text-editor");
+  await expect(editor).toBeVisible();
+
+  await editor.type("Answer $$");
+  await expect(page.getByTestId("math-field-panel")).toBeVisible({ timeout: 20_000 });
+  await page.locator("math-field").click();
+  await page.keyboard.type("2x");
+  await expect(editor).toHaveValue("Answer $$2x$$");
+
+  // Focus is in the maths field, and the participant clicks the canvas rather than pressing Done.
+  // The text editor already declined to save when focus left it, so the panel has to finish the
+  // edit; otherwise the next click opens a new editor and discards this draft.
+  await page.locator("#board-canvas").click({ position: { x: 1050, y: 260 } });
+  // That click starts a new text object; dismissing it leaves only what was saved.
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#board-canvas")).toContainText("Answer", { timeout: 10_000 });
+});

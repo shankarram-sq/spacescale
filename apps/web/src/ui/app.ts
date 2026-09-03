@@ -1013,6 +1013,8 @@ export class BoardApp {
     editor: HTMLTextAreaElement | HTMLInputElement;
     region: MathRegion;
     onValueChanged: () => void;
+    /** Finishes the edit the field belongs to, as that editor's own blur would. */
+    finish: (save: boolean) => void;
   } | null = null;
   private aiWatchCountdown: number | null = null;
   private aiAssistSelectionKey = "";
@@ -1412,6 +1414,7 @@ export class BoardApp {
       root: this.root,
       onChange: this.applyMathField,
       onDone: this.finishMathField,
+      onFocusLeft: this.leaveMathField,
     });
 
     this.webMcp = new CollectiveInquiryWebMcp({
@@ -3570,9 +3573,10 @@ export class BoardApp {
       editor.value = value;
       editor.setSelectionRange(cursor, cursor);
     });
-    this.bindMathField(editor);
+    this.bindMathField(editor, (save) => void this.closeTableCellEditor(save));
     editor.addEventListener("blur", (event) => {
-      // Reaching for the maths keyboard is not leaving the editor.
+      // Reaching for the maths keyboard is not leaving the editor; the panel finishes the edit
+      // when focus leaves it too.
       if (this.mathFieldPanel?.contains((event as FocusEvent).relatedTarget as Node | null)) return;
       void this.closeTableCellEditor(true);
     });
@@ -3707,9 +3711,10 @@ export class BoardApp {
       editor.value = value;
       editor.setSelectionRange(cursor, cursor);
     });
-    this.bindMathField(editor);
+    this.bindMathField(editor, (save) => void this.closeZoneTitleEditor(save));
     editor.addEventListener("blur", (event) => {
-      // Reaching for the maths keyboard is not leaving the editor.
+      // Reaching for the maths keyboard is not leaving the editor; the panel finishes the edit
+      // when focus leaves it too.
       if (this.mathFieldPanel?.contains((event as FocusEvent).relatedTarget as Node | null)) return;
       void this.closeZoneTitleEditor(true);
     });
@@ -4613,9 +4618,10 @@ export class BoardApp {
       preview();
     };
     editor.addEventListener("input", schedule);
-    this.bindMathField(editor, schedule);
+    this.bindMathField(editor, (save) => void this.closeTextEditor(save), schedule);
     editor.addEventListener("blur", (event) => {
-      // Reaching for the maths keyboard is not leaving the editor.
+      // Reaching for the maths keyboard is not leaving the editor; the panel finishes the edit
+      // when focus leaves it too.
       if (this.mathFieldPanel?.contains((event as FocusEvent).relatedTarget as Node | null)) return;
       void this.closeTextEditor(true);
     });
@@ -7154,9 +7160,10 @@ export class BoardApp {
    */
   private bindMathField(
     editor: HTMLTextAreaElement | HTMLInputElement,
+    finish: (save: boolean) => void,
     onValueChanged: () => void = () => undefined,
   ): void {
-    const sync = (): void => this.syncMathField(editor, onValueChanged);
+    const sync = (): void => this.syncMathField(editor, finish, onValueChanged);
     editor.addEventListener("input", () => {
       this.closeMathDelimiter(editor, onValueChanged);
       sync();
@@ -7182,6 +7189,7 @@ export class BoardApp {
 
   private syncMathField(
     editor: HTMLTextAreaElement | HTMLInputElement,
+    finish: (save: boolean) => void,
     onValueChanged: () => void,
   ): void {
     const panel = this.mathFieldPanel;
@@ -7193,7 +7201,7 @@ export class BoardApp {
       panel.close();
       return;
     }
-    this.mathFieldTarget = { editor, region, onValueChanged };
+    this.mathFieldTarget = { editor, region, onValueChanged, finish };
     void panel.open(
       `${region.delimiter.open}@${region.start}`,
       region,
@@ -7220,6 +7228,20 @@ export class BoardApp {
     this.mathFieldPanel?.close();
     this.mathFieldTarget = null;
     target?.editor.focus();
+  };
+
+  /**
+   * Focus left the maths field for something that is not the text it belongs to. The text editor
+   * declined to save when focus came to the field, so the edit is finished here instead; without
+   * it the editor would stay open and unsaved, and the next click on the canvas would discard it.
+   */
+  private readonly leaveMathField = (next: Node | null): void => {
+    const target = this.mathFieldTarget;
+    if (!target) return;
+    if (next !== null && (next === target.editor || target.editor.contains(next))) return;
+    this.mathFieldPanel?.close();
+    this.mathFieldTarget = null;
+    target.finish(true);
   };
 
   private async downloadLocalSvg(): Promise<void> {

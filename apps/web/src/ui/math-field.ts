@@ -42,6 +42,11 @@ export type MathFieldOptions = {
   onChange: (tex: string) => void;
   /** Called when the participant is finished, so the caller can return focus to the text. */
   onDone: () => void;
+  /**
+   * Called when focus leaves the panel for something that is not the text being edited. The text
+   * editor already declined to save when focus came here, so somebody has to finish the edit.
+   */
+  onFocusLeft: (next: Node | null) => void;
 };
 
 /** The top edge of MathLive's on-screen keyboard, or null when it is closed. */
@@ -74,6 +79,7 @@ export class MathFieldPanel {
       <p class="math-field-hint">Type or use the keyboard. The board stores it as TeX.</p>
     `;
     this.element.addEventListener("pointerdown", this.keepFocus);
+    this.element.addEventListener("focusout", this.handleFocusOut);
     this.element
       .querySelector("[data-math-field-done]")
       ?.addEventListener("click", () => this.options.onDone());
@@ -92,6 +98,7 @@ export class MathFieldPanel {
   destroy(): void {
     this.destroyed = true;
     this.element.removeEventListener("pointerdown", this.keepFocus);
+    this.element.removeEventListener("focusout", this.handleFocusOut);
     this.stopWatchingKeyboard?.();
     this.stopWatchingKeyboard = null;
     this.element.remove();
@@ -201,6 +208,18 @@ export class MathFieldPanel {
     this.watchVirtualKeyboard();
     return field;
   }
+
+  /**
+   * Focus leaving the panel ends the edit. The text editor's own blur declined to save when focus
+   * came here, so without this a participant who clicks away keeps an open, unsaved editor, and
+   * the next click on the canvas discards the draft.
+   */
+  private readonly handleFocusOut = (event: Event): void => {
+    if (this.element.hidden) return;
+    const next = (event as FocusEvent).relatedTarget as Node | null;
+    if (next !== null && this.element.contains(next)) return;
+    this.options.onFocusLeft(next);
+  };
 
   /** Pressing a key must not blur the text editor, which would save and close it. */
   private readonly keepFocus = (event: Event): void => {

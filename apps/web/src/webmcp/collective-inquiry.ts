@@ -92,6 +92,8 @@ export class CollectiveInquiryWebMcp {
   private readonly registration = new AbortController();
   private destroyed = false;
   private visualObjectUrl: string | null = null;
+  /** Claimed while a review is being typeset, before the dialog itself is open. */
+  private visualReviewPending = false;
 
   constructor(private readonly options: CollectiveInquiryWebMcpOptions) {
     this.problemStepWatch = new ProblemStepWatchFeed({
@@ -543,9 +545,25 @@ export class CollectiveInquiryWebMcp {
       "[data-webmcp-visual-surface]",
     );
     if (!surface) throw new Error("The visual review surface is unavailable.");
-    if (this.visualReviewDialog.open) {
+    // Typesetting the preview takes a turn, so the dialog is claimed before that rather than
+    // after it: two inspections arriving together would otherwise both pass an open check that is
+    // still false, and the second would replace and then close the first participant's review.
+    if (this.visualReviewDialog.open || this.visualReviewPending) {
       throw new Error("Finish the current visual review before sharing another selection.");
     }
+    this.visualReviewPending = true;
+    try {
+      await this.renderVisualReview(surface, items, kindCounts);
+    } finally {
+      this.visualReviewPending = false;
+    }
+  }
+
+  private async renderVisualReview(
+    surface: HTMLElement,
+    items: readonly BoardItem[],
+    kindCounts: Readonly<Partial<Record<BoardItem["kind"], number>>>,
+  ): Promise<void> {
     this.clearVisualReview();
     const preview = await buildVisualPreview(items);
     this.visualObjectUrl = preview.objectUrl;

@@ -350,16 +350,19 @@ function renderSticky(item: StickyBoardItem, options: SvgItemOptions = {}): stri
   const lineHeight = number(item.style.fontSize * STICKY_LINE_HEIGHT);
   const lines = stickyTextLines(item);
   const clipAttribute = `clip-path="url(#${escapeXmlAttribute(clipId)})"`;
-  const mathText = renderStackedMath(
-    lines,
+  const mathText = renderBoxedMath(
+    text,
     contentX,
     contentY + item.style.fontSize,
-    item.style.fontSize * STICKY_LINE_HEIGHT,
+    contentWidth,
     item.style.fontSize,
+    STICKY_LINE_HEIGHT,
+    Math.max(1, Math.floor(contentHeight / (item.style.fontSize * STICKY_LINE_HEIGHT))),
     item.style.textColor,
+    item.style,
     typographyAttributes(item.style),
     clipAttribute,
-    options.renderMath,
+    options,
   );
   const spans = lines
     .map(
@@ -501,16 +504,19 @@ function renderTable(item: TableBoardItem, options: SvgItemOptions = {}): string
         );
         const cellTypography = typographyAttributes(item.style, isHeader ? "700" : "500");
         const cellClip = `clip-path="url(#${escapeXmlAttribute(clipId)})"`;
-        const cellMath = renderStackedMath(
-          textLines,
+        const cellMath = renderBoxedMath(
+          text,
           contentX,
           contentY + item.style.fontSize,
-          item.style.fontSize * TABLE_LINE_HEIGHT,
+          contentWidth,
           item.style.fontSize,
+          TABLE_LINE_HEIGHT,
+          Math.max(1, Math.floor(contentHeight / (item.style.fontSize * TABLE_LINE_HEIGHT))),
           item.style.textColor,
+          item.style,
           cellTypography,
           cellClip,
-          options.renderMath,
+          options,
         );
         if (cellMath !== null) {
           renderedText = cellMath;
@@ -557,16 +563,19 @@ function renderZone(item: ZoneBoardItem, options: SvgItemOptions = {}): string {
   const titleTypography = typographyAttributes(item.style, "700");
   const titleBaseline = y + ZONE_TITLE_PADDING + item.style.fontSize;
   const renderedTitle =
-    renderStackedMath(
-      [visibleTitle],
+    renderBoxedMath(
+      visibleTitle,
       contentX,
       titleBaseline,
+      Number.POSITIVE_INFINITY,
       item.style.fontSize,
-      item.style.fontSize,
+      1,
+      1,
       item.style.textColor,
+      item.style,
       titleTypography,
       titleClip,
-      options.renderMath,
+      options,
     ) ??
     `<text x="${number(contentX)}" y="${number(titleBaseline)}" fill="${escapeXmlAttribute(item.style.textColor)}" font-size="${number(item.style.fontSize)}" ${titleTypography} xml:space="preserve" ${titleClip}>${escapeXmlText(visibleTitle)}</text>`;
   return `<g ${attributes}><title>${escapeXmlText(title)}</title>${clip}${fill}${border}${renderedTitle}</g>`;
@@ -635,94 +644,162 @@ export interface SvgItemOptions {
   renderMath?: MathSvgRenderer;
 }
 
-/** Matches the per-code-point width the sticky and table wrappers already assume. */
+/** Used only when no measurer is supplied; matches what the plain-text wrappers already assume. */
 const ESTIMATED_CODE_POINT_WIDTH = 0.56;
 
-function estimatedTextWidth(text: string, fontSize: number): number {
+/**
+ * Measures one run of prose in board units. The browser hands over real font metrics; without one
+ * the estimate stands in, which is what an exporter with no layout engine has to do.
+ */
+export type TextMeasurer = (text: string, fontSize: number, style: TextBearingStyle) => number;
+
+export interface SvgItemOptions {
+  /**
+   * Draws math instead of writing its source. Omit it and every text surface renders exactly as
+   * it always has, which is what the edge exporter does: it has no typesetter.
+   */
+  renderMath?: MathSvgRenderer;
+  /**
+   * Measures prose so a formula can be placed after it. Without it the run width is estimated per
+   * code point, which drifts on a proportional font.
+   */
+  measureText?: TextMeasurer;
+}
+
+/** One piece of a laid-out line: a run of prose, or one typeset formula. */
+type LaidOutRun =
+  | { kind: "text"; text: string; width: number }
+  | { kind: "math"; tex: string; math: MathSvg };
+
+type MathLayout = { lines: LaidOutRun[][]; holdsMath: boolean };
+
+function runWidth(
+  text: string,
+  fontSize: number,
+  style: TextBearingStyle,
+  measure: TextMeasurer | undefined,
+): number {
+  if (measure) return measure(text, fontSize, style);
   return [...text].length * fontSize * ESTIMATED_CODE_POINT_WIDTH;
 }
 
 /**
- * Lays one line of mixed prose and math out by hand, because SVG has no inline layout: literal
- * runs stay `<text>`, and each typeset expression is placed on the baseline and advanced past.
- * Returns null when the line holds no math, so every math-free surface keeps its existing markup.
+ * Lays a whole text value out as lines of runs, keeping each formula whole. Splitting the value
+ * first is what lets a formula wrap as one thing: wrapping the characters first would leave its
+ * opening and closing delimiters on different lines, and neither line would read as maths.
+ *
+ * `maxWidth` of Infinity wraps only at explicit newlines, which is how a canvas text object
+ * behaves; a sticky note or a table cell passes its content box instead.
  */
-function renderMathLine(
-  line: string,
-  x: number,
-  baselineY: number,
+function layOutMath(
+  value: string,
   fontSize: number,
-  fill: string,
-  typography: string,
-  renderMath: MathSvgRenderer,
-): string | null {
-  const segments = splitTexSegments(line);
+  style: TextBearingStyle,
+  maxWidth: number,
+  maxLines: number,
+  options: SvgItemOptions,
+): MathLayout | null {
+  const renderMath = options.renderMath;
+  if (renderMath === undefined) return null;
+  const segments = splitTexSegments(value);
   if (!segments.some((segment) => segment.kind === "math")) return null;
-  const parts: string[] = [];
-  let cursor = x;
-  const writeText = (text: string): void => {
-    if (text.length === 0) return;
-    parts.push(
-      `<text x="${number(cursor)}" y="${number(baselineY)}" fill="${escapeXmlAttribute(fill)}" font-size="${number(fontSize)}" ${typography} xml:space="preserve">${escapeXmlText(text)}</text>`,
-    );
-    cursor += estimatedTextWidth(text, fontSize);
+
+  const lines: LaidOutRun[][] = [[]];
+  let used = 0;
+  const current = (): LaidOutRun[] => lines[lines.length - 1] as LaidOutRun[];
+  const newline = (): boolean => {
+    if (lines.length >= maxLines) return false;
+    lines.push([]);
+    used = 0;
+    return true;
   };
+  const place = (run: LaidOutRun, width: number): boolean => {
+    if (used > 0 && used + width > maxWidth && !newline()) return false;
+    current().push(run);
+    used += width;
+    return true;
+  };
+
   for (const segment of segments) {
-    if (segment.kind === "text") {
-      writeText(segment.text);
+    if (segment.kind === "math") {
+      const math = renderMath(segment.tex, fontSize, segment.display);
+      if (math === undefined) {
+        // Better the source than a gap: a reader can still see what was written.
+        if (!placeProse(segment.text, fontSize, style, options, place, newline)) break;
+        continue;
+      }
+      if (!place({ kind: "math", tex: segment.tex, math }, math.width)) break;
       continue;
     }
-    const math = renderMath(segment.tex, fontSize, segment.display);
-    if (math === undefined) {
-      // Better the source than a gap: a reader can still see what was written.
-      writeText(segment.text);
-      continue;
-    }
-    parts.push(
-      `<g transform="translate(${number(cursor)} ${number(baselineY - math.baseline)})" role="math" aria-label="${escapeXmlAttribute(`Formula: ${segment.tex}`)}">${math.svg}</g>`,
-    );
-    cursor += math.width;
+    if (!placeProse(segment.text, fontSize, style, options, place, newline)) break;
   }
-  return parts.join("");
+  return { lines, holdsMath: true };
 }
 
-/**
- * Draws a stack of already-wrapped lines that may hold math, clipped like the plain-text form it
- * replaces. Returns null when no line holds math, so a surface without formulas keeps the exact
- * `<text>` markup it has always produced.
- */
-function renderStackedMath(
-  lines: readonly string[],
+/** Places prose word by word, breaking at explicit newlines and wrapping between words. */
+function placeProse(
+  text: string,
+  fontSize: number,
+  style: TextBearingStyle,
+  options: SvgItemOptions,
+  place: (run: LaidOutRun, width: number) => boolean,
+  newline: () => boolean,
+): boolean {
+  const paragraphs = text.split(/\r\n?|\n/u);
+  for (let index = 0; index < paragraphs.length; index += 1) {
+    if (index > 0 && !newline()) return false;
+    const paragraph = paragraphs[index] ?? "";
+    if (paragraph.length === 0) continue;
+    // Keep the spaces: they are what separates a formula from the word before it.
+    for (const word of paragraph.split(/(?<=\s)/u)) {
+      if (word.length === 0) continue;
+      const width = runWidth(word, fontSize, style, options.measureText);
+      if (!place({ kind: "text", text: word, width }, width)) return false;
+    }
+  }
+  return true;
+}
+
+/** Draws laid-out lines, placing each formula on the baseline of the line it belongs to. */
+function drawMathLayout(
+  layout: MathLayout,
   x: number,
   firstBaseline: number,
   lineHeight: number,
   fontSize: number,
   fill: string,
   typography: string,
-  clipAttribute: string,
-  renderMath: MathSvgRenderer | undefined,
-): string | null {
-  if (renderMath === undefined) return null;
-  const rendered = lines.map((line, index) =>
-    renderMathLine(
-      line,
-      x,
-      firstBaseline + index * lineHeight,
-      fontSize,
-      fill,
-      typography,
-      renderMath,
-    ),
-  );
-  if (rendered.every((line) => line === null)) return null;
-  const content = rendered
-    .map((line, index) =>
-      line === null
-        ? `<text x="${number(x)}" y="${number(firstBaseline + index * lineHeight)}" fill="${escapeXmlAttribute(fill)}" font-size="${number(fontSize)}" ${typography} xml:space="preserve">${escapeXmlText(lines[index] || " ")}</text>`
-        : line,
-    )
-    .join("");
-  return `<g ${clipAttribute}>${content}</g>`;
+): string {
+  const parts: string[] = [];
+  layout.lines.forEach((runs, index) => {
+    const baselineY = firstBaseline + index * lineHeight;
+    let cursor = x;
+    let prose = "";
+    let proseStart = cursor;
+    const flushProse = (): void => {
+      if (prose.length === 0) return;
+      parts.push(
+        `<text x="${number(proseStart)}" y="${number(baselineY)}" fill="${escapeXmlAttribute(fill)}" font-size="${number(fontSize)}" ${typography} xml:space="preserve">${escapeXmlText(prose)}</text>`,
+      );
+      prose = "";
+    };
+    for (const run of runs) {
+      if (run.kind === "text") {
+        if (prose.length === 0) proseStart = cursor;
+        prose += run.text;
+        cursor += run.width;
+        continue;
+      }
+      flushProse();
+      parts.push(
+        `<g transform="translate(${number(cursor)} ${number(baselineY - run.math.baseline)})" role="math" aria-label="${escapeXmlAttribute(`Formula: ${run.tex}`)}">${run.math.svg}</g>`,
+      );
+      cursor += run.math.width;
+      proseStart = cursor;
+    }
+    flushProse();
+  });
+  return parts.join("");
 }
 
 function renderText(
@@ -730,7 +807,7 @@ function renderText(
   options: SvgItemOptions = {},
 ): string {
   const lines = item.geometry.text.split(/\r\n?|\n/u);
-  const mathContent = renderTextMath(item, lines, options.renderMath);
+  const mathContent = renderTextMath(item, options);
   if (mathContent !== null) return mathContent;
   const attributes = [
     `x="${number(item.geometry.x)}"`,
@@ -754,34 +831,64 @@ function renderText(
   return `<text ${attributes}>${content}</text>`;
 }
 
-/** Draws a canvas text object whose lines hold math. Returns null when none do. */
+/**
+ * Draws a boxed surface (a sticky note, a table cell, a Section title) holding math, wrapped to
+ * its own content box and clipped like the plain-text form it replaces. Returns null when the
+ * surface holds no math, so every math-free surface keeps the markup it has always produced.
+ */
+function renderBoxedMath(
+  value: string,
+  x: number,
+  firstBaseline: number,
+  contentWidth: number,
+  fontSize: number,
+  lineHeightRatio: number,
+  maxLines: number,
+  fill: string,
+  style: TextBearingStyle,
+  typography: string,
+  clipAttribute: string,
+  options: SvgItemOptions,
+): string | null {
+  const layout = layOutMath(value, fontSize, style, contentWidth, maxLines, options);
+  if (layout === null) return null;
+  const content = drawMathLayout(
+    layout,
+    x,
+    firstBaseline,
+    fontSize * lineHeightRatio,
+    fontSize,
+    fill,
+    typography,
+  );
+  return `<g ${clipAttribute}>${content}</g>`;
+}
+
+/** Draws a canvas text object holding math. Returns null when it holds none. */
 function renderTextMath(
   item: Extract<BoardItem, { kind: "text" }>,
-  lines: readonly string[],
-  renderMath: MathSvgRenderer | undefined,
+  options: SvgItemOptions,
 ): string | null {
-  if (renderMath === undefined) return null;
-  const typography = typographyAttributes(item.style);
   const lineHeight = item.style.fontSize * 1.2;
-  const rendered = lines.map((line, index) =>
-    renderMathLine(
-      line,
-      item.geometry.x,
-      item.geometry.y + index * lineHeight,
-      item.style.fontSize,
-      item.style.color,
-      typography,
-      renderMath,
-    ),
+  // A canvas text object grows rather than wraps, so only its own newlines break a line.
+  const layout = layOutMath(
+    item.geometry.text,
+    item.style.fontSize,
+    item.style,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER,
+    options,
   );
-  if (rendered.every((line) => line === null)) return null;
-  const content = rendered
-    .map((line, index) =>
-      line === null
-        ? `<text x="${number(item.geometry.x)}" y="${number(item.geometry.y + index * lineHeight)}" fill="${escapeXmlAttribute(item.style.color)}" font-size="${number(item.style.fontSize)}" ${typography} xml:space="preserve">${escapeXmlText(lines[index] ?? "")}</text>`
-        : line,
-    )
-    .join("");
+  if (layout === null) return null;
+  const content = drawMathLayout(
+    layout,
+    item.geometry.x,
+    item.geometry.y,
+    lineHeight,
+    item.style.fontSize,
+    item.style.color,
+    typographyAttributes(item.style),
+  );
   return `<g opacity="${number(item.style.opacity)}" transform="${transformAttribute(item)}" data-item-id="${escapeXmlAttribute(item.id)}">${content}</g>`;
 }
 

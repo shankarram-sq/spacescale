@@ -1,7 +1,16 @@
 import type { BoardItem } from "@collab/protocol";
 import { describe, expect, it } from "vitest";
 
-import { type MathSvg, renderSvgItem } from "./index.js";
+import { type MathSvg, renderSvgItem, type TextMeasurer } from "./index.js";
+
+/** Stands in for the browser: a proportional font where W is wide and i is narrow. */
+const measureText: TextMeasurer = (text, fontSize) => {
+  let width = 0;
+  for (const character of text) {
+    width += fontSize * (character === "W" ? 1.2 : character === "i" ? 0.25 : 0.5);
+  }
+  return width;
+};
 
 const ACTOR = "018f0000-0000-7000-8000-0000000000a1";
 
@@ -124,6 +133,47 @@ describe("exporting math", () => {
     if (!after) throw new Error("The trailing prose was not drawn.");
     // x = 10 (the item's x) + 40 (the formula's measured width at font size 20).
     expect(Number(after[1])).toBeCloseTo(50, 5);
+  });
+
+  it("places a formula where the measured prose actually ends", () => {
+    const { renderMath } = fakeRenderer();
+    // Four W at font size 20 measure 96, where a per-character estimate would claim 44.8.
+    const svg = renderSvgItem(textItem("WWWW $$x$$"), { renderMath, measureText });
+    const formula = svg.match(/translate\(([\d.]+) /u);
+    if (!formula) throw new Error("The formula was not drawn.");
+    // x = 10 + 96 for the four W plus 10 for the space that follows them.
+    expect(Number(formula[1])).toBeCloseTo(116, 5);
+  });
+
+  it("falls back to an estimate when no measurer is supplied", () => {
+    const { renderMath } = fakeRenderer();
+    const svg = renderSvgItem(textItem("WWWW $$x$$"), { renderMath });
+    const formula = svg.match(/translate\(([\d.]+) /u);
+    if (!formula) throw new Error("The formula was not drawn.");
+    // Five code points, "WWWW ", at 0.56 em of font size 20.
+    expect(Number(formula[1])).toBeCloseTo(10 + 5 * 20 * 0.56, 5);
+  });
+
+  it("keeps a formula whole when a sticky note wraps around it", () => {
+    const { renderMath } = fakeRenderer();
+    // The words before it force a wrap; the formula must not be split across the break.
+    const sticky = stickyItem("one two three four five six seven $$\\frac{1}{2}$$ after");
+    const svg = renderSvgItem(sticky, { renderMath, measureText });
+    expect(svg).toContain('<svg data-tex="\\frac{1}{2}"></svg>');
+    expect(svg).not.toContain("$$");
+    // Wrapping put the later words on a lower baseline than the first ones.
+    const baselines = [...svg.matchAll(/<text x="[\d.]+" y="([\d.]+)"/gu)].map((match) =>
+      Number(match[1]),
+    );
+    expect(new Set(baselines).size).toBeGreaterThan(1);
+  });
+
+  it("draws a formula written across a newline", () => {
+    const { renderMath } = fakeRenderer();
+    // The delimiters sit on different lines, so per-line detection would miss this entirely.
+    const svg = renderSvgItem(textItem("before $$a +\nb$$ after"), { renderMath, measureText });
+    expect(svg).toContain('data-tex="a +\nb"');
+    expect(svg).not.toContain("$$");
   });
 
   it("keeps the source visible when one expression cannot be typeset", () => {
