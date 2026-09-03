@@ -1104,3 +1104,32 @@ describe("pictures of drawn work", () => {
     feed.destroy();
   });
 });
+
+describe("a board that outgrows its watch", () => {
+  it("ends the watch rather than following only part of the board", async () => {
+    const board: BoardItem[] = Array.from({ length: 1_000 }, (_, index) => ({
+      ...sticky(),
+      id: `018f0000-0000-7000-8000-${String(index).padStart(12, "0")}`,
+    }));
+    const feed = new ProblemStepWatchFeed({
+      getBoardItems: () => board,
+      getAuthoritativeItem: (itemId) => board.find((item) => item.id === itemId),
+      getSequence: () => 7,
+      getParticipantDisplayName: () => "Sam",
+    });
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    expect(started.steps).toHaveLength(1_000);
+
+    const extra = { ...sticky("one too many"), id: "018f0000-0000-7000-8000-0000000ffff1" };
+    board.push(extra);
+    feed.recordAuthoritativeAction(serverAction(8, extra), new Set([extra.id]));
+
+    expect(() =>
+      feed.execute(
+        { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+        new AbortController().signal,
+      ),
+    ).toThrow("missing or expired");
+    feed.destroy();
+  });
+});

@@ -378,6 +378,7 @@ export class ProblemStepWatchFeed {
     const actor = { displayName: action.actor.displayName };
     for (const session of this.sessions.values()) {
       const steps: StepChange[] = [];
+      let outgrown = false;
       const applied = new Map<string, WatchedStep | undefined>();
       for (const itemId of changedIds) {
         const previous = session.steps.get(itemId);
@@ -385,7 +386,10 @@ export class ProblemStepWatchFeed {
           // The watch follows the whole board, so anything new joins it as it is saved.
           const created = this.options.getAuthoritativeItem(itemId);
           if (!created) continue;
-          this.trackItem(session, created);
+          if (!this.trackItem(session, created)) {
+            outgrown = true;
+            continue;
+          }
           const step = session.steps.get(itemId);
           if (step) {
             applied.set(itemId, step);
@@ -414,6 +418,10 @@ export class ProblemStepWatchFeed {
       for (const [itemId, step] of applied) {
         if (step) session.steps.set(itemId, step);
         else session.steps.delete(itemId);
+      }
+      if (outgrown) {
+        this.stopSession(session, "outgrown");
+        continue;
       }
       if (steps.length === 0) continue;
       session.lastReportedSeq = Math.max(session.lastReportedSeq, action.seq);
@@ -893,8 +901,13 @@ export class ProblemStepWatchFeed {
     );
   }
 
-  /** Gives an object a stable step alias for this watch and snapshots it. */
-  private trackItem(session: WatchSession, item: BoardItem): void {
+  /**
+   * Gives an object a stable step alias for this watch and snapshots it. Returns false when the
+   * board has grown past what one watch can carry, which ends the watch rather than quietly
+   * following only part of the board.
+   */
+  private trackItem(session: WatchSession, item: BoardItem): boolean {
+    if (!session.itemIds.has(item.id) && session.itemIds.size >= MAX_WATCHED_ITEMS) return false;
     let alias = session.aliases.get(item.id);
     if (alias === undefined) {
       alias = `step_${session.nextAlias}`;
@@ -904,6 +917,7 @@ export class ProblemStepWatchFeed {
     session.itemIds.add(item.id);
     const step = this.toWatchedStep(item, alias);
     if (step) session.steps.set(item.id, step);
+    return true;
   }
 
   private toWatchedStep(item: BoardItem, alias?: string): WatchedStep | undefined {
@@ -1188,12 +1202,13 @@ function safeInteger(value: unknown, field: string, minimum: number, maximum?: n
   return value;
 }
 
-type WatchEndedStatus = "stopped" | "expired" | "replaced";
+type WatchEndedStatus = "stopped" | "expired" | "replaced" | "outgrown";
 
 const WATCH_ENDED_REASON: Record<WatchEndedStatus, string> = {
   stopped: "The participant asked to stop this watch.",
   expired: "The 15-minute watch ended.",
   replaced: "A newer watch started in this browser and replaced this one.",
+  outgrown: `This board grew past the ${MAX_WATCHED_ITEMS} objects one watch can follow. Start another watch to pick it up again.`,
 };
 
 /** Every terminal result says why it ended and that no further wait should be issued. */
