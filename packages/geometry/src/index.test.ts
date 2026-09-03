@@ -21,8 +21,10 @@ import {
   normalizeStampGeometry,
   normalizeStickyGeometry,
   normalizeTableGeometry,
+  normalizeTextGeometry,
   normalizeTransform,
   normalizeZoneGeometry,
+  parseVideoEmbedReference,
   polygonPoints,
   protractorSnapPoints,
   tableGeometryContainsPoint,
@@ -60,6 +62,33 @@ describe("geometry normalization", () => {
       width: 4.56,
       height: 8,
     });
+  });
+
+  it("accepts only supported video URLs with the explicit embed marker", () => {
+    expect(parseVideoEmbedReference("https://youtu.be/dQw4w9WgXcQ?t=10")).toEqual({
+      provider: "youtube",
+      videoId: "dQw4w9WgXcQ",
+      sourceUrl: "https://youtu.be/dQw4w9WgXcQ?t=10",
+    });
+    expect(
+      normalizeTextGeometry({
+        x: 10,
+        y: 20,
+        text: "https://vimeo.com/76979871",
+        embed: "video",
+      }),
+    ).toMatchObject({ embed: "video" });
+    expect(() =>
+      normalizeTextGeometry({ x: 10, y: 20, text: "not a video", embed: "video" }),
+    ).toThrow(/supported HTTPS YouTube or Vimeo/);
+    expect(() =>
+      normalizeTextGeometry({
+        x: 10,
+        y: 20,
+        text: "https://example.com/video",
+        embed: "video",
+      }),
+    ).toThrow(/supported HTTPS YouTube or Vimeo/);
   });
 
   it("canonicalizes legacy rectangles and persists an explicit square subtype", () => {

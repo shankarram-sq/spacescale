@@ -723,6 +723,22 @@ describe("sticky note UI configuration", () => {
         },
       },
     ]);
+    expect(
+      buildTextStyleOperations(
+        [
+          {
+            ...text,
+            id: "video-a",
+            geometry: {
+              ...text.geometry,
+              text: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+              embed: "video",
+            },
+          },
+        ],
+        { fontFamily: "serif", fontSize: 72 },
+      ),
+    ).toEqual([]);
 
     const sticky: Extract<BoardItem, { kind: "sticky" }> = {
       id: "sticky-a",

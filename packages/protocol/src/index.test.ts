@@ -247,6 +247,15 @@ describe("durable operation validation", () => {
         item: { ...text(), geometry: { ...text().geometry, embed: "automatic" } },
       }),
     ).toThrow(/text embed/);
+    expect(() =>
+      validateDurableOperation({
+        kind: "item.create",
+        item: {
+          ...text(),
+          geometry: { ...text().geometry, text: "not a video", embed: "video" },
+        },
+      }),
+    ).toThrow(/supported HTTPS YouTube or Vimeo/);
   });
 
   it("normalizes explicit groups, Section membership, copy remapping, and block typography", () => {

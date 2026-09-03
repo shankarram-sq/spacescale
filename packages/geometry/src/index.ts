@@ -80,6 +80,61 @@ export interface TextGeometry {
 export const VIDEO_EMBED_WIDTH = 360;
 export const VIDEO_EMBED_HEIGHT = 232;
 
+export interface VideoEmbedReference {
+  provider: "youtube" | "vimeo";
+  videoId: string;
+  sourceUrl: string;
+}
+
+/** Parses the complete HTTPS video URLs supported by every render and validation surface. */
+export function parseVideoEmbedReference(value: string): VideoEmbedReference | null {
+  const candidate = value.trim();
+  if (!candidate || /\s/u.test(candidate)) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password) return null;
+
+  const host = parsed.hostname.toLowerCase();
+  if (host === "youtu.be" || host === "www.youtu.be") {
+    return youtubeVideoReference(parsed.pathname.split("/").filter(Boolean)[0], parsed.href);
+  }
+  if (
+    host === "youtube.com" ||
+    host === "www.youtube.com" ||
+    host === "m.youtube.com" ||
+    host === "youtube-nocookie.com" ||
+    host === "www.youtube-nocookie.com"
+  ) {
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const videoId =
+      parsed.pathname === "/watch"
+        ? parsed.searchParams.get("v")
+        : parts[0] === "embed" || parts[0] === "shorts" || parts[0] === "live"
+          ? parts[1]
+          : null;
+    return youtubeVideoReference(videoId, parsed.href);
+  }
+  if (host === "vimeo.com" || host === "www.vimeo.com" || host === "player.vimeo.com") {
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const videoId = host === "player.vimeo.com" && parts[0] === "video" ? parts[1] : parts[0];
+    if (!videoId || !/^\d{5,12}$/u.test(videoId)) return null;
+    return { provider: "vimeo", videoId, sourceUrl: parsed.href };
+  }
+  return null;
+}
+
+function youtubeVideoReference(
+  videoId: string | null | undefined,
+  sourceUrl: string,
+): VideoEmbedReference | null {
+  if (!videoId || !/^[A-Za-z0-9_-]{6,15}$/u.test(videoId)) return null;
+  return { provider: "youtube", videoId, sourceUrl };
+}
+
 export interface StickyGeometry extends BoxGeometry {
   text: string;
 }
@@ -519,6 +574,12 @@ export function normalizeTextGeometry(value: unknown, path = "$geometry"): TextG
   }
   if (object.embed !== undefined && object.embed !== "video") {
     throw new GeometryValidationError('Expected text embed to be "video"', `${path}.embed`);
+  }
+  if (object.embed === "video" && parseVideoEmbedReference(object.text) === null) {
+    throw new GeometryValidationError(
+      "Video embed text must be a supported HTTPS YouTube or Vimeo URL",
+      `${path}.text`,
+    );
   }
   return {
     x: normalizeCoordinate(object.x, `${path}.x`),

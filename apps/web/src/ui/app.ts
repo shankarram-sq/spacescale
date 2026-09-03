@@ -622,6 +622,17 @@ type TextWeightItem = {
   style: { fontWeight?: TextFontWeight };
 };
 
+type TextStyleItem = Extract<BoardItem, { kind: "text" | "sticky" | "table" | "zone" }>;
+
+function supportsTextStyling(item: BoardItem): item is TextStyleItem {
+  return (
+    (item.kind === "text" && item.geometry.embed !== "video") ||
+    item.kind === "sticky" ||
+    item.kind === "table" ||
+    item.kind === "zone"
+  );
+}
+
 export function effectiveTextFontWeight(item: TextWeightItem): TextFontWeight {
   return item.style.fontWeight ?? (item.kind === "zone" ? "bold" : "normal");
 }
@@ -632,13 +643,7 @@ export function buildTextStyleOperations(
   allItems: Iterable<BoardItem> = items,
   assignNewMembership = true,
 ): BatchItemOperation[] {
-  const textItems = items.filter(
-    (item) =>
-      item.kind === "text" ||
-      item.kind === "sticky" ||
-      item.kind === "table" ||
-      item.kind === "zone",
-  );
+  const textItems = items.filter(supportsTextStyling);
   if (
     textItems.length !== items.length ||
     textItems.length === 0 ||
@@ -2581,13 +2586,7 @@ export class BoardApp {
     ): void => {
       const items = [...this.tools.selection].flatMap((id) => {
         const item = this.model.getItem(id);
-        return item &&
-          (item.kind === "text" ||
-            item.kind === "sticky" ||
-            item.kind === "table" ||
-            item.kind === "zone")
-          ? [item]
-          : [];
+        return item && supportsTextStyling(item) ? [item] : [];
       });
       const allActive =
         items.length > 0 &&
@@ -6274,13 +6273,7 @@ export class BoardApp {
       "[data-selection-font-controls]",
       HTMLElement,
     );
-    const textItems = selectedItems.filter(
-      (item): item is Extract<BoardItem, { kind: "text" | "sticky" | "table" | "zone" }> =>
-        item.kind === "text" ||
-        item.kind === "sticky" ||
-        item.kind === "table" ||
-        item.kind === "zone",
-    );
+    const textItems = selectedItems.filter(supportsTextStyling);
     const allText =
       selectedItems.length === selectedIds.length &&
       selectedItems.length > 0 &&
