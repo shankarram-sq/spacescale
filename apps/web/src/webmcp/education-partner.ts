@@ -32,6 +32,7 @@ import {
   enumValue,
   isRecord,
   optionalText,
+  registerWebMcpTool,
   requiredText,
   textArray,
   WEBMCP_MATHJAX_GUIDANCE,
@@ -593,7 +594,8 @@ export class EducationPartnerWebMcp {
     const modelContext = document.modelContext;
     if (typeof modelContext?.registerTool !== "function") return;
     try {
-      await modelContext.registerTool(
+      await registerWebMcpTool(
+        modelContext,
         {
           name: "list_class_collaboration_modes",
           description: `List the live SpaceScale education collaboration modes, their matching write tools, output limits, human-control rules, and supported text rendering. Call this when choosing how to help a class before reading or changing the canvas. ${WEBMCP_MATHJAX_GUIDANCE}`,
@@ -604,7 +606,8 @@ export class EducationPartnerWebMcp {
         { signal: this.registration.signal },
       );
       for (const configuration of CARD_TOOL_CONFIGURATIONS) {
-        await modelContext.registerTool(
+        await registerWebMcpTool(
+          modelContext,
           {
             name: configuration.name,
             description: `${configuration.description} First call read_selected_class_ideas and pass its selectionToken. The caller's WebMCP permission is the approval; this tool adds one normal realtime batch directly, with ordinary undo and internal origin metadata. ${WEBMCP_MATHJAX_GUIDANCE}`,
@@ -615,7 +618,8 @@ export class EducationPartnerWebMcp {
           { signal: this.registration.signal },
         );
       }
-      await modelContext.registerTool(
+      await registerWebMcpTool(
+        modelContext,
         {
           name: "add_content_visuals",
           description: `Add one to three playful, content-grounded visuals beside browser-selected class ideas. Use meme_card for a reliable locally rendered classroom meme, or inline_image for an LLM-generated PNG, JPEG, WebP, or GIF supplied as a data URL. Every visual must cite selected idea aliases, include a discussion question, avoid real student likenesses or targeting individuals, and help the class discuss rather than merely decorate. Alt text is optional; the title is used when it is omitted. First call read_selected_class_ideas and pass its selectionToken. External image URLs are never fetched or embedded; SpaceScale sanitizes and privately stores every image in the board bucket. ${WEBMCP_MATHJAX_GUIDANCE}`,
@@ -630,7 +634,8 @@ export class EducationPartnerWebMcp {
         if (!/^[a-z][a-z0-9_]{0,63}$/u.test(sectionContext.readToolName)) {
           throw new Error("The authoritative section reader must use a valid WebMCP tool name.");
         }
-        await modelContext.registerTool(
+        await registerWebMcpTool(
+          modelContext,
           {
             name: "add_cross_group_jigsaw",
             description: `Compare selected contributions from different authoritative class sections. Include agreement, tension, and complementary idea cards; every card must cite sources from at least two section aliases and end with a testable class question. First call ${sectionContext.readToolName} and pass its sectionToken. This tool never infers group membership from coordinates.`,
@@ -641,7 +646,8 @@ export class EducationPartnerWebMcp {
           { signal: this.registration.signal },
         );
       }
-      await modelContext.registerTool(
+      await registerWebMcpTool(
+        modelContext,
         {
           name: "add_group_decision_scaffold",
           description: `Add a source-linked scaffold that students complete for criteria_co_designer, tradeoff_visualizer, assumption_auction, consensus_with_dissent, minority_report, or decision_record. The tool may structure criteria, options, expressed concerns, and questions, but every weight, rating, response count, vote, and final class choice stays blank for students. Never infer consensus from silence or note similarity. First call read_selected_class_ideas and pass its selectionToken. ${WEBMCP_MATHJAX_GUIDANCE}`,

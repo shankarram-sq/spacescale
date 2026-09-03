@@ -12,7 +12,14 @@ export const ASSIST_NOTE_MAX_LENGTH = 280;
 /** Comments one watch may post, so a looping host cannot flood the board's comment cap. */
 export const MAX_ASSIST_COMMENTS_PER_WATCH = 20;
 
-const MAX_WATCHED_ITEMS = 30;
+/** Items one watch can follow, sized to cover a whole classroom board rather than a few steps. */
+const MAX_WATCHED_ITEMS = 150;
+/**
+ * Characters one watch may carry across all of its steps. Item count alone cannot bound a
+ * result: a board holds up to 10,000 items and one canvas text item up to 5,000 characters, so
+ * the text budget is what actually keeps a watch result a sane size for the host.
+ */
+const MAX_WATCHED_TEXT_CODE_POINTS = 120_000;
 const MAX_RETAINED_CHANGES = 100;
 const MAX_LIVE_SESSIONS = 5;
 /** Requests retained between waits; the oldest are dropped and the drop count is reported. */
@@ -106,6 +113,15 @@ type DeliveredAssistRequest = Omit<AssistRequest, "steps"> & {
   steps: Array<WatchedStep & { deleted?: true }>;
 };
 
+/** A whole-board share raised from the board's AI tool, with the task it asks the host to do. */
+type SharedBoard = {
+  requestId: string;
+  requestedAt: string;
+  action: AssistAction;
+  note?: string;
+  itemCount: number;
+};
+
 type PendingWait = {
   afterSeq: number;
   signal: AbortSignal;
@@ -136,6 +152,8 @@ type WatchSession = {
   requests: AssistRequest[];
   droppedRequests: number;
   nextRequestId: number;
+  /** Set when the participant shared the whole board; cleared once a wait delivers it. */
+  boardShare?: SharedBoard;
   /** Latest action requested per step alias, attached to the comment that answers it. */
   requestedActions: Map<string, AssistAction>;
   commentsPosted: number;
@@ -145,6 +163,8 @@ type WatchSession = {
 
 export type ProblemStepWatchOptions = {
   getSelectedItems: () => BoardItem[] | null;
+  /** Every saved item on the board, used when a watch starts with nothing selected. */
+  getBoardItems?: () => BoardItem[];
   getAuthoritativeItem: (itemId: string) => BoardItem | undefined;
   getSequence: () => number;
   getParticipantDisplayName: (participantId: string) => string | null;
@@ -216,6 +236,43 @@ export class ProblemStepWatchFeed {
       delivered,
       stepAliases: steps.map((step) => step.alias),
     };
+  }
+
+  /**
+   * The board's AI tool shares every item the participant can see, rather than the steps this
+   * watch started with. The page cannot widen a running watch on its own, so this records the
+   * ask and the task prompt; the next wait hands both to the host, which restarts its watch
+   * over the new selection.
+   */
+  shareEntireBoard(input: { action: AssistAction; note?: string; itemCount: number }): {
+    requestId: string;
+    delivered: boolean;
+  } {
+    if (this.destroyed) throw new Error("The problem-step watch is no longer available.");
+    this.expireSessions();
+    const session = this.newestSession();
+    if (!session) throw new Error("Ask the AI assistant to start a problem-step watch first.");
+    const action = enumValue(input.action, ASSIST_ACTIONS, "action");
+    const note = optionalText(input.note, "note", ASSIST_NOTE_MAX_LENGTH);
+    if (!Number.isSafeInteger(input.itemCount) || input.itemCount < 1) {
+      throw new Error("Select something on the board before sharing it.");
+    }
+    session.nextRequestId += 1;
+    // The queued per-step requests describe the old, narrower scope.
+    session.requests = [];
+    session.droppedRequests = 0;
+    const requestId = `share_${session.nextRequestId}`;
+    session.boardShare = {
+      requestId,
+      requestedAt: new Date().toISOString(),
+      action,
+      ...(note === undefined ? {} : { note }),
+      itemCount: input.itemCount,
+    };
+    // Delivering clears session.boardShare, so the id is read before the wait resolves.
+    const delivered = session.pending !== undefined;
+    if (delivered) this.resolvePending(session, this.requestedResult(session));
+    return { requestId, delivered };
   }
 
   /**
@@ -392,14 +449,31 @@ export class ProblemStepWatchFeed {
   private start(): Record<string, unknown> {
     const selection = this.options.getSelectedItems();
     if (selection === null) throw new Error("Wait for every selected item to finish saving.");
-    const watchable = selection.filter(isWatchableItem);
+    // Starting with nothing selected is a request to follow the whole board, which is what a
+    // participant means when they ask for help without singling anything out first.
+    const wholeBoard = selection.length === 0;
+    const scope = wholeBoard ? (this.options.getBoardItems?.() ?? []) : selection;
+    const watchable = scope.filter(isWatchableItem);
     if (watchable.length === 0) {
       throw new Error(
-        "Select one or more saved text items, sticky notes, tables, or Section titles first.",
+        wholeBoard
+          ? "This board has no saved text items, sticky notes, tables, or Section titles to watch yet."
+          : "Select one or more saved text items, sticky notes, tables, or Section titles first.",
       );
     }
     if (watchable.length > MAX_WATCHED_ITEMS) {
-      throw new Error(`Select ${MAX_WATCHED_ITEMS} problem-step items or fewer.`);
+      throw new Error(
+        `This watch follows up to ${MAX_WATCHED_ITEMS} items; ${watchable.length} are selected. Select fewer and start again.`,
+      );
+    }
+    const selectedCodePoints = watchable.reduce(
+      (total, item) => total + [...watchableText(item)].length,
+      0,
+    );
+    if (selectedCodePoints > MAX_WATCHED_TEXT_CODE_POINTS) {
+      throw new Error(
+        `The selected items hold ${selectedCodePoints} characters, over this watch's ${MAX_WATCHED_TEXT_CODE_POINTS}-character budget. Select fewer and start again.`,
+      );
     }
 
     const now = Date.now();
@@ -453,6 +527,7 @@ export class ProblemStepWatchFeed {
       durationSeconds: PROBLEM_STEP_WATCH_DURATION_MS / 1_000,
       nextSeq: startSeq,
       steps: this.currentSteps(session),
+      scope: wholeBoard ? "entire_board" : "browser_selection",
       ...this.selectionTokenFields(session),
       canComment: this.options.canComment?.() ?? false,
       canWrite: this.options.canWrite?.() ?? false,
@@ -492,7 +567,9 @@ export class ProblemStepWatchFeed {
         : safeInteger(input.waitMs, "waitMs", 1_000, PROBLEM_STEP_WATCH_MAX_WAIT_MS);
     // Requests embed the current step text, so they do not depend on the caller's cursor and
     // go out ahead of queued changes; nextSeq is unchanged and the changes follow next time.
-    if (session.requests.length > 0) return Promise.resolve(this.requestedResult(session));
+    if (session.requests.length > 0 || session.boardShare !== undefined) {
+      return Promise.resolve(this.requestedResult(session));
+    }
     if (afterSeq <= session.discardedThroughSeq) {
       return Promise.resolve(this.resyncResult(session));
     }
@@ -531,6 +608,8 @@ export class ProblemStepWatchFeed {
     const requests = session.requests.splice(0);
     const droppedRequests = session.droppedRequests;
     session.droppedRequests = 0;
+    const boardShare = session.boardShare;
+    session.boardShare = undefined;
     const selection = this.selectionTokenFields(session);
     const canComment = this.options.canComment?.() ?? false;
     const canWrite = this.options.canWrite?.() ?? false;
@@ -546,6 +625,25 @@ export class ProblemStepWatchFeed {
         };
       }),
       ...(droppedRequests > 0 ? { droppedRequests } : {}),
+      ...(boardShare === undefined
+        ? {}
+        : {
+            boardShare: {
+              requestId: boardShare.requestId,
+              requestedAt: boardShare.requestedAt,
+              action: boardShare.action,
+              ...(boardShare.note === undefined ? {} : { note: boardShare.note }),
+              itemCount: boardShare.itemCount,
+              scope: "entire_board",
+              prompt: ASSIST_GUIDANCE[boardShare.action].instruction,
+              reply: {
+                via: "restart_watch",
+                instruction:
+                  "The participant shared the whole board and selected it in their browser. Call watch_selected_problem_steps with action start to re-scope this watch to that selection, then carry out the prompt.",
+                call: { tool: PROBLEM_STEP_WATCH_TOOL, input: { action: "start" } },
+              },
+            },
+          }),
       ...selection,
       canComment,
       canWrite,
@@ -797,7 +895,7 @@ export const ASSIST_GUIDANCE: Record<AssistAction, AssistGuidance> = {
   check_work: {
     label: "Check my work",
     instruction:
-      "Verify the reasoning step by step. Name the first error if there is one and say what is correct. Do not assign a score, level, or grade.",
+      "Check the work step by step and reply as comments on the board. Say what is already correct, then name the first mistake. Do not give the answer: give the participant a way to debug it themselves, such as the check to run or the case to try. Do not assign a score, level, or grade.",
     replyVia: "comment",
   },
   examples: {

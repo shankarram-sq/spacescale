@@ -1,3 +1,71 @@
+import type { WebMcpModelContext, WebMcpRegisterToolOptions, WebMcpToolDefinition } from "./types";
+
+export type WebMcpRegistryState = {
+  /** True when a WebMCP host exposed document.modelContext in this browser. */
+  hostPresent: boolean;
+  /** Tools this page has registered with that host and not yet withdrawn. */
+  toolCount: number;
+};
+
+const registeredToolNames = new Set<string>();
+const registryListeners = new Set<(state: WebMcpRegistryState) => void>();
+
+function hostPresent(): boolean {
+  return (
+    typeof document !== "undefined" && typeof document.modelContext?.registerTool === "function"
+  );
+}
+
+export function webMcpRegistryState(): WebMcpRegistryState {
+  return { hostPresent: hostPresent(), toolCount: registeredToolNames.size };
+}
+
+/** Subscribes to registry changes and returns an unsubscribe function. */
+export function observeWebMcpRegistry(listener: (state: WebMcpRegistryState) => void): () => void {
+  registryListeners.add(listener);
+  return () => {
+    registryListeners.delete(listener);
+  };
+}
+
+function announceRegistryChange(): void {
+  const state = webMcpRegistryState();
+  for (const listener of [...registryListeners]) {
+    try {
+      listener(state);
+    } catch (error) {
+      queueMicrotask(() => {
+        throw error;
+      });
+    }
+  }
+}
+
+/**
+ * Registers one tool and keeps a page-wide count of what is currently exposed, so the board can
+ * show how many tools a visiting host can see. Withdrawal is driven by the same abort signal the
+ * caller already passes, so a destroyed module drops its tools from the count without extra
+ * bookkeeping.
+ */
+export async function registerWebMcpTool(
+  modelContext: WebMcpModelContext,
+  tool: WebMcpToolDefinition,
+  options?: WebMcpRegisterToolOptions,
+): Promise<void> {
+  await modelContext.registerTool(tool, options);
+  if (options?.signal?.aborted) return;
+  registeredToolNames.add(tool.name);
+  options?.signal?.addEventListener(
+    "abort",
+    () => {
+      registeredToolNames.delete(tool.name);
+      announceRegistryChange();
+    },
+    { once: true },
+  );
+  announceRegistryChange();
+}
+
 export function requiredText(value: unknown, field: string, maxLength: number): string {
   if (typeof value !== "string") throw new Error(`${field} must be text.`);
   const text = value.trim();

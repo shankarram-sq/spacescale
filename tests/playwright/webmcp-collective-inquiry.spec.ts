@@ -67,10 +67,15 @@ test("a board participant can use headless WebMCP tools with neutral board attri
       "stage_collective_inquiry",
       "watch_selected_problem_steps",
     ]);
-  await expect(page.locator("[data-webmcp-status]")).toHaveCount(0);
+  // The header reports the tool surface a visiting host can see, and that a host is linked.
+  const webMcpStatus = page.getByTestId("webmcp-status");
+  await expect(webMcpStatus).toHaveAttribute("data-state", "linked");
+  await expect(webMcpStatus).toContainText(/WebMCP · \d+ tools/u);
+  await expect(page.getByTestId("save-status")).not.toContainText("·");
   // The AI button exists only while a problem-step watch is live in this browser.
   await expect(page.locator("[data-selection-ai-wrap]")).toBeHidden();
   await expect(page.getByTestId("ai-watch-indicator")).toBeHidden();
+  await expect(page.getByTestId("tool-ai")).toBeHidden();
   expect(
     await page.evaluate(
       () => window.__spaceScaleWebMcpTools.read_selected_class_ideas?.annotations,
@@ -316,6 +321,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   }, String(watchStart.watchToken));
   await expect(page.locator("[data-selection-ai-wrap]")).toBeHidden();
   await expect(page.getByTestId("ai-watch-indicator")).toBeHidden();
+  await expect(page.getByTestId("tool-ai")).toBeHidden();
 
   const readResult = await page.evaluate(() => {
     const tool = window.__spaceScaleWebMcpTools.read_selected_class_ideas;

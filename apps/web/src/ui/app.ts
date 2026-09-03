@@ -117,6 +117,11 @@ import {
   assistActionLabel,
   type WatchState,
 } from "../webmcp/problem-step-watch";
+import {
+  observeWebMcpRegistry,
+  type WebMcpRegistryState,
+  webMcpRegistryState,
+} from "../webmcp/shared";
 
 const TOOL_DEFINITIONS: Array<{
   name: ToolName;
@@ -964,6 +969,7 @@ export class BoardApp {
   /** True until the board first becomes editable, when the landing tool is chosen. */
   private landingToolPending = true;
   private aiWatchState: WatchState = { phase: "idle", expiresAt: null, watchedItemIds: new Set() };
+  private stopObservingWebMcp: (() => void) | null = null;
   private aiWatchCountdown: number | null = null;
   private aiAssistSelectionKey = "";
   private readonly pendingRenderedTextSectionUpdates = new Set<string>();
@@ -1090,6 +1096,11 @@ export class BoardApp {
   private readonly aiAssistNote: HTMLInputElement;
   private readonly aiWatchIndicator: HTMLElement;
   private readonly aiWatchIndicatorText: HTMLElement;
+  private readonly webMcpStatus: HTMLElement;
+  private readonly webMcpStatusText: HTMLElement;
+  private readonly aiShareButton: HTMLButtonElement;
+  private readonly aiShareMenu: HTMLElement;
+  private readonly aiShareNote: HTMLInputElement;
   private readonly selectionColourButton: HTMLButtonElement;
   private readonly selectionColourMenu: HTMLElement;
   private readonly arrangeButton: HTMLButtonElement;
@@ -1189,6 +1200,11 @@ export class BoardApp {
     this.aiAssistNote = query(this.aiAssistMenu, "[data-ai-assist-note]", HTMLInputElement);
     this.aiWatchIndicator = query(this.root, "[data-ai-watch-indicator]", HTMLElement);
     this.aiWatchIndicatorText = query(this.root, "[data-ai-watch-indicator-text]", HTMLElement);
+    this.webMcpStatus = query(this.root, "[data-webmcp-status]", HTMLElement);
+    this.webMcpStatusText = query(this.root, "[data-webmcp-status-text]", HTMLElement);
+    this.aiShareButton = query(this.root, "[data-ai-share]", HTMLButtonElement);
+    this.aiShareMenu = query(this.root, "[data-testid='ai-share-menu']", HTMLElement);
+    this.aiShareNote = query(this.aiShareMenu, "[data-ai-share-note]", HTMLInputElement);
     this.selectionColourButton = query(
       this.selectionActions,
       "[data-selection-colour]",
@@ -1345,6 +1361,9 @@ export class BoardApp {
       api.embedSessionToken,
     );
 
+    this.renderWebMcpStatus(webMcpRegistryState());
+    this.stopObservingWebMcp = observeWebMcpRegistry((state) => this.renderWebMcpStatus(state));
+
     this.webMcp = new CollectiveInquiryWebMcp({
       root: this.root,
       getSelectedItems: () =>
@@ -1353,6 +1372,7 @@ export class BoardApp {
           this.model.items,
           this.model.authoritativeItems,
         ),
+      getBoardItems: () => [...this.model.authoritativeItems.values()],
       getAuthoritativeItem: (itemId) => this.model.authoritativeItems.get(itemId),
       getSequence: () => this.model.lastAppliedSeq,
       getParticipantDisplayName: (participantId) => this.creatorNames.get(participantId) ?? null,
@@ -1473,6 +1493,8 @@ export class BoardApp {
     this.inquiryMapWebMcp = null;
     this.webMcp?.destroy();
     this.webMcp = null;
+    this.stopObservingWebMcp?.();
+    this.stopObservingWebMcp = null;
     this.setAiWatchState({ phase: "idle", expiresAt: null, watchedItemIds: new Set() });
     this.tools.destroy();
     this.renderer.destroy();
@@ -1500,6 +1522,10 @@ export class BoardApp {
               <span class="status-dot" aria-hidden="true"></span>
               <span data-save-status-text>Connecting…</span>
             </div>
+            <span class="webmcp-status" data-webmcp-status data-testid="webmcp-status" role="status" aria-live="polite" data-state="unlinked">
+              <span class="webmcp-status-dot" aria-hidden="true"></span>
+              <span data-webmcp-status-text>WebMCP</span>
+            </span>
             <span class="ai-watch-indicator" data-ai-watch-indicator data-testid="ai-watch-indicator" role="status" aria-live="polite" hidden>
               <span class="ai-mark" aria-hidden="true">AI</span>
               <span data-ai-watch-indicator-text>AI watching</span>
@@ -1694,6 +1720,17 @@ export class BoardApp {
               <button type="button" data-tools-tool="protractor" data-testid="tools-protractor" role="menuitemradio" aria-checked="false" aria-label="Protractor"><span class="shape-choice-glyph" aria-hidden="true">∠</span><span>Protractor</span></button>
             </div>
           </section>
+          <section class="shape-menu ai-share-menu" data-testid="ai-share-menu" id="ai-share-menu" role="menu" aria-label="Share the whole board with the AI assistant" hidden>
+            <p class="ai-share-heading">Share the whole board</p>
+            <div class="shape-menu-grid ai-share-grid">
+              ${ASSIST_ACTIONS.map(
+                (action) =>
+                  `<button type="button" role="menuitem" data-ai-share-action="${action}"><span class="shape-choice-glyph ai-mark" aria-hidden="true">AI</span><span>${ASSIST_GUIDANCE[action].label}</span></button>`,
+              ).join("")}
+            </div>
+            <label class="ai-assist-note"><span>Add a note (optional)</span><input type="text" maxlength="${ASSIST_NOTE_MAX_LENGTH}" data-ai-share-note placeholder="What should the assistant do?" autocomplete="off" /></label>
+            <p class="ai-assist-menu-note">Selects every saved object and asks the watching assistant to follow the whole board, then do what you picked.</p>
+          </section>
           <section class="style-popover" data-testid="style-popover" id="style-popover" aria-label="Drawing style" hidden>
             <div class="popover-heading"><strong>Style</strong><span data-style-heading-context>New marks</span></div>
             <fieldset class="stamp-fieldset" data-stamp-fieldset hidden>
@@ -1835,6 +1872,20 @@ export class BoardApp {
         rail.append(video);
       }
     }
+    const aiShare = document.createElement("button");
+    aiShare.type = "button";
+    aiShare.dataset.aiShare = "true";
+    aiShare.dataset.testid = "tool-ai";
+    aiShare.hidden = true;
+    aiShare.setAttribute("aria-label", "Share the whole board with the AI assistant");
+    aiShare.setAttribute("aria-haspopup", "menu");
+    aiShare.setAttribute("aria-controls", "ai-share-menu");
+    aiShare.setAttribute("aria-expanded", "false");
+    aiShare.title = "Share the whole board with the AI assistant";
+    aiShare.innerHTML =
+      '<span class="tool-glyph ai-mark" aria-hidden="true">AI</span><span class="tool-label">AI</span>';
+    rail.append(aiShare);
+
     const divider = document.createElement("span");
     divider.className = "tool-divider";
     divider.setAttribute("aria-hidden", "true");
@@ -2719,6 +2770,29 @@ export class BoardApp {
       this.setArrangeMenuOpen(opening);
       if (opening) this.arrangeMenu.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
     });
+    this.aiShareButton.addEventListener("click", () => {
+      if (this.aiShareButton.hidden) return;
+      const opening = this.aiShareMenu.hidden !== false;
+      this.setAiShareMenuOpen(opening);
+      if (opening) this.aiShareMenu.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
+    });
+    for (const button of this.aiShareMenu.querySelectorAll<HTMLButtonElement>(
+      "[data-ai-share-action]",
+    )) {
+      button.addEventListener("click", () => {
+        const action = button.dataset.aiShareAction;
+        if (action && (ASSIST_ACTIONS as readonly string[]).includes(action)) {
+          this.shareBoardWithAi(action as AssistAction);
+        }
+      });
+    }
+    this.aiShareMenu.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.setAiShareMenuOpen(false);
+      this.aiShareButton.focus();
+    });
     this.aiAssistButton.addEventListener("click", () => {
       if (this.aiAssistButton.disabled) return;
       const opening = this.aiAssistMenu.hidden !== false;
@@ -3029,6 +3103,13 @@ export class BoardApp {
         !this.aiAssistButton.contains(target)
       ) {
         this.setAiAssistMenuOpen(false);
+      }
+      if (
+        !this.aiShareMenu.hidden &&
+        !this.aiShareMenu.contains(target) &&
+        !this.aiShareButton.contains(target)
+      ) {
+        this.setAiShareMenuOpen(false);
       }
       if (
         !this.toolsMenu.hidden &&
@@ -6150,7 +6231,7 @@ export class BoardApp {
       label = "Saving…";
       state = "saving";
     } else {
-      label = this.model.lastAppliedSeq > 0 ? `Saved · ${this.model.lastAppliedSeq}` : "Saved";
+      label = "Saved";
       state = "saved";
     }
     this.saveStatus.dataset.state = state;
@@ -6725,10 +6806,71 @@ export class BoardApp {
     if (this.aiAssistWrap.hidden || this.aiAssistButton.disabled) this.setAiAssistMenuOpen(false);
   }
 
+  /** Renders how many tools a visiting WebMCP host can see, and whether one is linked at all. */
+  private renderWebMcpStatus(state: WebMcpRegistryState): void {
+    const { hostPresent, toolCount } = state;
+    this.webMcpStatus.dataset.state = hostPresent ? "linked" : "unlinked";
+    this.webMcpStatusText.textContent = hostPresent
+      ? `WebMCP · ${toolCount} ${toolCount === 1 ? "tool" : "tools"}`
+      : "WebMCP · not linked";
+    this.webMcpStatus.title = hostPresent
+      ? `An AI assistant is linked to this browser and can see ${toolCount} SpaceScale tools.`
+      : "No AI assistant is linked to this browser.";
+  }
+
+  private setAiShareMenuOpen(open: boolean): void {
+    const next = open && !this.aiShareButton.hidden;
+    this.aiShareMenu.hidden = !next;
+    this.aiShareButton.setAttribute("aria-expanded", String(next));
+  }
+
+  /**
+   * Hands the whole board to the assistant already watching this browser. The page cannot widen
+   * a running watch by itself, so this selects every saved object and asks the host to re-scope
+   * its watch to that selection, carrying the task the participant picked.
+   */
+  private shareBoardWithAi(action: AssistAction): void {
+    const itemIds = [...this.model.items.keys()].filter((itemId) =>
+      this.model.authoritativeItems.has(itemId),
+    );
+    if (itemIds.length === 0) {
+      this.notify("Add something to the board before sharing it.", "info");
+      return;
+    }
+    const note = this.aiShareNote.value.trim();
+    try {
+      this.tools.setTool("select");
+      this.tools.selectOnly(itemIds);
+      const receipt = this.webMcp?.shareEntireBoard({
+        action,
+        ...(note.length > 0 ? { note } : {}),
+        itemCount: itemIds.length,
+      });
+      if (!receipt) throw new Error("The AI assistant is not available in this browser.");
+      this.setAiShareMenuOpen(false);
+      this.aiShareNote.value = "";
+      this.aiShareButton.focus();
+      const label = assistActionLabel(action);
+      this.notify(
+        receipt.delivered
+          ? `Shared all ${itemIds.length} objects with the AI assistant: ${label}.`
+          : `Queued the whole board for the AI assistant: ${label}. It will see it on its next check.`,
+        "info",
+      );
+    } catch (error) {
+      this.notify(
+        error instanceof Error ? error.message : "The board could not be shared.",
+        "warning",
+      );
+    }
+  }
+
   private setAiWatchState(state: WatchState): void {
     this.aiWatchState = state;
     const watching = state.phase !== "idle";
     this.aiWatchIndicator.hidden = !watching;
+    this.aiShareButton.hidden = !watching;
+    if (!watching) this.setAiShareMenuOpen(false);
     if (this.aiWatchCountdown !== null) {
       window.clearInterval(this.aiWatchCountdown);
       this.aiWatchCountdown = null;

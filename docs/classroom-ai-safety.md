@@ -30,6 +30,10 @@ student.
   edit permission and never elevate a viewer. A future classroom rollout must
   additionally add a server-enforced, fail-closed kill switch and board-level
   owner opt-in.
+- The board header shows whether a WebMCP host is linked to this browser and how
+  many tools it can see, so a participant can tell at a glance when an assistant
+  is present. While a watch is live the tool rail also offers an AI action that
+  shares the whole board. Both are deliberate, visible AI chrome.
 - The WebMCP host surfaces tool calls and permissions. Generated items and
   comments retain internal `assistedBy` metadata, use the responsible
   participant's normal author badge, and carry a small, consistent AI mark so a
@@ -44,9 +48,13 @@ student.
 
 ## Data boundary
 
-An AI request may contain only the content selected in the current browser and
-the minimum instruction needed for the approved task. The complete board must
-never be sent merely because a section or item is selected.
+An AI request may contain only content the participant has put in scope in the
+current browser, plus the minimum instruction needed for the approved task. Scope
+is set two ways, both deliberate: selecting items, or asking for the whole board.
+A watch started with nothing selected follows the whole board, and the board's AI
+tool hands the whole board over in one action. Neither happens as a side effect of
+selecting a section or an item: selecting a section still shares that section, not
+its contents, and never the rest of the board.
 
 Selected contributions may include the creator's board-visible display name and
 stable opaque participant ID so the AI can associate an action with the correct

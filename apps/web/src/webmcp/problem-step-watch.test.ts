@@ -734,3 +734,118 @@ describe("board-side assist requests", () => {
     expect(() => feed.commentTarget(token, "step_1")).toThrow("limit of 20 AI comments");
   });
 });
+
+describe("whole-board watching", () => {
+  function feedOver(items: BoardItem[], selected: BoardItem[] = []) {
+    return new ProblemStepWatchFeed({
+      getSelectedItems: () => selected,
+      getBoardItems: () => items,
+      getAuthoritativeItem: (itemId) => items.find((item) => item.id === itemId),
+      getSequence: () => 7,
+      getParticipantDisplayName: () => "Sam",
+      canComment: () => true,
+      canWrite: () => true,
+    });
+  }
+
+  it("follows every board item when the participant selected nothing", async () => {
+    const feed = feedOver([sticky(), canvasText()]);
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+
+    expect(started).toMatchObject({ status: "started", scope: "entire_board" });
+    expect(started.steps).toHaveLength(2);
+    feed.destroy();
+  });
+
+  it("still follows only the selection when there is one", async () => {
+    const feed = feedOver([sticky(), canvasText()], [sticky()]);
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+
+    expect(started).toMatchObject({ status: "started", scope: "browser_selection" });
+    expect(started.steps).toHaveLength(1);
+    feed.destroy();
+  });
+
+  it("says so when the board holds nothing watchable", () => {
+    const feed = feedOver([]);
+    expect(() => feed.execute({ action: "start" }, new AbortController().signal)).toThrow(
+      "no saved text items",
+    );
+    feed.destroy();
+  });
+
+  it("refuses a scope past the item budget", () => {
+    const many = Array.from({ length: 151 }, (_, index) => ({
+      ...sticky(),
+      id: `018f0000-0000-7000-8000-${String(index).padStart(12, "0")}`,
+    }));
+    const feed = feedOver(many);
+    expect(() => feed.execute({ action: "start" }, new AbortController().signal)).toThrow(
+      /follows up to 150 items; 151 are selected/u,
+    );
+    feed.destroy();
+  });
+
+  it("refuses a scope past the character budget even when the item count fits", () => {
+    const feed = feedOver([sticky("x".repeat(130_000))]);
+    expect(() => feed.execute({ action: "start" }, new AbortController().signal)).toThrow(
+      /character budget/u,
+    );
+    feed.destroy();
+  });
+
+  it("hands a pending wait the whole board and the task prompt", async () => {
+    const feed = feedOver([sticky(), canvasText()], [sticky()]);
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    const wait = feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+
+    const receipt = feed.shareEntireBoard({ action: "check_work", itemCount: 2 });
+    expect(receipt.delivered).toBe(true);
+
+    const result = await wait;
+    expect(result).toMatchObject({
+      status: "requested",
+      continueWatching: true,
+      boardShare: {
+        action: "check_work",
+        scope: "entire_board",
+        itemCount: 2,
+        reply: { via: "restart_watch", call: { tool: "watch_selected_problem_steps" } },
+      },
+    });
+    // The prompt is what tells the host what to do with the board it was just handed.
+    const share = result.boardShare as { prompt: string };
+    expect(share.prompt).toContain("reply as comments");
+    expect(share.prompt).toContain("debug");
+    feed.destroy();
+  });
+
+  it("queues a board share for the next wait and drops the narrower queued requests", async () => {
+    const feed = feedOver([sticky(), canvasText()], [sticky()]);
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    feed.requestAssistance({ itemIds: [STICKY_ID], action: "explain" });
+
+    expect(
+      feed.shareEntireBoard({ action: "critique", note: "whole thing", itemCount: 2 }),
+    ).toMatchObject({ delivered: false });
+    const result = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+
+    expect(result.requests).toHaveLength(0);
+    expect(result).toMatchObject({ boardShare: { action: "critique", note: "whole thing" } });
+    feed.destroy();
+  });
+
+  it("refuses a board share with no live watch", () => {
+    const feed = feedOver([sticky()]);
+    expect(() => feed.shareEntireBoard({ action: "explain", itemCount: 1 })).toThrow(
+      "start a problem-step watch first",
+    );
+    feed.destroy();
+  });
+});

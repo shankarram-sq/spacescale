@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BoardItem } from "../types";
 import { CollectiveInquiryWebMcp } from "./collective-inquiry";
+import { webMcpRegistryState } from "./shared";
 import type { WebMcpRegisterToolOptions, WebMcpToolDefinition } from "./types";
 
 const ACTOR_ID = "018f0000-0000-7000-8000-0000000000a1";
@@ -144,5 +145,22 @@ describe("watch reply tools", () => {
     ).rejects.toThrow("1-2000 characters");
     await expect(call("comment_on_watched_step", base)).rejects.toThrow("cannot comment");
     inquiry.destroy();
+  });
+});
+
+describe("registered tool surface", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("counts the tools a linked host can see and drops them when the page tears down", async () => {
+    const before = webMcpRegistryState().toolCount;
+    const { inquiry, tools } = harness();
+    await vi.waitFor(() => expect(tools.has("comment_on_watched_step")).toBe(true));
+
+    const linked = webMcpRegistryState();
+    expect(linked.hostPresent).toBe(true);
+    expect(linked.toolCount).toBe(before + tools.size);
+
+    inquiry.destroy();
+    await vi.waitFor(() => expect(webMcpRegistryState().toolCount).toBe(before));
   });
 });

@@ -210,3 +210,58 @@
   letter-spacing: 0.04em;
   vertical-align: middle;
 }
+
+/* Header chip: how many tools a visiting WebMCP host can see, and whether one is linked. */
+.webmcp-status {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.webmcp-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #b9b5ab;
+}
+
+.webmcp-status[data-state="linked"] {
+  border-color: #bad8c2;
+  background: rgb(245 255 247 / 72%);
+  color: #275d38;
+}
+
+.webmcp-status[data-state="linked"] .webmcp-status-dot {
+  background: #32a85a;
+  box-shadow: 0 0 0 3px rgb(50 168 90 / 13%);
+}
+
+.tool-rail button[data-ai-share] .ai-mark {
+  font-size: 9px;
+}
+
+.ai-share-heading {
+  margin: 0 0 6px;
+  padding: 2px 3px 0;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.shape-menu-grid.ai-share-grid {
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+}
+
+.ai-share-menu .ai-assist-note {
+  padding-inline: 3px;
+}
