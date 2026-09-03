@@ -138,6 +138,87 @@
   line-height: 1;
 }
 
+/* The four-point glitter mark: the conventional "ask the AI" icon. It sits calm until the pointer
+   lands, then the core tilts and the small sparks twinkle, so the hover reads as an invitation. */
+.ai-sparkle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* On the dark selection bar the mark rides on currentColor; light surfaces get the assistant's purple. */
+.tool-rail button[data-ai-share] .ai-sparkle,
+.ai-share-menu .ai-sparkle {
+  color: #6840a8;
+}
+
+.ai-sparkle svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+  overflow: visible;
+}
+
+.ai-sparkle-core,
+.ai-sparkle-spark {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition:
+    transform 200ms ease,
+    opacity 200ms ease;
+}
+
+.ai-sparkle-spark {
+  opacity: 0.5;
+}
+
+button:is(:hover, :focus-visible) .ai-sparkle-core {
+  transform: rotate(18deg) scale(1.08);
+}
+
+button:is(:hover, :focus-visible) .ai-sparkle-spark {
+  opacity: 1;
+  animation: ai-sparkle-twinkle 1000ms ease-in-out infinite;
+}
+
+button:is(:hover, :focus-visible) .ai-sparkle-spark-late {
+  animation-delay: 300ms;
+}
+
+.ai-sparkle-menu svg {
+  width: 19px;
+  height: 19px;
+}
+
+@keyframes ai-sparkle-twinkle {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.8);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.3);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-sparkle-core,
+  .ai-sparkle-spark {
+    transition: none;
+  }
+
+  button:is(:hover, :focus-visible) .ai-sparkle-core {
+    transform: none;
+  }
+
+  button:is(:hover, :focus-visible) .ai-sparkle-spark {
+    opacity: 1;
+    animation: none;
+  }
+}
+
 .ai-watch-indicator {
   height: 32px;
   display: inline-flex;
@@ -424,8 +505,9 @@
   font-size: 9px;
 }
 
-.tool-rail button[data-ai-share] .ai-mark {
-  font-size: 9px;
+.tool-rail button[data-ai-share] .ai-sparkle svg {
+  width: 22px;
+  height: 22px;
 }
 
 .ai-share-heading {
