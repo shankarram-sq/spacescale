@@ -1,4 +1,4 @@
-import { boundsForItems, ZONE_TITLE_PADDING, zoneTitleBandHeight } from "@collab/geometry";
+import { ZONE_TITLE_PADDING, zoneTitleBandHeight } from "@collab/geometry";
 import {
   BOARD_FEATURE_KEYS,
   type BoardFeatureKey,
@@ -15,7 +15,7 @@ import {
   validateClientFrame,
   validateDurableOperation,
 } from "@collab/protocol";
-import { renderSvgItem } from "@collab/svg-export";
+import { boundsForSvgItems, renderSvgItem } from "@collab/svg-export";
 import {
   buildOrganisationTemplateBatch,
   OrganisationTemplateError,
@@ -7134,7 +7134,7 @@ export function localSvg(snapshot: BoardSnapshot, title: string): string {
   const items = [...snapshot.items]
     .map((item) => normalizeBoardItem(item))
     .sort((a, b) => a.z - b.z);
-  const bounds = aggregateItemBounds(items);
+  const bounds = boundsForSvgItems(items);
   const pad = 32;
   const viewBox = bounds
     ? `${bounds.minX - pad} ${bounds.minY - pad} ${Math.max(1, bounds.maxX - bounds.minX + pad * 2)} ${Math.max(1, bounds.maxY - bounds.minY + pad * 2)}`
@@ -7178,10 +7178,6 @@ function transformPoint(point: Point, matrix: Matrix): Point {
     matrix[0] * point[0] + matrix[2] * point[1] + matrix[4],
     matrix[1] * point[0] + matrix[3] * point[1] + matrix[5],
   ];
-}
-
-function aggregateItemBounds(items: Parameters<typeof boundsForItems>[0]) {
-  return boundsForItems(items);
 }
 
 function stickyDraftFromOperation(operation: DurableOperation): StickyDraftRecovery | undefined {

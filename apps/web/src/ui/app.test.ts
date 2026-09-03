@@ -894,6 +894,37 @@ describe("sticky note UI configuration", () => {
 
     expect(localSvg(snapshot, "Rotated sticky")).toContain('viewBox="118 -22 114 164"');
   });
+
+  it("keeps literal TeX source inside the local recovery SVG viewBox", () => {
+    const source = "$$\\displaystyle x$$";
+    const fontSize = 20;
+    const snapshot: BoardSnapshot = {
+      format: "cf-whiteboard-json",
+      version: 1,
+      seq: 1,
+      items: [
+        {
+          id: "018f47a1-7a2b-7c3d-8e4f-123456789abf",
+          kind: "text",
+          z: 1,
+          version: 1,
+          createdBy: "018f47a1-7a2b-7c3d-8e4f-123456789abc",
+          transform: [1, 0, 0, 1, 0, 0],
+          style: {
+            kind: "text",
+            color: "#112233",
+            fontSize,
+            fontFamily: "sans",
+            opacity: 1,
+          },
+          geometry: { x: 100, y: 40, text: source },
+        },
+      ],
+    };
+    const maxX = 100 + Array.from(source).length * fontSize * 0.6;
+
+    expect(localSvg(snapshot, "Math recovery")).toContain(`viewBox="68 -12 ${maxX - 100 + 64} 88"`);
+  });
 });
 
 describe("image card UI validation", () => {

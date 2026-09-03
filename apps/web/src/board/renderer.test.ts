@@ -173,6 +173,112 @@ describe("lightweight movement previews", () => {
     expect(preview?.dataset.mathState).toBeUndefined();
     expect(preview?.children[0]?.textContent).toBe("$x^2$");
   });
+
+  it("keeps sticky, table, and Section formula previews free of MathJax work", () => {
+    const items: BoardItem[] = [
+      {
+        id: "math-sticky",
+        kind: "sticky",
+        z: 1,
+        version: 1,
+        createdBy: "owner",
+        transform: [1, 0, 0, 1, 0, 0],
+        style: {
+          kind: "sticky",
+          fill: "#fde68a",
+          textColor: "#292524",
+          fontSize: 20,
+          opacity: 1,
+        },
+        geometry: { x: 10, y: 20, width: 180, height: 140, text: "$x^2$" },
+      },
+      {
+        id: "math-table",
+        kind: "table",
+        z: 2,
+        version: 1,
+        createdBy: "owner",
+        transform: [1, 0, 0, 1, 0, 0],
+        style: {
+          kind: "table",
+          borderColor: "#64748b",
+          fill: "#ffffff",
+          headerFill: "#dbeafe",
+          textColor: "#0f172a",
+          fontSize: 16,
+          opacity: 1,
+        },
+        geometry: {
+          x: 10,
+          y: 20,
+          columnWidths: [180],
+          rowHeights: [60],
+          cells: [["$x^2$"]],
+          headerRow: false,
+        },
+      },
+      {
+        id: "math-zone",
+        kind: "zone",
+        z: 3,
+        version: 1,
+        createdBy: "owner",
+        transform: [1, 0, 0, 1, 0, 0],
+        style: {
+          kind: "zone",
+          borderColor: "#a8a59d",
+          fill: "#e8edff",
+          textColor: "#4f5b75",
+          fontSize: 18,
+          opacity: 0.18,
+        },
+        geometry: { x: 20, y: 30, width: 520, height: 320, title: "$x^2$" },
+      },
+    ];
+    const localLayer = fakeSvgNode("g");
+    let current = items[0];
+    const renderer = {
+      clearLocalLayer: () => localLayer.replaceChildren(),
+      imageAssets: { load: vi.fn() },
+      localLayer,
+      model: { getItem: () => current },
+      setSelection: vi.fn(),
+    } as unknown as BoardRenderer;
+
+    for (const item of items) {
+      current = item;
+      BoardRenderer.prototype.showMovePreview.call(renderer, [item.id], 24, 12);
+      const preview = localLayer.children[0];
+      expect(preview).toBeDefined();
+      if (!preview) continue;
+      const descendants = fakeDescendants(preview);
+      expect(
+        descendants.some((node) => node.name === "foreignObject"),
+        item.kind,
+      ).toBe(false);
+      expect(
+        descendants.some((node) =>
+          [...node.classList.values].some((name) => name.endsWith("-math-preview")),
+        ),
+        item.kind,
+      ).toBe(true);
+      expect(
+        descendants.some((node) => node.textContent?.includes("$x^2$")),
+        item.kind,
+      ).toBe(true);
+    }
+
+    const sticky = items[0];
+    if (sticky?.kind !== "sticky") throw new Error("Expected sticky fixture.");
+    BoardRenderer.prototype.showLocalSticky.call(renderer, sticky.geometry, sticky.style);
+    const draft = localLayer.children[0];
+    expect(draft).toBeDefined();
+    if (!draft) return;
+    expect(fakeDescendants(draft).some((node) => node.name === "foreignObject")).toBe(false);
+    expect(
+      fakeDescendants(draft).some((node) => node.classList.values.has("sticky-math-preview")),
+    ).toBe(true);
+  });
 });
 
 describe("creator attribution", () => {
@@ -520,6 +626,10 @@ type FakeSvgNode = {
   dispatchEvent: (event: Event) => boolean;
   replaceChildren: (...children: FakeSvgNode[]) => void;
 };
+
+function fakeDescendants(node: FakeSvgNode): FakeSvgNode[] {
+  return [node, ...node.children.flatMap(fakeDescendants)];
+}
 
 function fakeSvgNode(name: string): FakeSvgNode {
   const node: FakeSvgNode = {

@@ -622,7 +622,7 @@ export class BoardRenderer {
     transform: Matrix = [1, 0, 0, 1, 0, 0],
   ): void {
     this.clearLocalLayer();
-    const sticky = stickyNode(geometry, style);
+    const sticky = stickyNode(geometry, style, true);
     sticky.classList.add("local-preview", "sticky-preview");
     sticky.setAttribute("transform", matrixAttribute(transform));
     this.localLayer.append(sticky);
@@ -634,7 +634,7 @@ export class BoardRenderer {
     transform: Matrix = [1, 0, 0, 1, 0, 0],
   ): void {
     this.clearLocalLayer();
-    const zone = zoneNode("local-zone-preview", geometry, style);
+    const zone = zoneNode("local-zone-preview", geometry, style, true);
     zone.classList.add("local-preview", "zone-preview");
     zone.setAttribute("aria-hidden", "true");
     zone.setAttribute("transform", matrixAttribute(transform));
@@ -1333,7 +1333,7 @@ function itemNode(
       break;
     }
     case "sticky":
-      node = stickyNode(item.geometry, item.style);
+      node = stickyNode(item.geometry, item.style, options.preview === true);
       break;
     case "stamp":
       node = stampNode(item.geometry, item.style);
@@ -1342,10 +1342,10 @@ function itemNode(
       node = imageNode(item.id, item.geometry, item.style, loadImageAsset);
       break;
     case "table":
-      node = tableNode(item.id, item.geometry, item.style);
+      node = tableNode(item.id, item.geometry, item.style, options.preview === true);
       break;
     case "zone":
-      node = zoneNode(item.id, item.geometry, item.style);
+      node = zoneNode(item.id, item.geometry, item.style, options.preview === true);
       break;
   }
   node.dataset.itemId = item.id;
@@ -1690,7 +1690,12 @@ export function creatorBadge(item: AttributedItem, displayName: string): SVGGEle
   return badge;
 }
 
-export function zoneNode(itemId: string, geometry: ZoneGeometry, style: ZoneStyle): SVGGElement {
+export function zoneNode(
+  itemId: string,
+  geometry: ZoneGeometry,
+  style: ZoneStyle,
+  preview = false,
+): SVGGElement {
   const node = svgElement("g");
   node.classList.add("zone-item");
   node.dataset.zoneTitle = geometry.title;
@@ -1742,7 +1747,8 @@ export function zoneNode(itemId: string, geometry: ZoneGeometry, style: ZoneStyl
 
   const normalizedTitle = geometry.title.replace(/\r\n?|\n/gu, " ");
   const mathTitle = containsMathMarkup(normalizedTitle);
-  const title = mathTitle
+  const typesetMathTitle = mathTitle && !preview;
+  const title = typesetMathTitle
     ? mathForeignObject(
         geometry.x + ZONE_TITLE_PADDING,
         geometry.y + ZONE_TITLE_PADDING,
@@ -1755,8 +1761,12 @@ export function zoneNode(itemId: string, geometry: ZoneGeometry, style: ZoneStyl
       )
     : svgElement("text");
   title.classList.add("zone-title");
-  if (!mathTitle) {
+  if (!typesetMathTitle) {
     const plainTitle = title as SVGTextElement;
+    if (mathTitle) {
+      plainTitle.classList.add("zone-math-preview");
+      plainTitle.setAttribute("aria-hidden", "true");
+    }
     plainTitle.setAttribute("x", String(geometry.x + ZONE_TITLE_PADDING));
     plainTitle.setAttribute("y", String(geometry.y + ZONE_TITLE_PADDING + style.fontSize));
     plainTitle.setAttribute("fill", style.textColor);
@@ -1816,7 +1826,12 @@ export function zoneNode(itemId: string, geometry: ZoneGeometry, style: ZoneStyl
   return node;
 }
 
-export function tableNode(itemId: string, geometry: TableGeometry, style: TableStyle): SVGGElement {
+export function tableNode(
+  itemId: string,
+  geometry: TableGeometry,
+  style: TableStyle,
+  preview = false,
+): SVGGElement {
   const node = svgElement("g");
   const rowCount = geometry.rowHeights.length;
   const columnCount = geometry.columnWidths.length;
@@ -1883,7 +1898,8 @@ export function tableNode(itemId: string, geometry: TableGeometry, style: TableS
       cell.append(background);
 
       const lines = wrapTableCellText(value, columnWidth, rowHeight, style.fontSize);
-      if (value && containsMathMarkup(value)) {
+      const mathValue = value.length > 0 && containsMathMarkup(value);
+      if (mathValue && !preview) {
         const math = mathForeignObject(
           x + TABLE_CELL_PADDING,
           y + TABLE_CELL_PADDING,
@@ -1899,6 +1915,10 @@ export function tableNode(itemId: string, geometry: TableGeometry, style: TableS
       } else if (lines.length > 0) {
         const text = svgElement("text");
         text.classList.add("table-cell-text");
+        if (mathValue) {
+          text.classList.add("table-math-preview");
+          text.setAttribute("aria-hidden", "true");
+        }
         text.setAttribute("x", String(x + TABLE_CELL_PADDING));
         text.setAttribute("y", String(y + TABLE_CELL_PADDING + style.fontSize));
         text.setAttribute("fill", style.textColor);
@@ -2077,7 +2097,7 @@ function imageNode(
   return node;
 }
 
-function stickyNode(geometry: StickyGeometry, style: StickyStyle): SVGSVGElement {
+function stickyNode(geometry: StickyGeometry, style: StickyStyle, preview = false): SVGSVGElement {
   const node = svgElement("svg");
   node.setAttribute("x", String(geometry.x));
   node.setAttribute("y", String(geometry.y));
@@ -2096,7 +2116,8 @@ function stickyNode(geometry: StickyGeometry, style: StickyStyle): SVGSVGElement
   background.setAttribute("fill", style.fill);
 
   const mathText = containsMathMarkup(geometry.text);
-  const text = mathText
+  const typesetMathText = mathText && !preview;
+  const text = typesetMathText
     ? mathForeignObject(
         STICKY_PADDING,
         STICKY_PADDING,
@@ -2108,8 +2129,12 @@ function stickyNode(geometry: StickyGeometry, style: StickyStyle): SVGSVGElement
       )
     : svgElement("text");
   text.classList.add("sticky-text");
-  if (!mathText) {
+  if (!typesetMathText) {
     const plainText = text as SVGTextElement;
+    if (mathText) {
+      plainText.classList.add("sticky-math-preview");
+      plainText.setAttribute("aria-hidden", "true");
+    }
     plainText.setAttribute("x", String(STICKY_PADDING));
     plainText.setAttribute("y", String(STICKY_PADDING + style.fontSize));
     plainText.setAttribute("fill", style.textColor);

@@ -654,14 +654,21 @@ function rawExportTextBounds(item: Extract<BoardItem, { kind: "text" }>): Bounds
   );
 }
 
-function calculateViewBox(items: readonly BoardItem[], padding: number): Bounds {
+/** Bounds the exact fallback representation emitted by renderSvgItem. */
+export function boundsForSvgItems(items: readonly BoardItem[]): Bounds | null {
   let contentBounds = boundsForItems(items);
-  if (contentBounds === null) return { minX: -50, minY: -50, maxX: 50, maxY: 50 };
+  if (contentBounds === null) return null;
   for (const item of items) {
-    if (item.kind === "text" && item.geometry.embed !== "video") {
+    if (item.kind === "text") {
       contentBounds = unionBounds(contentBounds, rawExportTextBounds(item));
     }
   }
+  return contentBounds;
+}
+
+function calculateViewBox(items: readonly BoardItem[], padding: number): Bounds {
+  const contentBounds = boundsForSvgItems(items);
+  if (contentBounds === null) return { minX: -50, minY: -50, maxX: 50, maxY: 50 };
   return ensureNonDegenerate(expandBounds(contentBounds, padding));
 }
 
