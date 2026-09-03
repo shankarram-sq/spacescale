@@ -2,11 +2,15 @@
 
 ## Outcome
 
-SpaceScale turns an AI agent into a visible participant in a live classroom conversation. The agent reads only teacher-selected, saved contributions—either exact typed sticky-note text or an isolated visual rendering for handwriting and sketches—then can expand, connect, challenge, structure decisions, turn thinking into action through 27 live non-section education modes, or turn the discussion into a playful source-linked image or meme. Cross-Group Jigsaw is reserved for the separately tested section-context integration, bringing the complete catalog to 28 after that push lands. The agent can also propose a shared inquiry map, observe aggregate class votes, and propose a decision that preserves dissent. Every canvas mutation requires a teacher-requested WebMCP write, is atomic, realtime, visibly attributed, source-linked, and undoable.
+SpaceScale turns an AI agent into a visible participant in a live classroom conversation. The agent reads the saved contributions the teacher has selected—either exact typed sticky-note text or an isolated visual rendering for handwriting and sketches—then can expand, connect, challenge, structure decisions, turn thinking into action through 27 live non-section education modes, or turn the discussion into a playful source-linked image or meme. Cross-Group Jigsaw is reserved for the separately tested section-context integration, bringing the complete catalog to 28 after that push lands. The agent can also add a shared inquiry map, observe aggregate class votes, and add a decision that preserves dissent. Every canvas mutation is an ordinary WebMCP write that lands directly: atomic, realtime, visibly attributed, source-linked, and undoable.
 
 One-line pitch:
 
 > SpaceScale uses WebMCP to make AI a visible participant in classroom collaboration—helping students connect, challenge, and build on one another’s ideas while the group stays in control.
+
+## Consent model
+
+Using SpaceScale is the consent. Everyone with access to a board can already see every item, every creator name, and every vote on it, and the AI partner acts on behalf of the Space owner who is looking at that same board. SpaceScale therefore adds no in-app consent dialogs, share previews, or approval steps in front of WebMCP tools. Readers return the current selection immediately; writers add to the canvas immediately. Selection remains the scoping mechanism: the agent works with what the teacher has selected, not with the whole board, because that is what makes its contributions targeted and useful, not because anything on the board is hidden from it.
 
 ## Why this is a strong WebMCP use case
 
@@ -14,7 +18,7 @@ One-line pitch:
 - Semantic tools handle typed ideas and votes; a bounded canonical visual surface handles the genuinely visual case of handwriting and sketches without a whole-board screenshot or brittle DOM automation.
 - The most valuable context is ephemeral UI state: the teacher’s current selection and the class’s current aggregate vote.
 - The AI is not a private tutor for each student. Its output becomes a shared object that students can challenge, vote on, revise, and undo.
-- Human control is part of the product experience: selected-content consent is visible in SpaceScale, every write is teacher-requested through WebMCP, and the headline inquiry/decision flows add a second in-app preview.
+- Human control is exercised through the product itself: the teacher chooses the selection, asks for each move, and can undo any AI batch in one step.
 
 ## Implemented tool contract
 
@@ -24,41 +28,40 @@ Returns the live collaboration catalog before the agent reads or changes the boa
 
 - Lists all 27 available modes under their matching write tool.
 - Explains the purpose and exact structural contract for each mode: entry count, source-alias cardinality, connection requirement, role vocabulary or required role groups, and decision-criteria count.
-- Publishes the human-control contract: source linking, question-first critique, AI attribution, one-batch undo, blank student decision fields, no inferred consensus, and no grading or profiling.
+- Publishes the collaboration contract: source linking, question-first critique, AI attribution, one-batch undo, blank student decision fields, no inferred consensus, and no grading or profiling.
 - Reports Cross-Group Jigsaw as reserved—not live—and explains that it is waiting for authoritative section context.
 - Reads no board or student data.
 
 ### `read_selected_class_ideas`
 
-Reads saved sticky-note text from the current teacher selection.
+Reads saved sticky-note text from the current selection.
 
 - Owner-only and read-only.
-- Opens the existing in-app sharing dialog for the selected text.
+- Returns immediately with no in-app prompt.
 - Returns ephemeral aliases such as `idea_1` plus an explicit `createdBy`
   display name and stable participant ID for action attribution; board and item
-  IDs remain private.
+  IDs stay inside the page.
 - Deliberately does not inspect sections or infer group membership; the incoming section push owns that context.
-- Does not return coordinates, sections, unselected content, presence, history, contact details, or authentication data.
-- Returns an opaque selection token used by the next tool.
+- Does not return unselected content.
+- Returns an opaque selection token used by the write tools.
 
 ### `inspect_selected_board_visual`
 
-Makes the teacher's saved visual selection inspectable in the same live page for handwriting, sketches, arrows, shapes, spatial groupings, and mixed visual notes.
+Makes the saved visual selection inspectable in the same live page for handwriting, sketches, arrows, shapes, spatial groupings, and mixed visual notes.
 
 - Owner-only and read-only; at most 40 selected saved items per inspection.
-- Opens a first consent dialog that reveals only item kinds and counts. No selected pixels appear until the teacher approves.
-- Re-checks the selected item IDs and versions after approval and fails if the content or selection changed while consent was open.
-- Renders the approved items through SpaceScale's canonical SVG exporter, preserving pencil paths, transforms, layout, typed context, and source ordering.
-- Replaces stable item IDs with ephemeral aliases such as `visual_1`, returns each
-  creator's display name and stable participant ID but no coordinates, and makes
-  private board images non-pixel placeholders.
-- Opens the result in an opaque modal review surface that covers the unselected board. ChatGPT inspects this post-tool live-page state rather than receiving a large image string in JSON.
-- Returns bounded metadata and explicit instructions to use identity only for attribution or clarification, mark uncertain handwriting as uncertain, avoid invention, and avoid grading, ranking, or profiling.
+- Opens immediately with no in-app prompt.
+- Renders the selected items through SpaceScale's canonical SVG exporter, preserving pencil paths, transforms, layout, typed context, and source ordering.
+- Replaces stable item IDs with ephemeral aliases such as `visual_1` and returns each
+  creator's display name and stable participant ID. Image cards render as placeholders
+  that carry their alt text, because the exporter does not embed asset pixels.
+- Opens the result in a modal review surface over the board. ChatGPT inspects this post-tool live-page state rather than receiving a large image string in JSON.
+- Returns bounded metadata and instructions to mark uncertain handwriting as uncertain, avoid invention, and avoid grading, ranking, or profiling.
 - Closing the review removes the temporary visual surface. It never changes the shared canvas.
 
 ### Five education collaboration tools
 
-These tools use a `selectionToken` and add ordinary board objects directly after the teacher permits the WebMCP write. They have no feature-specific UI. Every card links back to one to five approved source aliases, ends with a testable question, carries durable AI-assistance metadata, waits for authoritative save acknowledgement, and is undoable as one batch.
+These tools use a `selectionToken` and add ordinary board objects directly. They have no feature-specific UI. Every card links back to one to five source aliases, ends with a testable question, carries durable AI-assistance metadata, waits for authoritative save acknowledgement, and is undoable as one batch.
 
 | Tool | Modes | Enforced collaboration invariant |
 | --- | --- | --- |
@@ -70,12 +73,12 @@ These tools use a `selectionToken` and add ordinary board objects directly after
 
 ### `add_content_visuals`
 
-Adds one to three playful visual responses to the approved class discussion without introducing a feature-specific meme interface.
+Adds one to three playful visual responses to the selected class discussion without introducing a feature-specific meme interface.
 
 - Every visual cites one to five aliases from `read_selected_class_ideas`, includes meaningful alt text and a class discussion question, and is connected back to its source cards on the canvas.
 - `meme_card` lets ChatGPT supply the joke, emoji, and palette while SpaceScale renders a deterministic 1200×675 raster locally.
 - `inline_image` accepts an LLM-generated PNG, JPEG, WebP, or GIF only as an inline data URL. HTTPS URLs and SVG are rejected, so SpaceScale never hotlinks, expands CSP, or creates a server-side URL-fetch/SSRF path.
-- Before upload, the browser decodes, bounds-checks, and re-encodes the raster through the existing privacy-safe image path. The existing private per-board R2 asset endpoint validates it again and addresses it by content hash.
+- Before upload, the browser decodes, bounds-checks, and re-encodes the raster through the existing image path. The existing per-board R2 asset endpoint validates it again and addresses it by content hash.
 - The request must explicitly confirm that the visual is classroom-safe, contains no real-student likeness, and targets no individual. The Images feature must be enabled by the Space owner.
 - The stored image, caption, discussion prompt, and source connectors are AI-attributed and committed as one acknowledged, undoable realtime board batch.
 
@@ -86,7 +89,7 @@ Adds one to three playful visual responses to the approved class discussion with
 The writer-side adapter is already isolated behind the optional `sectionContext` provider:
 
 - With no provider, `add_cross_group_jigsaw` is not registered, the capability catalog reports 27 live modes, and Jigsaw is marked reserved.
-- The incoming section integration supplies a read-tool name and an in-memory token lookup. Its approved snapshot uses ephemeral `group_N` and `idea_N` aliases while retaining item IDs and versions only inside the page.
+- The incoming section integration supplies a read-tool name and an in-memory token lookup. Its snapshot uses ephemeral `group_N` and `idea_N` aliases while retaining item IDs and versions only inside the page.
 - With that provider present, the catalog reports 28 modes and registers `add_cross_group_jigsaw`. The writer requires agreement, tension, and complementary-idea roles; every card must cite at least two ideas from at least two authoritative groups; at least one comparison connection is required.
 - The writer rejects inconsistent group/source mappings, expired or mismatched tokens, stale items, same-group-only comparisons, and any provider that does not use a valid WebMCP read-tool name. It never computes section membership from coordinates.
 
@@ -94,11 +97,10 @@ The writer-side adapter is already isolated behind the optional `sectionContext`
 
 Turns a selection token into two to four themes, source-to-theme connections, cross-theme bridges, one productive tension, and a next question.
 
-- Validates every alias against the approved selection.
+- Validates every alias against the selection snapshot.
 - Rejects duplicate alias assignments and stale/changed source items.
 - The agent supplies meaning; SpaceScale computes deterministic layout and safe board operations.
-- Opens a visual teacher preview marked “no changes yet.”
-- On approval, commits one ordinary `items.batch`, waits for server acknowledgement, selects the created objects, and reports success.
+- Commits one ordinary `items.batch` immediately, waits for server acknowledgement, selects the created objects, and reports success.
 - All generated persistent text is visibly marked `AI-assisted`.
 
 ### `read_live_class_vote`
@@ -106,32 +108,28 @@ Turns a selection token into two to four themes, source-to-theme connections, cr
 Reads the one selected “Vote with stamps” table.
 
 - Returns option labels, aggregate counts, total votes, leaders, and tie state.
-- Returns no voter identity, actor ID, stamp ID, or inferred holdout.
 - Explicitly instructs the agent not to treat a vote as proof of consensus.
 - Returns a short-lived vote token.
 
 ### `stage_class_decision`
 
-Uses a vote token to propose a chosen direction, rationale, minority concern, small pilot, success measure, and next open question.
+Uses a vote token to add a chosen direction, rationale, minority concern, small pilot, success measure, and next open question.
 
 - Requires an explicit `minorityConcern`; dissent cannot be silently omitted.
 - Rejects stale vote counts and choices not present in the captured vote.
-- Opens a visual teacher preview with aggregate vote bars.
-- On approval, adds the vote evidence and decision cards in one acknowledged, realtime, undoable board batch.
+- Adds the vote evidence and decision cards directly in one acknowledged, realtime, undoable board batch.
 
 ## Human-agent sequence
 
 1. Students add ideas to the shared Space.
 2. The teacher selects the contributions that are in scope.
 3. The agent can call `list_class_collaboration_modes` to choose the narrowest fitting move.
-4. For typed stickies, the agent calls `read_selected_class_ideas`; for handwriting, sketches, or spatial reasoning, it calls `inspect_selected_board_visual`. SpaceScale shows the matching teacher consent preview.
+4. For typed stickies, the agent calls `read_selected_class_ideas`; for handwriting, sketches, or spatial reasoning, it calls `inspect_selected_board_visual`. Both return immediately.
 5. The teacher can ask ChatGPT to call any of the five education-mode tools or `add_content_visuals`; the class receives a small, source-linked structure or visual to test, edit, discuss, or reject.
-6. For the headline synthesis, the agent calls `stage_collective_inquiry`; SpaceScale shows a visual proposal preview.
-7. The teacher approves; the map appears for every collaborator as one board update.
-8. Students challenge the map and vote with stamps.
-9. The agent calls `read_live_class_vote` on the selected vote table.
-10. The agent calls `stage_class_decision`; the teacher reviews a decision that keeps a minority concern and next question visible.
-11. The teacher approves; the whole class sees the decision record and can continue the inquiry.
+6. For the headline synthesis, the agent calls `stage_collective_inquiry`; the map appears for every collaborator as one board update.
+7. Students challenge the map and vote with stamps.
+8. The agent calls `read_live_class_vote` on the selected vote table.
+9. The agent calls `stage_class_decision`; the whole class sees a decision record that keeps a minority concern and next question visible, and can continue the inquiry or undo it.
 
 ## Architecture
 
@@ -140,28 +138,28 @@ Uses a vote token to propose a chosen direction, rationale, minority concern, sm
 - Existing SpaceScale authentication, owner role, item validation, Durable Outbox, WebSocket commit path, history, and undo remain authoritative.
 - Text-selection, visual-inspection, and vote receipts live only in page memory and are bounded to ten recent snapshots.
 - Read tools expose bounded semantic data or one selected-only canonical SVG review surface. Mutation tools accept structured intent—not coordinates, raw board operations, or arbitrary HTML.
-- Five generic education tools compile model-authored semantic cards, source aliases, roles, and relationships into deterministic layouts to the right of all current board content, so consecutive moves do not overlap. A complete mode-contract registry is shared by capability discovery and runtime validation, preventing the catalog and accepted inputs from drifting apart. The visual writer applies the same alias, freshness, placement, attribution, acknowledgement, and undo boundaries to private raster assets.
+- Five generic education tools compile model-authored semantic cards, source aliases, roles, and relationships into deterministic layouts to the right of all current board content, so consecutive moves do not overlap. A complete mode-contract registry is shared by capability discovery and runtime validation, preventing the catalog and accepted inputs from drifting apart. The visual writer applies the same alias, freshness, placement, attribution, acknowledgement, and undo boundaries to raster assets.
 - Generated layout is compiled into protocol-valid ordinary board items and capped below the 100-operation batch limit.
 - WebMCP commit promises resolve only after the corresponding authoritative server action; rejection or timeout reports failure.
 
-## Safety constraints
+## Collaboration constraints
 
 - No grading, ranking, participation scoring, student profiling, or inferred ability.
-- No whole-board or section reads. Visual inspection is limited to the saved items the teacher selected, with an opaque modal masking everything else.
-- No autonomous or silent board edits: the teacher initiates and permits every WebMCP write, and can undo the whole batch.
-- No identifying dissenters or claiming consensus.
+- No whole-board or section reads. Tools work on the current selection so that AI contributions stay targeted.
+- No autonomous board edits: every write is a tool call the teacher asked the agent to make, and the teacher can undo the whole batch.
+- No claiming consensus. Minority concerns stay visible.
 - No AI-assigned priorities, weights, scores, votes, response counts, or final choices.
 - No persistent AI memory about students.
-- No prompts or selected content are sent to a new SpaceScale AI backend. Visual output is sanitized and stored only through the board's existing private image-asset path.
-- All generated content is ordinary teacher-attributed board content and can be undone.
+- No prompts or selected content are sent to a new SpaceScale AI backend. Visual output is sanitized and stored only through the board's existing image-asset path.
+- All generated content is ordinary board content, attributed to the confirming teacher with AI-assistance metadata, and can be undone.
 
 ## Judging alignment
 
 - **Usefulness:** supports the full classroom arc from divergent thinking through mutual understanding, collective reasoning, explicit decisions, experiments, and reflection.
 - **Originality:** a capability-aware agent joins one shared class conversation, then leaves source-linked structures that students can challenge together instead of opening private AI chats.
-- **Execution:** strict schemas, 27 live non-section modes plus one reserved section mode, a discoverable and runtime-enforced contract for every live mode, a bounded source-linked visual writer, selected-only handwriting inspection, visible consent, deterministic non-overlapping layout, private raster sanitation/storage, atomic commits, server acknowledgement, realtime sync, AI attribution, and undo.
+- **Execution:** strict schemas, 27 live non-section modes plus one reserved section mode, a discoverable and runtime-enforced contract for every live mode, a bounded source-linked visual writer, selected-only handwriting inspection, deterministic non-overlapping layout, raster sanitation/storage, atomic commits, server acknowledgement, realtime sync, AI attribution, and undo.
 - **Thoughtful WebMCP:** uses live selection, canonical board rendering, and live vote state that an open page uniquely owns; it avoids whole-board screenshot guessing and needs no separate MCP installation.
-- **Human-agent experience:** two genuine loops in which student response changes the agent’s second contribution and the teacher remains in control.
+- **Human-agent experience:** two genuine loops in which student response changes the agent’s second contribution, with no friction dialogs between the ask and the result.
 
 ## Current verification gates
 
@@ -169,7 +167,7 @@ Uses a vote token to propose a chosen direction, rationale, minority concern, sm
 - Production Vite build passes.
 - Unit compiler tests cover all 28 catalog modes, including the reserved Jigsaw compiler path.
 - Public WebMCP contract tests inspect every published requirement, execute all 27 currently live modes through their registered tools, verify acknowledged AI-attributed batches, and reject invalid role structures. A separate provider-enabled contract test proves the conditional 28th mode, acknowledged Jigsaw write, authoritative-group flags, and same-group rejection.
-- Chromium exercises all twelve registrations, the selected-handwriting consent and masked review path, the published mode contracts and reserved-section boundary, three rejected unsafe structures, a representative write from each live education family, and a locally rendered/private-uploaded meme, then verifies save, AI attribution, and six independent undos.
+- Chromium exercises all twelve registrations, the selected-handwriting review path, the published mode contracts and reserved-section boundary, three rejected unsafe structures, a representative write from each live education family, and a locally rendered/uploaded meme, then verifies save, AI attribution, and six independent undos.
 - Full web TypeScript, Vite, unit, edge, protocol compatibility, lint, environment-doc, and secret-leak gates pass before production deployment.
 
 Official implementation reference: [OpenAI Site tools / WebMCP](https://learn.chatgpt.com/docs/webmcp).

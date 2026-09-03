@@ -1075,7 +1075,6 @@ export class BoardApp {
     });
 
     this.inquiryMapWebMcp = new InquiryMapWebMcp({
-      root: this.root,
       getRole: () => this.bootstrap.actor.role,
       getSnapshot: (token) => this.webMcp?.getSnapshot(token),
       getItemVersion: (itemId) => this.model.authoritativeItems.get(itemId)?.version,
@@ -1089,7 +1088,6 @@ export class BoardApp {
     });
 
     this.classDecisionWebMcp = new ClassDecisionWebMcp({
-      root: this.root,
       getRole: () => this.bootstrap.actor.role,
       getSelectedItems: () =>
         savedAuthoritativeItems(

@@ -17,7 +17,7 @@ declare global {
   }
 }
 
-test("teacher can turn selected class ideas into one approved, undoable WebMCP map", async ({
+test("teacher can turn selected class ideas into one undoable WebMCP map", async ({
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "The WebMCP demo-path smoke runs in Chromium.");
@@ -82,10 +82,10 @@ test("teacher can turn selected class ideas into one approved, undoable WebMCP m
       purpose: "handwriting_sketch_and_spatial_analysis",
       maximumItems: 40,
       result: "isolated_live_page_preview",
-      unselectedBoardMasked: true,
+      unselectedBoardIncluded: false,
       stableItemIdentifiersReturned: false,
       participantIdentifiersReturned: true,
-      privateImages: "placeholder_only",
+      images: "placeholder_with_alt_text",
     },
     visualTool: {
       tool: "add_content_visuals",
@@ -148,11 +148,8 @@ test("teacher can turn selected class ideas into one approved, undoable WebMCP m
     if (!tool) throw new Error("The selected-ideas tool was not registered.");
     return tool.execute({}, { signal: new AbortController().signal });
   });
-  const shareDialog = page.getByTestId("webmcp-share-dialog");
-  await expect(shareDialog).toBeVisible();
-  await expect(shareDialog).toContainText("Student names, board identifiers, positions, history");
-  await shareDialog.getByRole("button", { name: "Share 8 contributions" }).click();
   const readResult = await readResultPromise;
+  await expect(page.getByTestId("webmcp-share-dialog")).toHaveCount(0);
   expect(readResult.contributions).toHaveLength(8);
   const contributions = readResult.contributions as Array<{
     action: { type: string; objectKind: string };
@@ -498,14 +495,9 @@ test("teacher can turn selected class ideas into one approved, undoable WebMCP m
     { selectionToken: readResult.selectionToken as string },
   );
 
-  const preview = page.getByTestId("inquiry-preview-dialog");
-  await expect(preview).toBeVisible();
-  await expect(preview).toContainText("Proposal · no changes yet");
-  await expect(preview.locator(".inquiry-preview-theme")).toHaveCount(3);
-  await preview.getByRole("button", { name: "Add map for the class" }).click();
-
   const stageResult = await stageResultPromise;
-  expect(stageResult.status).toBe("teacher_approved_and_added");
+  await expect(page.getByTestId("inquiry-preview-dialog")).toHaveCount(0);
+  expect(stageResult.status).toBe("added");
   const createdItemCount = stageResult.createdItemCount as number;
   expect(createdItemCount).toBeGreaterThan(0);
   await expect(canvasItems).toHaveCount(13 + createdItemCount);

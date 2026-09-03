@@ -424,7 +424,7 @@ const MODE_CONTRACTS = {
     purpose:
       "Preserve explicitly expressed unresolved concerns and ask what evidence or change could address them.",
     requirements: [
-      "Use entries only for concerns present in the teacher-approved sources and pass an empty criteria array.",
+      "Use entries only for concerns present in the selected sources and pass an empty criteria array.",
       "Do not invent dissent or identify dissenters; preserve the concern alongside any majority choice.",
     ],
     minimumEntries: 2,
@@ -586,7 +586,7 @@ export class EducationPartnerWebMcp {
         await modelContext.registerTool(
           {
             name: configuration.name,
-            description: `${configuration.description} First call read_selected_class_ideas and pass its selectionToken. The teacher's WebMCP permission is the approval; this tool adds one normal realtime batch directly, with AI attribution and ordinary undo.`,
+            description: `${configuration.description} First call read_selected_class_ideas and pass its selectionToken. This tool adds one normal realtime batch directly, with AI attribution and ordinary undo.`,
             inputSchema: cardToolSchema(configuration),
             annotations: { readOnlyHint: false },
             execute: async (input, { signal }) => this.addCardMove(input, configuration, signal),
@@ -598,7 +598,7 @@ export class EducationPartnerWebMcp {
         {
           name: "add_content_visuals",
           description:
-            "Add one to three playful, content-grounded visuals beside teacher-approved class ideas. Use meme_card for a reliable locally rendered classroom meme, or inline_image for an LLM-generated PNG, JPEG, WebP, or GIF supplied as a data URL. Every visual must cite selected idea aliases, include accessible alt text and a discussion question, avoid real student likenesses or targeting individuals, and help the class discuss rather than merely decorate. First call read_selected_class_ideas and pass its selectionToken. External image URLs are never fetched or embedded; SpaceScale sanitizes and privately stores every image in the board bucket.",
+            "Add one to three playful, content-grounded visuals beside selected class ideas. Use meme_card for a reliable locally rendered classroom meme, or inline_image for an LLM-generated PNG, JPEG, WebP, or GIF supplied as a data URL. Every visual must cite selected idea aliases, include accessible alt text and a discussion question, avoid real student likenesses or targeting individuals, and help the class discuss rather than merely decorate. First call read_selected_class_ideas and pass its selectionToken. External image URLs are never fetched or embedded; SpaceScale sanitizes and privately stores every image in the board bucket.",
           inputSchema: contentVisualsToolSchema(),
           annotations: { readOnlyHint: false },
           execute: async (input, { signal }) => this.addContentVisuals(input, signal),
@@ -613,7 +613,7 @@ export class EducationPartnerWebMcp {
         await modelContext.registerTool(
           {
             name: "add_cross_group_jigsaw",
-            description: `Compare teacher-approved contributions from different authoritative class sections. Include agreement, tension, and complementary idea cards; every card must cite sources from at least two section aliases and end with a testable class question. First call ${sectionContext.readToolName} and pass its sectionToken. This tool never infers group membership from coordinates.`,
+            description: `Compare selected contributions from different authoritative class sections. Include agreement, tension, and complementary idea cards; every card must cite sources from at least two section aliases and end with a testable class question. First call ${sectionContext.readToolName} and pass its sectionToken. This tool never infers group membership from coordinates.`,
             inputSchema: jigsawToolSchema(sectionContext.readToolName),
             annotations: { readOnlyHint: false },
             execute: async (input, { signal }) => this.addCrossGroupJigsaw(input, signal),
@@ -685,14 +685,14 @@ export class EducationPartnerWebMcp {
           "Choose one mode that fits the teacher's request.",
           "For Cross-Group Jigsaw, call the authoritative section reader named in sectionIntegration.readTool and use its sectionToken.",
           "For every other mode, call read_selected_class_ideas and use its selectionToken.",
-          "Ground every proposed card in the aliases returned by the matching teacher-approved reader.",
-          "Call the matching write tool; its WebMCP permission is the teacher's approval.",
+          "Ground every proposed card in the aliases returned by the matching reader.",
+          "Call the matching write tool; it adds the cards to the shared canvas directly.",
         ]
       : [
           "Choose one mode that fits the teacher's request.",
-          "Call read_selected_class_ideas and wait for the teacher to approve the exact text.",
+          "Call read_selected_class_ideas to get the selected text and its aliases.",
           "Ground every proposed card in the returned idea aliases.",
-          "Call the matching write tool; its WebMCP permission is the teacher's approval.",
+          "Call the matching write tool; it adds the cards to the shared canvas directly.",
         ];
     return {
       availableModeCount: families.reduce((total, family) => total + family.modes.length, 0),
@@ -703,10 +703,10 @@ export class EducationPartnerWebMcp {
         purpose: "handwriting_sketch_and_spatial_analysis",
         maximumItems: 40,
         result: "isolated_live_page_preview",
-        unselectedBoardMasked: true,
+        unselectedBoardIncluded: false,
         stableItemIdentifiersReturned: false,
         participantIdentifiersReturned: true,
-        privateImages: "placeholder_only",
+        images: "placeholder_with_alt_text",
       },
       visualTool: {
         tool: "add_content_visuals",
@@ -869,8 +869,7 @@ export class EducationPartnerWebMcp {
       groupMembershipInferred: false,
       aiAttributed: true,
       undoable: true,
-      message:
-        "Added from teacher-approved authoritative section context as one acknowledged realtime batch.",
+      message: "Added from authoritative section context as one acknowledged realtime batch.",
     };
   }
 
@@ -921,9 +920,7 @@ export class EducationPartnerWebMcp {
   private snapshot(token: string): CollectiveInquirySnapshot {
     const snapshot = this.options.getSnapshot(token);
     if (!snapshot) {
-      throw new Error(
-        "That selection token has expired. Read the current teacher-approved selection again.",
-      );
+      throw new Error("That selection token has expired. Read the current selection again.");
     }
     for (const source of snapshot.sources) {
       if (this.options.getItemVersion(source.itemId) !== source.version) {
@@ -938,9 +935,7 @@ export class EducationPartnerWebMcp {
   private sectionSnapshot(token: string): CrossGroupJigsawSnapshot {
     const snapshot = this.options.sectionContext?.getSnapshot(token);
     if (!snapshot || snapshot.token !== token) {
-      throw new Error(
-        "That section token has expired. Read the current teacher-approved sections again.",
-      );
+      throw new Error("That section token has expired. Read the current sections again.");
     }
     for (const source of snapshot.sources) {
       if (this.options.getItemVersion(source.itemId) !== source.version) {
@@ -962,7 +957,7 @@ export class EducationPartnerWebMcp {
     const aliases = [...new Set(cards.flatMap((card) => card.sourceAliases))];
     return aliases.map((alias) => {
       const source = byAlias.get(alias);
-      if (!source) throw new Error(`${alias} is not part of the teacher-approved selection.`);
+      if (!source) throw new Error(`${alias} is not part of the selection.`);
       const bounds = this.options.getItemBounds(source.itemId);
       if (!bounds) throw new Error(`${alias} is no longer present on the shared canvas.`);
       return {

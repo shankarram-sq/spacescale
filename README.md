@@ -94,26 +94,27 @@ on shapes, sticky notes, tables, image cards, and sections. V1 stores the snappe
 coordinates as ordinary line geometry, so moving the target later does not move
 the connector automatically.
 
-AI assistance is exposed through twelve consent-aware WebMCP tools: a capability catalog,
-a teacher-approved text selection reader, a selected-board visual inspector for handwriting
+AI assistance is exposed through twelve WebMCP tools: a capability catalog,
+a selected-text reader, a selected-board visual inspector for handwriting
 and sketches, five education collaboration writers spanning 27
 non-section modes, a source-linked class visual/meme writer, a collective-inquiry mapper,
-an aggregate vote reader, and a dissent-preserving class decision tool. The visual writer
-renders safe meme cards locally or accepts inline generated raster data, then reuses the
-private board-asset pipeline. AI-generated PNG is preferred; inline JPEG, WebP, and GIF are
+an aggregate vote reader, and a dissent-preserving class decision tool. Using the Space is
+the consent: readers return the selection immediately and writers add to the canvas
+directly, with no in-app confirmation or preview dialogs. The visual writer
+renders meme cards locally or accepts inline generated raster data, then reuses the
+board-asset pipeline. AI-generated PNG is preferred; inline JPEG, WebP, and GIF are
 also accepted, while raw SVG and external image URLs are rejected. Selected contribution and
-visual metadata includes the creator's board-visible display name and stable participant ID
-for action attribution. The visual inspector opens a teacher-approved, selected-only SVG
-review surface in the live page, masks the rest of the board, aliases item IDs, and leaves
-private board images as placeholders.
+visual metadata includes the creator's display name and stable participant ID
+for action attribution. The visual inspector opens a selected-only SVG
+review surface in the live page, aliases item IDs, and renders image cards as placeholders
+carrying their alt text.
 Cross-Group
 Jigsaw is reserved for the tested
 section-context integration arriving separately; its writer adapter remains dormant
 unless an authoritative section snapshot provider is configured. The capability catalog publishes an
 exact contract for every live mode—including entry bounds, source-link cardinality,
 semantic roles, visible connections, and student-owned decision fields—and the write
-tools enforce the same registry at runtime. Writes require the teacher's WebMCP
-permission; the two headline demo flows add an extra visual preview. Every AI
+tools enforce the same registry at runtime. Every AI
 contribution is visibly attributed, source-linked, realtime, and undoable. The public
 deployment is a hackathon demo for synthetic or otherwise non-sensitive content; real
 classroom rollout remains subject to the [classroom AI safety and implementation

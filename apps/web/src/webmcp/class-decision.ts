@@ -1,5 +1,3 @@
-import "./class-decision.css";
-
 import {
   buildClassDecision,
   type ClassDecisionProposal,
@@ -22,7 +20,6 @@ type VoteSnapshot = {
 };
 
 export type ClassDecisionWebMcpOptions = {
-  root: HTMLElement;
   getRole: () => Role;
   getSelectedItems: () => BoardItem[] | null;
   getItem: (itemId: string) => BoardItem | undefined;
@@ -34,21 +31,15 @@ export type ClassDecisionWebMcpOptions = {
 };
 
 export class ClassDecisionWebMcp {
-  private readonly previewDialog: HTMLDialogElement;
   private readonly snapshots = new Map<string, VoteSnapshot>();
   private readonly registration = new AbortController();
-  private previewPending = false;
 
   constructor(private readonly options: ClassDecisionWebMcpOptions) {
-    this.previewDialog = this.buildPreviewDialog();
-    options.root.append(this.previewDialog);
     void this.register();
   }
 
   destroy(): void {
     this.registration.abort();
-    if (this.previewDialog.open) this.previewDialog.close("cancel");
-    this.previewDialog.remove();
   }
 
   private async register(): Promise<void> {
@@ -60,7 +51,7 @@ export class ClassDecisionWebMcp {
         {
           name: READ_VOTE_TOOL,
           description:
-            "Read the aggregate live result from the one saved SpaceScale vote table the teacher has selected. Returns option labels and counts only—never voter identities, stamp IDs, student names, or inferred consensus. Use after the class has responded to an AI-assisted inquiry map.",
+            "Read the aggregate live result from the one saved SpaceScale vote table currently selected. Returns option labels and counts. Use after the class has responded to an AI-assisted inquiry map.",
           inputSchema: { type: "object", properties: {}, additionalProperties: false },
           annotations: {
             readOnlyHint: true,
@@ -77,7 +68,7 @@ export class ClassDecisionWebMcp {
         {
           name: STAGE_DECISION_TOOL,
           description:
-            "Stage a class decision from a live SpaceScale vote result. Propose a chosen direction, rationale, small pilot, success measure, an explicit minority concern that must remain visible, and the next open question. SpaceScale shows a teacher preview and changes nothing until the teacher approves in the app.",
+            "Add a class decision record from a live SpaceScale vote result. Propose a chosen direction, rationale, small pilot, success measure, an explicit minority concern that must remain visible, and the next open question. SpaceScale adds the vote evidence and decision cards directly as one realtime, undoable board update.",
           inputSchema: {
             type: "object",
             additionalProperties: false,
@@ -147,7 +138,7 @@ export class ClassDecisionWebMcp {
       this.snapshots.delete(oldest);
     }
     this.options.notify(
-      `Shared aggregate class response: ${totalVotes} current vote${totalVotes === 1 ? "" : "s"}, no identities.`,
+      `Shared aggregate class response: ${totalVotes} current vote${totalVotes === 1 ? "" : "s"}.`,
       "info",
     );
     return {
@@ -159,8 +150,7 @@ export class ClassDecisionWebMcp {
       tie: leadingOptions.length > 1,
       guidance:
         "Treat the vote as input to a class decision, not proof of consensus. Preserve a concrete minority concern and keep the next question open.",
-      privacy:
-        "Aggregate counts only. No voter names, actor IDs, stamp IDs, or holdout identities.",
+      scope: "Aggregate option labels and counts from the selected vote table.",
     };
   }
 
@@ -170,7 +160,7 @@ export class ClassDecisionWebMcp {
   ): Promise<Record<string, unknown>> {
     signal.throwIfAborted();
     if (this.options.getRole() !== "owner") {
-      throw new Error("Only the Space owner can stage an AI-assisted class decision.");
+      throw new Error("Only the Space owner can add an AI-assisted class decision.");
     }
     const parsed = parseDecision(input);
     const snapshot = this.snapshots.get(parsed.voteToken);
@@ -183,127 +173,29 @@ export class ClassDecisionWebMcp {
     const current = table ? summarizeVotes(table, this.options.getItems()) : null;
     if (!current || !sameCounts(snapshot.options, current.options)) {
       throw new Error(
-        "The class vote changed. Read the live result again before staging a decision.",
+        "The class vote changed. Read the live result again before adding a decision.",
       );
     }
     const bounds = this.options.getItemBounds(snapshot.tableId);
     if (!bounds) throw new Error("The selected vote table is no longer on the canvas.");
     const batch = buildClassDecision(parsed.proposal, snapshot.options, bounds);
-    const approved = await this.confirmPreview(parsed.proposal, snapshot, signal);
-    if (!approved) {
-      return {
-        status: "teacher_declined",
-        changedCanvas: false,
-        message: "The teacher kept the shared class canvas unchanged.",
-      };
-    }
     signal.throwIfAborted();
     const accepted = await this.options.commit(batch.operation);
-    if (!accepted) throw new Error("The class decision was approved but could not be queued.");
+    if (!accepted) throw new Error("The class decision could not be queued for saving.");
     this.options.selectItems(batch.itemIds);
     this.options.notify(
       "Class decision added with the minority concern and next question intact.",
       "info",
     );
     return {
-      status: "teacher_approved_and_added",
+      status: "added",
       changedCanvas: true,
       createdItemCount: batch.itemIds.length,
       totalVotes: snapshot.totalVotes,
       chosenOption: parsed.proposal.chosenOption,
       dissentPreserved: true,
-      message:
-        "The decision record was added as one normal SpaceScale batch and remains undoable by the teacher.",
+      message: "The decision record was added as one normal SpaceScale batch and remains undoable.",
     };
-  }
-
-  private confirmPreview(
-    proposal: ClassDecisionProposal,
-    snapshot: VoteSnapshot,
-    signal: AbortSignal,
-  ): Promise<boolean> {
-    signal.throwIfAborted();
-    if (this.previewPending) {
-      return Promise.reject(
-        new Error("Another AI proposal is already waiting for teacher review."),
-      );
-    }
-    this.previewPending = true;
-    setText(this.previewDialog, "[data-decision-title]", proposal.decisionTitle);
-    setText(this.previewDialog, "[data-decision-choice]", proposal.chosenOption);
-    setText(this.previewDialog, "[data-decision-rationale]", proposal.rationale);
-    setText(this.previewDialog, "[data-decision-minority]", proposal.minorityConcern);
-    setText(this.previewDialog, "[data-decision-pilot]", proposal.pilotAction);
-    setText(this.previewDialog, "[data-decision-measure]", proposal.successMeasure);
-    setText(this.previewDialog, "[data-decision-question]", proposal.nextQuestion);
-    const voteBars = this.previewDialog.querySelector<HTMLElement>("[data-decision-votes]");
-    if (voteBars) {
-      const max = Math.max(1, ...snapshot.options.map((option) => option.count));
-      voteBars.replaceChildren(
-        ...snapshot.options.map((option) => {
-          const row = document.createElement("div");
-          row.className = "decision-vote-row";
-          const label = document.createElement("span");
-          label.textContent = option.label;
-          const track = document.createElement("i");
-          const fill = document.createElement("b");
-          fill.style.width = `${Math.round((option.count / max) * 100)}%`;
-          track.append(fill);
-          const count = document.createElement("strong");
-          count.textContent = String(option.count);
-          row.append(label, track, count);
-          return row;
-        }),
-      );
-    }
-    this.previewDialog.returnValue = "";
-    this.previewDialog.showModal();
-    return new Promise((resolve, reject) => {
-      const cleanup = (): void => {
-        signal.removeEventListener("abort", onAbort);
-        this.previewDialog.removeEventListener("close", onClose);
-        this.previewPending = false;
-      };
-      const onClose = (): void => {
-        cleanup();
-        resolve(this.previewDialog.returnValue === "apply");
-      };
-      const onAbort = (): void => {
-        cleanup();
-        if (this.previewDialog.open) this.previewDialog.close("cancel");
-        reject(signal.reason);
-      };
-      this.previewDialog.addEventListener("close", onClose, { once: true });
-      signal.addEventListener("abort", onAbort, { once: true });
-    });
-  }
-
-  private buildPreviewDialog(): HTMLDialogElement {
-    const dialog = document.createElement("dialog");
-    dialog.className = "claim-dialog webmcp-dialog decision-preview-dialog";
-    dialog.dataset.testid = "decision-preview-dialog";
-    dialog.setAttribute("aria-labelledby", "decision-preview-heading");
-    dialog.innerHTML = `
-      <form method="dialog">
-        <div class="inquiry-preview-topline"><span class="webmcp-dialog-mark" aria-hidden="true">✦</span><span class="inquiry-preview-state">Proposal · no changes yet</span></div>
-        <span class="eyebrow">Second collaboration loop · teacher review</span>
-        <h2 id="decision-preview-heading">Turn the class response into a decision?</h2>
-        <div class="inquiry-preview-title" data-decision-title></div>
-        <div class="decision-votes" data-decision-votes></div>
-        <div class="decision-preview-grid">
-          <section class="decision-card decision-card-choice"><strong>Class choice</strong><h3 data-decision-choice></h3><p data-decision-rationale></p></section>
-          <section class="decision-card decision-card-minority"><strong>Dissent we will not erase</strong><p data-decision-minority></p></section>
-          <section class="decision-card decision-card-pilot"><strong>Small pilot</strong><p data-decision-pilot></p><small>We will look for</small><p data-decision-measure></p></section>
-          <section class="decision-card decision-card-question"><strong>Keep the inquiry open</strong><p data-decision-question></p></section>
-        </div>
-        <div class="webmcp-privacy-note"><span aria-hidden="true">◎</span><span>The vote informs this proposal; it does not erase disagreement or claim unanimous consensus.</span></div>
-        <div class="dialog-actions">
-          <button type="submit" value="cancel">Keep canvas unchanged</button>
-          <button class="primary-button webmcp-primary-button" type="submit" value="apply">Add decision for the class</button>
-        </div>
-      </form>
-    `;
-    return dialog;
   }
 }
 
@@ -334,11 +226,6 @@ function sameCounts(
         option.label === current[index]?.label && option.count === current[index]?.count,
     )
   );
-}
-
-function setText(root: ParentNode, selector: string, value: string): void {
-  const element = root.querySelector<HTMLElement>(selector);
-  if (element) element.textContent = value;
 }
 
 function requiredText(value: unknown, field: string, maxLength: number): string {

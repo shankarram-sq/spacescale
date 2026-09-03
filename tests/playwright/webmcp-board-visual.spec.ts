@@ -13,7 +13,7 @@ declare global {
   }
 }
 
-test("teacher can expose only selected handwriting as an isolated WebMCP visual", async ({
+test("selected handwriting opens directly as an isolated WebMCP visual", async ({
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "The WebMCP visual smoke runs in Chromium.");
@@ -79,22 +79,17 @@ test("teacher can expose only selected handwriting as an isolated WebMCP visual"
     if (!tool) throw new Error("The visual inspection tool was not registered.");
     return tool.execute({}, { signal: new AbortController().signal });
   });
-  const consent = page.getByTestId("webmcp-visual-consent-dialog");
-  await expect(consent).toBeVisible();
-  await expect(consent).toContainText("handwriting / pencil stroke");
-  await expect(page.getByTestId("webmcp-visual-review-dialog")).toBeHidden();
-  await consent.getByRole("button", { name: "Share 1 visual item" }).click();
-
   const result = await resultPromise;
+  expect(page.getByTestId("webmcp-visual-consent-dialog")).toHaveCount(0);
   expect(result).toMatchObject({
     visualReady: true,
     preview: {
       state: "open_in_live_page",
-      scope: "teacher_selected_saved_items_only",
+      scope: "selected_saved_items_only",
       itemCount: 1,
       itemKinds: { pencil: 1 },
       containsHandwriting: true,
-      privateImagesRenderedAsPlaceholders: 0,
+      imagesRenderedAsPlaceholders: 0,
       aliases: [
         {
           alias: "visual_1",
@@ -115,7 +110,7 @@ test("teacher can expose only selected handwriting as an isolated WebMCP visual"
   await expect(review).toBeVisible();
   await expect(review).toContainText("AI can inspect now");
   await expect(review).toContainText("1 handwriting stroke");
-  const visual = review.locator('img[data-visual-scope="teacher-selected-items-only"]');
+  const visual = review.locator('img[data-visual-scope="selected-items-only"]');
   await expect(visual).toBeVisible();
   await expect(visual).toHaveAttribute("src", /^blob:/u);
   const visualMarkup = await visual.evaluate((node) => {

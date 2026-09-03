@@ -63,28 +63,18 @@ export type CollectiveInquiryWebMcpOptions = {
 };
 
 export class CollectiveInquiryWebMcp {
-  private readonly shareDialog: HTMLDialogElement;
-  private readonly visualConsentDialog: HTMLDialogElement;
   private readonly visualReviewDialog: HTMLDialogElement;
   private readonly guideDialog: HTMLDialogElement;
   private readonly snapshots = new Map<string, CollectiveInquirySnapshot>();
   private readonly visualSnapshots = new Map<string, VisualSelectionSnapshot>();
   private readonly registration = new AbortController();
   private destroyed = false;
-  private sharePending = false;
   private visualObjectUrl: string | null = null;
 
   constructor(private readonly options: CollectiveInquiryWebMcpOptions) {
-    this.shareDialog = this.buildShareDialog();
-    this.visualConsentDialog = this.buildVisualConsentDialog();
     this.visualReviewDialog = this.buildVisualReviewDialog();
     this.guideDialog = this.buildGuideDialog();
-    options.root.append(
-      this.shareDialog,
-      this.visualConsentDialog,
-      this.visualReviewDialog,
-      this.guideDialog,
-    );
+    options.root.append(this.visualReviewDialog, this.guideDialog);
     this.visualReviewDialog.addEventListener("close", this.clearVisualReview);
     options.selectionButton.addEventListener("click", this.openGuide);
     this.refresh();
@@ -120,12 +110,8 @@ export class CollectiveInquiryWebMcp {
     this.options.selectionButton.removeEventListener("click", this.openGuide);
     this.visualReviewDialog.removeEventListener("close", this.clearVisualReview);
     this.clearVisualReview();
-    this.shareDialog.close();
-    this.visualConsentDialog.close();
     this.visualReviewDialog.close();
     this.guideDialog.close();
-    this.shareDialog.remove();
-    this.visualConsentDialog.remove();
     this.visualReviewDialog.remove();
     this.guideDialog.remove();
   }
@@ -139,7 +125,7 @@ export class CollectiveInquiryWebMcp {
         {
           name: READ_SELECTION_TOOL,
           description:
-            "Read only the saved sticky-note ideas the teacher has explicitly selected on the live SpaceScale canvas. Use this before expanding, connecting, challenging, clustering, deciding from, or acting on the class's ideas. Each contribution includes its creator's board-visible display name and stable participant ID so the action can be attributed correctly. Board IDs, item IDs, positions, sections, presence, history, authentication data, and unselected content are not returned.",
+            "Read the saved sticky-note ideas currently selected on the live SpaceScale canvas. Use this before expanding, connecting, challenging, clustering, deciding from, or acting on the class's ideas. The result is returned immediately with no in-app prompt. Each contribution includes its text, its creator's display name, and the creator's stable participant ID so actions can be attributed correctly. Unselected content is not returned.",
           inputSchema: {
             type: "object",
             properties: {},
@@ -157,7 +143,7 @@ export class CollectiveInquiryWebMcp {
         {
           name: INSPECT_VISUAL_TOOL,
           description:
-            "Make only the teacher-selected, saved board items available for visual inspection in an isolated live-page preview. Use this to analyze handwriting, sketches, spatial groupings, arrows, shapes, or mixed visual notes that cannot be understood from text alone. SpaceScale masks the unselected board, replaces stable item IDs with ephemeral aliases, returns each creator's board-visible display name and stable participant ID for action attribution, returns no coordinates, and renders private image cards as placeholders rather than exposing their pixels.",
+            "Open the currently selected, saved board items in an isolated live-page preview for visual inspection. Use this to analyze handwriting, sketches, spatial groupings, arrows, shapes, or mixed visual notes that cannot be understood from text alone. The preview opens immediately with no in-app prompt. SpaceScale renders only the selected items, replaces item IDs with ephemeral aliases, and returns each creator's display name and stable participant ID for attribution.",
           inputSchema: {
             type: "object",
             properties: {},
@@ -185,22 +171,13 @@ export class CollectiveInquiryWebMcp {
     if (this.options.getRole() !== "owner") {
       throw new Error("Only the Space owner can share a board visual with the AI partner.");
     }
+    if (this.visualReviewDialog.open) {
+      throw new Error("Finish the current visual review before sharing another selection.");
+    }
     const selection = this.visualSelection();
     if (selection.issue) throw new Error(selection.issue);
     if (selection.items.length === 0) {
       throw new Error("Select one or more saved board items first.");
-    }
-
-    const approved = await this.confirmVisualShare(selection.items, signal);
-    if (!approved) throw new Error("The teacher chose not to share this visual selection.");
-    signal.throwIfAborted();
-
-    const current = this.visualSelection();
-    if (current.issue) throw new Error(current.issue);
-    if (!visualSelectionIsFresh(selection.items, current.items)) {
-      throw new Error(
-        "The selected board content changed during approval. Select it again before sharing the visual.",
-      );
     }
 
     const token = crypto.randomUUID();
@@ -232,11 +209,11 @@ export class CollectiveInquiryWebMcp {
       visualReady: true,
       preview: {
         state: "open_in_live_page",
-        scope: "teacher_selected_saved_items_only",
+        scope: "selected_saved_items_only",
         itemCount: selection.items.length,
         itemKinds: kindCounts,
         containsHandwriting: (kindCounts.pencil ?? 0) > 0,
-        privateImagesRenderedAsPlaceholders: kindCounts.image ?? 0,
+        imagesRenderedAsPlaceholders: kindCounts.image ?? 0,
         aliases: sharedItems,
       },
       inspectionGuidance: {
@@ -245,10 +222,10 @@ export class CollectiveInquiryWebMcp {
         uncertainty:
           "Label uncertain handwriting explicitly and ask the teacher to clarify instead of inventing text.",
         collaboration:
-          "Use creator identity only to attribute a visible action or ask the right participant for clarification. Do not grade, profile, rank, or infer ability, intent, or participation quality from attribution.",
+          "Use creator identity to attribute actions or ask the right participant for clarification. Do not grade, rank, or infer ability from attribution.",
       },
-      privacy:
-        "Only the teacher-approved selection, its board-visible creator names, and stable participant IDs are shared. Board and item IDs, coordinates, history, presence, authentication data, unselected board content, and private image pixels are not exposed.",
+      scope:
+        "The preview contains the selected items, their creators' display names, and stable participant IDs. Image cards render as placeholders with their alt text. Unselected board content is not included.",
     };
   }
 
@@ -270,9 +247,6 @@ export class CollectiveInquiryWebMcp {
       action: { type: "created" as const, objectKind: "sticky" as const },
       createdBy: this.participant(item.createdBy),
     }));
-    const approved = await this.confirmShare(ideas, signal);
-    if (!approved) throw new Error("The teacher chose not to share this selection.");
-    signal.throwIfAborted();
 
     const token = crypto.randomUUID();
     const snapshot: CollectiveInquirySnapshot = {
@@ -287,11 +261,7 @@ export class CollectiveInquiryWebMcp {
       })),
     };
     this.snapshots.set(token, snapshot);
-    while (this.snapshots.size > MAX_SNAPSHOTS) {
-      const oldest = this.snapshots.keys().next().value as string | undefined;
-      if (!oldest) break;
-      this.snapshots.delete(oldest);
-    }
+    trimSnapshots(this.snapshots);
 
     this.options.notify(
       `${ideas.length} selected contribution${ideas.length === 1 ? " was" : "s were"} shared with the AI partner.`,
@@ -306,10 +276,10 @@ export class CollectiveInquiryWebMcp {
           "Help the class build on these contributions together. Surface bridges, tensions, assumptions, missing perspectives, and useful next questions.",
         preserveDissent: true,
         avoid:
-          "Use identity only for accurate action attribution or a relevant clarification. Do not rank students, infer participation quality or ability, profile individuals, or claim consensus.",
+          "Use identity for accurate attribution or relevant clarification. Do not rank students, infer ability, or claim consensus.",
       },
-      privacy:
-        "This result contains only teacher-approved sticky-note text, ephemeral idea aliases, board-visible creator names, and stable participant IDs. Board and item IDs, coordinates, sections, unselected board content, presence, history, authentication data, and contact details were not shared.",
+      scope:
+        "This result contains the selected sticky-note text, ephemeral idea aliases, creator display names, and stable participant IDs. Unselected board content is not included.",
     };
   }
 
@@ -353,110 +323,6 @@ export class CollectiveInquiryWebMcp {
     return { items: selected, issue: null };
   }
 
-  private confirmShare(ideas: readonly SharedIdea[], signal: AbortSignal): Promise<boolean> {
-    signal.throwIfAborted();
-    if (this.sharePending) {
-      return Promise.reject(new Error("Another teacher approval is already open."));
-    }
-    this.sharePending = true;
-    const list = this.shareDialog.querySelector<HTMLElement>("[data-webmcp-share-list]");
-    if (list) {
-      list.replaceChildren(
-        ...ideas.map((idea) => {
-          const row = document.createElement("li");
-          const alias = document.createElement("span");
-          alias.textContent = idea.alias.replace("_", " ");
-          const text = document.createElement("p");
-          text.textContent = idea.text;
-          row.append(alias, text);
-          return row;
-        }),
-      );
-    }
-    const count = this.shareDialog.querySelector<HTMLElement>("[data-webmcp-share-count]");
-    if (count) count.textContent = String(ideas.length);
-    const submit = this.shareDialog.querySelector<HTMLButtonElement>("[data-webmcp-share-submit]");
-    if (submit) {
-      submit.textContent = `Share ${ideas.length} contribution${ideas.length === 1 ? "" : "s"}`;
-    }
-
-    this.shareDialog.returnValue = "";
-    this.shareDialog.showModal();
-    return new Promise((resolve, reject) => {
-      const cleanup = (): void => {
-        signal.removeEventListener("abort", onAbort);
-        this.shareDialog.removeEventListener("close", onClose);
-        this.sharePending = false;
-      };
-      const onClose = (): void => {
-        cleanup();
-        resolve(this.shareDialog.returnValue === "share");
-      };
-      const onAbort = (): void => {
-        cleanup();
-        if (this.shareDialog.open) this.shareDialog.close("cancel");
-        reject(signal.reason);
-      };
-      this.shareDialog.addEventListener("close", onClose, { once: true });
-      signal.addEventListener("abort", onAbort, { once: true });
-    });
-  }
-
-  private confirmVisualShare(items: readonly BoardItem[], signal: AbortSignal): Promise<boolean> {
-    signal.throwIfAborted();
-    if (this.sharePending) {
-      return Promise.reject(new Error("Another teacher approval is already open."));
-    }
-    this.sharePending = true;
-    const kindCounts = countKinds(items);
-    const list = this.visualConsentDialog.querySelector<HTMLElement>(
-      "[data-webmcp-visual-consent-list]",
-    );
-    if (list) {
-      list.replaceChildren(
-        ...Object.entries(kindCounts).map(([kind, count]) => {
-          const row = document.createElement("li");
-          const label = document.createElement("span");
-          label.textContent = humanizeItemKind(kind as BoardItem["kind"], count);
-          const value = document.createElement("strong");
-          value.textContent = String(count);
-          row.append(label, value);
-          return row;
-        }),
-      );
-    }
-    const count = this.visualConsentDialog.querySelector<HTMLElement>(
-      "[data-webmcp-visual-consent-count]",
-    );
-    if (count) count.textContent = String(items.length);
-    const submit = this.visualConsentDialog.querySelector<HTMLButtonElement>(
-      "[data-webmcp-visual-consent-submit]",
-    );
-    if (submit)
-      submit.textContent = `Share ${items.length} visual item${items.length === 1 ? "" : "s"}`;
-
-    this.visualConsentDialog.returnValue = "";
-    this.visualConsentDialog.showModal();
-    return new Promise((resolve, reject) => {
-      const cleanup = (): void => {
-        signal.removeEventListener("abort", onAbort);
-        this.visualConsentDialog.removeEventListener("close", onClose);
-        this.sharePending = false;
-      };
-      const onClose = (): void => {
-        cleanup();
-        resolve(this.visualConsentDialog.returnValue === "share");
-      };
-      const onAbort = (): void => {
-        cleanup();
-        if (this.visualConsentDialog.open) this.visualConsentDialog.close("cancel");
-        reject(signal.reason);
-      };
-      this.visualConsentDialog.addEventListener("close", onClose, { once: true });
-      signal.addEventListener("abort", onAbort, { once: true });
-    });
-  }
-
   private async showVisualReview(
     items: readonly BoardItem[],
     kindCounts: Readonly<Partial<Record<BoardItem["kind"], number>>>,
@@ -465,9 +331,6 @@ export class CollectiveInquiryWebMcp {
       "[data-webmcp-visual-surface]",
     );
     if (!surface) throw new Error("The visual review surface is unavailable.");
-    if (this.visualReviewDialog.open) {
-      throw new Error("Finish the current visual review before sharing another selection.");
-    }
     this.clearVisualReview();
     const preview = buildVisualPreview(items);
     this.visualObjectUrl = preview.objectUrl;
@@ -484,13 +347,13 @@ export class CollectiveInquiryWebMcp {
       handwriting.hidden = pencilCount === 0;
       handwriting.textContent = `${pencilCount} handwriting stroke${pencilCount === 1 ? "" : "s"}`;
     }
-    const privateImages = this.visualReviewDialog.querySelector<HTMLElement>(
-      "[data-webmcp-visual-private-images]",
+    const images = this.visualReviewDialog.querySelector<HTMLElement>(
+      "[data-webmcp-visual-images]",
     );
-    if (privateImages) {
+    if (images) {
       const imageCount = kindCounts.image ?? 0;
-      privateImages.hidden = imageCount === 0;
-      privateImages.textContent = `${imageCount} private image${imageCount === 1 ? "" : "s"} shown as ${imageCount === 1 ? "a placeholder" : "placeholders"}`;
+      images.hidden = imageCount === 0;
+      images.textContent = `${imageCount} image${imageCount === 1 ? "" : "s"} shown as ${imageCount === 1 ? "a placeholder" : "placeholders"}`;
     }
     this.visualReviewDialog.showModal();
     try {
@@ -514,50 +377,6 @@ export class CollectiveInquiryWebMcp {
     if (!this.guideDialog.open) this.guideDialog.showModal();
   };
 
-  private buildShareDialog(): HTMLDialogElement {
-    const dialog = document.createElement("dialog");
-    dialog.className = "claim-dialog webmcp-dialog webmcp-share-dialog";
-    dialog.dataset.testid = "webmcp-share-dialog";
-    dialog.setAttribute("aria-labelledby", "webmcp-share-title");
-    dialog.innerHTML = `
-      <form method="dialog">
-        <span class="webmcp-dialog-mark" aria-hidden="true">✦</span>
-        <span class="eyebrow">AI partner · WebMCP</span>
-        <h2 id="webmcp-share-title">Share this selection with AI?</h2>
-        <p>The AI can read only the <strong data-webmcp-share-count>0</strong> contributions below. Student names, board identifiers, positions, history, and everything you did not select stay private.</p>
-        <ul class="webmcp-share-list" data-webmcp-share-list></ul>
-        <div class="webmcp-privacy-note"><span aria-hidden="true">◎</span><span>You stay in control. Reading this selection does not change the shared canvas.</span></div>
-        <div class="dialog-actions">
-          <button type="submit" value="cancel">Keep private</button>
-          <button class="primary-button webmcp-primary-button" type="submit" value="share" data-webmcp-share-submit>Share selection</button>
-        </div>
-      </form>
-    `;
-    return dialog;
-  }
-
-  private buildVisualConsentDialog(): HTMLDialogElement {
-    const dialog = document.createElement("dialog");
-    dialog.className = "claim-dialog webmcp-dialog webmcp-visual-consent-dialog";
-    dialog.dataset.testid = "webmcp-visual-consent-dialog";
-    dialog.setAttribute("aria-labelledby", "webmcp-visual-consent-title");
-    dialog.innerHTML = `
-      <form method="dialog">
-        <span class="webmcp-dialog-mark" aria-hidden="true">◫</span>
-        <span class="eyebrow">Visual inspection · WebMCP</span>
-        <h2 id="webmcp-visual-consent-title">Let AI see this visual selection?</h2>
-        <p>After approval, SpaceScale will open an isolated preview containing only these <strong data-webmcp-visual-consent-count>0</strong> saved items. Handwriting and visible text inside the selection may be readable.</p>
-        <ul class="webmcp-visual-kind-list" data-webmcp-visual-consent-list></ul>
-        <div class="webmcp-privacy-note"><span aria-hidden="true">◎</span><span>The rest of the board will be covered. Names, history, presence, stable IDs, coordinates, and private image pixels stay hidden.</span></div>
-        <div class="dialog-actions">
-          <button type="submit" value="cancel">Keep private</button>
-          <button class="primary-button webmcp-primary-button" type="submit" value="share" data-webmcp-visual-consent-submit>Share visual selection</button>
-        </div>
-      </form>
-    `;
-    return dialog;
-  }
-
   private buildVisualReviewDialog(): HTMLDialogElement {
     const dialog = document.createElement("dialog");
     dialog.className = "claim-dialog webmcp-dialog webmcp-visual-review-dialog";
@@ -567,17 +386,17 @@ export class CollectiveInquiryWebMcp {
       <form method="dialog">
         <div class="webmcp-visual-review-heading">
           <div>
-            <span class="eyebrow">Approved selection · AI can inspect now</span>
+            <span class="eyebrow">Selected items · AI can inspect now</span>
             <h2 id="webmcp-visual-review-title">Selected board visual</h2>
           </div>
           <div class="webmcp-visual-review-meta" aria-label="Visual selection summary">
             <span><strong data-webmcp-visual-review-count>0</strong> items</span>
             <span data-webmcp-visual-handwriting hidden></span>
-            <span data-webmcp-visual-private-images hidden></span>
+            <span data-webmcp-visual-images hidden></span>
           </div>
         </div>
         <div class="webmcp-visual-surface" data-webmcp-visual-surface></div>
-        <div class="webmcp-privacy-note"><span aria-hidden="true">✦</span><span>AI should mark uncertain handwriting as uncertain. Closing this review removes the shared visual from the live page and does not change the board.</span></div>
+        <div class="webmcp-note"><span aria-hidden="true">✦</span><span>AI should mark uncertain handwriting as uncertain. Closing this review removes the preview from the live page and does not change the board.</span></div>
         <div class="dialog-actions"><button class="primary-button webmcp-primary-button" type="submit">Finish visual review</button></div>
       </form>
     `;
@@ -599,7 +418,7 @@ export class CollectiveInquiryWebMcp {
           <span>Try asking</span>
           <p>“If these are typed notes, read the selected class ideas. If they include handwriting or a sketch, inspect the selected board visual. Find two connections, one productive tension, and a question that helps the class move forward.”</p>
         </div>
-        <p class="webmcp-guide-note">SpaceScale will ask before sharing either exact anonymized text or an isolated visual preview. Unselected board content stays hidden.</p>
+        <p class="webmcp-guide-note">SpaceScale shares the selected text or an isolated visual preview straight away. Changes the AI makes land on the shared canvas as one undoable update.</p>
         <div class="dialog-actions"><button class="primary-button webmcp-primary-button" type="submit">Got it</button></div>
       </form>
     `;
@@ -616,7 +435,7 @@ function buildVisualPreview(items: readonly BoardItem[]): {
   const objectUrl = URL.createObjectURL(new Blob([markup], { type: "image/svg+xml" }));
   const image = document.createElement("img");
   image.alt = preview.ariaLabel;
-  image.dataset.visualScope = "teacher-selected-items-only";
+  image.dataset.visualScope = "selected-items-only";
   image.src = objectUrl;
   return { image, objectUrl };
 }
@@ -627,23 +446,14 @@ export function serializeVisualPreview(items: readonly BoardItem[]): {
   content: string;
 } {
   if (items.length === 0) throw new Error("A visual preview needs at least one item.");
-  const sanitized = items
-    .map((item, index) => {
-      const normalized = normalizeBoardItem(item);
-      const sanitized = {
-        ...normalized,
-        id: visualAlias(index),
-        createdBy: "shared-visual",
-      };
-      return sanitized.kind === "image"
-        ? {
-            ...sanitized,
-            geometry: { ...sanitized.geometry, alt: "Private image not shared" },
-          }
-        : sanitized;
-    })
+  const aliased = items
+    .map((item, index) => ({
+      ...normalizeBoardItem(item),
+      id: visualAlias(index),
+      createdBy: "shared-visual",
+    }))
     .sort((left, right) => left.z - right.z);
-  const bounds = boundsForItems(sanitized);
+  const bounds = boundsForItems(aliased);
   if (bounds === null) throw new Error("The selected visual has no renderable bounds.");
   const width = Math.max(1, boundsWidth(bounds));
   const height = Math.max(1, boundsHeight(bounds));
@@ -654,8 +464,8 @@ export function serializeVisualPreview(items: readonly BoardItem[]): {
   const viewHeight = height + padding * 2;
   return {
     viewBox: `${minX} ${minY} ${viewWidth} ${viewHeight}`,
-    ariaLabel: `Teacher-approved board visual containing ${items.length} selected item${items.length === 1 ? "" : "s"}`,
-    content: `<rect x="${minX}" y="${minY}" width="${viewWidth}" height="${viewHeight}" fill="#ffffff"/>${sanitized.map(renderSvgItem).join("")}`,
+    ariaLabel: `Board visual containing ${items.length} selected item${items.length === 1 ? "" : "s"}`,
+    content: `<rect x="${minX}" y="${minY}" width="${viewWidth}" height="${viewHeight}" fill="#ffffff"/>${aliased.map(renderSvgItem).join("")}`,
   };
 }
 
@@ -663,31 +473,10 @@ function visualAlias(index: number): string {
   return `visual_${index + 1}`;
 }
 
-export function visualSelectionIsFresh(
-  left: readonly BoardItem[],
-  right: readonly BoardItem[],
-): boolean {
-  if (left.length !== right.length) return false;
-  const versions = new Map(left.map((item) => [item.id, item.version]));
-  return right.every((item) => versions.get(item.id) === item.version);
-}
-
 function countKinds(items: readonly BoardItem[]): Partial<Record<BoardItem["kind"], number>> {
   const counts: Partial<Record<BoardItem["kind"], number>> = {};
   for (const item of items) counts[item.kind] = (counts[item.kind] ?? 0) + 1;
   return counts;
-}
-
-function humanizeItemKind(kind: BoardItem["kind"], count: number): string {
-  const label =
-    kind === "pencil"
-      ? "handwriting / pencil stroke"
-      : kind === "sticky"
-        ? "sticky note"
-        : kind === "image"
-          ? "private image placeholder"
-          : kind;
-  return count === 1 ? label : `${label}s`;
 }
 
 function trimSnapshots<T>(snapshots: Map<string, T>): void {

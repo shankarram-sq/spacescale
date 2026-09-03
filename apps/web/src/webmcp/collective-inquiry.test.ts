@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BoardItem } from "../types";
-import { serializeVisualPreview, visualSelectionIsFresh } from "./collective-inquiry";
+import { serializeVisualPreview } from "./collective-inquiry";
 
 const ACTOR_ID = "018f0000-0000-7000-8000-0000000000a1";
 const PENCIL_ID = "018f0000-0000-7000-8000-0000000000b1";
@@ -87,19 +87,15 @@ describe("selected board visual serialization", () => {
     expect(preview.content).not.toContain("Unselected private note");
   });
 
-  it("requires a non-empty visual and rejects changed or replaced selections", () => {
+  it("requires a non-empty visual", () => {
     expect(() => serializeVisualPreview([])).toThrow("at least one item");
-    expect(visualSelectionIsFresh([pencil(), sticky()], [sticky(), pencil()])).toBe(true);
-    expect(visualSelectionIsFresh([pencil(), sticky()], [pencil(2), sticky()])).toBe(false);
-    expect(visualSelectionIsFresh([pencil(), sticky()], [pencil()])).toBe(false);
   });
 
-  it("renders a generic placeholder without private image pixels or alt text", () => {
+  it("renders an image placeholder that keeps the alt text but embeds no pixels", () => {
     const preview = serializeVisualPreview([privateImage()]);
 
-    expect(preview.content).toContain("Private image not shared");
     expect(preview.content).toContain('data-export-placeholder="private-image"');
-    expect(preview.content).not.toContain("Secret student photo description");
+    expect(preview.content).toContain("Secret student photo description");
     expect(preview.content).not.toContain("asset_A");
     expect(preview.content).not.toContain(IMAGE_ID);
   });

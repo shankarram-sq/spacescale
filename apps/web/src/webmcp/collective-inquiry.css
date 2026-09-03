@@ -98,68 +98,6 @@
   line-height: 1.55;
 }
 
-.webmcp-share-list {
-  max-height: 310px;
-  display: grid;
-  gap: 7px;
-  margin: 2px 0;
-  padding: 0;
-  overflow: auto;
-  list-style: none;
-}
-
-.webmcp-share-list li {
-  display: grid;
-  grid-template-columns: 72px 1fr;
-  gap: 10px;
-  padding: 10px 12px;
-  border: 1px solid #e8e0f5;
-  border-radius: 11px;
-  background: #fff;
-}
-
-.webmcp-share-list li > span {
-  color: #7956ae;
-  font-size: 9px;
-  font-weight: 750;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-
-.webmcp-share-list li > p {
-  margin: 0;
-  color: #312a39;
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.webmcp-visual-kind-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 8px;
-  margin: 2px 0;
-  padding: 0;
-  list-style: none;
-}
-
-.webmcp-visual-kind-list li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
-  border: 1px solid #e8e0f5;
-  border-radius: 11px;
-  background: #fff;
-  color: #4a4055;
-  font-size: 11px;
-}
-
-.webmcp-visual-kind-list strong {
-  color: #6840a8;
-  font-size: 15px;
-}
-
 .webmcp-dialog.webmcp-visual-review-dialog {
   width: min(1040px, calc(100vw - 32px));
   max-height: calc(100vh - 32px);
@@ -223,7 +161,7 @@
   object-fit: contain;
 }
 
-.webmcp-privacy-note {
+.webmcp-note {
   display: flex;
   align-items: flex-start;
   gap: 8px;

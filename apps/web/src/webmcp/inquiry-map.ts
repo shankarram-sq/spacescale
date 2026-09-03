@@ -1,5 +1,3 @@
-import "./inquiry-map.css";
-
 import {
   buildCollectiveInquiryMap,
   type CollectiveInquiryBatch,
@@ -13,7 +11,6 @@ import type { CollectiveInquirySnapshot } from "./collective-inquiry";
 const STAGE_INQUIRY_TOOL = "stage_collective_inquiry";
 
 export type InquiryMapWebMcpOptions = {
-  root: HTMLElement;
   getRole: () => Role;
   getSnapshot: (token: string) => CollectiveInquirySnapshot | undefined;
   getItemVersion: (itemId: string) => number | undefined;
@@ -24,20 +21,14 @@ export type InquiryMapWebMcpOptions = {
 };
 
 export class InquiryMapWebMcp {
-  private readonly previewDialog: HTMLDialogElement;
   private readonly registration = new AbortController();
-  private previewPending = false;
 
   constructor(private readonly options: InquiryMapWebMcpOptions) {
-    this.previewDialog = this.buildPreviewDialog();
-    options.root.append(this.previewDialog);
     void this.register();
   }
 
   destroy(): void {
     this.registration.abort();
-    if (this.previewDialog.open) this.previewDialog.close("cancel");
-    this.previewDialog.remove();
   }
 
   private async register(): Promise<void> {
@@ -49,7 +40,7 @@ export class InquiryMapWebMcp {
         {
           name: STAGE_INQUIRY_TOOL,
           description:
-            "Stage a visual collective-inquiry map from a teacher-approved SpaceScale selection. Connect the selected contribution aliases into 2-4 themes, identify bridges across themes, and name one productive tension plus a next question. SpaceScale computes the canvas layout and shows the teacher a preview; nothing is added unless the teacher approves inside the app.",
+            "Add a visual collective-inquiry map from a SpaceScale selection. Connect the selected contribution aliases into 2-4 themes, identify bridges across themes, and name one productive tension plus a next question. SpaceScale computes the canvas layout and adds the map directly as one realtime, undoable board update.",
           inputSchema: {
             type: "object",
             additionalProperties: false,
@@ -77,7 +68,7 @@ export class InquiryMapWebMcp {
                       minItems: 1,
                       maxItems: 30,
                       uniqueItems: true,
-                      items: { type: "string", pattern: "^(idea|context)_[1-9][0-9]*$" },
+                      items: { type: "string", pattern: "^idea_[1-9][0-9]*$" },
                     },
                   },
                 },
@@ -123,13 +114,13 @@ export class InquiryMapWebMcp {
   private async stage(input: unknown, signal: AbortSignal): Promise<Record<string, unknown>> {
     signal.throwIfAborted();
     if (this.options.getRole() !== "owner") {
-      throw new Error("Only the Space owner can stage an AI-assisted inquiry map.");
+      throw new Error("Only the Space owner can add an AI-assisted inquiry map.");
     }
     const proposal = parseProposal(input);
     const snapshot = this.options.getSnapshot(proposal.selectionToken);
     if (!snapshot) {
       throw new Error(
-        "That selection token has expired. Read the currently selected ideas again before staging a map.",
+        "That selection token has expired. Read the currently selected ideas again before adding a map.",
       );
     }
     const knownAliases = new Set(snapshot.sources.map((source) => source.alias));
@@ -137,7 +128,7 @@ export class InquiryMapWebMcp {
     for (const theme of proposal.themes) {
       for (const alias of theme.ideaAliases) {
         if (!knownAliases.has(alias)) {
-          throw new Error(`${alias} is not part of the teacher-approved selection.`);
+          throw new Error(`${alias} is not part of the selection.`);
         }
         if (assignedAliases.has(alias)) {
           throw new Error(`${alias} was assigned to more than one theme.`);
@@ -148,7 +139,7 @@ export class InquiryMapWebMcp {
     for (const source of snapshot.sources) {
       if (this.options.getItemVersion(source.itemId) !== source.version) {
         throw new Error(
-          "The selected class ideas changed after they were shared. Read the selection again before staging a map.",
+          "The selected class ideas changed after they were read. Read the selection again before adding a map.",
         );
       }
     }
@@ -166,137 +157,23 @@ export class InquiryMapWebMcp {
       throw new Error("SpaceScale could not lay out that inquiry map safely.");
     }
 
-    const approved = await this.confirmPreview(
-      proposal,
-      assignedAliases.size,
-      batch.itemIds.length,
-      signal,
-    );
-    if (!approved) {
-      return {
-        status: "teacher_declined",
-        changedCanvas: false,
-        message: "The teacher reviewed the proposal and kept the shared canvas unchanged.",
-      };
-    }
     signal.throwIfAborted();
     const accepted = await this.options.commit(batch.operation);
-    if (!accepted)
-      throw new Error("The inquiry map was approved but could not be queued for saving.");
+    if (!accepted) throw new Error("The inquiry map could not be queued for saving.");
     this.options.selectItems(batch.itemIds);
     this.options.notify(
       "AI-assisted inquiry map added. The class can now challenge and extend it.",
       "info",
     );
     return {
-      status: "teacher_approved_and_added",
+      status: "added",
       changedCanvas: true,
       createdItemCount: batch.itemIds.length,
       connectedContributionCount: assignedAliases.size,
       themeCount: proposal.themes.length,
       message:
-        "The map was added as one normal SpaceScale batch. It is visible to collaborators and can be undone by the teacher.",
+        "The map was added as one normal SpaceScale batch. It is visible to collaborators and can be undone.",
     };
-  }
-
-  private confirmPreview(
-    proposal: CollectiveInquiryProposal,
-    contributionCount: number,
-    itemCount: number,
-    signal: AbortSignal,
-  ): Promise<boolean> {
-    signal.throwIfAborted();
-    if (this.previewPending) {
-      return Promise.reject(
-        new Error("Another AI proposal is already waiting for teacher review."),
-      );
-    }
-    this.previewPending = true;
-    const title = this.previewDialog.querySelector<HTMLElement>("[data-inquiry-preview-title]");
-    if (title) title.textContent = proposal.mapTitle;
-    const meta = this.previewDialog.querySelector<HTMLElement>("[data-inquiry-preview-meta]");
-    if (meta) {
-      meta.textContent = `${proposal.themes.length} themes · ${contributionCount} selected contributions · ${itemCount} new canvas objects`;
-    }
-    const themes = this.previewDialog.querySelector<HTMLElement>("[data-inquiry-preview-themes]");
-    if (themes) {
-      themes.replaceChildren(
-        ...proposal.themes.map((theme, index) => {
-          const card = document.createElement("article");
-          card.className = "inquiry-preview-theme";
-          card.dataset.colour = String(index + 1);
-          const heading = document.createElement("h3");
-          heading.textContent = theme.label;
-          const summary = document.createElement("p");
-          summary.textContent = theme.summary;
-          const aliases = document.createElement("small");
-          aliases.textContent = theme.ideaAliases.join(" · ").replaceAll("_", " ");
-          card.append(heading, summary, aliases);
-          return card;
-        }),
-      );
-    }
-    const bridges = this.previewDialog.querySelector<HTMLElement>("[data-inquiry-preview-bridges]");
-    if (bridges) {
-      bridges.replaceChildren(
-        ...proposal.bridges.map((bridge) => {
-          const row = document.createElement("li");
-          const from = proposal.themes.find((theme) => theme.id === bridge.fromThemeId)?.label;
-          const to = proposal.themes.find((theme) => theme.id === bridge.toThemeId)?.label;
-          row.textContent = `${from ?? bridge.fromThemeId} ↔ ${to ?? bridge.toThemeId}: ${bridge.insight}`;
-          return row;
-        }),
-      );
-    }
-    const tension = this.previewDialog.querySelector<HTMLElement>("[data-inquiry-preview-tension]");
-    if (tension) {
-      tension.textContent = `${proposal.tension.statement} Next question: ${proposal.tension.nextQuestion}`;
-    }
-    this.previewDialog.returnValue = "";
-    this.previewDialog.showModal();
-    return new Promise((resolve, reject) => {
-      const cleanup = (): void => {
-        signal.removeEventListener("abort", onAbort);
-        this.previewDialog.removeEventListener("close", onClose);
-        this.previewPending = false;
-      };
-      const onClose = (): void => {
-        cleanup();
-        resolve(this.previewDialog.returnValue === "apply");
-      };
-      const onAbort = (): void => {
-        cleanup();
-        if (this.previewDialog.open) this.previewDialog.close("cancel");
-        reject(signal.reason);
-      };
-      this.previewDialog.addEventListener("close", onClose, { once: true });
-      signal.addEventListener("abort", onAbort, { once: true });
-    });
-  }
-
-  private buildPreviewDialog(): HTMLDialogElement {
-    const dialog = document.createElement("dialog");
-    dialog.className = "claim-dialog webmcp-dialog inquiry-preview-dialog";
-    dialog.dataset.testid = "inquiry-preview-dialog";
-    dialog.setAttribute("aria-labelledby", "inquiry-preview-heading");
-    dialog.innerHTML = `
-      <form method="dialog">
-        <div class="inquiry-preview-topline"><span class="webmcp-dialog-mark" aria-hidden="true">✦</span><span class="inquiry-preview-state">Proposal · no changes yet</span></div>
-        <span class="eyebrow">AI partner · teacher review</span>
-        <h2 id="inquiry-preview-heading">Add this map to the class canvas?</h2>
-        <div class="inquiry-preview-title" data-inquiry-preview-title></div>
-        <p class="inquiry-preview-meta" data-inquiry-preview-meta></p>
-        <div class="inquiry-preview-themes" data-inquiry-preview-themes></div>
-        <section class="inquiry-preview-section"><strong>Bridges across the class</strong><ul data-inquiry-preview-bridges></ul></section>
-        <section class="inquiry-preview-tension"><strong>Productive tension</strong><p data-inquiry-preview-tension></p></section>
-        <div class="webmcp-privacy-note"><span aria-hidden="true">↶</span><span>Approval adds ordinary board objects in one shared update. You can undo the whole map.</span></div>
-        <div class="dialog-actions">
-          <button type="submit" value="cancel">Keep canvas unchanged</button>
-          <button class="primary-button webmcp-primary-button" type="submit" value="apply">Add map for the class</button>
-        </div>
-      </form>
-    `;
-    return dialog;
   }
 }
 
