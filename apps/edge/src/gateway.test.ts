@@ -105,4 +105,18 @@ describe("gateway board routing", () => {
     expect(limited.status).toBe(429);
     await expect(limited.json()).resolves.toMatchObject({ error: { code: "RATE_LIMITED" } });
   });
+
+  it("retires the obsolete production fixture boards", async () => {
+    for (const boardId of [
+      "b_esWiMoNl4NVJhKzMvmFRuw",
+      "b_nLMfuMz5RYX4Fm-uZtPc9Q",
+      "b_YtTunrS0fNx5hcBRZBiGMA",
+    ]) {
+      const response = await SELF.fetch(`http://localhost/api/v1/boards/${boardId}/bootstrap`);
+      expect(response.status).toBe(410);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "NOT_FOUND", message: "This test board has been removed." },
+      });
+    }
+  });
 });

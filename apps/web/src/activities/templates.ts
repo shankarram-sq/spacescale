@@ -20,9 +20,9 @@ export type ActivityTemplateId =
   | "pair-share"
   | "collective-inquiry-demo"
   | "vote-with-stamps"
-  | "product-discovery-lab"
-  | "incident-response-room"
-  | "design-critique-studio";
+  | "single-use-plastics-challenge"
+  | "safer-school-journeys"
+  | "inclusive-break-times";
 
 export type ActivityTemplateItem = {
   [Kind in NewBoardItem["kind"]]: Omit<

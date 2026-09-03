@@ -24,9 +24,9 @@ describe("classroom templates", () => {
       "sort-it": 12,
       "pair-share": 7,
       "vote-with-stamps": 4,
-      "product-discovery-lab": 28,
-      "incident-response-room": 24,
-      "design-critique-studio": 30,
+      "single-use-plastics-challenge": 28,
+      "safer-school-journeys": 29,
+      "inclusive-break-times": 30,
     };
 
     expect(ACTIVITY_TEMPLATES.map(({ id }) => id)).toEqual(Object.keys(expectedCounts));
@@ -69,23 +69,27 @@ describe("classroom templates", () => {
   });
 
   it("remaps rich board Sections and groups without leaking template metadata", () => {
-    const product = buildActivityBatch("product-discovery-lab", [0, 0], deterministicIds());
-    const created = product.operation.operations.flatMap((operation) =>
+    const plastics = buildActivityBatch(
+      "single-use-plastics-challenge",
+      [0, 0],
+      deterministicIds(),
+    );
+    const created = plastics.operation.operations.flatMap((operation) =>
       operation.kind === "item.create" ? [operation.item] : [],
     );
-    const opportunitySection = created.find(
-      (item) => item.kind === "zone" && item.geometry.title === "3 · Opportunities",
+    const ideasSection = created.find(
+      (item) => item.kind === "zone" && item.geometry.title === "3 · Imagine solutions",
     );
     const commentTarget = created.find(
       (item) => item.kind === "sticky" && item.geometry.text.includes("COMMENT TARGET"),
     );
-    expect(opportunitySection).toBeDefined();
-    expect(commentTarget?.sectionId).toBe(opportunitySection?.id);
+    expect(ideasSection).toBeDefined();
+    expect(commentTarget?.sectionId).toBe(ideasSection?.id);
 
     const evidenceCluster = created.filter(
       (item) =>
         item.kind === "sticky" &&
-        (item.geometry.text.includes("7 of 10") || item.geometry.text.includes("Support tickets")),
+        (item.geometry.text.includes("One lunch") || item.geometry.text.includes("Most bottles")),
     );
     expect(evidenceCluster).toHaveLength(2);
     expect(new Set(evidenceCluster.map((item) => item.groupId)).size).toBe(1);
@@ -96,8 +100,8 @@ describe("classroom templates", () => {
       ),
     ).toBe(true);
 
-    const incident = buildActivityBatch("incident-response-room", [0, 0], deterministicIds());
-    const rotatedTarget = incident.operation.operations.find(
+    const journey = buildActivityBatch("safer-school-journeys", [0, 0], deterministicIds());
+    const rotatedTarget = journey.operation.operations.find(
       (operation) =>
         operation.kind === "item.create" &&
         operation.item.kind === "sticky" &&

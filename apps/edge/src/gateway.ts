@@ -34,6 +34,11 @@ import { randomDisplayName } from "./validation-internal";
 export { BoardRoom, OrganisationRoom };
 
 const BOARD_ROUTE = /^\/api\/v1\/boards\/(b_[A-Za-z0-9_-]{22})(?:\/|$)/u;
+const RETIRED_FIXTURE_BOARD_IDS = new Set([
+  "b_esWiMoNl4NVJhKzMvmFRuw",
+  "b_nLMfuMz5RYX4Fm-uZtPc9Q",
+  "b_YtTunrS0fNx5hcBRZBiGMA",
+]);
 const VIEWER_ASSET_ROUTE = /^\/api\/v1\/viewer\/assets\/(asset_[A-Za-z0-9_-]{43})$/u;
 const VIEWER_ASSET_TOKEN_HEADER = "X-SpaceScale-Viewer-Asset-Token";
 const VIEWER_ASSET_EXPIRY_HEADER = "X-SpaceScale-Viewer-Asset-Expires";
@@ -569,6 +574,12 @@ async function routeRequest(
   const boardMatch = BOARD_ROUTE.exec(url.pathname);
   if (boardMatch !== null) {
     const boardId = requireBoardId(boardMatch[1] ?? "");
+    if (RETIRED_FIXTURE_BOARD_IDS.has(boardId)) {
+      return Response.json(
+        { error: { code: "NOT_FOUND", message: "This test board has been removed." } },
+        { status: 410 },
+      );
+    }
     const isSocket = url.pathname.endsWith("/socket");
     const socketAuth = isSocket
       ? authenticateWebSocketRequest(request)

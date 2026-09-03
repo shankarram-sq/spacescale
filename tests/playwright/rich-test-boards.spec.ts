@@ -3,24 +3,24 @@ import { createBoard } from "./helpers";
 
 const TEST_BOARDS = [
   {
-    id: "product-discovery-lab",
-    title: "Product discovery fixture",
+    id: "single-use-plastics-challenge",
+    title: "Single-use plastics challenge",
     itemCount: 28,
     sectionCount: 4,
-    transformed: false,
-  },
-  {
-    id: "incident-response-room",
-    title: "Incident response fixture",
-    itemCount: 24,
-    sectionCount: 3,
     transformed: true,
   },
   {
-    id: "design-critique-studio",
-    title: "Design critique fixture",
+    id: "safer-school-journeys",
+    title: "Safer school journeys challenge",
+    itemCount: 29,
+    sectionCount: 4,
+    transformed: true,
+  },
+  {
+    id: "inclusive-break-times",
+    title: "Inclusive break times challenge",
     itemCount: 30,
-    sectionCount: 3,
+    sectionCount: 4,
     transformed: true,
   },
 ] as const;
