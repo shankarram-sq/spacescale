@@ -85,14 +85,16 @@ plays.
 
 ## Limits to know
 
-- **Foreground only.** A Codex background agent has no access to the browser,
-  so it cannot call the board's WebMCP tools. The watch must run in the
-  foreground session, and you steer it with comments in chat rather than
-  handing it off. Asking Codex to "work in the background" is accepted but
-  the watch then stops seeing the board.
-- **Chatty with many students.** One agent handles every change on the board.
-  With a large class saving at once, replies slow down. The multi-agent
-  pattern that fixes this is not reliable on Codex yet.
+- **The main agent owns the board.** A Codex background agent has no access
+  to the browser, so it cannot call the board's WebMCP tools. Every skill
+  therefore keeps the watch loop and every tool call in the main agent, and
+  hands the analysis of each step to a background agent that returns a draft
+  comment. You steer the main agent with comments in chat; it folds them
+  into the next background task.
+- **Chatty with many students.** With a large class saving at once, the
+  main agent has a lot to route and replies slow down. The background
+  hand-off keeps it responsive, but how reliably Codex runs those background
+  tasks still needs testing.
 - **Polling.** The board reports changes through long polls of up to twenty
   seconds. Replies arrive within a poll, not instantly.
 - **Permissions.** Codex has exactly your permissions on the board. As a

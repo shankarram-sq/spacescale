@@ -32,9 +32,32 @@ student's own work, and never solve the problem for them.
   it. `timeout` means nothing changed; wait again. `resync` carries a fresh
   snapshot; keep going. `expired`, `stopped`, `replaced`, or `outgrown` end the
   watch; tell the teacher and offer to start again.
-- Stay in the foreground. Codex background agents cannot reach the browser, so
-  they cannot call these tools. The teacher steers you with short chat
-  messages while the watch runs; act on them between waits.
+- You run the loop and every tool call yourself; see **Split the work**.
+
+## Split the work
+
+Two kinds of agent, two jobs.
+
+- **You, the main agent, own the board.** You run the watch loop, read every
+  result, and make every tool call. Codex background agents have no access to
+  the browser, so they can never call the board's tools. Do not hand the
+  watch to one.
+- **Background agents do the analysing.** For each changed step or Ask AI
+  request, start a background task with: the step's text, its description and
+  picture if it is drawn, the student's display name, the relevant lines from
+  the teacher's files, the rules below, and what you want back: a draft
+  comment under the word limit, or "no comment" with a reason. Then go
+  straight back to waiting on the watch. Do not block on the analysis.
+- **Coordinate the replies.** When a draft comes back, check it against the
+  rules (a hint, not an answer; under the word limit; nothing about other
+  students), then post it with the tool the reply plan or the table names.
+  If two drafts land for the same student, post the later one only.
+- **Keep at most two background tasks in flight.** Queue the rest in order.
+  If a step changes again before its draft returns, drop the old task and
+  start a new one on the latest save.
+- **Steering goes through you.** The teacher's chat messages arrive between
+  waits. Fold them into the rules you pass to every later background task,
+  and answer the teacher in one line.
 
 ## What to do on each result
 

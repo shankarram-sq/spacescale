@@ -181,16 +181,17 @@ Swap the skill and the same board becomes:
 - **It gets chatty at scale.** With many students saving work at once, one
   watch delivers a lot of changes to one agent, and replies slow down. It suits
   a small group today.
-- **The watch has to stay in the foreground.** A Codex background agent has
-  no access to the browser, so it cannot call the board's tools. The watch
-  runs in the teacher's foreground session, and the teacher steers it with
-  short comments in chat rather than handing it off.
-- **Multiple agents are the answer, and they are not there yet.** The plan is
-  for a background agent to hold the watch so Codex stays responsive to the
-  teacher, ask back when it needs more detail, and spin up to two extra agents
-  when several requests queue at once. Codex accepts the instruction to work in
-  the background, but the behaviour is not reliable yet and needs more testing.
-  It is a prompt and skill change, so the site does not have to move for it.
+- **The watch has to stay with the main agent.** A Codex background agent
+  has no access to the browser, so it cannot call the board's tools. The
+  skills keep the watch loop and every tool call in the teacher's main
+  session and hand only the analysis of each step to background agents,
+  which return draft comments. The teacher steers the main agent with short
+  comments in chat.
+- **Multiple agents are the answer, and they are not reliable yet.** The
+  skills ask for up to two background analysis tasks in flight so the main
+  agent stays responsive. Codex accepts the instruction, but the behaviour
+  needs more testing before a full class leans on it. It is a prompt and
+  skill change, so the site does not have to move for it.
 
 ## What comes next
 

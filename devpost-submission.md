@@ -279,13 +279,14 @@ sensitive data.
 - The watch gets chatty when many participants save work at once and replies
   slow down. It suits a small group today.
 - A Codex background agent has no access to the browser, so it cannot call
-  the board's tools. The watch runs in the foreground session and the teacher
-  steers it with comments in chat.
-- The fix is multiple agents: a background agent holding the watch so Codex
-  stays responsive, asking back for detail, and spinning up to two extra
-  agents when requests queue. Codex accepts the background instruction but the
-  behaviour is not yet reliable and needs more testing. It is a prompt and
-  skill change, not a site change.
+  the board's tools. The skills keep the watch and every tool call in the
+  main agent and delegate only the analysis of each step to background
+  agents, which return draft comments. The teacher steers the main agent
+  with comments in chat.
+- The multi-agent split, with up to two background analysis tasks in flight,
+  is what keeps the main agent responsive. Codex accepts the instruction but
+  the behaviour is not yet reliable and needs more testing. It is a prompt
+  and skill change, not a site change.
 - The public deployment is a hackathon demo for synthetic or non-sensitive
   content; real classroom rollout requires the documented safety,
   administration, and data-governance gate.
