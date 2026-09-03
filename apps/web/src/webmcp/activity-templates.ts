@@ -28,6 +28,7 @@ import {
   requiredText,
   WEBMCP_MATHJAX_GUIDANCE,
   WEBMCP_TEXT_RENDERING_CAPABILITY,
+  webMcpToolEnabled,
 } from "./shared";
 
 export const READ_TEMPLATES_TOOL = "read_templates";
@@ -109,7 +110,7 @@ export class ActivityTemplateWebMcp {
         modelContext,
         {
           name: READ_TEMPLATES_TOOL,
-          description: `List the activity templates this board can insert, with the text slots each one takes. Templates are whole-board scaffolds such as an exit ticket, a K-W-L table, a sort, a pair share, or a stamp vote; they do not use the browser selection. Each template reports its templateId, label, description, the objects it creates, and its slots. A slot is one place the template holds text: a canvas text object, a sticky note, a table cell, or a Section title. Every slot carries a slot alias, its current placeholder, the longest fill the board accepts there, and whether it accepts an empty fill. A sticky note or table cell may be cleared for a student to complete; a canvas text object or Section title may not. When a template draws shapes, stamps or images, the result also carries preview, a PNG of the template as it would appear, so you can see the layout rather than infer it from the object list. Pass templateId to read one template and always get its picture. Use this before ${INSERT_FILLED_TEMPLATE_TOOL} to choose a template and learn its slot aliases. Board IDs, item IDs, coordinates, presence, and existing board content are not returned. ${WEBMCP_MATHJAX_GUIDANCE}`,
+          description: `List the activity templates this board can insert, with the text slots each one takes. Templates are whole-board scaffolds such as an exit ticket, a K-W-L table, a sort, a pair share, or a stamp vote; they do not use the browser selection. Each template reports its templateId, label, description, the objects it creates, and its slots. A slot is one place the template holds text: a canvas text object, a sticky note, a table cell, or a Section title. Every slot carries a slot alias, its current placeholder, the longest fill the board accepts there, and whether it accepts an empty fill. A sticky note or table cell may be cleared for a student to complete; a canvas text object or Section title may not. When a template draws shapes, stamps or images, the result also carries preview, a PNG of the template as it would appear, so you can see the layout rather than infer it from the object list. Pass templateId to read one template and always get its picture.${templateWriteGuidance()} Board IDs, item IDs, coordinates, presence, and existing board content are not returned. ${WEBMCP_MATHJAX_GUIDANCE}`,
           inputSchema: {
             type: "object",
             properties: {
@@ -230,14 +231,22 @@ export class ActivityTemplateWebMcp {
             previewsOmitted,
             previewNote: `${previewsOmitted} template${previewsOmitted === 1 ? "" : "s"} that draw could not fit a picture in this result. Read one by templateId to see it.`,
           }),
-      writeTool: INSERT_FILLED_TEMPLATE_TOOL,
-      fillGuidance: {
-        action:
-          "Fill the prompts, questions, headings and category labels that frame the activity. Keep the wording short enough to read on a card.",
-        leaveForStudents:
-          "Leave answer cells, votes, ratings, rankings and the class's own conclusions blank.",
-        omittedSlots: "A slot you do not list keeps the placeholder the template ships with.",
-      },
+      ...(webMcpToolEnabled(INSERT_FILLED_TEMPLATE_TOOL)
+        ? {
+            writeTool: INSERT_FILLED_TEMPLATE_TOOL,
+            fillGuidance: {
+              action:
+                "Fill the prompts, questions, headings and category labels that frame the activity. Keep the wording short enough to read on a card.",
+              leaveForStudents:
+                "Leave answer cells, votes, ratings, rankings and the class's own conclusions blank.",
+              omittedSlots: "A slot you do not list keeps the placeholder the template ships with.",
+            },
+          }
+        : {
+            writeTool: null,
+            writeNote:
+              "This build exposes no template writer, so this catalogue is for choosing and describing an activity, not for inserting one. A participant inserts a template from the board's own activities menu.",
+          }),
       textRendering: WEBMCP_TEXT_RENDERING_CAPABILITY,
       privacy:
         "Only the board's template definitions are shared. Board and item IDs, coordinates, existing board content, participants, presence, history, and authentication data are not.",
@@ -313,6 +322,16 @@ export class ActivityTemplateWebMcp {
       return undefined;
     }
   }
+}
+
+/**
+ * Names the writer only when this build exposes it. A read that tells a host to call a tool the
+ * allowlist withholds sends it to a call that cannot succeed, so the two are read from one place.
+ */
+function templateWriteGuidance(): string {
+  return webMcpToolEnabled(INSERT_FILLED_TEMPLATE_TOOL)
+    ? ` Use this before ${INSERT_FILLED_TEMPLATE_TOOL} to choose a template and learn its slot aliases.`
+    : " This board exposes no template writer, so use this to describe an activity or help a participant choose one from the board's activities menu; there is no tool call to follow it with.";
 }
 
 /**

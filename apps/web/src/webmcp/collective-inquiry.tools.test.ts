@@ -209,6 +209,27 @@ describe("registered tool surface", () => {
     inquiry.destroy();
   });
 
+  it("never names a withheld tool in the contract it advertises to a host", async () => {
+    // A description is the contract a host reads at discovery. Naming a tool the allowlist
+    // withholds sends it to a call that cannot succeed, which is what the reply plan already
+    // avoids at runtime.
+    const { inquiry, exposed } = harness();
+    await vi.waitFor(() => expect(exposed.has("watch_board")).toBe(true));
+    const watch = exposed.get("watch_board");
+    if (!watch) throw new Error("watch_board was not offered to the host.");
+    for (const withheld of [
+      "comment_on_watched_step",
+      "add_thinking_expansion",
+      "read_selected_class_ideas",
+      "inspect_selected_board_visual",
+    ]) {
+      expect(watch.description).not.toContain(withheld);
+    }
+    expect(watch.description).toContain("insert_comment");
+    expect(watch.description).toContain("insert_sticky");
+    inquiry.destroy();
+  });
+
   it("offers a host only the watch and drops it when the page tears down", async () => {
     const before = webMcpRegistryState().toolCount;
     const { inquiry, tools, exposed } = harness();

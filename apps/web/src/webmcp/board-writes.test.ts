@@ -305,24 +305,29 @@ describe("generic board writes", () => {
 
   it("comments on a watched step whatever the participant has selected now", async () => {
     const released: boolean[] = [];
-    const resolveWatchedStep = vi.fn((watchToken: string, stepAlias: string) => {
-      if (watchToken !== "watch-1") throw new Error("This problem-step watch is missing.");
-      if (stepAlias !== "step_2") throw new Error("stepAlias is not part of this watch.");
-      return {
-        itemId: STICKY_ID,
-        action: "critique" as const,
-        release: (posted: boolean) => released.push(posted),
-      };
-    });
+    const resolveWatchedStep = vi.fn(
+      (watchToken: string, stepAlias: string, action?: "critique" | "explain") => {
+        if (watchToken !== "watch-1") throw new Error("This problem-step watch is missing.");
+        if (stepAlias !== "step_2") throw new Error("stepAlias is not part of this watch.");
+        return {
+          // The watch resolves the tag from the action the caller answered, not from its own
+          // per-alias memory, which a later request on the same step would have overwritten.
+          ...(action === undefined ? {} : { action }),
+          itemId: STICKY_ID,
+          release: (posted: boolean) => released.push(posted),
+        };
+      },
+    );
     // No location and nothing selected: the alias is the only handle, which is the case a
     // request over several steps, or none, leaves behind.
     const { writes, comments, notices, call } = await ready({ resolveWatchedStep });
     const result = await call("insert_comment", {
       watchToken: "watch-1",
       stepAlias: "step_2",
+      action: "critique",
       body: "Check the division step.",
     });
-    expect(resolveWatchedStep).toHaveBeenCalledWith("watch-1", "step_2");
+    expect(resolveWatchedStep).toHaveBeenCalledWith("watch-1", "step_2", "critique");
     expect(comments).toEqual([
       {
         itemId: STICKY_ID,
@@ -382,6 +387,14 @@ describe("generic board writes", () => {
     await expect(
       plain.call("insert_comment", { watchToken: "watch-1", stepAlias: "nope", body: "hi" }),
     ).rejects.toThrow("stepAlias must look like step_1");
+    await expect(
+      plain.call("insert_comment", {
+        watchToken: "watch-1",
+        stepAlias: "step_1",
+        action: "grade",
+        body: "hi",
+      }),
+    ).rejects.toThrow("action must be one of");
     await expect(
       plain.call("insert_comment", { watchToken: "watch-1", stepAlias: "step_1", body: "hi" }),
     ).rejects.toThrow("cannot comment on a watched step");

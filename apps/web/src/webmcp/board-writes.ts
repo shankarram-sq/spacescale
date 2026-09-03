@@ -1,6 +1,11 @@
 import { COORDINATE_LIMIT } from "@collab/geometry";
-import type { AssistAction, Assistance } from "@collab/protocol";
-import { MAX_IMAGE_ALT_CODE_POINTS, MAX_STICKY_TEXT_CODE_POINTS } from "@collab/protocol";
+import {
+  ASSIST_ACTIONS,
+  type AssistAction,
+  type Assistance,
+  MAX_IMAGE_ALT_CODE_POINTS,
+  MAX_STICKY_TEXT_CODE_POINTS,
+} from "@collab/protocol";
 import { VIDEO_EMBED_HEIGHT, VIDEO_EMBED_WIDTH, videoEmbedFromText } from "../board/links";
 import {
   buildImageCreateOperation,
@@ -16,7 +21,13 @@ import type {
   TextFontFamily,
 } from "../types";
 import { createId, roundBoard } from "../types";
-import { isRecord, registerWebMcpTool, requiredText, WEBMCP_MATHJAX_GUIDANCE } from "./shared";
+import {
+  enumValue,
+  isRecord,
+  registerWebMcpTool,
+  requiredText,
+  WEBMCP_MATHJAX_GUIDANCE,
+} from "./shared";
 
 export const INSERT_COMMENT_TOOL = "insert_comment";
 export const INSERT_STICKY_TOOL = "insert_sticky";
@@ -85,7 +96,11 @@ export type BoardWriteWebMcpOptions = {
   /** The one saved object selected in this browser, when exactly one is. */
   getSelectedItem: () => BoardItem | null;
   /** Resolves a live watch's step alias to a comment target, or throws saying why it cannot. */
-  resolveWatchedStep?: (watchToken: string, stepAlias: string) => WatchedStepTarget;
+  resolveWatchedStep?: (
+    watchToken: string,
+    stepAlias: string,
+    action?: AssistAction,
+  ) => WatchedStepTarget;
   commit: (operation: DurableOperation) => Promise<boolean>;
   /** Posts a comment as this browser's participant, tagged with the writing tool. */
   createComment: (itemId: string, body: string, assistance: Assistance) => Promise<void>;
@@ -147,6 +162,12 @@ export class BoardWriteWebMcp {
                 type: "string",
                 pattern: "^step_(?:[1-9][0-9]{0,3}|10000)$",
                 description: "The step_N alias of the watched step to comment on.",
+              },
+              action: {
+                type: "string",
+                enum: [...ASSIST_ACTIONS],
+                description:
+                  "The participant action this comment answers, copied from the reply plan. Omit for feedback on a changed step. Pass it whenever the plan names one: another request may have queued on the step since, and only this tells the board which one is being answered.",
               },
               location: LOCATION_SCHEMA,
               body: {
@@ -319,9 +340,11 @@ export class BoardWriteWebMcp {
     if (!/^step_(?:[1-9][0-9]{0,3}|10000)$/u.test(stepAlias)) {
       throw new Error("stepAlias must look like step_1.");
     }
+    const action =
+      input.action === undefined ? undefined : enumValue(input.action, ASSIST_ACTIONS, "action");
     const resolve = this.options.resolveWatchedStep;
     if (!resolve) throw new Error("This browser cannot comment on a watched step.");
-    return { target: resolve(watchToken, stepAlias), stepAlias };
+    return { target: resolve(watchToken, stepAlias, action), stepAlias };
   }
 
   /** The object a comment attaches to: the one under the given point, else the lone selection. */

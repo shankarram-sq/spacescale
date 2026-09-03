@@ -167,8 +167,11 @@ describe("read_templates", () => {
     expect(result).toMatchObject({
       scope: "board_activity_templates",
       templateCount: ACTIVITY_TEMPLATES.length,
-      writeTool: "insert_filled_template",
+      // The writer is withheld by ENABLED_WEBMCP_TOOLS, so the read must not send a host to it.
+      writeTool: null,
     });
+    expect(result).not.toHaveProperty("fillGuidance");
+    expect(JSON.stringify(result)).not.toContain("insert_filled_template");
     const listed = result.templates as Array<Record<string, unknown>>;
     const kwl = listed.find((entry) => entry.templateId === "kwl");
     expect(kwl).toMatchObject({ label: "K-W-L", objectCount: 2 });
@@ -259,6 +262,15 @@ describe("read_templates", () => {
     const single = await context.call("read_templates", { templateId: "pair-share" });
     expect((single.templates as Array<Record<string, unknown>>)[0]?.preview).toBeDefined();
     context.templates.destroy();
+  });
+
+  it("never names the withheld writer in the contract a host reads", async () => {
+    const { templates, exposed } = await ready();
+    const read = exposed.get("read_templates");
+    if (!read) throw new Error("read_templates was not offered to the host.");
+    expect(read.description).not.toContain("insert_filled_template");
+    expect(read.description).toContain("no template writer");
+    templates.destroy();
   });
 
   it("rejects a template id it does not know", async () => {

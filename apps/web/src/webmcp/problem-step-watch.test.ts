@@ -640,6 +640,8 @@ describe("board-side assist requests", () => {
               input: {
                 watchToken: started.watchToken,
                 stepAlias: "step_1",
+                // Carried back so a second request queued on the step cannot retag this reply.
+                action: "critique",
                 body: expect.any(String),
               },
             },

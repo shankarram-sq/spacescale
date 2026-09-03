@@ -3,6 +3,7 @@ import { createBoard } from "./helpers";
 
 type RegisteredTool = {
   name: string;
+  description: string;
   inputSchema: Record<string, unknown>;
   annotations?: {
     readOnlyHint?: boolean;
@@ -106,12 +107,28 @@ test("a board participant can use headless WebMCP tools with neutral board attri
     await page.evaluate(() => window.__spaceScaleWebMcpTools.insert_comment?.annotations),
   ).toEqual({ readOnlyHint: false, untrustedContentHint: true });
 
+  // A description is the contract a host reads at discovery; naming a withheld tool sends it to
+  // a call that cannot succeed.
+  const advertised = await page.evaluate(() =>
+    Object.fromEntries(
+      Object.entries(window.__spaceScaleWebMcpTools).map(([name, tool]) => [
+        name,
+        tool.description,
+      ]),
+    ),
+  );
+  for (const description of Object.values(advertised)) {
+    for (const withheld of WITHHELD_TOOLS) {
+      expect(description).not.toContain(withheld);
+    }
+  }
+
   const templates = await page.evaluate(() => {
     const tool = window.__spaceScaleWebMcpTools.read_templates;
     if (!tool) throw new Error("The template reader was not registered.");
     return tool.execute({}, { signal: new AbortController().signal });
   });
-  expect(templates).toMatchObject({ scope: "board_activity_templates" });
+  expect(templates).toMatchObject({ scope: "board_activity_templates", writeTool: null });
   expect(Number(templates.templateCount)).toBeGreaterThan(0);
   expect(JSON.stringify(templates)).not.toContain("itemId");
 
@@ -177,7 +194,11 @@ test("a board participant can use headless WebMCP tools with neutral board attri
           via: "comment",
           call: {
             tool: "insert_comment",
-            input: { watchToken: watchStart.watchToken, stepAlias: expect.any(String) },
+            input: {
+              watchToken: watchStart.watchToken,
+              stepAlias: expect.any(String),
+              action: "critique",
+            },
           },
         },
       },
@@ -195,7 +216,12 @@ test("a board participant can use headless WebMCP tools with neutral board attri
       const tool = window.__spaceScaleWebMcpTools.insert_comment;
       if (!tool) throw new Error("The comment write was not registered.");
       return tool.execute(
-        { watchToken, stepAlias: alias, body: "Check the division step: $6/2=3$, so $x=3$." },
+        {
+          watchToken,
+          stepAlias: alias,
+          action: "critique",
+          body: "Check the division step: $6/2=3$, so $x=3$.",
+        },
         { signal: new AbortController().signal },
       );
     },

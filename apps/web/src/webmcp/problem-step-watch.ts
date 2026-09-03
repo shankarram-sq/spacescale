@@ -1085,8 +1085,13 @@ function replyPlan(
       ? {
           call: {
             tool: "insert_comment",
-            input: { watchToken, stepAlias: firstAlias, body: COMMENT_BODY_PLACEHOLDER },
-            note: "The watchToken and stepAlias name the step being answered, so the reply lands on it whatever the participant has selected now.",
+            input: {
+              watchToken,
+              stepAlias: firstAlias,
+              action: request.action,
+              body: COMMENT_BODY_PLACEHOLDER,
+            },
+            note: "The watchToken and stepAlias name the step being answered, so the reply lands on it whatever the participant has selected now. Copy the action back so this comment is tagged with the request it answers, even if another request has queued on the step since.",
           },
         }
       : via === "board"
