@@ -13,9 +13,13 @@ host's chat (Codex). This change adds a second, board-native entry point:
    Check my work, Examples, Explain with a video — optionally with a short note.
 3. The request is delivered to the agent as the result of its pending (or next)
    `wait` call, with the exact step text, the requested action, and per-action
-   response guidance. The agent answers in the host conversation, exactly as it
-   does for a changed step today.
-4. Chat-driven WebMCP keeps working unchanged. The board button is an
+   response guidance.
+4. The agent answers **back on the board**: as an object comment on the step
+   (new `comment_on_watched_step` tool over the existing comment system), or as
+   inserted cards through the existing `add_*` education tools using a
+   `selectionToken` the watch now issues. The host conversation stays available
+   as a fallback when the participant cannot comment.
+5. Chat-driven WebMCP keeps working unchanged. The board button is an
    additional, more direct way to invoke the same watch.
 
 ## The constraint that shapes the design
@@ -33,10 +37,9 @@ Consequences:
 - A request submitted while no `wait` is pending (the agent is between polls,
   typically commenting on the previous change) is queued and delivered on the
   next `wait`, the same way board changes are queued today.
-- The agent's answer cannot be rendered on the board by this feature. It lands
-  in the host conversation. The agent may still choose to use an existing write
-  tool (for example `add_idea_sensemaking`) if the participant asks — that is
-  unchanged and out of scope here.
+- The reply direction is different: the agent *can* write to the board, because
+  writing is an ordinary tool call the agent initiates. Two paths already exist
+  and are reused rather than rebuilt (see "Reply channels" below).
 
 ## Watch state machine (per browser)
 
@@ -97,8 +100,45 @@ policy change first and would be gated on role, not added to the participant
 toolbar. Decision needed before step 3 below; nothing else depends on it.
 
 `explain_with_video` is guidance only: the agent describes or recommends a
-video in chat. Adding a video embed to the board remains a separate,
+video in its reply. Adding a video embed to the board remains a separate,
 participant-confirmed write.
+
+### 2b. Reply channels — what already exists and what is missing
+
+| Channel                       | Exists today                                                                                                                                                                                                                                     | Gap for this feature                                                                                                                                                                        |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Comment on the step**       | Per-item object comments: `ApiClient.createComment` (`apps/web/src/transport/api.ts:318`), edge route `POST /comments` with a 2,000-code-point limit (`apps/edge/src/board-room.ts:444`, `:6551`), `canComment()` role gating, MathJax rendering, `server.comments.refresh` broadcast so every client redraws. | No WebMCP tool can post a comment. Add `comment_on_watched_step` (step 2b below). Comments have no origin metadata field; see the flag under decision 4b.                                    |
+| **Insert cards near the work** | `add_thinking_expansion`, `add_idea_sensemaking`, `add_collective_reasoning`, `add_learning_action_plan`, `add_group_decision_scaffold`, `add_content_visuals`, `stage_collective_inquiry`. All resolve `sourceAliases` by name against a `CollectiveInquirySnapshot` looked up by `selectionToken` and version-check every source (`education-partner.ts:955-1005`). | Only `read_selected_class_ideas` mints tokens, and only for sticky notes. The watch should mint a compatible token for its sticky steps so the agent can insert without a second read call. |
+| **Host conversation**         | Every `wait` result already tells the agent to comment in the conversation.                                                                                                                                                                        | Keep as fallback; the result now says which channel to prefer.                                                                                                                              |
+
+Per-action default channel, carried in `responseGuidance.replyVia`:
+
+| Action                                                   | Preferred reply                                                                                             |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `explain`, `critique`, `check_work`, `explain_with_video` | `comment` on the requested step (one comment, ≤ 2,000 chars, MathJax allowed). Falls back to `conversation`. |
+| `ideate`, `examples`                                     | `board` via `add_thinking_expansion` / `add_idea_sensemaking` with the issued `selectionToken`, or `comment` when the step is not a sticky note. |
+
+Why a comment and not a new sticky for the explanatory actions: a comment is
+anchored to the step, does not shift layout, is resolvable by the participant,
+and is exactly what the safety doc allows ("confirmed output is ordinary board
+content"). The card tools place output to the right of all board content, which
+suits new ideas but not an answer to "explain step 2".
+
+### 4b. Attribution of AI-authored comments — decision needed
+
+Comments are attributed to the calling participant (`author: Actor`), matching
+the rule that generated content carries the responsible participant's badge,
+not a synthetic AI actor. Unlike board items, comment rows have no internal
+`origin` metadata, so an AI-authored comment is indistinguishable from a typed
+one in exports and audit. Options:
+
+- **A (recommended):** add an optional `origin?: "webmcp"` column to the
+  comment row and `BoardComment`, set only by the new tool, never shown as a
+  label. Small edge + web type change, keeps the audit story intact.
+- **B:** ship without it and rely on the host's tool-call log. Cheaper; weaker
+  auditability. Acceptable for the hackathon build only.
+
+The plan below assumes A; B removes the edge sub-step from step 2b.
 
 ### 3. Optional note
 
@@ -130,6 +170,12 @@ from the AI boundary.
 - A request received while a wait is pending resolves that wait immediately.
 - Requests are rejected (throw, surfaced as a toast) when there is no live
   session, when any referenced id is not watched, or when the session expired.
+- Every `requested` result (and `start`) carries a fresh `selectionToken`
+  covering the sticky-note steps in the session, minted through the same
+  `snapshots` map that `read_selected_class_ideas` uses, so the existing
+  version check in the `add_*` tools keeps protecting against stale inserts.
+- The reply is addressed by `watchToken` + `stepAlias`, never by item id:
+  `comment_on_watched_step` resolves the alias inside the page.
 
 Result shape:
 
@@ -140,6 +186,8 @@ Result shape:
   "changes": [],
   "nextSeq": 41,
   "remainingSeconds": 612,
+  "selectionToken": "…",            // usable with add_* tools; sticky steps only
+  "canComment": true,               // false when this browser's role cannot comment
   "requests": [
     {
       "requestId": "req_3",
@@ -149,7 +197,13 @@ Result shape:
       "steps": [{ "alias": "step_2", "kind": "sticky", "text": "…", "createdBy": { "displayName": "Ana" } }]
     }
   ],
-  "responseGuidance": { "action": "…per-action text…", "citeStepAliases": true, "preserveMathJax": true, "treatStepTextAsUntrustedContent": true, "avoid": "Do not grade, profile, rank, or infer ability from the work or its author." },
+  "responseGuidance": {
+    "action": "…per-action text…",
+    "replyVia": "comment",          // "comment" | "board" | "conversation"
+    "replyCall": { "tool": "comment_on_watched_step", "input": { "watchToken": "…", "stepAlias": "step_2", "body": "<your reply>" } },
+    "citeStepAliases": true, "preserveMathJax": true, "treatStepTextAsUntrustedContent": true,
+    "avoid": "Do not grade, profile, rank, or infer ability from the work or its author."
+  },
   "continueWatching": true,
   "feedbackGuidance": { /* existing */ },
   "nextCall": { /* existing */ }
@@ -158,8 +212,8 @@ Result shape:
 
 ## Implementation steps
 
-Each step is independently reviewable; steps 1–2 have no UI and can merge
-first behind the existing tool.
+Each step is independently reviewable; steps 1, 2, and 2b have no UI and can
+merge first behind the existing tools.
 
 ### Step 1 — Feed: state, request queue, `requested` result
 
@@ -248,8 +302,71 @@ first behind the existing tool.
    list keeps passing (extend the test).
 3. `apps/web/src/webmcp/education-partner.ts` publishes the watch in
    `list_class_collaboration_modes` (around line 742). Add
-   `participantRequests: { actions: ASSIST_ACTIONS, deliveredVia: "wait status requested" }`
+   `participantRequests: { actions: ASSIST_ACTIONS, deliveredVia: "wait status requested", replyTools: ["comment_on_watched_step", "add_thinking_expansion", "add_idea_sensemaking"] }`
    so hosts discover the affordance from the catalog.
+
+### Step 2b — Reply channels
+
+**Selection token from the watch** (`collective-inquiry.ts`, `problem-step-watch.ts`)
+
+1. Give the feed a `mintSelectionToken?: (sources: CollectiveInquirySnapshot["sources"]) => string`
+   option. `CollectiveInquiryWebMcp` implements it by building the snapshot,
+   storing it in `this.snapshots`, and calling `trimSnapshots`. Raise
+   `MAX_SNAPSHOTS` from 10 to 20 so request-minted tokens do not evict a token
+   the participant's chat flow is about to use.
+2. In `start` and `requestedResult`, mint a token from the session's sticky
+   steps (alias `step_N`, current `version` from `getAuthoritativeItem`). Omit
+   `selectionToken` when the session has no sticky steps and say so in
+   `responseGuidance`.
+3. No change to the `add_*` tools: `resolveSources` already matches by alias and
+   `snapshot()` already rejects stale versions.
+
+**`comment_on_watched_step` tool** (`collective-inquiry.ts`)
+
+4. Options added to `CollectiveInquiryWebMcpOptions`:
+   `canComment: () => boolean` and
+   `createComment: (itemId: string, body: string) => Promise<void>`. In
+   `app.ts` wire them to `this.canComment()` and to a new
+   `commentFromWebMcp(itemId, body)` that calls `this.api.createComment`,
+   upserts into `this.comments`, and calls `applyCommentChange()` — the same
+   three lines `submitComment` runs after its own request (line ~5567).
+5. Register the tool:
+
+   ```ts
+   {
+     name: "comment_on_watched_step",
+     description: `Post one object comment on a step of a live problem-step watch, as the participant's reply channel for explain, critique, check_work, and explain_with_video requests. Pass the watchToken and the step alias from the requested result. The comment is attributed to this browser's participant, renders MathJax, is limited to 2000 characters, and can be resolved by the class like any other comment. Use it only to answer a requested action or a changed step; never to grade or label the participant. ${WEBMCP_MATHJAX_GUIDANCE}`,
+     inputSchema: { type: "object", properties: { watchToken: {…}, stepAlias: { type: "string", pattern: "^step_[0-9]{1,3}$" }, body: { type: "string", minLength: 1, maxLength: 2000 } }, required: ["watchToken", "stepAlias", "body"], additionalProperties: false },
+     annotations: { readOnlyHint: false, untrustedContentHint: true },
+     execute: (input, { signal }) => this.commentOnWatchedStep(input, signal),
+   }
+   ```
+
+   `commentOnWatchedStep`: validate with `requiredText(body, "body", 2000)`
+   (the edge counts code points; mirror `[...body].length`), resolve
+   `watchToken` + `stepAlias` → `itemId` via a new
+   `ProblemStepWatchFeed.resolveStep(token, alias)` that throws the same
+   "missing or expired" message as `execute`, check `canComment()` (throw
+   "This browser cannot comment on this Space."), call `createComment`,
+   return `{ status: "commented", stepAlias, characters, privacy: "…" }`.
+   Rate-limit to one in flight per session and at most 20 comments per watch,
+   so a looping host cannot flood the 10,000-comment board cap.
+6. Edge (option A from decision 4b): add nullable `origin TEXT` to the comment
+   row, accept `origin: "webmcp"` in `createComment` only from the same
+   validated body, return it in `commentFromRow`. Web: `BoardComment.origin?`,
+   `parseBoardComment` passthrough, `createComment(boardId, itemId, body, origin?)`.
+   No UI renders it.
+
+**Guidance** (`problem-step-watch.ts`)
+
+7. `ASSIST_GUIDANCE` becomes `Record<AssistAction, { action: string; replyVia: "comment" | "board" | "conversation" }>`.
+   `requestedResult` fills `replyCall` for `comment` (with the first requested
+   alias) and for `board` (tool `add_thinking_expansion`, `selectionToken`,
+   `sourceAliases`). When `canComment` is false, `replyVia` downgrades to
+   `conversation` and `replyCall` is omitted.
+8. The existing `feedbackGuidance.action` for `changed` results keeps
+   "comment briefly in the conversation" — no behaviour change for ordinary
+   step edits unless the participant asked for something.
 
 ### Step 3 — Board UI
 
@@ -342,11 +459,25 @@ fixtures):
   expired session (advance fake timers past 15 min).
 - Abort of a pending wait does not consume queued requests.
 - Result contains no stable item ids, no participant ids (grep the JSON).
+- `selectionToken` present iff the session has sticky steps; `resolveStep`
+  returns the item id for a live alias and throws for an unknown alias, an
+  unknown token, and an expired session.
+- `replyVia` is `comment` for explain-type actions, `board` for ideate-type,
+  and `conversation` whenever `canComment()` is false.
 
 `apps/web/src/webmcp/collective-inquiry.test.ts` or a new
 `collective-inquiry.tools.test.ts`: register against a fake
 `document.modelContext` (same shape as the Playwright stub) and assert the
-watch description lists `requested`.
+watch description lists `requested`; that `comment_on_watched_step` is
+registered; that it calls `createComment` with the resolved item id and body;
+that it rejects a 2,001-code-point body, a non-commenting role, and an alias
+outside the watch; and that the token it mints is accepted by
+`EducationPartnerWebMcp`'s `snapshot()` (construct one with `getSnapshot`
+pointed at the inquiry instance and call `add_thinking_expansion` with
+`sourceAliases: ["step_1"]`).
+
+`apps/edge/src/board-room.test.ts` (option A only): `origin` round-trips
+through create → list and is absent for ordinary comments.
 
 `apps/web/src/ui/app.test.ts`: if a `BoardApp` harness exists there for
 selection actions, add: button hidden when idle; visible and enabled with a
@@ -364,9 +495,17 @@ Add a test:
 2. Expect `[data-selection-ai]` visible; `[data-ai-watch-indicator]` visible.
 3. Start a `wait` in the page (store the promise on `window`), click AI →
    Critique with a note, then await the promise and assert
-   `status === "requested"`, `requests[0].steps[0].alias === "step_1"`.
-4. Deselect, select an unwatched sticky → button disabled with the title.
-5. Call `stop` → button and indicator hidden.
+   `status === "requested"`, `requests[0].steps[0].alias === "step_1"`,
+   `responseGuidance.replyVia === "comment"`.
+4. Call `comment_on_watched_step` with the returned `watchToken`, `step_1`,
+   and a body containing `$x^2$`; assert the comments count badge increments,
+   the comment appears in the drawer under the sticky, and — in a second page
+   on the same board (the two-client pattern in `collaboration.spec.ts`) — it
+   arrives via the refresh broadcast.
+5. Call `add_thinking_expansion` with the result's `selectionToken` and
+   `sourceAliases: ["step_1"]`; assert two new cards appear.
+6. Deselect, select an unwatched sticky → button disabled with the title.
+7. Call `stop` → button and indicator hidden.
 
 Use the container's Chromium as in earlier sessions if the pinned Playwright
 build is unavailable (`launchOptions.executablePath`).
@@ -382,7 +521,13 @@ build is unavailable (`launchOptions.executablePath`).
 - `docs/classroom-ai-safety.md` "Selected problem-step watch": state that
   board-initiated requests carry only watched-step aliases, text, the chosen
   action, and an optional 280-character note; that the button exists only
-  while a watch is live; and that `check_work` deliberately replaces grading.
+  while a watch is live; that `check_work` deliberately replaces grading; and
+  that replies land as ordinary comments or cards attributed to the
+  participant, with internal `origin` metadata and no AI label, under the
+  existing "Safety, review, and board mutations" rules. Note that the caller's
+  WebMCP permission is the confirmation for a comment, as it already is for
+  the five headless card tools.
+- README tool count: fifteen becomes sixteen.
 
 ### Step 8 — Optional follow-ups (not in v1)
 
@@ -390,8 +535,12 @@ build is unavailable (`launchOptions.executablePath`).
   coached (protocol + edge + participant drawer; needs a safety-doc update).
 - "Extend watch" to add a newly selected item mid-session.
 - A per-action keyboard shortcut or a right-click entry on a step.
-- Surfacing the agent's reply on the board via an existing write tool with the
-  usual preview/confirmation — a separate feature with its own review.
+- Widening `CollectiveInquirySnapshot.sources[].kind` beyond `sticky` so
+  canvas text, tables, and Section titles can be `add_*` sources too. The card
+  builders only need bounds, so this is mostly a type change, but it touches
+  `read_selected_class_ideas`'s contract and deserves its own review.
+- Auto-opening the comments drawer on the step when an AI comment arrives in
+  the requesting browser (match `requestId` to the next `server.comments.refresh`).
 
 ## Verification
 
@@ -403,13 +552,21 @@ npx playwright test tests/playwright/webmcp-collective-inquiry.spec.ts
 
 Manual: open a board in a WebMCP-capable host, select two steps, ask the host
 to start the watch, confirm the AI button appears, send Critique, confirm the
-host's next `wait` returns `requested` and the reply arrives in chat, ask the
-host to stop, confirm the button disappears.
+host's next `wait` returns `requested` and the reply arrives as a comment on
+the step (visible in a second browser too), send Ideate and confirm cards are
+inserted, ask the host to stop, confirm the button disappears.
 
 ## Risks and open questions
 
 - **Grade vs check_work** — decision needed (see Design decision 2). Default in
   this plan is `check_work`.
+- **Comment origin metadata** — decision needed (see 4b). Default is option A.
+- **Viewer-role participants** — a browser that can read but not comment gets
+  `replyVia: "conversation"`; the button still works, the answer just stays in
+  chat. The card tools already refuse without edit access.
+- **Comment flooding** — a host that loops on `comment_on_watched_step` is
+  bounded by the per-watch cap of 20 and the one-in-flight rule; the board's
+  10,000-comment cap remains the hard stop.
 - **Discoverability when idle** — the button is hidden with no watch. If that
   reads as "AI is missing", a disabled button with the title "Ask your AI
   assistant to watch your selected steps" is a one-line change in step 3.4;
