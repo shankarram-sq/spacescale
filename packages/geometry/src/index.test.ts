@@ -663,10 +663,19 @@ describe("bounds and transforms", () => {
 
   it("does not count zero-width TeX syntax in canonical text bounds", () => {
     expect(textLayoutEstimateSource("Result: $$\\displaystyle x$$")).toBe("Result:  x");
+    expect(textLayoutEstimateSource("$$\\frac{1}{2}$$")).toBe("12");
     expect(
       itemBounds({
         kind: "text",
         geometry: { x: 100, y: 40, text: "$$\\displaystyle x$$" },
+        transform: [1, 0, 0, 1, 0, 0],
+        style: { kind: "text", fontSize: 20 },
+      }),
+    ).toEqual({ minX: 100, minY: 20, maxX: 124, maxY: 44 });
+    expect(
+      itemBounds({
+        kind: "text",
+        geometry: { x: 100, y: 40, text: "$$\\frac{1}{2}$$" },
         transform: [1, 0, 0, 1, 0, 0],
         style: { kind: "text", fontSize: 20 },
       }),

@@ -1089,14 +1089,28 @@ function codePointLength(value: string): number {
 }
 
 const UNAMBIGUOUS_TEX_MARKUP = /\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\]|\$\$[\s\S]+?\$\$/gu;
-const ZERO_WIDTH_TEX_STYLE_COMMAND =
-  /\\(?:displaystyle|textstyle|scriptstyle|scriptscriptstyle)\b/gu;
+const TEX_ENVIRONMENT_COMMAND = /\\(?:begin|end)\s*\{[^{}]*\}/gu;
+const ZERO_WIDTH_TEX_LAYOUT_COMMAND =
+  /\\(?:displaystyle|textstyle|scriptstyle|scriptscriptstyle|frac|dfrac|tfrac|binom|dbinom|tbinom|left|right|middle|text|textrm|textsf|texttt|textnormal|mathrm|mathbf|mathit|mathsf|mathtt|mathcal|mathbb|boldsymbol|operatorname|overline|underline|hat|widehat|bar|vec|dot|ddot|tilde|widetilde|overbrace|underbrace)\b/gu;
+const TEX_CONTROL_WORD = /\\[A-Za-z]+/gu;
+const TEX_ESCAPED_VISIBLE_SYMBOL = /\\([#$%&_{}])/gu;
 
-/** Removes only TeX syntax known not to contribute visible glyph width. */
+function texLayoutEstimateSource(markup: string): string {
+  return markup
+    .slice(2, -2)
+    .replace(TEX_ENVIRONMENT_COMMAND, "")
+    .replace(/\\\\/gu, "\n")
+    .replace(ZERO_WIDTH_TEX_LAYOUT_COMMAND, "")
+    .replace(TEX_CONTROL_WORD, "x")
+    .replace(TEX_ESCAPED_VISIBLE_SYMBOL, (_match, symbol: string) =>
+      symbol === "{" ? "(" : symbol === "}" ? ")" : symbol === "_" ? "-" : symbol,
+    )
+    .replace(/[{}^_]/gu, "");
+}
+
+/** Normalizes TeX markup to representative visible glyphs for deterministic bounds estimates. */
 export function textLayoutEstimateSource(value: string): string {
-  return value.replace(UNAMBIGUOUS_TEX_MARKUP, (markup) =>
-    markup.slice(2, -2).replace(ZERO_WIDTH_TEX_STYLE_COMMAND, ""),
-  );
+  return value.replace(UNAMBIGUOUS_TEX_MARKUP, texLayoutEstimateSource);
 }
 
 export type OutlineGeometryKind = "pencil" | "line" | "rectangle" | "ellipse" | "polygon";

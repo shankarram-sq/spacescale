@@ -319,7 +319,6 @@ describe("BoardModel", () => {
     section.geometry.width = 100;
     section.geometry.height = 80;
     const item = textItem();
-    item.geometry.text = "$$\\displaystyle x$$";
     const model = new BoardModel();
     model.load(snapshot([section, item], 1));
 
