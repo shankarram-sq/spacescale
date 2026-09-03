@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildEducationMove,
+  buildEducationVisuals,
   buildGroupDecisionScaffold,
   COLLECTIVE_REASONING_MODES,
   CROSS_GROUP_MODES,
@@ -153,6 +154,69 @@ describe("education partner board compiler", () => {
       }
     });
   }
+
+  const VISUAL_ASSET = {
+    assetId: `asset_${"A".repeat(43)}`,
+    mimeType: "image/png" as const,
+    intrinsicWidth: 1_200,
+    intrinsicHeight: 675,
+  };
+
+  it("uses explicit alt text on the visual image when it is supplied", () => {
+    const batch = buildEducationVisuals(
+      {
+        title: "Lunchroom plot twist",
+        visuals: [
+          {
+            id: "queue_meme",
+            format: "meme_card",
+            title: "When both ideas click",
+            caption: "The joke connects packaging waste with queue flow.",
+            altText: "A bright meme card with a recycling emoji and two lines of text.",
+            sourceAliases: ["idea_1", "idea_2"],
+            discussionPrompt: "What does the meme oversimplify?",
+          },
+        ],
+      },
+      SOURCES,
+      [VISUAL_ASSET],
+      ids(),
+    );
+    const image = batch.operation.operations
+      .flatMap((operation) => (operation.kind === "item.create" ? [operation.item] : []))
+      .find((item) => item.kind === "image");
+    if (image?.kind !== "image") throw new Error("Expected an image item.");
+    expect(image.geometry.alt).toBe(
+      "A bright meme card with a recycling emoji and two lines of text.",
+    );
+  });
+
+  it("falls back to the visual title as image alt text when alt text is omitted", () => {
+    const batch = buildEducationVisuals(
+      {
+        title: "Lunchroom plot twist",
+        visuals: [
+          {
+            id: "queue_meme",
+            format: "meme_card",
+            title: "When both ideas click",
+            caption: "The joke connects packaging waste with queue flow.",
+            sourceAliases: ["idea_1", "idea_2"],
+            discussionPrompt: "What does the meme oversimplify?",
+          },
+        ],
+      },
+      SOURCES,
+      [VISUAL_ASSET],
+      ids(),
+    );
+    const image = batch.operation.operations
+      .flatMap((operation) => (operation.kind === "item.create" ? [operation.item] : []))
+      .find((item) => item.kind === "image");
+    if (image?.kind !== "image") throw new Error("Expected an image item.");
+    expect(image.geometry.alt).toBe("When both ideas click");
+    expect(batch.sourceLinkCount).toBe(2);
+  });
 
   it("covers every collaboration mode named in the hackathon objective", () => {
     expect([

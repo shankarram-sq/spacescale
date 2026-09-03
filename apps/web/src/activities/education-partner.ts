@@ -108,7 +108,7 @@ export type EducationVisual = {
   format: "meme_card" | "inline_image";
   title: string;
   caption: string;
-  altText: string;
+  altText?: string;
   sourceAliases: string[];
   discussionPrompt: string;
 };
@@ -530,7 +530,7 @@ export function buildEducationVisuals(
             mimeType: asset.mimeType,
             intrinsicWidth: asset.intrinsicWidth,
             intrinsicHeight: asset.intrinsicHeight,
-            alt: visual.altText,
+            alt: visual.altText ?? visual.title,
           },
         },
         itemIds,
