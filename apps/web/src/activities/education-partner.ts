@@ -1,8 +1,14 @@
-import { type Bounds, unionBounds } from "@collab/geometry";
-import { MAX_BATCH_OPERATIONS, validateDurableOperation } from "@collab/protocol";
+import type { Bounds } from "@collab/geometry";
 
-import type { BatchItemOperation, DurableOperation, ImageGeometry, NewBoardItem } from "../types";
+import type { BatchItemOperation, ImageGeometry } from "../types";
 import { createId, roundBoard } from "../types";
+import {
+  boundsCenter,
+  createItem,
+  finalizeBatch,
+  type ItemsBatchOperation,
+  combinedBounds as unionSourceBounds,
+} from "./batch";
 
 export const THINKING_EXPANSION_MODES = [
   "gap_finder",
@@ -92,7 +98,7 @@ export type GroupDecisionProposal = {
 };
 
 export type EducationBatch = {
-  operation: Extract<DurableOperation, { kind: "items.batch" }>;
+  operation: ItemsBatchOperation;
   itemIds: string[];
   sourceLinkCount: number;
 };
@@ -689,36 +695,22 @@ function validatedBatch(
   itemIds: string[],
   sourceLinkCount: number,
 ): EducationBatch {
-  if (operations.length === 0 || operations.length > MAX_BATCH_OPERATIONS) {
-    throw new Error("This collaboration move is too large for one shared update.");
-  }
   return {
-    operation: validateDurableOperation({
-      kind: "items.batch",
+    operation: finalizeBatch(
       operations,
-    }) as EducationBatch["operation"],
+      "This collaboration move is too large for one shared update.",
+      { rejectEmpty: true },
+    ),
     itemIds,
     sourceLinkCount,
   };
 }
 
-function createItem(item: NewBoardItem, itemIds: string[]): BatchItemOperation {
-  itemIds.push(item.id);
-  return { kind: "item.create", item: { ...item, assistedBy: "ai" } as NewBoardItem };
-}
-
 function combinedBounds(sources: readonly EducationSource[]): Bounds {
   if (sources.length === 0) throw new Error("At least one source contribution is required.");
-  const bounds = sources.reduce<Bounds | null>(
-    (combined, source) => (combined ? unionBounds(combined, source.bounds) : source.bounds),
-    null,
-  );
+  const bounds = unionSourceBounds(sources);
   if (!bounds) throw new Error("The source contributions have no layout bounds.");
   return bounds;
-}
-
-function boundsCenter(bounds: Bounds): [number, number] {
-  return [roundBoard((bounds.minX + bounds.maxX) / 2), roundBoard((bounds.minY + bounds.maxY) / 2)];
 }
 
 export function modeLabel(mode: string): string {

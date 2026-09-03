@@ -322,6 +322,7 @@ export class BoardRenderer {
   private objectTransformsEnabled = true;
   private votingEnabled = true;
   private comments: readonly BoardComment[] = [];
+  private commentRefreshFrame: number | null = null;
 
   constructor(
     container: HTMLElement,
@@ -388,6 +389,7 @@ export class BoardRenderer {
   }
 
   destroy(): void {
+    this.cancelCommentRefresh();
     this.imageAssets.destroy();
     this.viewport.destroy();
     this.svg.remove();
@@ -413,13 +415,25 @@ export class BoardRenderer {
     this.renderVoteCounts();
   }
 
+  /** Comments are immutable snapshots, so the array is kept as given. */
   setComments(comments: readonly BoardComment[]): void {
-    this.comments = comments.map((comment) => structuredClone(comment));
+    this.comments = comments;
     this.renderCommentMarkers();
   }
 
+  /** Coalesces marker repositioning (for example zoom changes) into one frame. */
   refreshComments(): void {
-    this.renderCommentMarkers();
+    if (this.commentRefreshFrame !== null) return;
+    this.commentRefreshFrame = requestAnimationFrame(() => {
+      this.commentRefreshFrame = null;
+      this.renderCommentMarkers();
+    });
+  }
+
+  private cancelCommentRefresh(): void {
+    if (this.commentRefreshFrame === null) return;
+    cancelAnimationFrame(this.commentRefreshFrame);
+    this.commentRefreshFrame = null;
   }
 
   setSelection(ids: Iterable<string>, translated?: { x: number; y: number }): void {
@@ -839,6 +853,7 @@ export class BoardRenderer {
   }
 
   private renderCommentMarkers(): void {
+    this.cancelCommentRefresh();
     const counts = new Map<string, number>();
     for (const comment of this.comments) {
       if (comment.state !== "open" || !this.model.getItem(comment.itemId)) continue;

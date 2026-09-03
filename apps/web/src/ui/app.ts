@@ -936,10 +936,7 @@ export class BoardApp {
   private inquiryMapWebMcp: InquiryMapWebMcp | null = null;
   private classDecisionWebMcp: ClassDecisionWebMcp | null = null;
   private educationPartnerWebMcp: EducationPartnerWebMcp | null = null;
-  private readonly pendingWebMcpCommits = new Map<
-    string,
-    { timer: number; resolve: (accepted: boolean) => void }
-  >();
+  private readonly pendingWebMcpCommits = new PendingCommitTracker();
   private bootstrap: Bootstrap;
   private phase: ConnectionPhase = "idle";
   private history: HistoryState;
@@ -994,15 +991,17 @@ export class BoardApp {
   private readonly pendingZoneTitleDrafts = new Map<string, ZoneTitleDraftRecovery>();
   private readonly rejectedZoneTitleDrafts: ZoneTitleDraftRecovery[] = [];
   private readonly pendingNewZoneTitles = new Set<string>();
-  private readonly comments = new Map<string, BoardComment>();
+  private readonly comments = new CommentStore(
+    (itemId) => this.model.getItem(itemId) !== undefined,
+  );
   private readonly commentsResolving = new Set<string>();
   private activeCommentTargetId: string | null = null;
   private showHiddenComments = false;
   private commentSubmitting = false;
-  private commentsLoading = false;
-  private commentsLoadVersion = 0;
+  private commentsLoading = true;
   private accessMembers: Member[] = [];
   private readonly participantRoleChangesPending = new Set<string>();
+  private participantRenderPending = false;
   private managedInvitations: ManagedInvitation[];
   private recoverySnapshots: RecoverySnapshot[] = [];
   private outboxAvailable = true;
@@ -1367,7 +1366,6 @@ export class BoardApp {
   static async mount(root: HTMLElement, api: ApiClient, bootstrap: Bootstrap): Promise<BoardApp> {
     const app = new BoardApp(root, api, bootstrap);
     await app.restoreOutbox();
-    await app.reloadComments(false);
     app.updateAll();
     if (bootstrap.board.features.organisationTemplates) void app.loadOrganisationTemplates();
     app.socket.connect();
@@ -1396,9 +1394,7 @@ export class BoardApp {
     void this.closeTableCellEditor(false);
     void this.closeZoneTitleEditor(false);
     void this.closeTextEditor(false);
-    for (const commandId of [...this.pendingWebMcpCommits.keys()]) {
-      this.finishWebMcpCommit(commandId, false);
-    }
+    this.pendingWebMcpCommits.finishAll(false);
     this.socket.destroy();
     this.educationPartnerWebMcp?.destroy();
     this.educationPartnerWebMcp = null;
@@ -3057,6 +3053,7 @@ export class BoardApp {
       }
       return assets;
     } catch (error) {
+      if (signal.aborted || isAbortError(error)) throw error;
       if (error instanceof ApiError || error instanceof ImagePreparationError) throw error;
       throw new Error("The generated visual could not be prepared or stored.", {
         cause: error,
@@ -3482,6 +3479,7 @@ export class BoardApp {
         commands.map((command) => command.commandId),
       );
       this.model.discardOptimistic();
+      for (const command of commands) this.finishWebMcpCommit(command.commandId, false);
       this.notify("Unsaved edits were discarded. The shared board is unchanged.", "info");
     } catch {
       this.notify(
@@ -3567,8 +3565,7 @@ export class BoardApp {
       let queued = false;
       void this.commit(operation, createId(), undefined, (commandId) => {
         queued = true;
-        const timer = window.setTimeout(() => this.finishWebMcpCommit(commandId, false), 30_000);
-        this.pendingWebMcpCommits.set(commandId, { timer, resolve });
+        this.pendingWebMcpCommits.track(commandId, resolve, (id) => this.withdrawCommand(id));
       }).then((accepted) => {
         if (!accepted && !queued) resolve(false);
       });
@@ -3576,11 +3573,19 @@ export class BoardApp {
   }
 
   private finishWebMcpCommit(commandId: string, accepted: boolean): void {
-    const pending = this.pendingWebMcpCommits.get(commandId);
-    if (!pending) return;
-    window.clearTimeout(pending.timer);
-    this.pendingWebMcpCommits.delete(commandId);
-    pending.resolve(accepted);
+    this.pendingWebMcpCommits.finish(commandId, accepted);
+  }
+
+  /**
+   * Drops a command that is still queued locally so it cannot be flushed
+   * later. Returns false when the model no longer holds it, which means the
+   * server already answered it.
+   */
+  private withdrawCommand(commandId: string): boolean {
+    if (!this.model.reject(commandId)) return false;
+    void this.outbox.remove(this.bootstrap.board.id, this.bootstrap.actor.id, commandId);
+    this.updateStatus();
+    return true;
   }
 
   private handleAction(action: ServerAction, replay: boolean): void {
@@ -4025,33 +4030,32 @@ export class BoardApp {
   }
 
   private readonly onGlobalKeyDown = (event: KeyboardEvent): void => {
-    if (isEditingTarget(event.target)) return;
-    if (event.key === "Escape" && !this.toolsMenu.hidden) {
-      event.preventDefault();
-      this.setToolsMenuOpen(false);
-      query(this.root, "[data-testid='tool-protractor']", HTMLButtonElement).focus();
-      return;
-    }
-    if (event.key === "Escape" && !this.shapeMenu.hidden) {
-      event.preventDefault();
-      this.setShapeMenuOpen(false);
-      query(this.root, "[data-testid='tool-rectangle']", HTMLButtonElement).focus();
-      return;
-    }
-    if (event.key === "Escape" && this.followedSpotlight) {
-      event.preventDefault();
-      this.stopFollowingSpotlight();
-      return;
-    }
-    if (!(event.ctrlKey || event.metaKey)) return;
-    const key = event.key.toLowerCase();
-    if (key === "z") {
-      event.preventDefault();
-      if (event.shiftKey) void this.redo();
-      else void this.undo();
-    } else if (key === "y" && !event.metaKey) {
-      event.preventDefault();
-      void this.redo();
+    const shortcut = globalShortcutFor(event, {
+      editing: isEditingTarget(event.target),
+      toolsMenuOpen: !this.toolsMenu.hidden,
+      shapeMenuOpen: !this.shapeMenu.hidden,
+      followingSpotlight: this.followedSpotlight !== null,
+    });
+    if (shortcut === null) return;
+    event.preventDefault();
+    switch (shortcut) {
+      case "close-tools-menu":
+        this.setToolsMenuOpen(false);
+        query(this.root, "[data-testid='tool-protractor']", HTMLButtonElement).focus();
+        break;
+      case "close-shape-menu":
+        this.setShapeMenuOpen(false);
+        query(this.root, "[data-testid='tool-rectangle']", HTMLButtonElement).focus();
+        break;
+      case "stop-following-spotlight":
+        this.stopFollowingSpotlight();
+        break;
+      case "undo":
+        void this.undo();
+        break;
+      case "redo":
+        void this.redo();
+        break;
     }
   };
 
@@ -5329,25 +5333,24 @@ export class BoardApp {
   }
 
   private canComment(): boolean {
-    return (
-      this.phase !== "archived" && this.phase !== "reload_required" && this.phase !== "stopped"
+    return canActorComment(
+      this.phase,
+      this.bootstrap.actor.role,
+      this.bootstrap.board.drawingPolicy,
     );
   }
 
   private async reloadComments(notifyOnError = true): Promise<void> {
-    const loadVersion = ++this.commentsLoadVersion;
+    const load = this.comments.beginLoad();
     this.commentsLoading = true;
     this.renderComments();
     try {
       const comments = await this.api.comments(this.bootstrap.board.id);
-      if (loadVersion !== this.commentsLoadVersion) return;
-      this.comments.clear();
-      for (const comment of comments) this.comments.set(comment.id, comment);
-      this.reconcileCommentStates();
+      if (this.comments.completeLoad(load, comments)) this.applyCommentChange();
     } catch (error) {
       if (notifyOnError) this.apiError(error);
     } finally {
-      if (loadVersion === this.commentsLoadVersion) {
+      if (this.comments.isLatestLoad(load)) {
         this.commentsLoading = false;
         this.renderComments();
       }
@@ -5355,12 +5358,11 @@ export class BoardApp {
   }
 
   private reconcileCommentStates(): void {
-    for (const [commentId, comment] of this.comments) {
-      if (comment.state === "open" && !this.model.getItem(comment.itemId)) {
-        this.comments.set(commentId, { ...comment, state: "orphaned" });
-      }
-    }
-    this.renderer.setComments([...this.comments.values()]);
+    if (this.comments.reconcile()) this.applyCommentChange();
+  }
+
+  private applyCommentChange(): void {
+    this.renderer.setComments(this.comments.comments);
     this.renderComments();
   }
 
@@ -5391,9 +5393,9 @@ export class BoardApp {
     this.renderComments();
     try {
       const comment = await this.api.createComment(this.bootstrap.board.id, itemId, body);
-      this.comments.set(comment.id, comment);
+      this.comments.upsert(comment);
       this.commentInput.value = "";
-      this.reconcileCommentStates();
+      this.applyCommentChange();
       this.liveRegion.textContent = "Comment added.";
     } catch (error) {
       this.apiError(error);
@@ -5409,8 +5411,8 @@ export class BoardApp {
     this.renderComments();
     try {
       const comment = await this.api.resolveComment(this.bootstrap.board.id, commentId);
-      this.comments.set(comment.id, comment);
-      this.reconcileCommentStates();
+      this.comments.upsert(comment);
+      this.applyCommentChange();
       this.liveRegion.textContent = "Comment resolved.";
     } catch (error) {
       this.apiError(error);
@@ -5421,7 +5423,7 @@ export class BoardApp {
   }
 
   private renderComments(): void {
-    const comments = [...this.comments.values()];
+    const comments = this.comments.comments;
     const openCount = comments.filter((comment) => comment.state === "open").length;
     this.commentsCount.textContent = String(openCount);
     this.commentsCount.hidden = openCount === 0;
@@ -5429,6 +5431,9 @@ export class BoardApp {
       "aria-label",
       openCount === 0 ? "Comments" : `Comments, ${openCount} open`,
     );
+    // The card list is rebuilt when the drawer opens, so a hidden drawer only
+    // needs the badge.
+    if (this.commentsDrawer.hidden) return;
     this.showHiddenCommentsInput.checked = this.showHiddenComments;
 
     const target = this.activeCommentTargetId
@@ -5522,6 +5527,13 @@ export class BoardApp {
   }
 
   private renderParticipants(): void {
+    const active = document.activeElement;
+    if (active instanceof HTMLSelectElement && this.participantList.contains(active)) {
+      // Rebuilding the rows would close the role picker the owner is using.
+      this.participantRenderPending = true;
+      return;
+    }
+    this.participantRenderPending = false;
     this.participantList.replaceChildren();
     const entries = [...this.presences.values()];
     this.participantCount.textContent = String(Math.max(1, entries.length));
@@ -5562,6 +5574,9 @@ export class BoardApp {
           if (select.value === "viewer" || select.value === "editor") {
             void this.changeParticipantRole(member, select.value);
           }
+        });
+        select.addEventListener("blur", () => {
+          if (this.participantRenderPending) this.renderParticipants();
         });
         actions.append(select);
       }
@@ -7306,6 +7321,177 @@ function dataTransferHasImage(transfer: DataTransfer | null): boolean {
       (item) => item.kind === "file" && item.type.startsWith("image/"),
     )
   );
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+export type GlobalShortcut =
+  | "close-tools-menu"
+  | "close-shape-menu"
+  | "stop-following-spotlight"
+  | "undo"
+  | "redo";
+
+/**
+ * Maps a window keydown to a board-wide shortcut. Escape closes transient UI
+ * even while a field is focused; every other shortcut stays out of inputs.
+ */
+export function globalShortcutFor(
+  event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "shiftKey">,
+  state: {
+    editing: boolean;
+    toolsMenuOpen: boolean;
+    shapeMenuOpen: boolean;
+    followingSpotlight: boolean;
+  },
+): GlobalShortcut | null {
+  if (event.key === "Escape") {
+    if (state.toolsMenuOpen) return "close-tools-menu";
+    if (state.shapeMenuOpen) return "close-shape-menu";
+    if (state.followingSpotlight) return "stop-following-spotlight";
+    return null;
+  }
+  if (state.editing || !(event.ctrlKey || event.metaKey)) return null;
+  const key = event.key.toLowerCase();
+  if (key === "z") return event.shiftKey ? "redo" : "undo";
+  if (key === "y" && !event.metaKey) return "redo";
+  return null;
+}
+
+/** Mirrors the server gate: commenting needs a live Space and drawing rights. */
+export function canActorComment(
+  phase: ConnectionPhase,
+  role: Role,
+  drawingPolicy: DrawingPolicy,
+): boolean {
+  return (
+    phase !== "archived" &&
+    phase !== "reload_required" &&
+    phase !== "stopped" &&
+    canRoleDraw(role, drawingPolicy)
+  );
+}
+
+/**
+ * Derives the states shown for server comment snapshots: an open comment whose
+ * object is missing locally shows as orphaned, and flips back to open when the
+ * object returns (for example after a rejected optimistic delete).
+ */
+export function deriveCommentStates(
+  comments: Iterable<BoardComment>,
+  hasItem: (itemId: string) => boolean,
+): BoardComment[] {
+  const derived: BoardComment[] = [];
+  for (const comment of comments) {
+    derived.push(
+      comment.state === "open" && !hasItem(comment.itemId)
+        ? { ...comment, state: "orphaned" }
+        : comment,
+    );
+  }
+  return derived;
+}
+
+/**
+ * Holds the server's comment snapshots and the item-aware copies the UI shows.
+ * Every local write supersedes in-flight loads so an older response cannot
+ * overwrite fresher state.
+ */
+export class CommentStore {
+  private version = 0;
+  private latestLoad = 0;
+  private readonly server = new Map<string, BoardComment>();
+  private displayed: readonly BoardComment[] = [];
+
+  constructor(private readonly hasItem: (itemId: string) => boolean) {}
+
+  get comments(): readonly BoardComment[] {
+    return this.displayed;
+  }
+
+  beginLoad(): number {
+    this.version += 1;
+    this.latestLoad = this.version;
+    return this.version;
+  }
+
+  /** Whether no newer load has started since this token was issued. */
+  isLatestLoad(token: number): boolean {
+    return token === this.latestLoad;
+  }
+
+  /** Adopts a loaded snapshot unless it was superseded. Returns whether shown states changed. */
+  completeLoad(token: number, comments: readonly BoardComment[]): boolean {
+    if (token !== this.version) return false;
+    this.server.clear();
+    for (const comment of comments) this.server.set(comment.id, comment);
+    return this.reconcile();
+  }
+
+  /** Stores a comment the server just returned for a local write. */
+  upsert(comment: BoardComment): void {
+    this.version += 1;
+    this.server.set(comment.id, comment);
+    this.reconcile();
+  }
+
+  /** Re-derives shown states from item presence. Returns whether anything changed. */
+  reconcile(): boolean {
+    const next = deriveCommentStates(this.server.values(), this.hasItem);
+    const changed =
+      next.length !== this.displayed.length ||
+      next.some((comment, index) => {
+        const previous = this.displayed[index];
+        return (
+          previous === undefined ||
+          previous.id !== comment.id ||
+          previous.state !== comment.state ||
+          previous.updatedAt !== comment.updatedAt
+        );
+      });
+    if (changed) this.displayed = next;
+    return changed;
+  }
+}
+
+/**
+ * Tracks tool-initiated commits until the server answers them. A commit that
+ * receives no answer in time is withdrawn so the reported failure is truthful;
+ * one that can no longer be withdrawn was already acknowledged.
+ */
+export class PendingCommitTracker {
+  private readonly pending = new Map<
+    string,
+    { timer: ReturnType<typeof setTimeout>; resolve: (accepted: boolean) => void }
+  >();
+
+  constructor(private readonly timeoutMs = 30_000) {}
+
+  track(
+    commandId: string,
+    resolve: (accepted: boolean) => void,
+    withdraw: (commandId: string) => boolean,
+  ): void {
+    const timer = setTimeout(() => {
+      if (!this.pending.has(commandId)) return;
+      this.finish(commandId, !withdraw(commandId));
+    }, this.timeoutMs);
+    this.pending.set(commandId, { timer, resolve });
+  }
+
+  finish(commandId: string, accepted: boolean): void {
+    const entry = this.pending.get(commandId);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    this.pending.delete(commandId);
+    entry.resolve(accepted);
+  }
+
+  finishAll(accepted: boolean): void {
+    for (const commandId of [...this.pending.keys()]) this.finish(commandId, accepted);
+  }
 }
 
 function isEditingTarget(target: EventTarget | null): boolean {

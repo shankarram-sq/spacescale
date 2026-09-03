@@ -8,6 +8,7 @@ import {
 import { isVoteTable, summarizeVotes } from "../activities/voting";
 import type { Bounds } from "../board/model";
 import type { BoardItem, DurableOperation } from "../types";
+import { awaitDialogDecision, isRecord, requiredText, trimSnapshots } from "./shared";
 
 const READ_VOTE_TOOL = "read_live_class_vote";
 const STAGE_DECISION_TOOL = "stage_class_decision";
@@ -37,7 +38,6 @@ export class ClassDecisionWebMcp {
   private readonly previewDialog: HTMLDialogElement;
   private readonly snapshots = new Map<string, VoteSnapshot>();
   private readonly registration = new AbortController();
-  private previewPending = false;
 
   constructor(private readonly options: ClassDecisionWebMcpOptions) {
     this.previewDialog = this.buildPreviewDialog();
@@ -137,11 +137,7 @@ export class ClassDecisionWebMcp {
       capturedAt: new Date().toISOString(),
     };
     this.snapshots.set(token, snapshot);
-    while (this.snapshots.size > MAX_VOTE_SNAPSHOTS) {
-      const oldest = this.snapshots.keys().next().value as string | undefined;
-      if (!oldest) break;
-      this.snapshots.delete(oldest);
-    }
+    trimSnapshots(this.snapshots, MAX_VOTE_SNAPSHOTS);
     this.options.notify(
       `Shared aggregate class response: ${totalVotes} current vote${totalVotes === 1 ? "" : "s"}, no identities.`,
       "info",
@@ -174,16 +170,7 @@ export class ClassDecisionWebMcp {
     if (!snapshot.options.some((option) => option.label === parsed.proposal.chosenOption)) {
       throw new Error("chosenOption must exactly match an option in the live class vote.");
     }
-    const table = this.options.getItem(snapshot.tableId);
-    const current = table ? summarizeVotes(table, this.options.getItems()) : null;
-    if (!current || !sameCounts(snapshot.options, current.options)) {
-      throw new Error(
-        "The class vote changed. Read the live result again before staging a decision.",
-      );
-    }
-    const bounds = this.options.getItemBounds(snapshot.tableId);
-    if (!bounds) throw new Error("The selected vote table is no longer on the canvas.");
-    const batch = buildClassDecision(parsed.proposal, snapshot.options, bounds);
+    this.liveVoteBounds(snapshot);
     const approved = await this.confirmPreview(parsed.proposal, snapshot, signal);
     if (!approved) {
       return {
@@ -193,6 +180,10 @@ export class ClassDecisionWebMcp {
       };
     }
     signal.throwIfAborted();
+    // The vote may have moved while the preview was open; only commit a
+    // decision built from the counts the participant actually approved.
+    const bounds = this.liveVoteBounds(snapshot);
+    const batch = buildClassDecision(parsed.proposal, snapshot.options, bounds);
     const accepted = await this.options.commit(batch.operation);
     if (!accepted) throw new Error("The class decision was approved but could not be queued.");
     this.options.selectItems(batch.itemIds);
@@ -211,16 +202,31 @@ export class ClassDecisionWebMcp {
     };
   }
 
+  /** Throws unless the live vote still matches the snapshot; returns the table bounds. */
+  private liveVoteBounds(snapshot: VoteSnapshot): Bounds {
+    const table = this.options.getItem(snapshot.tableId);
+    const current = table ? summarizeVotes(table, this.options.getItems()) : null;
+    if (!current || !sameCounts(snapshot.options, current.options)) {
+      throw new Error(
+        "The class vote changed. Read the live result again before staging a decision.",
+      );
+    }
+    const bounds = this.options.getItemBounds(snapshot.tableId);
+    if (!bounds) throw new Error("The selected vote table is no longer on the canvas.");
+    return bounds;
+  }
+
   private confirmPreview(
     proposal: ClassDecisionProposal,
     snapshot: VoteSnapshot,
     signal: AbortSignal,
   ): Promise<boolean> {
-    signal.throwIfAborted();
-    if (this.previewPending) {
-      return Promise.reject(new Error("Another proposal is already waiting for review."));
-    }
-    this.previewPending = true;
+    return awaitDialogDecision(this.previewDialog, signal, () =>
+      this.renderPreview(proposal, snapshot),
+    );
+  }
+
+  private renderPreview(proposal: ClassDecisionProposal, snapshot: VoteSnapshot): void {
     setText(this.previewDialog, "[data-decision-title]", proposal.decisionTitle);
     setText(this.previewDialog, "[data-decision-choice]", proposal.chosenOption);
     setText(this.previewDialog, "[data-decision-rationale]", proposal.rationale);
@@ -248,26 +254,6 @@ export class ClassDecisionWebMcp {
         }),
       );
     }
-    this.previewDialog.returnValue = "";
-    this.previewDialog.showModal();
-    return new Promise((resolve, reject) => {
-      const cleanup = (): void => {
-        signal.removeEventListener("abort", onAbort);
-        this.previewDialog.removeEventListener("close", onClose);
-        this.previewPending = false;
-      };
-      const onClose = (): void => {
-        cleanup();
-        resolve(this.previewDialog.returnValue === "apply");
-      };
-      const onAbort = (): void => {
-        cleanup();
-        if (this.previewDialog.open) this.previewDialog.close("cancel");
-        reject(signal.reason);
-      };
-      this.previewDialog.addEventListener("close", onClose, { once: true });
-      signal.addEventListener("abort", onAbort, { once: true });
-    });
   }
 
   private buildPreviewDialog(): HTMLDialogElement {
@@ -331,17 +317,4 @@ function sameCounts(
 function setText(root: ParentNode, selector: string, value: string): void {
   const element = root.querySelector<HTMLElement>(selector);
   if (element) element.textContent = value;
-}
-
-function requiredText(value: unknown, field: string, maxLength: number): string {
-  if (typeof value !== "string") throw new Error(`${field} must be text.`);
-  const text = value.trim();
-  if (text.length === 0 || text.length > maxLength) {
-    throw new Error(`${field} must contain 1-${maxLength} characters.`);
-  }
-  return text;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }

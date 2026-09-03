@@ -495,6 +495,85 @@ describe("education partner WebMCP contract", () => {
     expect(tools.size).toBe(0);
   });
 
+  it("rejects duplicate trade-off criteria even when they differ only by whitespace", async () => {
+    const tools = new Map<string, WebMcpToolDefinition>();
+    vi.stubGlobal("document", {
+      modelContext: {
+        registerTool(tool: WebMcpToolDefinition) {
+          tools.set(tool.name, tool);
+        },
+      },
+    });
+    const committed: DurableOperation[] = [];
+    const partner = new EducationPartnerWebMcp({
+      canWrite: () => true,
+      getSnapshot: (token) =>
+        token === "selected-ideas"
+          ? {
+              token,
+              capturedAt: "2026-09-01T00:00:00.000Z",
+              sources: [
+                { alias: "idea_1", itemId: "source-one", version: 3, kind: "sticky", text: "A" },
+                { alias: "idea_2", itemId: "source-two", version: 5, kind: "sticky", text: "B" },
+              ],
+            }
+          : undefined,
+      getItemVersion: (itemId) => (itemId === "source-one" ? 3 : 5),
+      getItemBounds: () => ({ minX: 0, minY: 0, maxX: 180, maxY: 140 }),
+      getPlacementBounds: () => undefined,
+      imagesEnabled: () => true,
+      storeVisualImages: storedVisualAssets,
+      commit: async (operation) => {
+        committed.push(operation);
+        return true;
+      },
+      selectItems: vi.fn(),
+      notify: vi.fn(),
+    });
+
+    await vi.waitFor(() => expect(tools.size).toBe(7));
+    const decisionTool = tools.get("add_group_decision_scaffold");
+    if (!decisionTool) throw new Error("Decision tool did not register.");
+    const scaffold = (criteria: string[]) => ({
+      selectionToken: "selected-ideas",
+      mode: "tradeoff_visualizer",
+      title: "Which option should the class test?",
+      entries: [
+        {
+          id: "entry_one",
+          heading: "Reusable containers",
+          body: "A return station at one lunch line.",
+          sourceAliases: ["idea_1"],
+          question: "What evidence could reopen this option?",
+        },
+        {
+          id: "entry_two",
+          heading: "Smaller portions",
+          body: "Portion choice at the counter.",
+          sourceAliases: ["idea_2"],
+          question: "What evidence could reopen this option?",
+        },
+      ],
+      criteria,
+    });
+
+    await expect(
+      decisionTool.execute(scaffold(["Access", " Access "]), {
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow("criteria must be unique.");
+    expect(committed).toHaveLength(0);
+
+    await expect(
+      decisionTool.execute(scaffold(["Access", "Impact"]), {
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toMatchObject({ status: "participant_requested_and_added" });
+    expect(committed).toHaveLength(1);
+
+    partner.destroy();
+  });
+
   it("enables Cross-Group Jigsaw only with authoritative section context", async () => {
     const tools = new Map<string, WebMcpToolDefinition>();
     vi.stubGlobal("document", {

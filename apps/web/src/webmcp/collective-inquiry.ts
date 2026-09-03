@@ -4,6 +4,7 @@ import { boundsForItems, boundsHeight, boundsWidth } from "@collab/geometry";
 import { normalizeBoardItem } from "@collab/protocol";
 import { renderSvgItem } from "@collab/svg-export";
 import type { BoardItem } from "../types";
+import { trimSnapshots } from "./shared";
 
 const READ_SELECTION_TOOL = "read_selected_class_ideas";
 const INSPECT_VISUAL_TOOL = "inspect_selected_board_visual";
@@ -41,17 +42,6 @@ export type CollectiveInquirySnapshot = {
   }>;
 };
 
-export type VisualSelectionSnapshot = {
-  token: string;
-  capturedAt: string;
-  sources: Array<{
-    alias: string;
-    itemId: string;
-    version: number;
-    kind: BoardItem["kind"];
-  }>;
-};
-
 export type CollectiveInquiryWebMcpOptions = {
   root: HTMLElement;
   getSelectedItems: () => BoardItem[] | null;
@@ -62,7 +52,6 @@ export type CollectiveInquiryWebMcpOptions = {
 export class CollectiveInquiryWebMcp {
   private readonly visualReviewDialog: HTMLDialogElement;
   private readonly snapshots = new Map<string, CollectiveInquirySnapshot>();
-  private readonly visualSnapshots = new Map<string, VisualSelectionSnapshot>();
   private readonly registration = new AbortController();
   private destroyed = false;
   private visualObjectUrl: string | null = null;
@@ -142,22 +131,13 @@ export class CollectiveInquiryWebMcp {
       throw new Error("Select one or more saved board items first.");
     }
 
-    const token = crypto.randomUUID();
     const capturedAt = new Date().toISOString();
-    const sources = selection.items.map((item, index) => ({
-      alias: visualAlias(index),
-      itemId: item.id,
-      version: item.version,
-      kind: item.kind,
-    }));
     const sharedItems = selection.items.map((item, index) => ({
       alias: visualAlias(index),
       kind: item.kind,
       action: { type: "created" as const, objectKind: item.kind },
       createdBy: this.participant(item.createdBy),
     }));
-    this.visualSnapshots.set(token, { token, capturedAt, sources });
-    trimSnapshots(this.visualSnapshots);
 
     const kindCounts = countKinds(selection.items);
     await this.showVisualReview(selection.items, kindCounts);
@@ -166,7 +146,6 @@ export class CollectiveInquiryWebMcp {
       "info",
     );
     return {
-      visualToken: token,
       capturedAt,
       visualReady: true,
       preview: {
@@ -219,11 +198,7 @@ export class CollectiveInquiryWebMcp {
       })),
     };
     this.snapshots.set(token, snapshot);
-    while (this.snapshots.size > MAX_SNAPSHOTS) {
-      const oldest = this.snapshots.keys().next().value as string | undefined;
-      if (!oldest) break;
-      this.snapshots.delete(oldest);
-    }
+    trimSnapshots(this.snapshots, MAX_SNAPSHOTS);
 
     this.options.notify(
       `${ideas.length} selected contribution${ideas.length === 1 ? " is" : "s are"} ready for collaboration.`,
@@ -421,25 +396,8 @@ function visualAlias(index: number): string {
   return `visual_${index + 1}`;
 }
 
-export function visualSelectionIsFresh(
-  left: readonly BoardItem[],
-  right: readonly BoardItem[],
-): boolean {
-  if (left.length !== right.length) return false;
-  const versions = new Map(left.map((item) => [item.id, item.version]));
-  return right.every((item) => versions.get(item.id) === item.version);
-}
-
 function countKinds(items: readonly BoardItem[]): Partial<Record<BoardItem["kind"], number>> {
   const counts: Partial<Record<BoardItem["kind"], number>> = {};
   for (const item of items) counts[item.kind] = (counts[item.kind] ?? 0) + 1;
   return counts;
-}
-
-function trimSnapshots<T>(snapshots: Map<string, T>): void {
-  while (snapshots.size > MAX_SNAPSHOTS) {
-    const oldest = snapshots.keys().next().value as string | undefined;
-    if (!oldest) break;
-    snapshots.delete(oldest);
-  }
 }

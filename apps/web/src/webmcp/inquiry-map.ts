@@ -5,10 +5,12 @@ import {
   type CollectiveInquiryBatch,
   CollectiveInquiryError,
   type CollectiveInquiryProposal,
+  type InquirySource,
 } from "../activities/collective-inquiry";
 import type { Bounds } from "../board/model";
 import type { DurableOperation } from "../types";
 import type { CollectiveInquirySnapshot } from "./collective-inquiry";
+import { awaitDialogDecision, isRecord, requiredText } from "./shared";
 
 const STAGE_INQUIRY_TOOL = "stage_collective_inquiry";
 
@@ -26,7 +28,6 @@ export type InquiryMapWebMcpOptions = {
 export class InquiryMapWebMcp {
   private readonly previewDialog: HTMLDialogElement;
   private readonly registration = new AbortController();
-  private previewPending = false;
 
   constructor(private readonly options: InquiryMapWebMcpOptions) {
     this.previewDialog = this.buildPreviewDialog();
@@ -143,31 +144,12 @@ export class InquiryMapWebMcp {
         assignedAliases.add(alias);
       }
     }
-    for (const source of snapshot.sources) {
-      if (this.options.getItemVersion(source.itemId) !== source.version) {
-        throw new Error(
-          "The selected class ideas changed after they were shared. Read the selection again before staging a map.",
-        );
-      }
-    }
-
-    const sources = snapshot.sources.map((source) => {
-      const bounds = this.options.getItemBounds(source.itemId);
-      if (!bounds) throw new Error("One of the selected class ideas is no longer on the canvas.");
-      return { alias: source.alias, bounds };
-    });
-    let batch: CollectiveInquiryBatch;
-    try {
-      batch = buildCollectiveInquiryMap(proposal, sources);
-    } catch (error) {
-      if (error instanceof CollectiveInquiryError) throw error;
-      throw new Error("SpaceScale could not lay out that inquiry map safely.");
-    }
+    const previewBatch = buildBatch(proposal, this.liveSources(snapshot));
 
     const approved = await this.confirmPreview(
       proposal,
       assignedAliases.size,
-      batch.itemIds.length,
+      previewBatch.itemIds.length,
       signal,
     );
     if (!approved) {
@@ -178,6 +160,9 @@ export class InquiryMapWebMcp {
       };
     }
     signal.throwIfAborted();
+    // The ideas may have been edited or moved while the preview was open, so
+    // re-validate them and lay the map out again from their current bounds.
+    const batch = buildBatch(proposal, this.liveSources(snapshot));
     const accepted = await this.options.commit(batch.operation);
     if (!accepted)
       throw new Error("The inquiry map was approved but could not be queued for saving.");
@@ -194,17 +179,38 @@ export class InquiryMapWebMcp {
     };
   }
 
+  /** Throws unless every snapshot idea is unchanged; returns their current bounds. */
+  private liveSources(snapshot: CollectiveInquirySnapshot): InquirySource[] {
+    for (const source of snapshot.sources) {
+      if (this.options.getItemVersion(source.itemId) !== source.version) {
+        throw new Error(
+          "The selected class ideas changed after they were shared. Read the selection again before staging a map.",
+        );
+      }
+    }
+    return snapshot.sources.map((source) => {
+      const bounds = this.options.getItemBounds(source.itemId);
+      if (!bounds) throw new Error("One of the selected class ideas is no longer on the canvas.");
+      return { alias: source.alias, bounds };
+    });
+  }
+
   private confirmPreview(
     proposal: CollectiveInquiryProposal,
     contributionCount: number,
     itemCount: number,
     signal: AbortSignal,
   ): Promise<boolean> {
-    signal.throwIfAborted();
-    if (this.previewPending) {
-      return Promise.reject(new Error("Another proposal is already waiting for review."));
-    }
-    this.previewPending = true;
+    return awaitDialogDecision(this.previewDialog, signal, () =>
+      this.renderPreview(proposal, contributionCount, itemCount),
+    );
+  }
+
+  private renderPreview(
+    proposal: CollectiveInquiryProposal,
+    contributionCount: number,
+    itemCount: number,
+  ): void {
     const title = this.previewDialog.querySelector<HTMLElement>("[data-inquiry-preview-title]");
     if (title) title.textContent = proposal.mapTitle;
     const meta = this.previewDialog.querySelector<HTMLElement>("[data-inquiry-preview-meta]");
@@ -245,26 +251,6 @@ export class InquiryMapWebMcp {
     if (tension) {
       tension.textContent = `${proposal.tension.statement} Next question: ${proposal.tension.nextQuestion}`;
     }
-    this.previewDialog.returnValue = "";
-    this.previewDialog.showModal();
-    return new Promise((resolve, reject) => {
-      const cleanup = (): void => {
-        signal.removeEventListener("abort", onAbort);
-        this.previewDialog.removeEventListener("close", onClose);
-        this.previewPending = false;
-      };
-      const onClose = (): void => {
-        cleanup();
-        resolve(this.previewDialog.returnValue === "apply");
-      };
-      const onAbort = (): void => {
-        cleanup();
-        if (this.previewDialog.open) this.previewDialog.close("cancel");
-        reject(signal.reason);
-      };
-      this.previewDialog.addEventListener("close", onClose, { once: true });
-      signal.addEventListener("abort", onAbort, { once: true });
-    });
   }
 
   private buildPreviewDialog(): HTMLDialogElement {
@@ -290,6 +276,18 @@ export class InquiryMapWebMcp {
       </form>
     `;
     return dialog;
+  }
+}
+
+function buildBatch(
+  proposal: CollectiveInquiryProposal,
+  sources: readonly InquirySource[],
+): CollectiveInquiryBatch {
+  try {
+    return buildCollectiveInquiryMap(proposal, sources);
+  } catch (error) {
+    if (error instanceof CollectiveInquiryError) throw error;
+    throw new Error("SpaceScale could not lay out that inquiry map safely.");
   }
 }
 
@@ -348,17 +346,4 @@ function parseProposal(input: unknown): CollectiveInquiryProposal {
       nextQuestion: requiredText(input.tension.nextQuestion, "tension.nextQuestion", 240),
     },
   };
-}
-
-function requiredText(value: unknown, field: string, maxLength: number): string {
-  if (typeof value !== "string") throw new Error(`${field} must be text.`);
-  const text = value.trim();
-  if (text.length === 0 || text.length > maxLength) {
-    throw new Error(`${field} must contain 1-${maxLength} characters.`);
-  }
-  return text;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }

@@ -1,7 +1,7 @@
 import { DEFAULT_BOARD_FEATURES } from "@collab/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "../transport/api";
-import type { BoardItem, BoardSnapshot, DurableOperation } from "../types";
+import type { BoardComment, BoardItem, BoardSnapshot, DurableOperation } from "../types";
 import {
   actorFromAccessChanged,
   attributedDataDownloadAllowed,
@@ -10,9 +10,13 @@ import {
   buildCreatorNameMap,
   buildElementColourOperations,
   buildTextStyleOperations,
+  CommentStore,
+  canActorComment,
   clampImageAlt,
   clampStickyText,
+  deriveCommentStates,
   effectiveTextFontWeight,
+  globalShortcutFor,
   imageUploadIssue,
   localSvg,
   MAX_IMAGE_UPLOAD_BYTES,
@@ -20,6 +24,7 @@ import {
   objectCommentVisible,
   operationAllowedForActor,
   organisationTemplateManagementForRole,
+  PendingCommitTracker,
   STAMP_CHOICES,
   STICKY_COLORS,
   savedAuthoritativeItems,
@@ -1038,5 +1043,178 @@ describe("object comment visibility", () => {
     expect(objectCommentVisible("orphaned", false)).toBe(false);
     expect(objectCommentVisible("resolved", true)).toBe(true);
     expect(objectCommentVisible("orphaned", true)).toBe(true);
+  });
+});
+
+describe("object comment permissions", () => {
+  it("mirrors the server gate by requiring drawing rights on a live Space", () => {
+    expect(canActorComment("ready", "owner", "editors_enabled")).toBe(true);
+    expect(canActorComment("connecting", "editor", "editors_enabled")).toBe(true);
+    expect(canActorComment("ready", "viewer", "editors_enabled")).toBe(false);
+    expect(canActorComment("ready", "editor", "owner_only")).toBe(false);
+    expect(canActorComment("ready", "owner", "locked")).toBe(false);
+    expect(canActorComment("archived", "owner", "editors_enabled")).toBe(false);
+    expect(canActorComment("reload_required", "owner", "editors_enabled")).toBe(false);
+    expect(canActorComment("stopped", "owner", "editors_enabled")).toBe(false);
+  });
+});
+
+function comment(overrides: Partial<BoardComment> = {}): BoardComment {
+  return {
+    id: "c_1",
+    itemId: "item_1",
+    body: "Look here",
+    state: "open",
+    author: { id: "a_1", displayName: "Ada" },
+    createdAt: 1_000,
+    updatedAt: 1_000,
+    ...overrides,
+  };
+}
+
+describe("object comment states", () => {
+  it("shows an open comment as orphaned only while its object is missing", () => {
+    const open = comment();
+    const resolved = comment({ id: "c_2", state: "resolved" });
+    const serverOrphaned = comment({ id: "c_3", state: "orphaned" });
+    const missing = deriveCommentStates([open, resolved, serverOrphaned], () => false);
+    expect(missing.map((value) => value.state)).toEqual(["orphaned", "resolved", "orphaned"]);
+    const present = deriveCommentStates([open, resolved, serverOrphaned], () => true);
+    expect(present.map((value) => value.state)).toEqual(["open", "resolved", "orphaned"]);
+    expect(present[0]).toBe(open);
+  });
+
+  it("flips a locally orphaned comment back to open when a rejected delete restores its object", () => {
+    const items = new Set(["item_1"]);
+    const store = new CommentStore((itemId) => items.has(itemId));
+    const load = store.beginLoad();
+    expect(store.completeLoad(load, [comment()])).toBe(true);
+    expect(store.comments[0]?.state).toBe("open");
+
+    items.delete("item_1");
+    expect(store.reconcile()).toBe(true);
+    expect(store.comments[0]?.state).toBe("orphaned");
+    expect(store.reconcile()).toBe(false);
+
+    items.add("item_1");
+    expect(store.reconcile()).toBe(true);
+    expect(store.comments[0]?.state).toBe("open");
+  });
+
+  it("keeps a local write ahead of an older in-flight load", () => {
+    const store = new CommentStore(() => true);
+    const stale = store.beginLoad();
+    store.upsert(comment({ id: "c_new", createdAt: 2_000, updatedAt: 2_000 }));
+    expect(store.comments.map((value) => value.id)).toEqual(["c_new"]);
+
+    expect(store.completeLoad(stale, [comment({ id: "c_old" })])).toBe(false);
+    expect(store.comments.map((value) => value.id)).toEqual(["c_new"]);
+    expect(store.isLatestLoad(stale)).toBe(true);
+
+    const fresh = store.beginLoad();
+    expect(store.isLatestLoad(stale)).toBe(false);
+    expect(store.completeLoad(fresh, [comment({ id: "c_old" }), comment({ id: "c_new" })])).toBe(
+      true,
+    );
+    expect(store.comments.map((value) => value.id)).toEqual(["c_old", "c_new"]);
+  });
+
+  it("reports a resolved comment as a change without flipping its state", () => {
+    const store = new CommentStore(() => true);
+    store.completeLoad(store.beginLoad(), [comment()]);
+    store.upsert(comment({ state: "resolved", updatedAt: 3_000 }));
+    expect(store.comments[0]?.state).toBe("resolved");
+    expect(store.reconcile()).toBe(false);
+  });
+});
+
+describe("tool commit tracking", () => {
+  it("withdraws a queued command on timeout and reports the failure", () => {
+    vi.useFakeTimers();
+    try {
+      const tracker = new PendingCommitTracker(30_000);
+      const resolve = vi.fn();
+      const withdraw = vi.fn(() => true);
+      tracker.track("cmd_1", resolve, withdraw);
+      vi.advanceTimersByTime(29_999);
+      expect(withdraw).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(withdraw).toHaveBeenCalledWith("cmd_1");
+      expect(resolve).toHaveBeenCalledWith(false);
+      tracker.finish("cmd_1", true);
+      expect(resolve).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports success when the server already answered before the timeout fired", () => {
+    vi.useFakeTimers();
+    try {
+      const tracker = new PendingCommitTracker(30_000);
+      const resolve = vi.fn();
+      tracker.track("cmd_1", resolve, () => false);
+      vi.advanceTimersByTime(30_000);
+      expect(resolve).toHaveBeenCalledWith(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels the timer on an authoritative answer and settles the rest on destroy", () => {
+    vi.useFakeTimers();
+    try {
+      const tracker = new PendingCommitTracker(30_000);
+      const acked = vi.fn();
+      const abandoned = vi.fn();
+      const withdraw = vi.fn(() => true);
+      tracker.track("cmd_1", acked, withdraw);
+      tracker.track("cmd_2", abandoned, withdraw);
+      tracker.finish("cmd_1", true);
+      expect(acked).toHaveBeenCalledWith(true);
+      tracker.finishAll(false);
+      expect(abandoned).toHaveBeenCalledWith(false);
+      vi.advanceTimersByTime(30_000);
+      expect(withdraw).not.toHaveBeenCalled();
+      expect(acked).toHaveBeenCalledTimes(1);
+      expect(abandoned).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("global keyboard shortcuts", () => {
+  const idle = {
+    editing: false,
+    toolsMenuOpen: false,
+    shapeMenuOpen: false,
+    followingSpotlight: false,
+  };
+  const escapeKey = { key: "Escape", ctrlKey: false, metaKey: false, shiftKey: false };
+
+  it("lets Escape close menus and stop spotlight-follow even from an input", () => {
+    expect(globalShortcutFor(escapeKey, { ...idle, editing: true, toolsMenuOpen: true })).toBe(
+      "close-tools-menu",
+    );
+    expect(globalShortcutFor(escapeKey, { ...idle, editing: true, shapeMenuOpen: true })).toBe(
+      "close-shape-menu",
+    );
+    expect(globalShortcutFor(escapeKey, { ...idle, editing: true, followingSpotlight: true })).toBe(
+      "stop-following-spotlight",
+    );
+    expect(globalShortcutFor(escapeKey, { ...idle, editing: true })).toBeNull();
+  });
+
+  it("keeps undo and redo out of text fields while honouring them elsewhere", () => {
+    const undo = { key: "z", ctrlKey: true, metaKey: false, shiftKey: false };
+    expect(globalShortcutFor(undo, idle)).toBe("undo");
+    expect(globalShortcutFor({ ...undo, shiftKey: true }, idle)).toBe("redo");
+    expect(globalShortcutFor({ ...undo, key: "y" }, idle)).toBe("redo");
+    expect(
+      globalShortcutFor({ ...undo, key: "y", ctrlKey: false, metaKey: true }, idle),
+    ).toBeNull();
+    expect(globalShortcutFor(undo, { ...idle, editing: true })).toBeNull();
+    expect(globalShortcutFor({ ...undo, ctrlKey: false }, idle)).toBeNull();
   });
 });
