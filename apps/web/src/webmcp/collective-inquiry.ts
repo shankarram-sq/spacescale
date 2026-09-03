@@ -1,9 +1,8 @@
 import "./collective-inquiry.css";
 
-import { boundsForItems, boundsHeight, boundsWidth } from "@collab/geometry";
-import { ASSIST_ACTIONS, type Assistance, normalizeBoardItem } from "@collab/protocol";
-import { renderSvgItem } from "@collab/svg-export";
+import { ASSIST_ACTIONS, type AssistAction, type Assistance } from "@collab/protocol";
 import type { BoardItem, ServerAction } from "../types";
+import { captureBoardImage, serializeVisualPreview, visualAlias } from "./board-image";
 import {
   type AssistRequestInput,
   type AssistRequestReceipt,
@@ -17,6 +16,7 @@ import {
 import {
   enumValue,
   isRecord,
+  registerWebMcpTool,
   requiredText,
   trimSnapshots,
   WEBMCP_MATHJAX_GUIDANCE,
@@ -27,8 +27,10 @@ const READ_SELECTION_TOOL = "read_selected_class_ideas";
 const INSPECT_VISUAL_TOOL = "inspect_selected_board_visual";
 const INSPIRE_SELECTION_TOOL = "inspire_from_selected_ideas";
 const EXPLAIN_SELECTION_TOOL = "explain_selected_ideas";
-const MAX_SHARED_IDEAS = 30;
-const MAX_SHARED_VISUAL_ITEMS = 40;
+const MAX_SHARED_IDEAS = 1_000;
+export const MAX_SHARED_VISUAL_ITEMS = 1_000;
+/** Bounds one read's payload independently of item count; see the watch's budget for why. */
+const MAX_SHARED_TEXT_CODE_POINTS = 120_000;
 /** Chat-minted and watch-minted tokens share this store, so leave room for both flows. */
 const MAX_SNAPSHOTS = 20;
 /** Matches the edge's comment limit, counted in code points like the server does. */
@@ -67,6 +69,8 @@ export type CollectiveInquirySnapshot = {
 export type CollectiveInquiryWebMcpOptions = {
   root: HTMLElement;
   getSelectedItems: () => BoardItem[] | null;
+  /** Every saved object on the board. The watch always follows the whole board. */
+  getBoardItems: () => BoardItem[];
   getAuthoritativeItem: (itemId: string) => BoardItem | undefined;
   getSequence: () => number;
   getParticipantDisplayName: (participantId: string) => string | null;
@@ -90,7 +94,8 @@ export class CollectiveInquiryWebMcp {
 
   constructor(private readonly options: CollectiveInquiryWebMcpOptions) {
     this.problemStepWatch = new ProblemStepWatchFeed({
-      getSelectedItems: options.getSelectedItems,
+      getBoardItems: options.getBoardItems,
+      captureBoardImage: (items) => captureBoardImage(items),
       getAuthoritativeItem: options.getAuthoritativeItem,
       getSequence: options.getSequence,
       getParticipantDisplayName: options.getParticipantDisplayName,
@@ -126,6 +131,14 @@ export class CollectiveInquiryWebMcp {
     return this.problemStepWatch.requestAssistance(input);
   }
 
+  /** The board's AI tool asks the assistant already watching to work on the whole board. */
+  shareEntireBoard(input: { action: AssistAction; note?: string; itemCount: number }): {
+    requestId: string;
+    delivered: boolean;
+  } {
+    return this.problemStepWatch.shareEntireBoard(input);
+  }
+
   destroy(): void {
     this.destroyed = true;
     this.registration.abort();
@@ -141,7 +154,8 @@ export class CollectiveInquiryWebMcp {
     const modelContext = document.modelContext;
     if (typeof modelContext?.registerTool !== "function") return;
     try {
-      await modelContext.registerTool(
+      await registerWebMcpTool(
+        modelContext,
         {
           name: READ_SELECTION_TOOL,
           description:
@@ -159,7 +173,8 @@ export class CollectiveInquiryWebMcp {
         },
         { signal: this.registration.signal },
       );
-      await modelContext.registerTool(
+      await registerWebMcpTool(
+        modelContext,
         {
           name: INSPIRE_SELECTION_TOOL,
           description: `Read only the saved sticky notes selected in this browser and return guidance for proposing fresh, source-grounded ideas, analogies, combinations, and next questions without overwriting or ranking the original contributions. Use this when a participant asks for inspiration. ${WEBMCP_MATHJAX_GUIDANCE}`,
@@ -169,10 +184,11 @@ export class CollectiveInquiryWebMcp {
         },
         { signal: this.registration.signal },
       );
-      await modelContext.registerTool(
+      await registerWebMcpTool(
+        modelContext,
         {
           name: PROBLEM_STEP_WATCH_TOOL,
-          description: `Start, continue, or stop a 15-minute read-only watch of the exact saved text items selected in this browser. Use this when a participant asks for real-time feedback while working through a problem. First call with action start. Briefly comment on every returned change, then call action wait again with the returned watchToken and nextSeq; repeat after timeouts until the watch expires or the participant asks to stop. Each wait returns once and lasts at most 20 seconds and reports status changed, requested, timeout, resync, stopped, expired, or replaced; every status except changed, requested, timeout and resync ends the watch, and resync carries a fresh snapshot after the board reloaded. While the watch is live the board shows an AI button; a requested result carries the participant's chosen action, the step text, an optional note, and a reply plan naming the exact next tool call (a comment on the step via ${WATCHED_STEP_COMMENT_TOOL}, or cards via an add_* tool with the returned selectionToken). Answer it, then wait again. The watch never includes unsaved keystrokes, other contents of a selected Section, unselected content, stable item IDs, coordinates, presence, or history. ${WEBMCP_MATHJAX_GUIDANCE}`,
+          description: `Start, continue, or stop a 15-minute read-only watch of this whole board, every saved object of any kind. It does not use the browser selection; the other read tools do. Written work (canvas text, sticky notes, table cells, Section titles) carries its text; drawn work (handwriting, shapes, lines, images, stamps, video embeds) carries a short description and the saved version it is at. Whenever the board holds drawn work, every result also carries boardImage, a PNG of the board as it is at that moment, so you can see the handwriting rather than infer it. Private image cards render as placeholders in that picture. Use this when a participant asks for real-time feedback while working through a problem. First call with action start. Objects saved after the watch begins join it automatically. Briefly comment on every returned change, then call action wait again with the returned watchToken and nextSeq; repeat after timeouts until the watch expires or the participant asks to stop. Each wait returns once and lasts at most 20 seconds and reports status changed, requested, timeout, resync, stopped, expired, or replaced; every status except changed, requested, timeout and resync ends the watch, and resync carries a fresh snapshot after the board reloaded. While the watch is live the board shows an AI button; a requested result carries the participant's chosen action, the step content, an optional note, and a reply plan naming the exact next tool call (a comment on the step via ${WATCHED_STEP_COMMENT_TOOL}, or cards via an add_* tool with the returned selectionToken). Answer it, then wait again. A requested result may also carry boardShare when the participant used the board's AI tool: it names the task they picked for the whole board, which this watch already follows. The watch never includes unsaved keystrokes, stable item IDs, coordinates, presence, or history. It ends with status outgrown if the board grows past what one watch can follow, at which point start it again. ${WEBMCP_MATHJAX_GUIDANCE}`,
           inputSchema: {
             type: "object",
             properties: {
@@ -209,7 +225,8 @@ export class CollectiveInquiryWebMcp {
         },
         { signal: this.registration.signal },
       );
-      await modelContext.registerTool(
+      await registerWebMcpTool(
+        modelContext,
         {
           name: WATCHED_STEP_COMMENT_TOOL,
           description: `Post one object comment on a step of a live problem-step watch. This is the reply channel for explain, critique, check_work, and explain_with_video requests and for feedback on a changed step. Pass the watchToken and the step alias from the watch result. The comment is attributed to this browser's participant, tagged as written by AI, renders MathJax, is limited to 2000 characters, and can be resolved by the class like any other comment. At most ${MAX_ASSIST_COMMENTS_PER_WATCH} comments per watch. Never grade, label, or profile the participant. ${WEBMCP_MATHJAX_GUIDANCE}`,
@@ -219,11 +236,11 @@ export class CollectiveInquiryWebMcp {
               watchToken: {
                 type: "string",
                 maxLength: 128,
-                description: "Opaque token returned by watch_selected_problem_steps.",
+                description: "Opaque token returned by watch_board.",
               },
               stepAlias: {
                 type: "string",
-                pattern: "^step_[1-9][0-9]{0,2}$",
+                pattern: "^step_(?:[1-9][0-9]{0,3}|10000)$",
                 description: "The step_N alias of the watched step to comment on.",
               },
               action: {
@@ -247,7 +264,8 @@ export class CollectiveInquiryWebMcp {
         },
         { signal: this.registration.signal },
       );
-      await modelContext.registerTool(
+      await registerWebMcpTool(
+        modelContext,
         {
           name: EXPLAIN_SELECTION_TOOL,
           description: `Read only the saved sticky notes selected in this browser and return guidance for explaining their meaning clearly, defining terms, unpacking reasoning, and identifying ambiguities without inventing unsupported claims. Use this when a participant asks what selected writing means. ${WEBMCP_MATHJAX_GUIDANCE}`,
@@ -257,7 +275,8 @@ export class CollectiveInquiryWebMcp {
         },
         { signal: this.registration.signal },
       );
-      await modelContext.registerTool(
+      await registerWebMcpTool(
+        modelContext,
         {
           name: INSPECT_VISUAL_TOOL,
           description:
@@ -304,7 +323,7 @@ export class CollectiveInquiryWebMcp {
     if (!isRecord(input)) throw new Error("Comment input must be an object.");
     const watchToken = requiredText(input.watchToken, "watchToken", 128);
     const stepAlias = requiredText(input.stepAlias, "stepAlias", 16);
-    if (!/^step_[1-9][0-9]{0,2}$/u.test(stepAlias)) {
+    if (!/^step_(?:[1-9][0-9]{0,3}|10000)$/u.test(stepAlias)) {
       throw new Error("stepAlias must look like step_1.");
     }
     const action =
@@ -485,7 +504,17 @@ export class CollectiveInquiryWebMcp {
     if (items.length > MAX_SHARED_IDEAS) {
       return {
         items,
-        issue: `Select ${MAX_SHARED_IDEAS} ideas or fewer for one collaboration turn.`,
+        issue: `One collaboration turn shares up to ${MAX_SHARED_IDEAS} ideas; ${items.length} are selected.`,
+      };
+    }
+    const codePoints = items.reduce(
+      (total, item) => total + [...item.geometry.text.trim()].length,
+      0,
+    );
+    if (codePoints > MAX_SHARED_TEXT_CODE_POINTS) {
+      return {
+        items,
+        issue: `The selected ideas hold ${codePoints} characters, over the ${MAX_SHARED_TEXT_CODE_POINTS}-character budget for one turn.`,
       };
     }
     return { items, issue: null };
@@ -499,7 +528,7 @@ export class CollectiveInquiryWebMcp {
     if (selected.length > MAX_SHARED_VISUAL_ITEMS) {
       return {
         items: selected,
-        issue: `Select ${MAX_SHARED_VISUAL_ITEMS} visual items or fewer for one inspection.`,
+        issue: `One inspection shares up to ${MAX_SHARED_VISUAL_ITEMS} visual items; ${selected.length} are selected.`,
       };
     }
     return { items: selected, issue: null };
@@ -597,48 +626,6 @@ function buildVisualPreview(items: readonly BoardItem[]): {
   image.dataset.visualScope = "browser-selected-items-only";
   image.src = objectUrl;
   return { image, objectUrl };
-}
-
-export function serializeVisualPreview(items: readonly BoardItem[]): {
-  viewBox: string;
-  ariaLabel: string;
-  content: string;
-} {
-  if (items.length === 0) throw new Error("A visual preview needs at least one item.");
-  const sanitized = items
-    .map((item, index) => {
-      const normalized = normalizeBoardItem(item);
-      const sanitized = {
-        ...normalized,
-        id: visualAlias(index),
-        createdBy: "shared-visual",
-      };
-      return sanitized.kind === "image"
-        ? {
-            ...sanitized,
-            geometry: { ...sanitized.geometry, alt: "Private image not shared" },
-          }
-        : sanitized;
-    })
-    .sort((left, right) => left.z - right.z);
-  const bounds = boundsForItems(sanitized);
-  if (bounds === null) throw new Error("The selected visual has no renderable bounds.");
-  const width = Math.max(1, boundsWidth(bounds));
-  const height = Math.max(1, boundsHeight(bounds));
-  const padding = Math.max(18, Math.min(72, Math.min(width, height) * 0.08));
-  const minX = bounds.minX - padding;
-  const minY = bounds.minY - padding;
-  const viewWidth = width + padding * 2;
-  const viewHeight = height + padding * 2;
-  return {
-    viewBox: `${minX} ${minY} ${viewWidth} ${viewHeight}`,
-    ariaLabel: `Board visual containing ${items.length} browser-selected item${items.length === 1 ? "" : "s"}`,
-    content: `<rect x="${minX}" y="${minY}" width="${viewWidth}" height="${viewHeight}" fill="#ffffff"/>${sanitized.map(renderSvgItem).join("")}`,
-  };
-}
-
-function visualAlias(index: number): string {
-  return `visual_${index + 1}`;
 }
 
 function countKinds(items: readonly BoardItem[]): Partial<Record<BoardItem["kind"], number>> {

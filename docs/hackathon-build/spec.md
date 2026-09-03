@@ -85,7 +85,7 @@ the DOM.
 
 Makes the current browser's saved visual selection inspectable in the same live page for handwriting, sketches, arrows, shapes, spatial groupings, and mixed visual notes.
 
-- Publicly discoverable and read-only; at most 40 selected saved items per inspection.
+- Publicly discoverable and read-only; at most 1,000 selected saved items per inspection.
 - Opens the isolated visual review directly from the authoritative saved selection.
 - Renders the selected items through SpaceScale's canonical SVG exporter, preserving pencil paths, transforms, layout, typed context, and source ordering.
 - Replaces stable item IDs with ephemeral aliases such as `visual_1`, returns each
@@ -95,16 +95,17 @@ Makes the current browser's saved visual selection inspectable in the same live 
 - Returns bounded metadata and explicit instructions to use identity only for attribution or clarification, mark uncertain handwriting as uncertain, avoid invention, and avoid grading, ranking, or profiling.
 - Closing the review removes the temporary visual surface. It never changes the shared canvas.
 
-### `watch_selected_problem_steps`
+### `watch_board`
 
-Follows changes to exact saved text-bearing items selected in the current browser
+Follows changes to exact saved objects selected in the current browser, of any kind,
 for 15 minutes so Codex can comment as a participant works through a problem.
 
-- `start` snapshots at most 30 selected canvas-text, sticky-note, table, or Section-title items and returns ephemeral `step_N` aliases plus the authoritative board sequence.
+- `start` snapshots up to 1,000 saved objects of any kind, bounded also by a 120,000-character text budget, and returns ephemeral `step_N` aliases plus the authoritative board sequence. Written work carries its text; drawn work (handwriting, shapes, images, stamps, video embeds) carries a short description and the saved version it is at, plus a `boardImage` PNG of the whole board on every result, so handwriting can be read rather than guessed at. With nothing selected it follows the whole board and reports `scope: entire_board`; with a selection it follows exactly that and reports `scope: browser_selection`.
 - `wait` is a cancelable long poll, bounded to 20 seconds per call. It returns promptly when a selected item is saved, otherwise times out with the next cursor so the host can wait again.
 - The tool tells the host to comment briefly after every changed step—checking the reasoning, acknowledging what is valid, identifying the first concrete issue or uncertainty, and asking one useful next-step question—then continue waiting.
 - Only server-acknowledged changes enter the feed. Unsaved keystrokes, video embeds, unselected items, Section children, coordinates, presence, history, stable board/item/participant IDs, and contact or authentication data are excluded.
-- `stop`, request cancellation, page navigation, or the fixed 15-minute expiry ends the watch. Sessions and up to 100 retained change groups live only in page memory.
+- `stop`, request cancellation, page navigation, the fixed 15-minute expiry, or a board that grows past the object cap (status `outgrown`) ends the watch. Sessions and up to 100 retained change groups live only in page memory.
+- While a watch is live the tool rail shows an **AI** action. It selects every saved object and delivers a `boardShare` on the next wait, naming the task prompt for the action the participant picked and asking the host to call `start` again to re-scope the watch to that selection.
 - While a watch is live the board shows an **Ask AI** button in the selection toolbar. A participant's request (a watched step, one of `explain`, `ideate`, `critique`, `check_work`, `examples`, `explain_with_video`, and an optional 280-character note) is delivered as the next `wait` result with status `requested`, carrying the step text and a reply plan that names the exact next tool call. Up to 10 requests queue between polls; the oldest are dropped and counted. `nextSeq` is unchanged, so queued changes follow on the next wait.
 - Replies go back to the board: `comment_on_watched_step` posts one object comment on a watched step (attributed to the participant, tagged as AI-written, at most 20 per watch), and every `start`, `changed`, `resync`, and `requested` result mints a fresh `selectionToken` over the watch's sticky-note steps, using the `idea_N` aliases the writers' schemas accept and reporting the `step_N` → `idea_N` mapping as `selectionSources`, so the `add_*` tools can insert cards without a second read call. Generative replies fall back to a comment when the browser cannot add items.
 
@@ -203,7 +204,7 @@ Uses a vote token to propose a chosen direction, rationale, minority concern, sm
 11. The teacher approves; the whole class sees the decision record and can continue the inquiry.
 
 For live problem coaching, the participant instead selects the exact working
-steps and asks Codex to start `watch_selected_problem_steps`. Codex alternates
+steps and asks Codex to start `watch_board`. Codex alternates
 between bounded `wait` calls and short feedback until 15 minutes elapse or the
 participant asks it to stop. While the watch is live the participant can also
 select a step and press **Ask AI** on the board; the request arrives in the next
@@ -223,7 +224,7 @@ select a step and press **Ask AI** on the board; the request arrives in the next
 
 - No grading, ranking, participation scoring, student profiling, or inferred ability.
 - No whole-board or section reads. Visual inspection is limited to the saved items the teacher selected, with an opaque modal masking everything else.
-- Problem-step watches include only exact text-bearing items selected at start, never expand Section contents, and report only authoritative saved changes rather than unsaved keystrokes.
+- Problem-step watches include only the objects in scope at start, which is the exact selection or, when nothing was selected, the whole board. They never expand a selected Section into its contents and report only authoritative saved changes rather than unsaved keystrokes. Drawn work is described and, when the board holds any, pictured: results carry a PNG of the board capped at 1,280px on its long edge, with private image cards as placeholders.
 - No autonomous or silent board edits: the teacher initiates and permits every WebMCP write, and can undo the whole batch.
 - No identifying dissenters or claiming consensus.
 - No AI-assigned priorities, weights, scores, votes, response counts, or final choices.

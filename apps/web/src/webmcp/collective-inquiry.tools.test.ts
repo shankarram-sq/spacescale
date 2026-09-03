@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BoardItem } from "../types";
 import { CollectiveInquiryWebMcp } from "./collective-inquiry";
+import { MAX_WATCHED_ITEMS } from "./problem-step-watch";
+import { webMcpRegistryState } from "./shared";
 import type { WebMcpRegisterToolOptions, WebMcpToolDefinition } from "./types";
 
 const ACTOR_ID = "018f0000-0000-7000-8000-0000000000a1";
@@ -38,8 +40,9 @@ function fakeDialog(): HTMLDialogElement {
   } as unknown as HTMLDialogElement;
 }
 
-function harness(options: { canComment?: boolean; canWrite?: boolean } = {}) {
+function harness(options: { canComment?: boolean; canWrite?: boolean; board?: BoardItem[] } = {}) {
   const tools = new Map<string, WebMcpToolDefinition>();
+  const board = options.board ?? [sticky()];
   vi.stubGlobal("document", {
     createElement: () => fakeDialog(),
     modelContext: {
@@ -55,8 +58,9 @@ function harness(options: { canComment?: boolean; canWrite?: boolean } = {}) {
   const notices: string[] = [];
   const inquiry = new CollectiveInquiryWebMcp({
     root: { append: () => undefined } as unknown as HTMLElement,
-    getSelectedItems: () => [sticky()],
-    getAuthoritativeItem: (itemId) => (itemId === STICKY_ID ? sticky() : undefined),
+    getSelectedItems: () => board,
+    getBoardItems: () => board,
+    getAuthoritativeItem: (itemId) => board.find((item) => item.id === itemId),
     getSequence: () => 3,
     getParticipantDisplayName: () => "Sam",
     notify: (message) => notices.push(message),
@@ -83,7 +87,7 @@ describe("watch reply tools", () => {
   it("registers the comment tool and documents the requested status", async () => {
     const { inquiry, tools } = harness();
     await vi.waitFor(() => expect(tools.has("comment_on_watched_step")).toBe(true));
-    expect(tools.get("watch_selected_problem_steps")?.description).toContain("requested");
+    expect(tools.get("watch_board")?.description).toContain("requested");
     expect(tools.get("comment_on_watched_step")?.annotations).toEqual({
       readOnlyHint: false,
       untrustedContentHint: true,
@@ -92,10 +96,37 @@ describe("watch reply tools", () => {
     expect(tools.size).toBe(0);
   });
 
+  it("accepts the highest generated watch alias in the schema and runtime", async () => {
+    const board: BoardItem[] = Array.from({ length: MAX_WATCHED_ITEMS }, (_, index) => ({
+      ...sticky(),
+      id: `018f0000-0000-7000-8000-${String(index + 1).padStart(12, "0")}`,
+    }));
+    const finalItem = board.at(-1);
+    if (!finalItem) throw new Error("Expected the watch-limit fixture to contain an item.");
+    const { inquiry, tools, created, call } = harness({ board });
+    await vi.waitFor(() => expect(tools.has("comment_on_watched_step")).toBe(true));
+    expect(tools.get("comment_on_watched_step")?.inputSchema).toMatchObject({
+      properties: {
+        stepAlias: { pattern: "^step_(?:[1-9][0-9]{0,3}|10000)$" },
+      },
+    });
+
+    const started = await call("watch_board", { action: "start" });
+    const commented = await call("comment_on_watched_step", {
+      watchToken: started.watchToken,
+      stepAlias: "step_10000",
+      body: "Check this final object.",
+    });
+
+    expect(commented).toMatchObject({ status: "commented", stepAlias: "step_10000" });
+    expect(created.at(-1)?.itemId).toBe(finalItem.id);
+    inquiry.destroy();
+  });
+
   it("mints a selection token the add_* tools can resolve and posts a tagged comment", async () => {
     const { inquiry, tools, created, notices, call } = harness();
     await vi.waitFor(() => expect(tools.has("comment_on_watched_step")).toBe(true));
-    const started = await call("watch_selected_problem_steps", { action: "start" });
+    const started = await call("watch_board", { action: "start" });
     const token = String(started.selectionToken);
     expect(started).toMatchObject({
       selectionSources: [{ stepAlias: "step_1", sourceAlias: "idea_1" }],
@@ -130,7 +161,7 @@ describe("watch reply tools", () => {
   it("rejects bad aliases, oversized bodies, and browsers that cannot comment", async () => {
     const { inquiry, tools, call } = harness({ canComment: false });
     await vi.waitFor(() => expect(tools.has("comment_on_watched_step")).toBe(true));
-    const started = await call("watch_selected_problem_steps", { action: "start" });
+    const started = await call("watch_board", { action: "start" });
     expect(started).toMatchObject({ canComment: false });
     const base = { watchToken: started.watchToken, stepAlias: "step_1", body: "Hello" };
     await expect(call("comment_on_watched_step", { ...base, stepAlias: "idea_1" })).rejects.toThrow(
@@ -144,5 +175,22 @@ describe("watch reply tools", () => {
     ).rejects.toThrow("1-2000 characters");
     await expect(call("comment_on_watched_step", base)).rejects.toThrow("cannot comment");
     inquiry.destroy();
+  });
+});
+
+describe("registered tool surface", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("counts the tools a linked host can see and drops them when the page tears down", async () => {
+    const before = webMcpRegistryState().toolCount;
+    const { inquiry, tools } = harness();
+    await vi.waitFor(() => expect(tools.has("comment_on_watched_step")).toBe(true));
+
+    const linked = webMcpRegistryState();
+    expect(linked.hostPresent).toBe(true);
+    expect(linked.toolCount).toBe(before + tools.size);
+
+    inquiry.destroy();
+    await vi.waitFor(() => expect(webMcpRegistryState().toolCount).toBe(before));
   });
 });

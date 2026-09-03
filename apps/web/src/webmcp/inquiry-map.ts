@@ -10,7 +10,13 @@ import {
 import type { Bounds } from "../board/model";
 import type { DurableOperation } from "../types";
 import type { CollectiveInquirySnapshot } from "./collective-inquiry";
-import { awaitDialogDecision, isRecord, requiredText, WEBMCP_MATHJAX_GUIDANCE } from "./shared";
+import {
+  awaitDialogDecision,
+  isRecord,
+  registerWebMcpTool,
+  requiredText,
+  WEBMCP_MATHJAX_GUIDANCE,
+} from "./shared";
 
 const STAGE_INQUIRY_TOOL = "stage_collective_inquiry";
 
@@ -45,7 +51,8 @@ export class InquiryMapWebMcp {
     const modelContext = document.modelContext;
     if (typeof modelContext?.registerTool !== "function") return;
     try {
-      await modelContext.registerTool(
+      await registerWebMcpTool(
+        modelContext,
         {
           name: STAGE_INQUIRY_TOOL,
           description: `Stage a visual collective-inquiry map from a SpaceScale selection read in this browser. Connect the selected contribution aliases into 2-4 themes, identify bridges across themes, and name one productive tension plus a next question. SpaceScale computes the canvas layout and shows a preview; nothing is added unless the participant approves inside the app. ${WEBMCP_MATHJAX_GUIDANCE}`,

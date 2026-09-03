@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BoardItem, ServerAction } from "../types";
-import { PROBLEM_STEP_WATCH_DURATION_MS, ProblemStepWatchFeed } from "./problem-step-watch";
+import {
+  MAX_WATCHED_ITEMS,
+  PROBLEM_STEP_WATCH_DURATION_MS,
+  ProblemStepWatchFeed,
+} from "./problem-step-watch";
 
 const ACTOR_ID = "018f0000-0000-7000-8000-0000000000a1";
 const STICKY_ID = "018f0000-0000-7000-8000-0000000000b1";
@@ -9,6 +13,7 @@ const TABLE_ID = "018f0000-0000-7000-8000-0000000000b3";
 const SECTION_ID = "018f0000-0000-7000-8000-0000000000b4";
 const VIDEO_ID = "018f0000-0000-7000-8000-0000000000b5";
 const UNSELECTED_ID = "018f0000-0000-7000-8000-0000000000b6";
+const IMAGE_ID = "018f0000-0000-7000-8000-0000000000b7";
 
 function sticky(text = "Let $2x=6$", version = 1): Extract<BoardItem, { kind: "sticky" }> {
   return {
@@ -107,6 +112,29 @@ function video(): Extract<BoardItem, { kind: "text" }> {
   };
 }
 
+function imageItem(alt = "A worked diagram", version = 1): Extract<BoardItem, { kind: "image" }> {
+  return {
+    id: IMAGE_ID,
+    kind: "image",
+    z: 5,
+    version,
+    createdBy: ACTOR_ID,
+    transform: [1, 0, 0, 1, 0, 0],
+    style: { kind: "image", opacity: 1, radius: 12 },
+    geometry: {
+      x: 260,
+      y: 10,
+      width: 120,
+      height: 80,
+      assetId: "asset_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      alt,
+      mimeType: "image/png",
+      intrinsicWidth: 1200,
+      intrinsicHeight: 800,
+    },
+  };
+}
+
 function unselectedSticky(
   text = "Unselected private work",
   version = 1,
@@ -133,7 +161,7 @@ function serverAction(seq: number, item: BoardItem): ServerAction {
   };
 }
 
-function setup(selected: BoardItem[] = [sticky()]) {
+function setup(board: BoardItem[] = [sticky()]) {
   let sequence = 7;
   const items = new Map<string, BoardItem>(
     [sticky(), canvasText(), table(), section(), video(), unselectedSticky()].map((item) => [
@@ -142,7 +170,8 @@ function setup(selected: BoardItem[] = [sticky()]) {
     ]),
   );
   const feed = new ProblemStepWatchFeed({
-    getSelectedItems: () => selected,
+    // The board holds whatever the authoritative map currently says, as it does in the app.
+    getBoardItems: () => board.map((item) => items.get(item.id) ?? item),
     getAuthoritativeItem: (itemId) => items.get(itemId),
     getSequence: () => sequence,
     getParticipantDisplayName: (participantId) =>
@@ -162,7 +191,7 @@ afterEach(() => {
 });
 
 describe("problem-step WebMCP watch", () => {
-  it("starts a 15-minute watch over only exact selected text-bearing items", async () => {
+  it("starts a 15-minute watch over every saved object, written or drawn", async () => {
     const unselected = unselectedSticky();
     const { feed } = setup([sticky(), canvasText(), table(), section(), video()]);
 
@@ -179,35 +208,106 @@ describe("problem-step WebMCP watch", () => {
         { alias: "step_2", kind: "text", text: "Divide both sides by $2$" },
         { alias: "step_3", kind: "table", text: "Step\tResult\n$2x/2$\t$6/2$" },
         { alias: "step_4", kind: "zone", text: "Solve for $x$" },
+        // A video carries no text, so it is described rather than transcribed.
+        { alias: "step_5", kind: "text", visual: { description: "embedded video" } },
       ],
     });
     expect(serialized).not.toContain(STICKY_ID);
     expect(serialized).not.toContain(VIDEO_ID);
     expect(serialized).not.toContain(unselected.geometry.text);
-    expect(result.privacy).toContain("other Section contents");
+    expect(result.privacy).toContain("follows the saved objects on this board");
   });
 
-  it("does not report an unselected child of a selected Section", async () => {
-    vi.useFakeTimers();
-    const { feed, items, setSequence } = setup([section()]);
+  it("watches handwriting and other drawn work, and reports when it is redrawn", async () => {
+    const strokes: Extract<BoardItem, { kind: "pencil" }> = {
+      id: "018f0000-0000-7000-8000-0000000000c1",
+      kind: "pencil",
+      z: 9,
+      version: 1,
+      createdBy: ACTOR_ID,
+      transform: [1, 0, 0, 1, 0, 0],
+      style: { kind: "stroke", color: "#123456", width: 4, opacity: 1 },
+      geometry: {
+        points: [
+          [0, 0],
+          [10, 12],
+          [20, 4],
+        ],
+      },
+    };
+    const { feed, items } = setup([strokes]);
+    items.set(strokes.id, strokes);
+
     const started = await feed.execute({ action: "start" }, new AbortController().signal);
-    const watchToken = String(started.watchToken);
-    const pending = feed.execute(
-      { action: "wait", watchToken, afterSeq: 7, waitMs: 1_000 },
+    expect(started.steps).toMatchObject([
+      {
+        alias: "step_1",
+        kind: "pencil",
+        visual: { description: "handwriting or sketch of 3 points", revision: 1 },
+      },
+    ]);
+    expect(started.steps).not.toMatchObject([{ text: expect.anything() }]);
+
+    const redrawn = {
+      ...strokes,
+      version: 2,
+      geometry: { points: [...strokes.geometry.points, [30, 18] as [number, number]] },
+    };
+    items.set(strokes.id, redrawn);
+    feed.recordAuthoritativeAction(serverAction(8, redrawn), new Set([strokes.id]));
+
+    const result = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
       new AbortController().signal,
     );
-    const privateUpdate = unselectedSticky("Private next step", 2);
-    items.set(UNSELECTED_ID, privateUpdate);
+    expect(result).toMatchObject({
+      status: "changed",
+      changes: [
+        {
+          steps: [
+            {
+              alias: "step_1",
+              kind: "pencil",
+              change: "updated",
+              visual: { description: "handwriting or sketch of 4 points", revision: 2 },
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("takes in an object saved after the watch started, including a Section child", async () => {
+    const { feed, items, setSequence } = setup([section()]);
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    expect(started.steps).toHaveLength(1);
+
+    const child = unselectedSticky("A later step inside the Section", 2);
+    items.set(UNSELECTED_ID, child);
     setSequence(8);
+    feed.recordAuthoritativeAction(serverAction(8, child), new Set([UNSELECTED_ID]));
 
-    feed.recordAuthoritativeAction(serverAction(8, privateUpdate), new Set([UNSELECTED_ID]));
-    await vi.advanceTimersByTimeAsync(1_000);
-
-    const result = await pending;
-    // nextSeq stays at the last sequence that changed a watched step. Advancing it to 8 would
-    // disclose that an unselected item was edited, which this watch promises to exclude.
-    expect(result).toMatchObject({ status: "timeout", changes: [], nextSeq: 7 });
-    expect(JSON.stringify(result)).not.toContain("Private next step");
+    const result = await feed.execute(
+      { action: "wait", watchToken: String(started.watchToken), afterSeq: 7 },
+      new AbortController().signal,
+    );
+    expect(result).toMatchObject({
+      status: "changed",
+      nextSeq: 8,
+      changes: [
+        {
+          steps: [
+            {
+              alias: "step_2",
+              kind: "sticky",
+              change: "created",
+              text: "A later step inside the Section",
+            },
+          ],
+        },
+      ],
+    });
+    expect(JSON.stringify(result)).not.toContain(UNSELECTED_ID);
     feed.destroy();
   });
 
@@ -427,14 +527,14 @@ describe("problem-step WebMCP watch", () => {
 });
 
 describe("board-side assist requests", () => {
-  function watching(selected: BoardItem[] = [sticky(), canvasText()]) {
+  function watching(board: BoardItem[] = [sticky(), canvasText()]) {
     const states: Array<ReturnType<ProblemStepWatchFeed["getState"]>> = [];
     const minted: unknown[] = [];
     let canComment = true;
     let canWrite = true;
-    const context = setup(selected);
+    const context = setup(board);
     const feed = new ProblemStepWatchFeed({
-      getSelectedItems: () => selected,
+      getBoardItems: () => board.map((item) => context.items.get(item.id) ?? item),
       getAuthoritativeItem: (itemId) => context.items.get(itemId),
       getSequence: () => 7,
       getParticipantDisplayName: () => "Sam",
@@ -563,7 +663,11 @@ describe("board-side assist requests", () => {
       { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
       new AbortController().signal,
     );
-    expect(first).toMatchObject({ status: "requested", droppedRequests: 2, nextSeq: 8 });
+    expect(first).toMatchObject({
+      status: "requested",
+      droppedRequests: 2,
+      nextSeq: started.nextSeq,
+    });
     expect(first.requests).toHaveLength(10);
     expect((first.requests as Array<{ steps: unknown[] }>)[0]?.steps).toHaveLength(2);
 
@@ -732,5 +836,587 @@ describe("board-side assist requests", () => {
     const token = String(started.watchToken);
     for (let index = 0; index < 20; index += 1) feed.commentTarget(token, "step_1").release(true);
     expect(() => feed.commentTarget(token, "step_1")).toThrow("limit of 20 AI comments");
+  });
+});
+
+describe("whole-board watching", () => {
+  function feedOver(items: BoardItem[]) {
+    return new ProblemStepWatchFeed({
+      getBoardItems: () => items,
+      getAuthoritativeItem: (itemId) => items.find((item) => item.id === itemId),
+      getSequence: () => 7,
+      getParticipantDisplayName: () => "Sam",
+      canComment: () => true,
+      canWrite: () => true,
+    });
+  }
+
+  it("follows every board item when the participant selected nothing", async () => {
+    const feed = feedOver([sticky(), canvasText()]);
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+
+    expect(started).toMatchObject({ status: "started", scope: "entire_board" });
+    expect(started.steps).toHaveLength(2);
+    feed.destroy();
+  });
+
+  it("says so when the board holds nothing watchable", () => {
+    const feed = feedOver([]);
+    expect(() => feed.execute({ action: "start" }, new AbortController().signal)).toThrow(
+      "nothing saved to watch",
+    );
+    feed.destroy();
+  });
+
+  it("refuses a scope past the item budget", () => {
+    const many = Array.from({ length: MAX_WATCHED_ITEMS + 1 }, (_, index) => ({
+      ...sticky(),
+      id: `018f0000-0000-7000-8000-${String(index).padStart(12, "0")}`,
+    }));
+    const feed = feedOver(many);
+    expect(() => feed.execute({ action: "start" }, new AbortController().signal)).toThrow(
+      `follows up to ${MAX_WATCHED_ITEMS} objects; this board holds ${MAX_WATCHED_ITEMS + 1}`,
+    );
+    feed.destroy();
+  });
+
+  it("refuses a scope past the character budget even when the item count fits", () => {
+    const feed = feedOver([sticky("x".repeat(130_000))]);
+    expect(() => feed.execute({ action: "start" }, new AbortController().signal)).toThrow(
+      /character budget/u,
+    );
+    feed.destroy();
+  });
+
+  it("hands a pending wait the whole board and the task prompt", async () => {
+    const feed = feedOver([sticky(), canvasText()]);
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    const wait = feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+
+    const receipt = feed.shareEntireBoard({ action: "check_work", itemCount: 2 });
+    expect(receipt.delivered).toBe(true);
+
+    const result = await wait;
+    expect(result).toMatchObject({
+      status: "requested",
+      continueWatching: true,
+      boardShares: [
+        {
+          action: "check_work",
+          scope: "entire_board",
+          itemCount: 2,
+          reply: { via: "act_on_board" },
+        },
+      ],
+    });
+    // The prompt is what tells the host what to do with the board it was just handed.
+    const share = (result.boardShares as Array<{ prompt: string }>)[0];
+    expect(share?.prompt).toContain("reply as comments");
+    expect(share?.prompt).toContain("debug");
+    feed.destroy();
+  });
+
+  it("queues a board share for the next wait and drops the narrower queued requests", async () => {
+    const feed = feedOver([sticky(), canvasText()]);
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    feed.requestAssistance({ itemIds: [STICKY_ID], action: "explain" });
+
+    expect(
+      feed.shareEntireBoard({ action: "critique", note: "whole thing", itemCount: 2 }),
+    ).toMatchObject({ delivered: false });
+    const result = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+
+    expect(result.requests).toHaveLength(0);
+    expect(result).toMatchObject({
+      boardShares: [{ action: "critique", note: "whole thing" }],
+    });
+    feed.destroy();
+  });
+
+  it("refuses a board share with no live watch", () => {
+    const feed = feedOver([sticky()]);
+    expect(() => feed.shareEntireBoard({ action: "explain", itemCount: 1 })).toThrow(
+      "start a problem-step watch first",
+    );
+    feed.destroy();
+  });
+});
+
+describe("character budget over the life of a watch", () => {
+  it("trims a step that grows past the budget after the watch started", async () => {
+    const small = sticky("short");
+    const board = [small];
+    const items = new Map<string, BoardItem>([[small.id, small]]);
+    const feed = new ProblemStepWatchFeed({
+      getBoardItems: () => board,
+      getAuthoritativeItem: (itemId) => items.get(itemId),
+      getSequence: () => 7,
+      getParticipantDisplayName: () => "Sam",
+    });
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    expect(started.steps).toMatchObject([{ text: "short" }]);
+
+    // The board grew after the budget was checked at start.
+    const grown = sticky("y".repeat(200_000), 2);
+    items.set(small.id, grown);
+    board[0] = grown;
+    feed.recordAuthoritativeAction(serverAction(8, grown), new Set([small.id]));
+
+    const changed = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    const changedStep = (changed.changes as Array<{ steps: Array<Record<string, unknown>> }>)[0]
+      ?.steps[0];
+    expect(changedStep).toMatchObject({ textTruncated: true });
+    expect(String(changedStep?.text ?? "")).toHaveLength(120_000);
+
+    // The snapshot a resync hands back is bounded the same way.
+    feed.recordAuthoritativeReload(9);
+    const resync = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(resync).toMatchObject({ status: "resync" });
+    const resyncStep = (resync.steps as Array<Record<string, unknown>>)[0];
+    expect(resyncStep).toMatchObject({ textTruncated: true });
+    expect(String(resyncStep?.text ?? "")).toHaveLength(120_000);
+    feed.destroy();
+  });
+
+  it("applies the text budget when a queued request refreshes grown steps", async () => {
+    const small = sticky("short");
+    const board = [small];
+    const items = new Map<string, BoardItem>([[small.id, small]]);
+    let sequence = 7;
+    const feed = new ProblemStepWatchFeed({
+      getBoardItems: () => board,
+      getAuthoritativeItem: (itemId) => items.get(itemId),
+      getSequence: () => sequence,
+      getParticipantDisplayName: () => "Sam",
+    });
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    feed.requestAssistance({ itemIds: [small.id], action: "check_work" });
+
+    const grown = sticky("y".repeat(200_000), 2);
+    items.set(small.id, grown);
+    board[0] = grown;
+    sequence = 8;
+    feed.recordAuthoritativeAction(serverAction(sequence, grown), new Set([small.id]));
+
+    const requested = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(requested).toMatchObject({ status: "requested", nextSeq: started.nextSeq });
+    const requestedStep = (
+      requested.requests as Array<{ steps: Array<Record<string, unknown>> }>
+    )[0]?.steps[0];
+    expect(requestedStep).toMatchObject({ textTruncated: true });
+    expect(String(requestedStep?.text ?? "")).toHaveLength(120_000);
+
+    const changed = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: requested.nextSeq },
+      new AbortController().signal,
+    );
+    expect(changed).toMatchObject({ status: "changed", changes: [{ seq: 8 }] });
+    feed.destroy();
+  });
+
+  it("counts visual descriptions when bounding retained change history", async () => {
+    let current = imageItem("short");
+    const board: BoardItem[] = [current];
+    let sequence = 7;
+    const feed = new ProblemStepWatchFeed({
+      getBoardItems: () => board,
+      getAuthoritativeItem: (itemId) => (itemId === current.id ? current : undefined),
+      getSequence: () => sequence,
+      getParticipantDisplayName: () => "Sam",
+    });
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+
+    for (let index = 0; index < 30; index += 1) {
+      current = imageItem(`${index}:${"v".repeat(5_000)}`, index + 2);
+      board[0] = current;
+      sequence = index + 8;
+      feed.recordAuthoritativeAction(serverAction(sequence, current), new Set([current.id]));
+    }
+
+    const result = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(result).toMatchObject({
+      status: "resync",
+      nextSeq: sequence,
+      steps: [{ kind: "image" }],
+    });
+    feed.destroy();
+  });
+
+  it("charges fallback visual labels to the result text budget", async () => {
+    const writing = sticky("short");
+    const stamp: Extract<BoardItem, { kind: "stamp" }> = {
+      id: "018f0000-0000-7000-8000-0000000000b8",
+      kind: "stamp",
+      z: 2,
+      version: 1,
+      createdBy: ACTOR_ID,
+      transform: [1, 0, 0, 1, 0, 0],
+      style: { kind: "stamp", color: "#e5484d", opacity: 1 },
+      geometry: { x: 100, y: 80, size: 72, stamp: "star" },
+    };
+    const board: BoardItem[] = [writing, stamp];
+    const items = new Map(board.map((item) => [item.id, item]));
+    let sequence = 7;
+    const feed = new ProblemStepWatchFeed({
+      getBoardItems: () => board,
+      getAuthoritativeItem: (itemId) => items.get(itemId),
+      getSequence: () => sequence,
+      getParticipantDisplayName: () => "Sam",
+    });
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+
+    const grown = sticky("y".repeat(200_000), 2);
+    board[0] = grown;
+    items.set(grown.id, grown);
+    sequence = 8;
+    feed.recordAuthoritativeAction(serverAction(sequence, grown), new Set([grown.id]));
+    sequence = 9;
+    feed.recordAuthoritativeReload(sequence);
+
+    const resync = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    const steps = resync.steps as Array<{
+      text?: string;
+      visual?: { description: string };
+    }>;
+    const deliveredCodePoints = steps.reduce(
+      (total, step) => total + [...(step.text ?? step.visual?.description ?? "")].length,
+      0,
+    );
+    expect(deliveredCodePoints).toBe(120_000);
+    expect(steps[1]?.visual?.description).toBe("");
+    feed.destroy();
+  });
+});
+
+describe("whole-board reconciliation and queued shares", () => {
+  it("takes in objects a reload introduced and drops ones it removed", async () => {
+    const first = sticky("first");
+    const later = { ...canvasText(), version: 3 };
+    const board: BoardItem[] = [first];
+    const items = new Map<string, BoardItem>([[first.id, first]]);
+    const feed = new ProblemStepWatchFeed({
+      getBoardItems: () => board,
+      getAuthoritativeItem: (itemId) => items.get(itemId),
+      getSequence: () => 7,
+      getParticipantDisplayName: () => "Sam",
+    });
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    expect(started.steps).toHaveLength(1);
+
+    // A snapshot restore swaps the board wholesale.
+    board.length = 0;
+    board.push(later);
+    items.clear();
+    items.set(later.id, later);
+    feed.recordAuthoritativeReload(9);
+
+    const resync = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(resync).toMatchObject({ status: "resync" });
+    expect(resync.steps).toMatchObject([{ kind: "text", text: "Divide both sides by $2$" }]);
+    feed.destroy();
+  });
+
+  it("keeps both whole-board asks when two are made before the host polls", async () => {
+    const only = sticky();
+    const board = [only];
+    const feed = new ProblemStepWatchFeed({
+      getBoardItems: () => board,
+      getAuthoritativeItem: (itemId) => (itemId === only.id ? only : undefined),
+      getSequence: () => 7,
+      getParticipantDisplayName: () => "Sam",
+    });
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    feed.shareEntireBoard({ action: "explain", itemCount: 1 });
+    feed.shareEntireBoard({ action: "critique", itemCount: 1 });
+
+    const result = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(result.boardShares).toMatchObject([{ action: "explain" }, { action: "critique" }]);
+    feed.destroy();
+  });
+
+  it("ends a pending watch when a reload crosses the object cap", async () => {
+    let board: BoardItem[] = [sticky("first")];
+    const feed = new ProblemStepWatchFeed({
+      getBoardItems: () => board,
+      getAuthoritativeItem: (itemId) => board.find((item) => item.id === itemId),
+      getSequence: () => 7,
+      getParticipantDisplayName: () => "Sam",
+    });
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    const pending = feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+
+    board = Array.from({ length: MAX_WATCHED_ITEMS + 1 }, (_, index) => ({
+      ...sticky("x"),
+      id: `018f0000-0000-7000-8000-${String(index).padStart(12, "0")}`,
+    }));
+    feed.recordAuthoritativeReload(8);
+
+    await expect(pending).resolves.toMatchObject({
+      status: "outgrown",
+      continueWatching: false,
+    });
+    feed.destroy();
+  });
+
+  it("removes deleted objects from the live cap before tracking replacements", async () => {
+    const board: BoardItem[] = Array.from({ length: MAX_WATCHED_ITEMS }, (_, index) => ({
+      ...sticky(),
+      id: `018f0000-0000-7000-8000-${String(index).padStart(12, "0")}`,
+    }));
+    const items = new Map(board.map((item) => [item.id, item]));
+    let sequence = 7;
+    const feed = new ProblemStepWatchFeed({
+      getBoardItems: () => board,
+      getAuthoritativeItem: (itemId) => items.get(itemId),
+      getSequence: () => sequence,
+      getParticipantDisplayName: () => "Sam",
+    });
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+
+    const removed = board.shift();
+    if (!removed) throw new Error("Expected a board item to remove.");
+    items.delete(removed.id);
+    sequence = 8;
+    const deletion = serverAction(sequence, removed);
+    deletion.op = { kind: "item.delete", itemId: removed.id, expectedVersion: removed.version };
+    feed.recordAuthoritativeAction(deletion, new Set([removed.id]));
+
+    const replacement = {
+      ...sticky("replacement"),
+      id: "018f0000-0000-7000-8000-999999999999",
+    };
+    board.push(replacement);
+    items.set(replacement.id, replacement);
+    sequence = 9;
+    feed.recordAuthoritativeAction(serverAction(sequence, replacement), new Set([replacement.id]));
+
+    const result = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(result).toMatchObject({
+      status: "changed",
+      nextSeq: 9,
+      changes: [
+        { seq: 8, steps: [{ change: "deleted" }] },
+        { seq: 9, steps: [{ change: "created", text: "replacement" }] },
+      ],
+    });
+    feed.destroy();
+  });
+
+  it("reports whole-board requests discarded at the queue cap", async () => {
+    const only = sticky();
+    const board = [only];
+    const feed = new ProblemStepWatchFeed({
+      getBoardItems: () => board,
+      getAuthoritativeItem: (itemId) => (itemId === only.id ? only : undefined),
+      getSequence: () => 7,
+      getParticipantDisplayName: () => "Sam",
+    });
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    for (let index = 0; index < 12; index += 1) {
+      feed.shareEntireBoard({ action: "explain", itemCount: 1 });
+    }
+
+    const result = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(result).toMatchObject({ status: "requested", droppedBoardShares: 2 });
+    expect(result.boardShares).toHaveLength(10);
+    feed.destroy();
+  });
+
+  it("preserves pending changes across a whole-board request", async () => {
+    let current = sticky("first");
+    const board: BoardItem[] = [current];
+    let sequence = 7;
+    const feed = new ProblemStepWatchFeed({
+      getBoardItems: () => board,
+      getAuthoritativeItem: (itemId) => (itemId === current.id ? current : undefined),
+      getSequence: () => sequence,
+      getParticipantDisplayName: () => "Sam",
+    });
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+
+    current = sticky("changed before the request", 2);
+    board[0] = current;
+    sequence = 8;
+    feed.recordAuthoritativeAction(serverAction(sequence, current), new Set([current.id]));
+    feed.shareEntireBoard({ action: "check_work", itemCount: 1 });
+
+    const requested = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(requested).toMatchObject({
+      status: "requested",
+      nextSeq: started.nextSeq,
+      nextCall: { input: { afterSeq: started.nextSeq } },
+    });
+
+    const changed = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: requested.nextSeq },
+      new AbortController().signal,
+    );
+    expect(changed).toMatchObject({
+      status: "changed",
+      nextSeq: 8,
+      changes: [{ seq: 8, steps: [{ text: "changed before the request" }] }],
+    });
+    feed.destroy();
+  });
+});
+
+describe("pictures of drawn work", () => {
+  const strokes: Extract<BoardItem, { kind: "pencil" }> = {
+    id: "018f0000-0000-7000-8000-0000000000d1",
+    kind: "pencil",
+    z: 4,
+    version: 1,
+    createdBy: ACTOR_ID,
+    transform: [1, 0, 0, 1, 0, 0],
+    style: { kind: "stroke", color: "#123456", width: 4, opacity: 1 },
+    geometry: {
+      points: [
+        [0, 0],
+        [8, 9],
+      ],
+    },
+  };
+
+  function feedWithCamera(board: BoardItem[]) {
+    const captured: BoardItem[][] = [];
+    const feed = new ProblemStepWatchFeed({
+      getBoardItems: () => board,
+      getAuthoritativeItem: (itemId) => board.find((item) => item.id === itemId),
+      getSequence: () => 7,
+      getParticipantDisplayName: () => "Sam",
+      captureBoardImage: async (items) => {
+        captured.push([...items]);
+        return {
+          pngDataUrl: "data:image/png;base64,AAAA",
+          width: 320,
+          height: 240,
+          itemCount: items.length,
+        };
+      },
+    });
+    return { feed, captured };
+  }
+
+  it("sends a picture with every result once the board holds strokes", async () => {
+    const { feed, captured } = feedWithCamera([strokes, sticky()]);
+
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    expect(started).toMatchObject({
+      status: "started",
+      boardImage: { pngDataUrl: "data:image/png;base64,AAAA", scope: "entire_board", itemCount: 2 },
+    });
+    // The picture is taken of the whole board, not only of the drawn objects.
+    expect(captured.at(-1)).toHaveLength(2);
+
+    feed.recordAuthoritativeReload(9);
+    const resync = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(resync).toMatchObject({ status: "resync", boardImage: { width: 320, height: 240 } });
+    feed.destroy();
+  });
+
+  it("answers a pending wait with the picture alongside the change", async () => {
+    const board: BoardItem[] = [strokes];
+    const { feed } = feedWithCamera(board);
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    const pending = feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+
+    const redrawn = {
+      ...strokes,
+      version: 2,
+      geometry: { points: [...strokes.geometry.points, [20, 3] as [number, number]] },
+    };
+    board[0] = redrawn;
+    feed.recordAuthoritativeAction(serverAction(8, redrawn), new Set([strokes.id]));
+
+    const result = await pending;
+    expect(result).toMatchObject({
+      status: "changed",
+      changes: [{ steps: [{ change: "updated", visual: { revision: 2 } }] }],
+      boardImage: { pngDataUrl: "data:image/png;base64,AAAA" },
+    });
+    feed.destroy();
+  });
+
+  it("sends no picture when the board is only writing", async () => {
+    const { feed, captured } = feedWithCamera([sticky()]);
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+
+    expect(started).not.toHaveProperty("boardImage");
+    expect(captured).toHaveLength(0);
+    feed.destroy();
+  });
+});
+
+describe("a board that outgrows its watch", () => {
+  it("ends the watch rather than following only part of the board", async () => {
+    const board: BoardItem[] = Array.from({ length: MAX_WATCHED_ITEMS }, (_, index) => ({
+      ...sticky(),
+      id: `018f0000-0000-7000-8000-${String(index).padStart(12, "0")}`,
+    }));
+    const feed = new ProblemStepWatchFeed({
+      getBoardItems: () => board,
+      getAuthoritativeItem: (itemId) => board.find((item) => item.id === itemId),
+      getSequence: () => 7,
+      getParticipantDisplayName: () => "Sam",
+    });
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    expect(started.steps).toHaveLength(MAX_WATCHED_ITEMS);
+
+    const extra = { ...sticky("one too many"), id: "018f0000-0000-7000-8000-0000000ffff1" };
+    board.push(extra);
+    feed.recordAuthoritativeAction(serverAction(8, extra), new Set([extra.id]));
+
+    expect(() =>
+      feed.execute(
+        { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+        new AbortController().signal,
+      ),
+    ).toThrow("missing or expired");
+    feed.destroy();
   });
 });

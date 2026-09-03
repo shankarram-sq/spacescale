@@ -8,7 +8,7 @@
 Today the only way a participant reaches the visiting agent is by typing in the
 host's chat (Codex). This change adds a second, board-native entry point:
 
-1. When the agent starts or continues `watch_selected_problem_steps`, the tool
+1. When the agent starts or continues `watch_board`, the tool
    call itself is the "ping". The page records that **this browser's** WebMCP
    state is `watching`.
 2. While watching, an **AI** button appears in the selection toolbar. The
@@ -685,7 +685,7 @@ change. Otherwise cover this in Playwright only.
 Add a test:
 
 1. Create two stickies, select them, call
-   `watch_selected_problem_steps` with `{ action: "start" }` via `page.evaluate`.
+   `watch_board` with `{ action: "start" }` via `page.evaluate`.
 2. Expect `[data-selection-ai]` visible; `[data-ai-watch-indicator]` visible.
 3. Start a `wait` in the page (store the promise on `window`), click AI →
    Critique with a note, then await the promise and assert
@@ -712,7 +712,7 @@ build is unavailable (`launchOptions.executablePath`).
 
 - `README.md` (line ~97): mention that while a watch is live the board shows
   an AI button that routes participant requests through the same watch.
-- `docs/hackathon-build/spec.md` `watch_selected_problem_steps` section: add
+- `docs/hackathon-build/spec.md` `watch_board` section: add
   the `requested` status, the action list, the 10-request cap, and the
   consume-on-deliver rule. Add a line to "Human-agent sequence" after the
   live-coaching paragraph.

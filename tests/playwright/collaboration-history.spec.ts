@@ -45,7 +45,7 @@ test("a collaborator edit produces an undo conflict without changing authoritati
       "Undo stopped because a collaborator changed that item.",
     );
     await expect(collaborator.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
-    await expect(collaborator.getByTestId("save-status")).toContainText("Saved · 2");
+    await expect(collaborator.getByTestId("save-status")).toContainText("Saved");
     await expect(ownerItem).toHaveAttribute("transform", movedTransform);
     await expect(collaboratorItem).toHaveAttribute("transform", movedTransform);
     await expect(page.locator("#drawing-area [data-item-id]")).toHaveCount(1);
@@ -83,8 +83,8 @@ test("two tabs share history state and a new action invalidates redo everywhere"
     await expect(second.locator("#drawing-area [data-item-id]")).toHaveCount(0);
     await expect(page.getByTestId("redo-button")).toBeEnabled();
     await expect(second.getByTestId("redo-button")).toBeEnabled();
-    await expect(page.getByTestId("save-status")).toContainText("Saved · 2");
-    await expect(second.getByTestId("save-status")).toContainText("Saved · 2");
+    await expect(page.getByTestId("save-status")).toContainText("Saved");
+    await expect(second.getByTestId("save-status")).toContainText("Saved");
 
     const ellipseStart = await canvasPoint(page, 0.55, 0.42);
     await drawShape(page, "Ellipse", ellipseStart, {

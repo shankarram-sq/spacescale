@@ -115,7 +115,7 @@ the aggregate vote, and stage a decision that preserves one minority concern.
 This shows how human response changes the agent's next contribution.
 
 For live problem coaching, select the exact saved items containing a student's
-steps and ask the host to call `watch_selected_problem_steps`. It follows
+steps and ask the host to call `watch_board`. It follows
 server-acknowledged changes for up to 15 minutes and prompts the agent to respond
 after each saved step.
 

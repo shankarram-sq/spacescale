@@ -30,6 +30,10 @@ student.
   edit permission and never elevate a viewer. A future classroom rollout must
   additionally add a server-enforced, fail-closed kill switch and board-level
   owner opt-in.
+- The board header shows whether a WebMCP host is linked to this browser and how
+  many tools it can see, so a participant can tell at a glance when an assistant
+  is present. While a watch is live the tool rail also offers an AI action that
+  shares the whole board. Both are deliberate, visible AI chrome.
 - The WebMCP host surfaces tool calls and permissions. Generated items and
   comments retain internal `assistedBy` metadata, use the responsible
   participant's normal author badge, and carry a small, consistent AI mark so a
@@ -44,9 +48,14 @@ student.
 
 ## Data boundary
 
-An AI request may contain only the content selected in the current browser and
-the minimum instruction needed for the approved task. The complete board must
-never be sent merely because a section or item is selected.
+Scope is set deliberately, and differs by tool. Every read tool except the watch
+reads only the participant's browser selection, and selecting a Section still
+shares that Section rather than its contents. The watch is the deliberate
+exception: starting it puts the whole board in scope for as long as it runs, which
+is what makes live coaching over handwriting workable. Starting a watch is an
+explicit act by the participant's host, the board shows while one is running, and
+it expires after 15 minutes. Beyond scope, a request carries only the minimum
+instruction needed for the approved task.
 
 Selected contributions may include the creator's board-visible display name and
 stable opaque participant ID so the AI can associate an action with the correct
@@ -55,13 +64,22 @@ board or item IDs, access tokens, session data, presence data, activity history,
 or unselected item content. Images and file metadata are excluded unless a
 separately reviewed image use case is approved and visibly selected.
 
-### Selected problem-step watch
+### Whole-board watch
 
-`watch_selected_problem_steps` lets a visiting WebMCP host follow the exact saved
-text-bearing items selected when the watch starts for at most 15 minutes. It
-reports only authoritative saved changes to selected canvas text, sticky notes,
-table cells, or a Section title. Selecting a Section does not include its child
-items. Video embeds and all unselected board content are excluded.
+`watch_board` lets a visiting WebMCP host follow this board for at most 15
+minutes. It follows every saved object of any kind, including handwriting,
+shapes, images and video embeds, and takes in objects saved after it started. It
+reports only authoritative saved changes. This is the one tool whose scope is the
+whole board rather than the browser selection: every other read tool still reads
+only what the participant has selected.
+
+Written work is reported as its saved text. Drawn work is reported as a short
+description of what it is and the saved version it is at, and, because
+handwriting cannot be coached from a description, every result about a board
+holding drawn work also carries a PNG of that board. The picture is rendered in
+the page from saved objects only; private image cards appear as placeholders
+rather than their pixels, and its long edge is capped so a result stays a
+readable size. A board of writing alone carries no picture.
 
 The watch is a bounded sequence of cancelable long-poll tool calls rather than a
 background SpaceScale model connection. Its page-memory token expires after 15
@@ -69,12 +87,13 @@ minutes, the participant can ask the host to stop it immediately, and navigating
 away destroys it. Results use ephemeral `step_N` aliases and board-visible display
 names only; they exclude stable participant, board, and item IDs, coordinates,
 presence, history, contact details, and authentication data. Unsaved keystrokes
-are never observed. Step text is marked as untrusted content, and the host is
+are never observed. Step content is marked as untrusted content, and the host is
 instructed to comment briefly on the reasoning without grading, profiling, or
 inferring ability.
 
-While a watch is live the board shows an Ask AI button. A participant's request
-carries only watched-step aliases and text, the chosen action, and an optional
+While a watch is live the board shows an Ask AI button, and the tool rail offers
+an AI action for the whole board. A participant's request
+carries only step aliases and their content, the chosen action, and an optional
 280-character note, and it reaches the host only through the watch's next long
 poll. The action list deliberately offers "Check my work" (formative
 verification, no score) instead of grading. The host replies through

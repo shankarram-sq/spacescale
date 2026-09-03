@@ -11,6 +11,7 @@ import type { BoardItem, DurableOperation } from "../types";
 import {
   awaitDialogDecision,
   isRecord,
+  registerWebMcpTool,
   requiredText,
   trimSnapshots,
   WEBMCP_MATHJAX_GUIDANCE,
@@ -61,7 +62,8 @@ export class ClassDecisionWebMcp {
     const modelContext = document.modelContext;
     if (typeof modelContext?.registerTool !== "function") return;
     try {
-      await modelContext.registerTool(
+      await registerWebMcpTool(
+        modelContext,
         {
           name: READ_VOTE_TOOL,
           description:
@@ -78,7 +80,8 @@ export class ClassDecisionWebMcp {
         },
         { signal: this.registration.signal },
       );
-      await modelContext.registerTool(
+      await registerWebMcpTool(
+        modelContext,
         {
           name: STAGE_DECISION_TOOL,
           description: `Stage a class decision from a live SpaceScale vote result. Propose a chosen direction, rationale, small pilot, success measure, an explicit minority concern that must remain visible, and the next open question. SpaceScale shows a preview and changes nothing until the participant approves in the app. ${WEBMCP_MATHJAX_GUIDANCE}`,

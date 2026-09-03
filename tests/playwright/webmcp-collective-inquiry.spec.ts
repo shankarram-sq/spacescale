@@ -65,12 +65,17 @@ test("a board participant can use headless WebMCP tools with neutral board attri
       "read_selected_class_ideas",
       "stage_class_decision",
       "stage_collective_inquiry",
-      "watch_selected_problem_steps",
+      "watch_board",
     ]);
-  await expect(page.locator("[data-webmcp-status]")).toHaveCount(0);
+  // The header reports the tool surface a visiting host can see, and that a host is linked.
+  const webMcpStatus = page.getByTestId("webmcp-status");
+  await expect(webMcpStatus).toHaveAttribute("data-state", "linked");
+  await expect(webMcpStatus).toContainText(/WebMCP · \d+ tools/u);
+  await expect(page.getByTestId("save-status")).not.toContainText("·");
   // The AI button exists only while a problem-step watch is live in this browser.
   await expect(page.locator("[data-selection-ai-wrap]")).toBeHidden();
   await expect(page.getByTestId("ai-watch-indicator")).toBeHidden();
+  await expect(page.getByTestId("tool-ai")).toBeHidden();
   expect(
     await page.evaluate(
       () => window.__spaceScaleWebMcpTools.read_selected_class_ideas?.annotations,
@@ -91,7 +96,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
     visualReader: {
       tool: "inspect_selected_board_visual",
       purpose: "handwriting_sketch_and_spatial_analysis",
-      maximumItems: 40,
+      maximumItems: 1_000,
       result: "isolated_live_page_preview",
       unselectedBoardMasked: true,
       stableItemIdentifiersReturned: false,
@@ -108,13 +113,14 @@ test("a board participant can use headless WebMCP tools with neutral board attri
       externalImageUrlsAccepted: false,
     },
     problemStepWatch: {
-      tool: "watch_selected_problem_steps",
-      scope: "exact_saved_browser_selection",
+      tool: "watch_board",
+      scope: "entire_board",
       durationSeconds: 900,
       maximumWaitMs: 20_000,
       reports: "authoritative_saved_changes",
       unsavedKeystrokesIncluded: false,
-      sectionContentsExpanded: false,
+      watchesEveryObjectKind: true,
+      drawnWorkReportedAs: "description_and_board_png",
       stableItemIdentifiersReturned: false,
     },
     guardrails: {
@@ -128,9 +134,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
     },
   });
   expect(
-    await page.evaluate(
-      () => window.__spaceScaleWebMcpTools.watch_selected_problem_steps?.annotations,
-    ),
+    await page.evaluate(() => window.__spaceScaleWebMcpTools.watch_board?.annotations),
   ).toEqual({ readOnlyHint: true, untrustedContentHint: true });
   const capabilityModes = (
     capabilities.families as Array<{
@@ -170,7 +174,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   await expect(canvasItems).toHaveCount(13);
 
   const watchStart = await page.evaluate(() => {
-    const tool = window.__spaceScaleWebMcpTools.watch_selected_problem_steps;
+    const tool = window.__spaceScaleWebMcpTools.watch_board;
     if (!tool) throw new Error("The problem-step watch was not registered.");
     return tool.execute({ action: "start" }, { signal: new AbortController().signal });
   });
@@ -191,7 +195,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   // A request from the board resolves the host's pending wait with a reply plan.
   const requestedResult = page.evaluate(
     ({ watchToken, afterSeq }) => {
-      const tool = window.__spaceScaleWebMcpTools.watch_selected_problem_steps;
+      const tool = window.__spaceScaleWebMcpTools.watch_board;
       if (!tool) throw new Error("The problem-step watch was not registered.");
       return tool.execute(
         { action: "wait", watchToken, afterSeq, waitMs: 20_000 },
@@ -266,7 +270,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
 
   const watchResult = page.evaluate(
     ({ watchToken, afterSeq }) => {
-      const tool = window.__spaceScaleWebMcpTools.watch_selected_problem_steps;
+      const tool = window.__spaceScaleWebMcpTools.watch_board;
       if (!tool) throw new Error("The problem-step watch was not registered.");
       return tool.execute(
         { action: "wait", watchToken, afterSeq, waitMs: 20_000 },
@@ -310,12 +314,13 @@ test("a board participant can use headless WebMCP tools with neutral board attri
     ],
   });
   await page.evaluate((watchToken) => {
-    const tool = window.__spaceScaleWebMcpTools.watch_selected_problem_steps;
+    const tool = window.__spaceScaleWebMcpTools.watch_board;
     if (!tool) throw new Error("The problem-step watch was not registered.");
     return tool.execute({ action: "stop", watchToken }, { signal: new AbortController().signal });
   }, String(watchStart.watchToken));
   await expect(page.locator("[data-selection-ai-wrap]")).toBeHidden();
   await expect(page.getByTestId("ai-watch-indicator")).toBeHidden();
+  await expect(page.getByTestId("tool-ai")).toBeHidden();
 
   const readResult = await page.evaluate(() => {
     const tool = window.__spaceScaleWebMcpTools.read_selected_class_ideas;
