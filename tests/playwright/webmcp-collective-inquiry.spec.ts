@@ -254,7 +254,8 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   expect(answered).toMatchObject({ status: "commented", stepAlias, writtenBy: "ai" });
   await expect(page.locator("[data-comments-count]")).toHaveText("1");
   await expect(webMcpStatus).toHaveAttribute("data-state", "watch");
-  await expect(webMcpStatusTime).toHaveText(/^\d+ min left$/u);
+  await expect(webMcpStatusTime).not.toHaveText(/^\d+ min left$/u);
+  await expect(webMcpStatusTime).not.toHaveText("Ready");
   await webMcpStatus.click();
   await expect(mcpActivity).toContainText("insert_comment");
   await expect(mcpActivity).toContainText("Completed");

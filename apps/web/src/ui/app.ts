@@ -120,9 +120,11 @@ import {
   ASSIST_GUIDANCE,
   ASSIST_NOTE_MAX_LENGTH,
   assistActionLabel,
+  PROBLEM_STEP_WATCH_DURATION_MS,
   type WatchState,
 } from "../webmcp/problem-step-watch";
 import {
+  isVisibleWebMcpActivityCall,
   observeWebMcpRegistry,
   type WebMcpRegistryState,
   webMcpRegistryState,
@@ -1708,7 +1710,7 @@ export class BoardApp {
                 </svg>
                 <span class="webmcp-status-copy">
                   <span data-webmcp-status-text>MCP</span>
-                  <small data-webmcp-status-time data-testid="webmcp-status-time">Ready</small>
+                  <small class="webmcp-status-time" data-webmcp-status-time data-testid="webmcp-status-time">Ready</small>
                 </span>
               </button>
               <section class="floating-menu mcp-activity-menu" data-testid="mcp-activity-menu" id="mcp-activity-menu" role="dialog" aria-label="MCP call activity" hidden>
@@ -7192,27 +7194,32 @@ export class BoardApp {
   private renderWebMcpStatus(state: WebMcpRegistryState): void {
     this.webMcpState = state;
     const { activeCallCount, calls, hostPresent, toolCount } = state;
-    const activityCalls = calls.filter((call) => call.toolName !== "watch_board");
+    const activityCalls = calls.filter(isVisibleWebMcpActivityCall);
     const watching = this.aiWatchState.phase !== "idle";
     const visualState = activeCallCount > 0 ? "active" : watching ? "watch" : "ready";
     this.webMcpStatus.dataset.state = visualState;
     this.webMcpStatus.dataset.host = hostPresent ? "linked" : "unlinked";
     this.mcpActivityMenu.dataset.state = visualState;
     this.webMcpStatusText.textContent = "MCP";
-    const latestActivity = activityCalls[0];
+    const watchStartedAt =
+      watching && this.aiWatchState.expiresAt !== null
+        ? this.aiWatchState.expiresAt - PROBLEM_STEP_WATCH_DURATION_MS
+        : null;
+    const latestActivity = activityCalls.find(
+      (call) => watchStartedAt === null || call.startedAt >= watchStartedAt,
+    );
     const watchMinutes =
       watching && this.aiWatchState.expiresAt !== null
         ? Math.ceil(Math.max(0, this.aiWatchState.expiresAt - Date.now()) / 60_000)
         : null;
-    this.webMcpStatusTime.textContent =
-      watchMinutes !== null
+    this.webMcpStatusTime.textContent = latestActivity
+      ? new Date(latestActivity.startedAt).toLocaleTimeString([], {
+          hour: "numeric",
+          minute: "2-digit",
+        })
+      : watchMinutes !== null
         ? `${watchMinutes} min left`
-        : latestActivity
-          ? new Date(latestActivity.startedAt).toLocaleTimeString([], {
-              hour: "numeric",
-              minute: "2-digit",
-            })
-          : "Ready";
+        : "Ready";
 
     this.mcpActivitySummary.textContent =
       activeCallCount > 0
