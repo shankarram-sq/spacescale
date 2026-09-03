@@ -1029,7 +1029,7 @@ function geometryBounds(item: BoardItem): Bounds {
           maxY: item.geometry.y - item.style.fontSize + VIDEO_EMBED_HEIGHT,
         };
       }
-      const lines = textLayoutEstimateSource(item.geometry.text).split("\n");
+      const lines = textLayoutEstimateSource(item.geometry.text, item.style.fontSize).split("\n");
       const estimatedWidth =
         Math.max(1, ...lines.map((line) => [...line].length)) * item.style.fontSize * 0.61;
       const estimatedHeight = Math.max(1, lines.length) * item.style.fontSize * 1.2;

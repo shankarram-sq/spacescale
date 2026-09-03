@@ -1094,9 +1094,125 @@ const ZERO_WIDTH_TEX_LAYOUT_COMMAND =
 const TEX_CONTROL_WORD = /\\[A-Za-z]+/gu;
 const TEX_ESCAPED_VISIBLE_SYMBOL = /\\([#$%&_{}])/gu;
 
-function texLayoutEstimateSource(markup: string): string {
+/**
+ * Spacing and rule commands lay out an explicit dimension rather than glyphs. Collapsing them
+ * to one representative character would let `$$\hspace{20em}x$$` claim the width of a few
+ * letters, so a crafted item could be attached to a Section that the rendered formula spills
+ * far outside of, and edge containment would accept it.
+ */
+const TEX_DIMENSION = String.raw`[+-]?(?:\d+\.?\d*|\.\d+)\s*(?:em|ex|mu|pt|pc|bp|dd|cc|sp|in|cm|mm|px)`;
+const TEX_HORIZONTAL_DIMENSION_COMMAND = new RegExp(
+  String.raw`\\(?:hspace\*?|mspace)\s*\{\s*(${TEX_DIMENSION})\s*\}` +
+    String.raw`|\\(?:kern|mkern|hskip|mskip)\s*(${TEX_DIMENSION})`,
+  "gu",
+);
+const TEX_VERTICAL_DIMENSION_COMMAND = new RegExp(
+  String.raw`\\vspace\*?\s*\{\s*(${TEX_DIMENSION})\s*\}|\\vskip\s*(${TEX_DIMENSION})`,
+  "gu",
+);
+const TEX_RULE_COMMAND = new RegExp(
+  String.raw`\\rule\s*(?:\[[^\]]*\])?\s*\{\s*(${TEX_DIMENSION})\s*\}\s*\{\s*(${TEX_DIMENSION})\s*\}`,
+  "gu",
+);
+/** Sized commands left over once the parseable forms above are expanded. */
+const TEX_UNSIZED_DIMENSION_COMMAND =
+  /\\(?:hspace\*?|vspace\*?|mspace|kern|mkern|hskip|vskip|mskip|rule|raisebox|makebox|framebox|parbox|resizebox|scalebox)\b/gu;
+const TEX_DIMENSION_PARTS = /^([+-]?(?:\d+\.?\d*|\.\d+))\s*([a-z]+)$/u;
+/** Fixed-width math spaces, in em. Negative spaces count as zero rather than shrinking bounds. */
+const TEX_FIXED_SPACE_EM = new Map<string, number>([
+  ["\\!", 0],
+  ["\\negthinspace", 0],
+  ["\\,", 3 / 18],
+  ["\\thinspace", 3 / 18],
+  ["\\:", 4 / 18],
+  ["\\>", 4 / 18],
+  ["\\medspace", 4 / 18],
+  ["\\;", 5 / 18],
+  ["\\thickspace", 5 / 18],
+  ["\\enspace", 0.5],
+  ["\\quad", 1],
+  ["\\qquad", 2],
+]);
+const TEX_FIXED_SPACE =
+  /\\(?:negthinspace|thinspace|medspace|thickspace|enspace|qquad|quad|[!,:;>])/gu;
+/** Layout ratios the canonical text estimate below is expressed in. */
+const TEXT_GLYPH_WIDTH_RATIO = 0.6;
+const TEXT_LINE_HEIGHT_RATIO = 1.2;
+/** Keeps a hostile dimension from expanding into an unbounded estimate string. */
+const TEX_MAX_ESTIMATE_GLYPHS = 4096;
+const TEX_MAX_ESTIMATE_LINES = 512;
+/** Used for an unparseable sized command, so its extent is over- rather than under-reported. */
+const TEX_UNSIZED_COMMAND_GLYPHS = 64;
+const DEFAULT_TEX_ESTIMATE_FONT_SIZE = 16;
+const PX_PER_POINT = 4 / 3;
+const TEX_UNIT_PIXELS = new Map<string, number>([
+  ["px", 1],
+  ["pt", PX_PER_POINT],
+  ["bp", PX_PER_POINT],
+  ["pc", 12 * PX_PER_POINT],
+  ["in", 72 * PX_PER_POINT],
+  ["cm", (72 / 2.54) * PX_PER_POINT],
+  ["mm", (7.2 / 2.54) * PX_PER_POINT],
+  ["dd", 1.07 * PX_PER_POINT],
+  ["cc", 12 * 1.07 * PX_PER_POINT],
+  ["sp", PX_PER_POINT / 65536],
+]);
+
+/** Resolves a TeX dimension to pixels, or null when the unit is not one we model. */
+function texDimensionPixels(dimension: string, fontSize: number): number | null {
+  const parts = TEX_DIMENSION_PARTS.exec(dimension.trim());
+  if (!parts) return null;
+  const unit = parts[2];
+  const amount = Number(parts[1]);
+  if (!Number.isFinite(amount) || unit === undefined) return null;
+  if (unit === "em") return amount * fontSize;
+  if (unit === "ex") return amount * fontSize * 0.5;
+  if (unit === "mu") return (amount / 18) * fontSize;
+  const pixels = TEX_UNIT_PIXELS.get(unit);
+  return pixels === undefined ? null : amount * pixels;
+}
+
+function texWidthGlyphs(pixels: number, fontSize: number): string {
+  const glyphs = Math.ceil(Math.max(0, pixels) / Math.max(1, fontSize * TEXT_GLYPH_WIDTH_RATIO));
+  return "x".repeat(Math.min(TEX_MAX_ESTIMATE_GLYPHS, glyphs));
+}
+
+function texHeightLines(pixels: number, fontSize: number): string {
+  const lines = Math.ceil(Math.max(0, pixels) / Math.max(1, fontSize * TEXT_LINE_HEIGHT_RATIO));
+  return "\n".repeat(Math.min(TEX_MAX_ESTIMATE_LINES, lines));
+}
+
+function expandTexDimensions(markup: string, fontSize: number): string {
+  const width = (dimension: string | undefined): string => {
+    const pixels = dimension === undefined ? null : texDimensionPixels(dimension, fontSize);
+    return pixels === null
+      ? "x".repeat(TEX_UNSIZED_COMMAND_GLYPHS)
+      : texWidthGlyphs(pixels, fontSize);
+  };
+  const height = (dimension: string | undefined): string => {
+    const pixels = dimension === undefined ? null : texDimensionPixels(dimension, fontSize);
+    return pixels === null ? "\n" : texHeightLines(pixels, fontSize);
+  };
   return markup
-    .slice(2, -2)
+    .replace(
+      TEX_RULE_COMMAND,
+      (_match, ruleWidth?: string, ruleHeight?: string) =>
+        `${width(ruleWidth)}${height(ruleHeight)}`,
+    )
+    .replace(TEX_HORIZONTAL_DIMENSION_COMMAND, (_match, braced?: string, bare?: string) =>
+      width(braced ?? bare),
+    )
+    .replace(TEX_VERTICAL_DIMENSION_COMMAND, (_match, braced?: string, bare?: string) =>
+      height(braced ?? bare),
+    )
+    .replace(TEX_FIXED_SPACE, (match) =>
+      texWidthGlyphs((TEX_FIXED_SPACE_EM.get(match) ?? 0) * fontSize, fontSize),
+    )
+    .replace(TEX_UNSIZED_DIMENSION_COMMAND, "x".repeat(TEX_UNSIZED_COMMAND_GLYPHS));
+}
+
+function texLayoutEstimateSource(markup: string, fontSize: number): string {
+  return expandTexDimensions(markup.slice(2, -2), fontSize)
     .replace(TEX_ENVIRONMENT_COMMAND, "")
     .replace(/\\\\/gu, "\n")
     .replace(ZERO_WIDTH_TEX_LAYOUT_COMMAND, "")
@@ -1107,9 +1223,18 @@ function texLayoutEstimateSource(markup: string): string {
     .replace(/[{}^_]/gu, "");
 }
 
-/** Normalizes TeX markup to representative visible glyphs for deterministic bounds estimates. */
-export function textLayoutEstimateSource(value: string): string {
-  return value.replace(UNAMBIGUOUS_TEX_MARKUP, texLayoutEstimateSource);
+/**
+ * Normalizes TeX markup to representative visible glyphs for deterministic bounds estimates.
+ * The font size resolves absolute dimensions; callers that have one must pass it so clients
+ * and the edge agree on the estimate.
+ */
+export function textLayoutEstimateSource(
+  value: string,
+  fontSize: number = DEFAULT_TEX_ESTIMATE_FONT_SIZE,
+): string {
+  const size =
+    Number.isFinite(fontSize) && fontSize > 0 ? fontSize : DEFAULT_TEX_ESTIMATE_FONT_SIZE;
+  return value.replace(UNAMBIGUOUS_TEX_MARKUP, (markup) => texLayoutEstimateSource(markup, size));
 }
 
 export type OutlineGeometryKind = "pencil" | "line" | "rectangle" | "ellipse" | "polygon";
@@ -1333,9 +1458,11 @@ export function geometryBounds(
           maxY: text.y - textFontSize + VIDEO_EMBED_HEIGHT,
         };
       }
-      const lines = textLayoutEstimateSource(text.text).split(/\r\n?|\n/u);
-      const lineHeight = textFontSize * 1.2;
-      const width = Math.max(...lines.map((line) => codePointLength(line) * textFontSize * 0.6));
+      const lines = textLayoutEstimateSource(text.text, textFontSize).split(/\r\n?|\n/u);
+      const lineHeight = textFontSize * TEXT_LINE_HEIGHT_RATIO;
+      const width = Math.max(
+        ...lines.map((line) => codePointLength(line) * textFontSize * TEXT_GLYPH_WIDTH_RATIO),
+      );
       return {
         minX: text.x,
         minY: text.y - textFontSize,

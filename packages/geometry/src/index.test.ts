@@ -663,6 +663,47 @@ describe("bounds and transforms", () => {
     ).toEqual({ minX: 100, minY: 20, maxX: 460, maxY: 252 });
   });
 
+  it("counts explicit TeX dimensions in canonical text bounds", () => {
+    // Collapsing \hspace to one glyph let a crafted item claim the width of a few letters
+    // while MathJax rendered about 20 em, so a Section could accept a formula that spills out.
+    expect(textLayoutEstimateSource("$$\\hspace{20em}x$$", 20)).toHaveLength(35);
+    expect(
+      itemBounds({
+        kind: "text",
+        geometry: { x: 0, y: 40, text: "$$\\hspace{20em}x$$" },
+        transform: [1, 0, 0, 1, 0, 0],
+        style: { kind: "text", fontSize: 20 },
+      }),
+    ).toEqual({ minX: 0, minY: 20, maxX: 420, maxY: 44 });
+
+    // Absolute units resolve against the font size, so tiny kerns stay tiny.
+    expect(textLayoutEstimateSource("$$\\kern 2pt x$$", 20)).toBe("x x");
+
+    // Vertical space and rule heights extend the estimate downwards.
+    expect(
+      itemBounds({
+        kind: "text",
+        geometry: { x: 0, y: 40, text: "$$\\vspace{4em}x$$" },
+        transform: [1, 0, 0, 1, 0, 0],
+        style: { kind: "text", fontSize: 20 },
+      }),
+    ).toEqual({ minX: 0, minY: 20, maxX: 12, maxY: 140 });
+    expect(
+      itemBounds({
+        kind: "text",
+        geometry: { x: 0, y: 40, text: "$$\\rule{5em}{3em}$$" },
+        transform: [1, 0, 0, 1, 0, 0],
+        style: { kind: "text", fontSize: 20 },
+      }),
+    ).toEqual({ minX: 0, minY: 20, maxX: 108, maxY: 116 });
+
+    // A sized command with no dimension we model is over- rather than under-reported.
+    expect(textLayoutEstimateSource("$$\\makebox{x}$$", 20)).toBe(`${"x".repeat(64)}x`);
+
+    // A hostile dimension cannot expand the estimate without bound.
+    expect(textLayoutEstimateSource("$$\\hspace{999999in}x$$", 20)).toHaveLength(4097);
+  });
+
   it("does not count zero-width TeX syntax in canonical text bounds", () => {
     expect(textLayoutEstimateSource("Result: $$\\displaystyle x$$")).toBe("Result:  x");
     expect(textLayoutEstimateSource("$$\\frac{1}{2}$$")).toBe("12");
