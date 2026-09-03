@@ -127,10 +127,6 @@ bound site actions.
 - Handwriting and diagram analysis from strokes written on a Huion or any pen
   tablet, so steps and diagrams that digital setups usually cannot evaluate
   become assessable.
-- A background watch that fans out: a background agent holds the watch so
-  Codex stays responsive to the teacher, asks back when it needs more detail,
-  and spins up to two extra agents when several requests queue at once. Set by
-  prompt or skill, with no change to the site.
 - Skills and local files as the pedagogy: the teacher's Codex skill and
   documents set the mode, rules, and background material for the class.
 - Per-student Sections so feedback lands on one person's work while the rest
@@ -277,9 +273,12 @@ sensitive data.
   When WebMCP offers a push or subscription mechanism, the same tools move onto
   it.
 - The watch gets chatty when many participants save work at once and replies
-  slow down. The background agent and its helpers absorb a group comfortably;
-  a very large class on one board will feel the polling until WebMCP offers a
-  push channel.
+  slow down. It suits a small group today.
+- The fix is multiple agents: a background agent holding the watch so Codex
+  stays responsive, asking back for detail, and spinning up to two extra
+  agents when requests queue. Codex accepts the background instruction but the
+  behaviour is not yet reliable and needs more testing. It is a prompt and
+  skill change, not a site change.
 - The public deployment is a hackathon demo for synthetic or non-sensitive
   content; real classroom rollout requires the documented safety,
   administration, and data-governance gate.

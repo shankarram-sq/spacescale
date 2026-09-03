@@ -86,15 +86,6 @@ notices that the student's own arithmetic already contradicts the claim, and
 asks them to plot one point before fixing the curve. That is feedback on
 visual work, on the canvas where it was drawn.
 
-### 4. A background watch that fans out
-
-The watch does not sit in the teacher's chat. A background agent holds it, so
-Codex stays responsive to the teacher while the class works, and the
-background agent comes back to ask when it needs more detail. When the queue
-holds several requests at once, it spins up to two extra agents to handle them
-in parallel. All of this is set by prompt or skill. The site sends the same
-long poll it always did; how many agents pick it up is the teacher's choice.
-
 ## Why this is new
 
 Each piece exists somewhere. A tutor bot can give hints. A chat can summarise a
@@ -186,12 +177,19 @@ Swap the skill and the same board becomes:
 ## Honest limitations
 
 - **It gets chatty at scale.** With many students saving work at once, one
-  watch delivers a lot of changes, and replies slow down. The background agent
-  and its helpers absorb a group comfortably; a very large class on one board
-  will feel the polling until WebMCP offers a push channel.
+  watch delivers a lot of changes to one agent, and replies slow down. It suits
+  a small group today.
+- **Multiple agents are the answer, and they are not there yet.** The plan is
+  for a background agent to hold the watch so Codex stays responsive to the
+  teacher, ask back when it needs more detail, and spin up to two extra agents
+  when several requests queue at once. Codex accepts the instruction to work in
+  the background, but the behaviour is not reliable yet and needs more testing.
+  It is a prompt and skill change, so the site does not have to move for it.
 
 ## What comes next
 
+- Make the multi-agent watch reliable on Codex so a full class can work at
+  once with fast replies.
 - Replace long polling with a push channel the moment WebMCP offers one.
 - Ship a starter library of skills: problem set coach, brainstorm connector,
   debate mapper, with a plain-language editing guide for teachers.
