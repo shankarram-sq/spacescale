@@ -323,6 +323,19 @@ test("the complete board remains usable at a 320px viewport", async ({ page }, t
   await page.getByTestId("tool-rectangle").click();
   const shapeMenu = page.getByTestId("shape-menu");
   await expect(shapeMenu).toBeVisible();
+  // The menu must open directly above the tool rail, not float mid-canvas.
+  const railBounds = await page.getByTestId("tool-rail").boundingBox();
+  const menuBounds = await shapeMenu.boundingBox();
+  expect(railBounds).not.toBeNull();
+  expect(menuBounds).not.toBeNull();
+  if (railBounds && menuBounds) {
+    const gap = railBounds.y - (menuBounds.y + menuBounds.height);
+    expect(gap).toBeGreaterThanOrEqual(-12);
+    expect(gap).toBeLessThanOrEqual(24);
+    const railCenter = railBounds.x + railBounds.width / 2;
+    const menuCenter = menuBounds.x + menuBounds.width / 2;
+    expect(Math.abs(railCenter - menuCenter)).toBeLessThanOrEqual(12);
+  }
   const shapeChoices = shapeMenu.locator("[data-shape-variant]:visible");
   await expect(shapeChoices).toHaveCount(7);
   for (const choice of await shapeChoices.all()) {
