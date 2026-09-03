@@ -54,10 +54,16 @@ test("a delimiter opens the maths field, and its TeX lands back in the text", as
   expect(violations).toEqual([]);
   expect(consoleErrors).toEqual([]);
 
-  // A lone dollar is a dollar: a price must not open a formula.
+  // A lone dollar is a dollar: a price must not open a formula. Escape ends the edit outright
+  // rather than only dismissing the field, so the price is typed into a fresh text object.
   await page.keyboard.press("Escape");
-  await editor.fill("Kits cost $12 each");
-  await editor.click();
+  await expect(editor).toBeHidden();
+  await page.getByTestId("tool-text").click();
+  await page.locator("#board-canvas").click({ position: { x: 400, y: 420 } });
+  const priceEditor = page.getByTestId("canvas-text-editor");
+  await expect(priceEditor).toBeVisible();
+  await priceEditor.fill("Kits cost $12 each");
+  await expect(priceEditor).toHaveValue("Kits cost $12 each");
   await expect(panel).toBeHidden();
 });
 
