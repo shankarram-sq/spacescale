@@ -4363,3 +4363,17 @@ button:disabled {
   text-decoration-thickness: 0.08em;
   text-underline-offset: 0.12em;
 }
+
+.assistance-mark {
+  pointer-events: none;
+  filter: drop-shadow(0 1px 2px rgb(32 32 30 / 20%));
+}
+
+.assistance-mark text {
+  pointer-events: none;
+  user-select: none;
+}
+
+.creator-badge-ai text {
+  paint-order: stroke fill;
+}

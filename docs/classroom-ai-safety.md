@@ -30,9 +30,12 @@ student.
   edit permission and never elevate a viewer. A future classroom rollout must
   additionally add a server-enforced, fail-closed kill switch and board-level
   owner opt-in.
-- The WebMCP host surfaces tool calls and permissions. SpaceScale adds no
-  persistent AI-specific chrome or board labels; generated items retain internal
-  origin metadata and use the responsible participant's normal author badge.
+- The WebMCP host surfaces tool calls and permissions. Generated items and
+  comments retain internal `assistedBy` metadata, use the responsible
+  participant's normal author badge, and carry a small, consistent AI mark so a
+  reader can always tell tool-written content from a person's. SpaceScale adds
+  no other AI chrome except the board's Ask AI button, which exists only while a
+  problem-step watch is live in that browser.
 - School approval and the applicable lawful basis, notice, and student or
   guardian consent must be recorded before use. Age and jurisdiction rules are
   determined by the school; uncertainty means the feature stays off.
@@ -70,6 +73,16 @@ are never observed. Step text is marked as untrusted content, and the host is
 instructed to comment briefly on the reasoning without grading, profiling, or
 inferring ability.
 
+While a watch is live the board shows an Ask AI button. A participant's request
+carries only watched-step aliases and text, the chosen action, and an optional
+280-character note, and it reaches the host only through the watch's next long
+poll. The action list deliberately offers "Check my work" (formative
+verification, no score) instead of grading. The host replies through
+`comment_on_watched_step`, which posts an ordinary object comment on the step
+attributed to the requesting participant and tagged as AI-written, or through
+the existing card tools; the caller's WebMCP permission is the confirmation, as
+it is for the headless card tools.
+
 ### Selected handwritten visual inspection
 
 `inspect_selected_board_visual` is a separately bounded visual-input use case for
@@ -99,8 +112,8 @@ re-encodes the raster to remove metadata, applies the existing type, byte,
 dimension, and pixel limits, and stores it only in the board's private asset
 bucket. The tool fails if Images are disabled or the participant lacks edit access.
 
-Every visual must cite the selected text aliases, include alt text and a
-discussion question, and explicitly confirm that it depicts no real student
+Every visual must cite the selected text aliases and include a discussion
+question (alt text is optional; the title is the accessible fallback), and explicitly confirm that it depicts no real student
 and does not ridicule or target an individual. The image, caption, and source
 connectors retain internal origin metadata and are added as one participant-permitted,
 undoable board batch. This control is suitable for the synthetic hackathon
@@ -128,8 +141,8 @@ logs, analytics, error reports, or durable audit metadata.
 Inputs and outputs need age-appropriate content filtering and bounded size,
 time, and rate limits. Unsafe, disallowed, or uncertain results fail closed and
 leave the board unchanged. The WebMCP host surfaces tool calls and their
-permissions; SpaceScale keeps origin metadata internally without adding
-AI-specific board labels.
+permissions; SpaceScale keeps `assistedBy` metadata on every AI-written item
+and comment and shows a small AI mark beside the participant attribution.
 
 Model output remains a proposal until the participant confirms its write. For
 the five headless education tools, the caller's WebMCP host permission shows the

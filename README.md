@@ -198,9 +198,9 @@ on shapes, sticky notes, tables, image cards, and sections. V1 stores the snappe
 coordinates as ordinary line geometry, so moving the target later does not move
 the connector automatically.
 
-Codex and other compatible browser hosts discover fifteen WebMCP tools directly from every
+Codex and other compatible browser hosts discover sixteen WebMCP tools directly from every
 board browser: a capability catalog, browser-selection text and visual readers, a 15-minute
-selected problem-step watcher, five
+selected problem-step watcher with a watched-step comment writer, five
 education collaboration writers spanning 27 non-section modes, a source-linked class
 visual/meme writer, a collective-inquiry mapper, an aggregate vote reader, and a
 dissent-preserving class decision tool. Read tools operate on that browser's saved
@@ -217,13 +217,19 @@ unless an authoritative section snapshot provider is configured. The capability 
 exact contract for every live mode—including entry bounds, source-link cardinality,
 semantic roles, visible connections, and student-owned decision fields—and the write
 tools enforce the same registry at runtime. The two headline write flows add a proposal
-preview. Generated items retain internal origin metadata for MCP context and auditing, but
-use the responsible participant's ordinary author initials with no AI-specific board
-labels. Every generated contribution remains source-linked, realtime, and undoable. The
+preview. Everything the agent writes—cards, visuals, and comments—retains `assistedBy`
+metadata for MCP context and auditing, is attributed to the responsible participant's
+ordinary author initials, and carries a small AI mark so tool and human are always
+distinguishable. Every generated contribution remains source-linked, realtime, and undoable. The
 problem-step watcher reports authoritative saved changes to the visiting host in bounded
-long polls, so Codex can comment in the conversation after each selected step changes; it
+long polls, so Codex can respond after each selected step changes; it
 never captures unsaved keystrokes, expands a selected section into its contents, or returns
-stable board/item IDs. The
+stable board/item IDs. While a watch is live the board shows an **Ask AI** button in the
+selection toolbar: the participant picks a watched step and an action (Explain, Ideate,
+Critique, Check my work, Examples, Explain with a video) and the request reaches the host
+through the watch's next long poll with a reply plan. The host answers as an object comment
+on the step or as cards through the existing education tools; generated visuals no longer
+require alt text (the title is the fallback). The
 public deployment is a hackathon demo for synthetic or otherwise non-sensitive content;
 real classroom rollout remains subject to the [classroom AI safety and implementation
 gate](docs/classroom-ai-safety.md).

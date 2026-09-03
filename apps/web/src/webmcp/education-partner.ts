@@ -618,7 +618,7 @@ export class EducationPartnerWebMcp {
       await modelContext.registerTool(
         {
           name: "add_content_visuals",
-          description: `Add one to three playful, content-grounded visuals beside browser-selected class ideas. Use meme_card for a reliable locally rendered classroom meme, or inline_image for an LLM-generated PNG, JPEG, WebP, or GIF supplied as a data URL. Every visual must cite selected idea aliases, include accessible alt text and a discussion question, avoid real student likenesses or targeting individuals, and help the class discuss rather than merely decorate. First call read_selected_class_ideas and pass its selectionToken. External image URLs are never fetched or embedded; SpaceScale sanitizes and privately stores every image in the board bucket. ${WEBMCP_MATHJAX_GUIDANCE}`,
+          description: `Add one to three playful, content-grounded visuals beside browser-selected class ideas. Use meme_card for a reliable locally rendered classroom meme, or inline_image for an LLM-generated PNG, JPEG, WebP, or GIF supplied as a data URL. Every visual must cite selected idea aliases, include a discussion question, avoid real student likenesses or targeting individuals, and help the class discuss rather than merely decorate. Alt text is optional; the title is used when it is omitted. First call read_selected_class_ideas and pass its selectionToken. External image URLs are never fetched or embedded; SpaceScale sanitizes and privately stores every image in the board bucket. ${WEBMCP_MATHJAX_GUIDANCE}`,
           inputSchema: contentVisualsToolSchema(),
           annotations: { readOnlyHint: false },
           execute: async (input, { signal }) => this.addContentVisuals(input, signal),
@@ -735,7 +735,7 @@ export class EducationPartnerWebMcp {
         preferredGeneratedImageMimeType: "image/png",
         svgAccepted: false,
         externalImageUrlsAccepted: false,
-        requiresAltText: true,
+        requiresAltText: false,
         requiresDiscussionPrompt: true,
       },
       problemStepWatch: {
@@ -1020,7 +1020,8 @@ function contentVisualsToolSchema(): Record<string, unknown> {
       type: "string",
       minLength: 1,
       maxLength: 500,
-      description: "Describe the meaningful visual content and any words visible in the image.",
+      description:
+        "Optional. Describe meaningful visual content and visible words; if omitted the title is used.",
     },
     sourceAliases: {
       type: "array",
@@ -1074,7 +1075,6 @@ function contentVisualsToolSchema(): Record<string, unknown> {
                 "format",
                 "title",
                 "caption",
-                "altText",
                 "sourceAliases",
                 "discussionPrompt",
                 "headline",
@@ -1099,7 +1099,6 @@ function contentVisualsToolSchema(): Record<string, unknown> {
                 "format",
                 "title",
                 "caption",
-                "altText",
                 "sourceAliases",
                 "discussionPrompt",
                 "imageDataUrl",
@@ -1390,7 +1389,7 @@ function parseContentVisuals(input: unknown): ParsedEducationVisuals {
       format,
       title: requiredText(entry.title, `visuals[${index}].title`, 60),
       caption: requiredText(entry.caption, `visuals[${index}].caption`, 220),
-      altText: requiredText(entry.altText, `visuals[${index}].altText`, 500),
+      altText: optionalText(entry.altText, `visuals[${index}].altText`, 500),
       sourceAliases,
       discussionPrompt,
     };

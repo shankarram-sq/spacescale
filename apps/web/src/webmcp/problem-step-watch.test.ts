@@ -425,3 +425,312 @@ describe("problem-step WebMCP watch", () => {
     feed.destroy();
   });
 });
+
+describe("board-side assist requests", () => {
+  function watching(selected: BoardItem[] = [sticky(), canvasText()]) {
+    const states: Array<ReturnType<ProblemStepWatchFeed["getState"]>> = [];
+    const minted: unknown[] = [];
+    let canComment = true;
+    let canWrite = true;
+    const context = setup(selected);
+    const feed = new ProblemStepWatchFeed({
+      getSelectedItems: () => selected,
+      getAuthoritativeItem: (itemId) => context.items.get(itemId),
+      getSequence: () => 7,
+      getParticipantDisplayName: () => "Sam",
+      onStateChanged: (state) => states.push(state),
+      canComment: () => canComment,
+      canWrite: () => canWrite,
+      mintSelectionToken: (sources) => {
+        minted.push(sources);
+        return `token_${minted.length}`;
+      },
+    });
+    return {
+      feed,
+      states,
+      minted,
+      items: context.items,
+      setCanComment(value: boolean) {
+        canComment = value;
+      },
+      setCanWrite(value: boolean) {
+        canWrite = value;
+      },
+    };
+  }
+
+  it("reports idle, watching and listening as the host starts and waits", async () => {
+    vi.useFakeTimers();
+    const { feed, states } = watching();
+    expect(feed.getState()).toEqual({ phase: "idle", expiresAt: null, watchedItemIds: new Set() });
+
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    expect(states.at(-1)).toMatchObject({ phase: "watching" });
+    expect(states.at(-1)?.watchedItemIds).toEqual(new Set([STICKY_ID, TEXT_ID]));
+    expect(started).toMatchObject({
+      selectionToken: "token_1",
+      selectionSources: [{ stepAlias: "step_1", sourceAlias: "idea_1" }],
+      canComment: true,
+      canWrite: true,
+      participantRequests: { actions: expect.arrayContaining(["explain", "check_work"]) },
+    });
+
+    const wait = feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq, waitMs: 1_000 },
+      new AbortController().signal,
+    );
+    expect(feed.getState().phase).toBe("listening");
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(wait).resolves.toMatchObject({ status: "timeout" });
+    expect(feed.getState().phase).toBe("watching");
+
+    await feed.execute(
+      { action: "stop", watchToken: started.watchToken },
+      new AbortController().signal,
+    );
+    expect(feed.getState().phase).toBe("idle");
+  });
+
+  it("goes idle on expiry without any host call and on destroy", async () => {
+    vi.useFakeTimers();
+    const { feed } = watching();
+    await feed.execute({ action: "start" }, new AbortController().signal);
+    expect(feed.getState().phase).toBe("watching");
+    await vi.advanceTimersByTimeAsync(PROBLEM_STEP_WATCH_DURATION_MS);
+    expect(feed.getState().phase).toBe("idle");
+
+    await feed.execute({ action: "start" }, new AbortController().signal);
+    expect(feed.getState().phase).toBe("watching");
+    feed.destroy();
+    expect(feed.getState().phase).toBe("idle");
+  });
+
+  it("resolves a pending wait with the request, its reply plan and a fresh selection token", async () => {
+    const { feed, minted } = watching();
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    const wait = feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    const receipt = feed.requestAssistance({
+      itemIds: [STICKY_ID],
+      action: "critique",
+      note: "  not sure about the division  ",
+    });
+    expect(receipt).toEqual({ requestId: "req_1", delivered: true, stepAliases: ["step_1"] });
+    const result = await wait;
+    expect(result).toMatchObject({
+      status: "requested",
+      continueWatching: true,
+      nextSeq: started.nextSeq,
+      selectionToken: "token_2",
+      canComment: true,
+      requests: [
+        {
+          requestId: "req_1",
+          action: "critique",
+          note: "not sure about the division",
+          steps: [{ alias: "step_1", kind: "sticky", text: "Let $2x=6$" }],
+          reply: {
+            via: "comment",
+            call: {
+              tool: "comment_on_watched_step",
+              input: { watchToken: started.watchToken, stepAlias: "step_1", action: "critique" },
+            },
+          },
+        },
+      ],
+    });
+    expect(minted).toHaveLength(2);
+    // The writers' schemas only accept idea_N aliases, so the snapshot never uses step_N.
+    expect(minted[1]).toMatchObject([{ alias: "idea_1", itemId: STICKY_ID, version: 1 }]);
+    expect(JSON.stringify(result)).not.toContain(STICKY_ID);
+    expect(JSON.stringify(result)).not.toContain(ACTOR_ID);
+  });
+
+  it("queues requests ahead of changes when no wait is pending and caps the queue", async () => {
+    const { feed, items } = watching();
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    for (let index = 0; index < 12; index += 1) {
+      expect(feed.requestAssistance({ itemIds: [], action: "explain" }).delivered).toBe(false);
+    }
+    const updated = sticky("Let $2x=6$ so $x=3$", 2);
+    items.set(STICKY_ID, updated);
+    feed.recordAuthoritativeAction(serverAction(8, updated), new Set([STICKY_ID]));
+
+    const first = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(first).toMatchObject({ status: "requested", droppedRequests: 2, nextSeq: 8 });
+    expect(first.requests).toHaveLength(10);
+    expect((first.requests as Array<{ steps: unknown[] }>)[0]?.steps).toHaveLength(2);
+
+    const second = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(second).toMatchObject({
+      status: "changed",
+      changes: [{ seq: 8 }],
+      selectionToken: expect.stringMatching(/^token_/u),
+    });
+    expect(second).not.toHaveProperty("droppedRequests");
+  });
+
+  it("delivers queued requests with the step text current at delivery, flagging deleted steps", async () => {
+    const { feed, items, minted } = watching();
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    feed.requestAssistance({ itemIds: [STICKY_ID, TEXT_ID], action: "ideate" });
+
+    const edited = sticky("Let $2x=6$, so $x=3$", 2);
+    items.set(STICKY_ID, edited);
+    feed.recordAuthoritativeAction(serverAction(8, edited), new Set([STICKY_ID]));
+    items.delete(TEXT_ID);
+    feed.recordAuthoritativeAction(serverAction(9, canvasText()), new Set([TEXT_ID]));
+
+    const result = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(result).toMatchObject({
+      status: "requested",
+      requests: [
+        {
+          action: "ideate",
+          steps: [
+            { alias: "step_1", text: "Let $2x=6$, so $x=3$" },
+            { alias: "step_2", kind: "text", deleted: true },
+          ],
+          reply: { via: "board", call: { input: { sourceAliases: ["idea_1"] } } },
+        },
+      ],
+    });
+    // The token minted at delivery and the delivered text describe the same version.
+    expect(minted.at(-1)).toMatchObject([{ alias: "idea_1", itemId: STICKY_ID, version: 2 }]);
+  });
+
+  it("keeps queued requests when a wait is aborted and prefers cards for generative actions", async () => {
+    const { feed } = watching();
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    const controller = new AbortController();
+    const wait = feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      controller.signal,
+    );
+    controller.abort();
+    await expect(wait).rejects.toThrow();
+    feed.requestAssistance({ itemIds: [STICKY_ID], action: "ideate" });
+    const result = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(result).toMatchObject({
+      status: "requested",
+      requests: [
+        {
+          action: "ideate",
+          reply: {
+            via: "board",
+            call: {
+              tool: "add_thinking_expansion",
+              input: { selectionToken: expect.any(String), sourceAliases: ["idea_1"] },
+            },
+          },
+        },
+      ],
+    });
+  });
+
+  it("falls back to a comment for text steps, read-only boards, and to the conversation when commenting is off", async () => {
+    const { feed, setCanComment, setCanWrite } = watching();
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    feed.requestAssistance({ itemIds: [TEXT_ID], action: "examples" });
+    const commentFallback = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(commentFallback.requests).toMatchObject([{ reply: { via: "comment" } }]);
+
+    // A sticky source exists, but a browser that cannot add items must not be sent to a writer.
+    setCanWrite(false);
+    feed.requestAssistance({ itemIds: [STICKY_ID], action: "ideate" });
+    const readOnlyFallback = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(readOnlyFallback).toMatchObject({ canWrite: false });
+    expect(readOnlyFallback.requests).toMatchObject([
+      { reply: { via: "comment", call: { tool: "comment_on_watched_step" } } },
+    ]);
+    setCanWrite(true);
+
+    setCanComment(false);
+    feed.requestAssistance({ itemIds: [TEXT_ID], action: "explain" });
+    const chatFallback = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(chatFallback).toMatchObject({ canComment: false });
+    expect(chatFallback.requests).toMatchObject([{ reply: { via: "conversation" } }]);
+    expect((chatFallback.requests as Array<{ reply: object }>)[0]?.reply).not.toHaveProperty(
+      "call",
+    );
+  });
+
+  it("rejects requests outside a live watch, for unwatched items, and with bad input", async () => {
+    vi.useFakeTimers();
+    const { feed } = watching();
+    expect(() => feed.requestAssistance({ itemIds: [], action: "explain" })).toThrow(
+      "start a problem-step watch first",
+    );
+    await feed.execute({ action: "start" }, new AbortController().signal);
+    expect(() => feed.requestAssistance({ itemIds: [UNSELECTED_ID], action: "explain" })).toThrow(
+      "Only steps in the current AI watch",
+    );
+    expect(() => feed.requestAssistance({ itemIds: [], action: "grade" as never })).toThrow(
+      "action must be one of",
+    );
+    expect(() =>
+      feed.requestAssistance({ itemIds: [], action: "explain", note: "x".repeat(281) }),
+    ).toThrow("note must contain 1-280 characters");
+    await vi.advanceTimersByTimeAsync(PROBLEM_STEP_WATCH_DURATION_MS);
+    expect(() => feed.requestAssistance({ itemIds: [], action: "explain" })).toThrow(
+      "start a problem-step watch first",
+    );
+  });
+
+  it("resolves comment targets by alias, remembers the requested action, and caps comments", async () => {
+    const { feed, items } = watching();
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    const token = String(started.watchToken);
+    expect(() => feed.commentTarget("missing", "step_1")).toThrow("missing or expired");
+    expect(() => feed.commentTarget(token, "step_9")).toThrow("not part of this watch");
+
+    feed.requestAssistance({ itemIds: [STICKY_ID], action: "explain" });
+    feed.requestAssistance({ itemIds: [STICKY_ID], action: "check_work" });
+    // Two requests queued on one step: the host names the action it answers, so the earlier
+    // Explain reply is not stamped with the later Check-my-work action.
+    const explicit = feed.commentTarget(token, "step_1", "explain");
+    expect(explicit).toMatchObject({ itemId: STICKY_ID, action: "explain" });
+    explicit.release(true);
+    const target = feed.commentTarget(token, "step_1");
+    expect(target).toMatchObject({ itemId: STICKY_ID, action: "check_work" });
+    expect(() => feed.commentTarget(token, "step_1")).toThrow("previous comment");
+    target.release(false);
+    expect(feed.commentTarget(token, "step_2")).toMatchObject({ itemId: TEXT_ID });
+
+    items.delete(TEXT_ID);
+    feed.recordAuthoritativeAction(serverAction(9, canvasText()), new Set([TEXT_ID]));
+    expect(() => feed.commentTarget(token, "step_2")).toThrow("no longer on the board");
+  });
+
+  it("enforces the per-watch comment cap through release", async () => {
+    const { feed } = watching();
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    const token = String(started.watchToken);
+    for (let index = 0; index < 20; index += 1) feed.commentTarget(token, "step_1").release(true);
+    expect(() => feed.commentTarget(token, "step_1")).toThrow("limit of 20 AI comments");
+  });
+});

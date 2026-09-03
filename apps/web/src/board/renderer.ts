@@ -2,6 +2,7 @@ import {
   lineArrowheadPoints,
   type OutlineGeometry,
   polygonPoints,
+  textLayoutEstimateSource,
   transformPoint,
   visibleOutlinePaths,
   ZONE_TITLE_PADDING,
@@ -1324,37 +1325,63 @@ function itemNode(
   loadImageAsset: (assetId: string) => Promise<string>,
   options: ItemNodeOptions = {},
 ): SVGGraphicsElement {
+  const preview = options.preview === true;
+  const creatorName = options.creatorName?.trim() ?? "";
+  const badged =
+    creatorName !== "" &&
+    (item.kind === "sticky" || item.kind === "image" || item.kind === "stamp");
+  // Previews echo a gesture in progress, so only authoritative nodes carry the AI mark; a
+  // badged item shows it inside the creator badge instead of as a standalone pill.
+  const marked = item.assistedBy === "ai" && !preview && !badged;
+  let mark: SVGGElement | undefined;
+  const onTextSize = marked
+    ? (width: number, height: number) => {
+        // Typeset math reports its real width, so keep the mark on the measured corner.
+        if (mark && item.kind === "text") {
+          positionAssistanceMark(mark, textAssistanceMarkAnchor(item.geometry, item.style, width));
+        }
+        options.onTextSize?.(width, height);
+      }
+    : options.onTextSize;
   let node: SVGGraphicsElement;
+  // Leaf elements (path, rect, text…) cannot hold the mark, so those get a wrapping group.
+  let leaf = false;
   switch (item.kind) {
     case "pencil": {
       const path = svgElement("path");
       path.setAttribute("d", outlinePath(visibleOutlinePaths("pencil", item.geometry)));
       setStroke(path, item.style);
       node = path;
+      leaf = true;
       break;
     }
     case "line":
+      node = shapeNode(item.kind, item.geometry, item.style);
+      break;
     case "rectangle":
     case "ellipse":
     case "polygon":
       node = shapeNode(item.kind, item.geometry, item.style);
+      leaf = true;
       break;
     case "protractor":
       node = protractorNode(item.geometry, item.style);
       break;
     case "text": {
       const video = item.geometry.embed === "video" ? videoEmbedFromText(item.geometry.text) : null;
+      const math = containsMathMarkup(item.geometry.text);
       node = video
-        ? videoEmbedNode(item.geometry, item.style, video, options.preview === true)
-        : containsMathMarkup(item.geometry.text)
-          ? options.preview === true
+        ? videoEmbedNode(item.geometry, item.style, video, preview)
+        : math
+          ? preview
             ? mathTextPreviewNode(item.geometry, item.style)
-            : mathTextNode(item.geometry, item.style, options.onTextSize)
+            : mathTextNode(item.geometry, item.style, onTextSize)
           : textNode(item.geometry, item.style);
+      leaf = !video && (!math || preview);
       break;
     }
     case "sticky":
-      node = stickyNode(item.geometry, item.style, options.preview === true);
+      node = stickyNode(item.geometry, item.style, preview);
       break;
     case "stamp":
       node = stampNode(item.geometry, item.style);
@@ -1363,21 +1390,31 @@ function itemNode(
       node = imageNode(item.id, item.geometry, item.style, loadImageAsset);
       break;
     case "table":
-      node = tableNode(item.id, item.geometry, item.style, options.preview === true);
+      node = tableNode(item.id, item.geometry, item.style, preview);
       break;
     case "zone":
-      node = zoneNode(item.id, item.geometry, item.style, options.preview === true);
+      node = zoneNode(item.id, item.geometry, item.style, preview);
       break;
+  }
+  if (marked && leaf) {
+    const group = svgElement("g");
+    group.append(node);
+    node = group;
   }
   node.dataset.itemId = item.id;
   node.dataset.z = String(item.z);
   node.classList.add("board-item", `board-item-${item.kind}`);
   node.setAttribute("transform", matrixAttribute(item.transform));
-  if (
-    options.creatorName?.trim() &&
-    (item.kind === "sticky" || item.kind === "image" || item.kind === "stamp")
-  ) {
-    appendCreatorAttribution(node, item, options.creatorName.trim());
+  if (badged) {
+    appendCreatorAttribution(node, item, creatorName);
+  } else if (marked) {
+    mark = assistanceMark(item);
+    node.append(mark);
+    node.dataset.assistedBy = "ai";
+    node.setAttribute("aria-description", assistanceLabel(creatorName));
+    // A moved video card is laid out in place rather than rebuilt, so it must move its mark.
+    const videoParts = videoEmbedParts.get(node);
+    if (videoParts) videoParts.assistanceMark = mark;
   }
   return node;
 }
@@ -1487,6 +1524,7 @@ type VideoEmbedParts = {
   border: SVGRectElement;
   handleSurface?: SVGRectElement;
   handleGrip?: SVGTextElement;
+  assistanceMark?: SVGGElement;
 };
 
 const videoEmbedParts = new WeakMap<Element, VideoEmbedParts>();
@@ -1510,6 +1548,9 @@ function layoutVideoEmbedNode(
   parts.handleSurface?.setAttribute("y", String(handleY));
   parts.handleGrip?.setAttribute("x", String(handleX + 15));
   parts.handleGrip?.setAttribute("y", String(handleY + 15));
+  if (parts.assistanceMark) {
+    positionAssistanceMark(parts.assistanceMark, videoAssistanceMarkAnchor(geometry, style));
+  }
 }
 
 /**
@@ -1725,17 +1766,30 @@ export function creatorInitials(displayName: string): string {
   return `${first}${last}`.toLocaleUpperCase();
 }
 
+const BADGE_FONT_FAMILY = "Inter, ui-sans-serif, system-ui, sans-serif";
+const ASSISTANCE_MARK_FILL = "#2d2240";
+const ASSISTANCE_MARK_WIDTH = 14;
+const ASSISTANCE_MARK_HEIGHT = 10;
+
+function assistanceLabel(displayName: string): string {
+  return displayName
+    ? `Created by ${displayName} with AI assistance`
+    : "Created with AI assistance";
+}
+
 function appendCreatorAttribution(
   node: SVGGraphicsElement,
   item: AttributedItem,
   displayName: string,
 ): void {
-  const label = `Created by ${displayName}`;
+  const assisted = item.assistedBy === "ai";
+  const label = assisted ? assistanceLabel(displayName) : `Created by ${displayName}`;
   const title = svgElement("title");
   title.textContent = label;
   node.prepend(title);
   node.setAttribute("aria-description", label);
   node.dataset.creatorInitials = creatorInitials(displayName);
+  if (assisted) node.dataset.assistedBy = "ai";
   node.classList.add("has-creator-badge");
   node.append(creatorBadge(item, displayName));
 }
@@ -1778,11 +1832,174 @@ export function creatorBadge(item: AttributedItem, displayName: string): SVGGEle
   text.setAttribute("text-anchor", "middle");
   text.setAttribute("fill", "#ffffff");
   text.setAttribute("font-size", String(Math.max(7, radius * 0.92)));
-  text.setAttribute("font-family", "Inter, ui-sans-serif, system-ui, sans-serif");
+  text.setAttribute("font-family", BADGE_FONT_FAMILY);
   text.setAttribute("font-weight", "800");
   text.textContent = creatorInitials(displayName);
   badge.append(background, text);
+
+  if (item.assistedBy === "ai") {
+    // The responsible participant keeps their initials; a smaller "AI" disc overlaps the
+    // top-left so a reader can tell tool-written content from typed content at a glance.
+    badge.classList.add("creator-badge-ai");
+    const markRadius = Math.max(5, radius * 0.6);
+    const markX = x - radius * 0.9;
+    const markY = y - radius * 0.9;
+    const markBackground = svgElement("circle");
+    markBackground.setAttribute("cx", String(markX));
+    markBackground.setAttribute("cy", String(markY));
+    markBackground.setAttribute("r", String(markRadius));
+    markBackground.setAttribute("fill", ASSISTANCE_MARK_FILL);
+    markBackground.setAttribute("stroke", "#ffffff");
+    markBackground.setAttribute("stroke-width", "1.5");
+    markBackground.setAttribute("vector-effect", "non-scaling-stroke");
+    const markText = svgElement("text");
+    markText.setAttribute("x", String(markX));
+    markText.setAttribute("y", String(markY + markRadius * 0.34));
+    markText.setAttribute("text-anchor", "middle");
+    markText.setAttribute("fill", "#ffffff");
+    markText.setAttribute("font-size", String(Math.max(6, radius * 0.6)));
+    markText.setAttribute("font-family", BADGE_FONT_FAMILY);
+    markText.setAttribute("font-weight", "800");
+    markText.textContent = "AI";
+    badge.append(markBackground, markText);
+  }
   return badge;
+}
+
+/** Top-right corner, in the node's local coordinates, that the assistance mark hangs from. */
+function assistanceMarkAnchor(item: BoardItem): Point {
+  const width = ASSISTANCE_MARK_WIDTH;
+  const height = ASSISTANCE_MARK_HEIGHT;
+  switch (item.kind) {
+    case "pencil":
+      return outlineAssistanceMarkAnchor(
+        visibleOutlinePaths("pencil", item.geometry),
+        item.geometry.points,
+      );
+    case "line":
+      return outlineAssistanceMarkAnchor(visibleOutlinePaths("line", item.geometry), [
+        [item.geometry.x1, item.geometry.y1],
+        [item.geometry.x2, item.geometry.y2],
+      ]);
+    case "rectangle":
+    case "ellipse":
+    case "polygon":
+    case "image":
+      return [item.geometry.x + item.geometry.width - width - 4, item.geometry.y + 4];
+    case "protractor":
+      return [item.geometry.radius - width, -item.geometry.radius];
+    case "text":
+      if (item.geometry.embed === "video" && videoEmbedFromText(item.geometry.text)) {
+        return videoAssistanceMarkAnchor(item.geometry, item.style);
+      }
+      return textAssistanceMarkAnchor(
+        item.geometry,
+        item.style,
+        estimatedTextWidth(item.geometry, item.style),
+      );
+    case "sticky":
+      // Sticky content lives in a nested <svg>, so its local origin is the card's corner.
+      return [item.geometry.width - width - 4, 4];
+    case "stamp":
+      return [
+        item.geometry.x + item.geometry.size / 2 - width,
+        item.geometry.y - item.geometry.size / 2,
+      ];
+    case "table":
+      return [
+        item.geometry.x +
+          item.geometry.columnWidths.reduce((total, column) => total + column, 0) -
+          width -
+          3,
+        item.geometry.y + 3,
+      ];
+    case "zone": {
+      const band = Math.min(item.geometry.height, zoneTitleBandHeight(item.style.fontSize));
+      // The lock badge owns the title bar's right end on locked sections.
+      const inset = item.geometry.locked === true ? 32 : ZONE_TITLE_PADDING;
+      return [
+        item.geometry.x + item.geometry.width - inset - width,
+        item.geometry.y + Math.max(2, (band - height) / 2),
+      ];
+    }
+  }
+}
+
+function outlineAssistanceMarkAnchor(
+  paths: readonly (readonly Point[])[],
+  fallback: readonly Point[],
+): Point {
+  const visible = paths.flat();
+  const points = visible.length > 0 ? visible : fallback;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  for (const [x, y] of points) {
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+  }
+  if (!Number.isFinite(maxX) || !Number.isFinite(minY)) return [0, -ASSISTANCE_MARK_HEIGHT];
+  // Strokes have no interior to sit in, so the mark hangs just outside their top-right point.
+  return [maxX + 2, minY - ASSISTANCE_MARK_HEIGHT - 2];
+}
+
+function estimatedTextWidth(geometry: TextGeometry, style: TextStyle): number {
+  const lines = textLayoutEstimateSource(geometry.text, style.fontSize).split("\n");
+  return Math.max(1, ...lines.map((line) => [...line].length)) * style.fontSize * 0.61;
+}
+
+function textAssistanceMarkAnchor(geometry: TextGeometry, style: TextStyle, width: number): Point {
+  // Above the first line's right end, so the mark never covers glyphs.
+  return [
+    geometry.x + width - ASSISTANCE_MARK_WIDTH,
+    geometry.y - style.fontSize - ASSISTANCE_MARK_HEIGHT - 2,
+  ];
+}
+
+function videoAssistanceMarkAnchor(geometry: TextGeometry, style: TextStyle): Point {
+  // Left of the drag handle, which owns the card's top-right corner.
+  return [
+    geometry.x + VIDEO_EMBED_WIDTH - 34 - 4 - ASSISTANCE_MARK_WIDTH,
+    geometry.y - style.fontSize + 4,
+  ];
+}
+
+function positionAssistanceMark(mark: SVGGElement, anchor: Point): void {
+  mark.setAttribute("transform", `translate(${anchor[0]} ${anchor[1]})`);
+}
+
+/**
+ * The standalone "AI" pill for kinds that carry no creator badge. Decorative only: the
+ * accessible sentence lives in the item's aria-description.
+ */
+export function assistanceMark(item: BoardItem): SVGGElement {
+  const mark = svgElement("g");
+  mark.classList.add("assistance-mark");
+  mark.setAttribute("aria-hidden", "true");
+  mark.setAttribute("pointer-events", "none");
+  positionAssistanceMark(mark, assistanceMarkAnchor(item));
+
+  const background = svgElement("rect");
+  background.setAttribute("x", "0");
+  background.setAttribute("y", "0");
+  background.setAttribute("width", String(ASSISTANCE_MARK_WIDTH));
+  background.setAttribute("height", String(ASSISTANCE_MARK_HEIGHT));
+  background.setAttribute("rx", "3");
+  background.setAttribute("fill", ASSISTANCE_MARK_FILL);
+  background.setAttribute("stroke", "#ffffff");
+  background.setAttribute("stroke-width", "1");
+  background.setAttribute("vector-effect", "non-scaling-stroke");
+
+  const text = svgElement("text");
+  text.setAttribute("x", String(ASSISTANCE_MARK_WIDTH / 2));
+  text.setAttribute("y", String(ASSISTANCE_MARK_HEIGHT * 0.78));
+  text.setAttribute("text-anchor", "middle");
+  text.setAttribute("fill", "#ffffff");
+  text.setAttribute("font-size", "7");
+  text.setAttribute("font-family", BADGE_FONT_FAMILY);
+  text.setAttribute("font-weight", "800");
+  text.textContent = "AI";
+  mark.append(background, text);
+  return mark;
 }
 
 export function zoneNode(

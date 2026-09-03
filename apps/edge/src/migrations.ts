@@ -401,6 +401,18 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
         ON comments(state, updated_at_ms DESC);
     `,
   },
+  {
+    version: 14,
+    name: "comment_assistance",
+    sql: `
+      ALTER TABLE comments ADD COLUMN assisted_by TEXT
+        CHECK (assisted_by IS NULL OR assisted_by = 'ai');
+      ALTER TABLE comments ADD COLUMN assistance_tool TEXT
+        CHECK (assistance_tool IS NULL OR (length(assistance_tool) BETWEEN 1 AND 64));
+      ALTER TABLE comments ADD COLUMN assistance_action TEXT
+        CHECK (assistance_action IS NULL OR length(assistance_action) <= 32);
+    `,
+  },
 ] as const;
 
 export const ORGANISATION_SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [

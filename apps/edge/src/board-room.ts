@@ -5,6 +5,10 @@ import {
   findMoveCopyClosureLimitViolation,
 } from "@collab/board-core";
 import {
+  ASSIST_ACTIONS,
+  ASSISTANCE_TOOL_PATTERN,
+  type AssistAction,
+  type Assistance,
   BOARD_FEATURE_KEYS,
   type BoardFeatures,
   type ClientFrame,
@@ -204,6 +208,9 @@ type CommentRow = {
   resolved_by: string | null;
   resolved_at_ms: number | null;
   updated_at_ms: number;
+  assisted_by: string | null;
+  assistance_tool: string | null;
+  assistance_action: string | null;
   author_name: string;
   resolver_name: string | null;
 };
@@ -218,6 +225,8 @@ type BoardComment = {
   updatedAt: number;
   resolvedBy?: { id: string; displayName: string };
   resolvedAt?: number;
+  assistedBy?: "ai";
+  assistance?: Assistance;
 };
 
 type ActionRow = {
@@ -592,9 +601,10 @@ export class BoardRoom extends DurableObject<Env> {
     capturedBoard: BoardRow,
   ): Promise<Response> {
     const body = await readJsonBody(request, 16 * 1_024);
-    assertExactKeys(body, ["itemId", "body"], ["itemId", "body"]);
+    assertExactKeys(body, ["itemId", "body", "assistedBy", "assistance"], ["itemId", "body"]);
     const itemId = requireOpaqueId(body.itemId, "comment target");
     const text = requireCommentBody(body.body);
+    const assistance = requireCommentAssistance(body);
     const commentId = randomOpaqueId("c_");
     const now = Date.now();
     let comment!: BoardComment;
@@ -621,14 +631,18 @@ export class BoardRoom extends DurableObject<Env> {
       this.#sql.exec(
         `INSERT INTO comments(
           comment_id, target_item_id, body, state, created_by,
-          created_at_ms, resolved_by, resolved_at_ms, updated_at_ms
-        ) VALUES (?, ?, ?, 'open', ?, ?, NULL, NULL, ?)`,
+          created_at_ms, resolved_by, resolved_at_ms, updated_at_ms,
+          assisted_by, assistance_tool, assistance_action
+        ) VALUES (?, ?, ?, 'open', ?, ?, NULL, NULL, ?, ?, ?, ?)`,
         commentId,
         itemId,
         text,
         actor.actorId,
         now,
         now,
+        assistance === null ? null : "ai",
+        assistance?.tool ?? null,
+        assistance?.action ?? null,
       );
       comment = this.readComment(commentId) as BoardComment;
     });
@@ -696,6 +710,7 @@ export class BoardRoom extends DurableObject<Env> {
       .exec<CommentRow>(
         `SELECT c.comment_id, c.target_item_id, c.body, c.state, c.created_by,
           c.created_at_ms, c.resolved_by, c.resolved_at_ms, c.updated_at_ms,
+          c.assisted_by, c.assistance_tool, c.assistance_action,
           author.display_name AS author_name, resolver.display_name AS resolver_name
          FROM comments c
          LEFT JOIN members author ON author.actor_id = c.created_by
@@ -6567,11 +6582,53 @@ function requireCommentBody(value: unknown): string {
   }
   return normalized;
 }
+
+/**
+ * Reads the optional writer metadata from a comment create body. Returns null for a typed
+ * comment; both `assistedBy` and `assistance` must be present together for an assisted one.
+ */
+function requireCommentAssistance(body: Record<string, unknown>): Assistance | null {
+  const hasAssistedBy = Object.hasOwn(body, "assistedBy");
+  const hasAssistance = Object.hasOwn(body, "assistance");
+  if (!hasAssistedBy && !hasAssistance) return null;
+  if (hasAssistedBy !== hasAssistance) {
+    throw new HttpError(400, "BAD_REQUEST", "assistedBy and assistance must be provided together.");
+  }
+  if (body.assistedBy !== "ai") {
+    throw new HttpError(400, "BAD_REQUEST", "assistedBy must be 'ai'.");
+  }
+  const assistance = body.assistance;
+  if (!isRecord(assistance)) {
+    throw new HttpError(400, "BAD_REQUEST", "assistance must be an object.");
+  }
+  assertExactKeys(assistance, ["tool", "action"], ["tool"]);
+  if (typeof assistance.tool !== "string" || !ASSISTANCE_TOOL_PATTERN.test(assistance.tool)) {
+    throw new HttpError(400, "BAD_REQUEST", "assistance.tool must be a valid tool name.");
+  }
+  if (assistance.action === undefined) return { tool: assistance.tool };
+  if (
+    typeof assistance.action !== "string" ||
+    !(ASSIST_ACTIONS as readonly string[]).includes(assistance.action)
+  ) {
+    throw new HttpError(400, "BAD_REQUEST", "assistance.action is not a supported action.");
+  }
+  return { tool: assistance.tool, action: assistance.action as AssistAction };
+}
+
 function commentFromRow(row: CommentRow): BoardComment {
   const resolved = row.state === "resolved";
   if (
     (resolved && (row.resolved_by === null || row.resolved_at_ms === null)) ||
     (!resolved && (row.resolved_by !== null || row.resolved_at_ms !== null))
+  ) {
+    throw new HttpError(500, "INTERNAL_ERROR", "Stored comment data is invalid.");
+  }
+  const assisted = row.assisted_by !== null;
+  if (
+    (assisted && (row.assisted_by !== "ai" || row.assistance_tool === null)) ||
+    (!assisted && (row.assistance_tool !== null || row.assistance_action !== null)) ||
+    (row.assistance_action !== null &&
+      !(ASSIST_ACTIONS as readonly string[]).includes(row.assistance_action))
   ) {
     throw new HttpError(500, "INTERNAL_ERROR", "Stored comment data is invalid.");
   }
@@ -6593,6 +6650,17 @@ function commentFromRow(row: CommentRow): BoardComment {
             displayName: row.resolver_name || fallbackDisplayName(row.resolved_by),
           },
           resolvedAt: row.resolved_at_ms,
+        }
+      : {}),
+    ...(assisted && row.assistance_tool !== null
+      ? {
+          assistedBy: "ai" as const,
+          assistance: {
+            tool: row.assistance_tool,
+            ...(row.assistance_action !== null
+              ? { action: row.assistance_action as AssistAction }
+              : {}),
+          },
         }
       : {}),
   };
