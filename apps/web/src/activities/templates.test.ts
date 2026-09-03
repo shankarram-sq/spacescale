@@ -95,6 +95,41 @@ describe("classroom templates", () => {
     expect(isVoteTable(voteTable)).toBe(true);
   });
 
+  it("binds every student's work to their own Section", () => {
+    for (const id of [
+      "student-questions",
+      "brainstorm-school-traffic",
+      "problem-set-six-students",
+    ] as const) {
+      const batch = buildActivityBatch(id, [0, 0], deterministicIds());
+      const created = batch.operation.operations.flatMap((operation) =>
+        operation.kind === "item.create" ? [operation.item] : [],
+      );
+      const sections = new Map(
+        created.filter((item) => item.kind === "zone").map((item) => [item.id, item]),
+      );
+      expect(sections.size, id).toBe(6);
+
+      const members = created.filter(
+        (item) => item.kind !== "zone" && item.sectionId !== undefined,
+      );
+      // Every Section holds work, and every piece of work names a real Section.
+      const held = new Set(members.map((item) => item.sectionId));
+      expect(held.size, id).toBe(6);
+      for (const item of members) {
+        expect(sections.has(item.sectionId as string), `${id} ${item.id}`).toBe(true);
+      }
+
+      // The titles above the Sections sit outside them, so they belong to nobody.
+      const loose = created.filter((item) => item.kind !== "zone" && item.sectionId === undefined);
+      expect(loose.length, id).toBeGreaterThan(0);
+      expect(
+        loose.every((item) => item.kind === "text"),
+        id,
+      ).toBe(true);
+    }
+  });
+
   it("gives each demo board student Sections and no AI scaffolding", () => {
     const byId = new Map(ACTIVITY_TEMPLATES.map((template) => [template.id, template]));
     const demos = [

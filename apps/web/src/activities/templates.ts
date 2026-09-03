@@ -1,3 +1,4 @@
+import { type Bounds, type BoundsItem, itemBounds } from "@collab/geometry";
 import { MAX_BATCH_OPERATIONS } from "@collab/protocol";
 
 import { DRAWING_COLOR_VALUES, STICKY_COLOR_VALUES, UI_COLORS } from "../palette";
@@ -891,16 +892,61 @@ export function buildActivityBatch(
     throw new RangeError(`Activity templates must contain 1 to ${MAX_BATCH_OPERATIONS} items.`);
   }
   const transform: Matrix = [1, 0, 0, 1, roundBoard(center[0]), roundBoard(center[1])];
-  const itemIds: string[] = [];
-  const operations: BatchItemOperation[] = template.items.map((source) => {
-    const id = idFactory();
-    itemIds.push(id);
+  const itemIds: string[] = template.items.map(() => idFactory());
+  const sections = templateSectionMembership(template.items, itemIds);
+  const operations: BatchItemOperation[] = template.items.map((source, index) => {
+    const sectionId = sections.get(index);
     const item = {
       ...structuredClone(source),
-      id,
+      id: itemIds[index] as string,
       transform: [...transform] as Matrix,
+      ...(sectionId === undefined ? {} : { sectionId }),
     } as NewBoardItem;
     return { kind: "item.create", item };
   });
   return { operation: { kind: "items.batch", operations }, itemIds };
+}
+
+/**
+ * Binds each item a template draws inside a Section to that Section. A template that draws a
+ * Section around a student's work means the work belongs to it, and only an explicit sectionId
+ * makes that true: selecting or moving a Section carries its members, and visual containment
+ * alone would leave the work behind. Only canvas text is ever reattached later, and only after a
+ * round trip, so a template that did not say so would ship six Sections holding nothing.
+ */
+function templateSectionMembership(
+  items: readonly ActivityTemplateItem[],
+  itemIds: readonly string[],
+): Map<number, string> {
+  // Containment is measured before the batch is placed, so every item shares one transform and
+  // the identity is enough: moving them all together cannot change which Section holds which.
+  const bounds = items.map((item) =>
+    itemBounds({ ...item, transform: [1, 0, 0, 1, 0, 0] } as unknown as BoundsItem),
+  );
+  const membership = new Map<number, string>();
+  items.forEach((item, index) => {
+    if (item.kind === "zone") return;
+    const inner = bounds[index];
+    if (!inner) return;
+    // The last containing Section wins, which is the topmost one, as the board's own reconciler
+    // resolves overlapping Sections by z order.
+    let owner: string | undefined;
+    items.forEach((candidate, candidateIndex) => {
+      if (candidate.kind !== "zone" || candidateIndex === index) return;
+      const outer = bounds[candidateIndex];
+      const id = itemIds[candidateIndex];
+      if (outer && id && boundsContain(outer, inner)) owner = id;
+    });
+    if (owner !== undefined) membership.set(index, owner);
+  });
+  return membership;
+}
+
+function boundsContain(outer: Bounds, inner: Bounds): boolean {
+  return (
+    outer.minX <= inner.minX &&
+    outer.minY <= inner.minY &&
+    outer.maxX >= inner.maxX &&
+    outer.maxY >= inner.maxY
+  );
 }
