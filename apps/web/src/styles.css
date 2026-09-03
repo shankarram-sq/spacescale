@@ -1354,6 +1354,14 @@ button:disabled {
   background: #111827;
 }
 
+.video-embed-preview {
+  display: grid;
+  place-items: center;
+  color: rgb(255 255 255 / 72%);
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .video-embed-border {
   fill: none;
   stroke: rgb(30 30 30 / 28%);

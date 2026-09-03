@@ -184,10 +184,25 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   await expect(videoDialog).toBeHidden();
   const video = page.locator("#drawing-area .video-embed-item");
   await expect(video).toHaveCount(1);
-  await expect(video.locator("iframe")).toHaveAttribute(
+  const videoFrame = video.locator("iframe");
+  await expect(videoFrame).toHaveAttribute(
     "src",
     "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ",
   );
+  const videoHeading = video.locator(".video-embed-heading");
+  await expect(videoHeading).toHaveAttribute("data-board-link", "true");
+  await videoHeading.evaluate((node) => {
+    node.addEventListener(
+      "click",
+      (event) => {
+        event.preventDefault();
+        node.setAttribute("data-clicked", "true");
+      },
+      { once: true },
+    );
+  });
+  await videoHeading.click();
+  await expect(videoHeading).toHaveAttribute("data-clicked", "true");
 
   await page.reload();
   await expect(page.locator("#drawing-area [data-math-state='ready']")).toHaveCount(5);

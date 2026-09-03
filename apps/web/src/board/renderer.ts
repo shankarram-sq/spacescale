@@ -645,7 +645,9 @@ export class BoardRenderer {
     for (const id of ids) {
       const item = this.model.getItem(id);
       if (!item) continue;
-      const node = itemNode(item, (assetId) => this.imageAssets.load(assetId));
+      const node = itemNode(item, (assetId) => this.imageAssets.load(assetId), {
+        preview: true,
+      });
       node.classList.add("local-preview", "move-preview");
       node.setAttribute(
         "transform",
@@ -679,7 +681,9 @@ export class BoardRenderer {
   ): void {
     this.clearLocalLayer();
     const preview = { ...item, transform } as RotatableObjectItem;
-    const node = itemNode(preview, (assetId) => this.imageAssets.load(assetId));
+    const node = itemNode(preview, (assetId) => this.imageAssets.load(assetId), {
+      preview: true,
+    });
     node.classList.add("local-preview", className);
     this.localLayer.append(node);
     this.renderSelectionBounds(boardItemBounds(preview), [
@@ -697,7 +701,9 @@ export class BoardRenderer {
       ...preview,
       id: `${item.id}-resize-preview`,
     } as ResizableCardItem;
-    const node = itemNode(renderItem, (assetId) => this.imageAssets.load(assetId));
+    const node = itemNode(renderItem, (assetId) => this.imageAssets.load(assetId), {
+      preview: true,
+    });
     node.classList.add("local-preview", "resize-preview");
     this.localLayer.append(node);
     this.renderSelectionBounds(
@@ -716,7 +722,9 @@ export class BoardRenderer {
       ...preview,
       id: `${item.id}-resize-preview`,
     } as ResizableStructuredItem;
-    const node = itemNode(renderItem, (assetId) => this.imageAssets.load(assetId));
+    const node = itemNode(renderItem, (assetId) => this.imageAssets.load(assetId), {
+      preview: true,
+    });
     node.classList.add("local-preview", "resize-preview");
     this.localLayer.append(node);
     this.renderSelectionBounds(
@@ -742,6 +750,7 @@ export class BoardRenderer {
   }
 
   renderRemotePreviews(previews: Iterable<RemotePreview>): void {
+    clearTypesetMath(this.remoteLayer);
     this.remoteLayer.replaceChildren();
     for (const preview of previews) {
       const group = svgElement("g");
@@ -785,7 +794,9 @@ export class BoardRenderer {
         for (const id of ids) {
           const item = this.model.getItem(id);
           if (!item) continue;
-          const node = itemNode(item, (assetId) => this.imageAssets.load(assetId));
+          const node = itemNode(item, (assetId) => this.imageAssets.load(assetId), {
+            preview: true,
+          });
           node.setAttribute("stroke", color);
           node.setAttribute("opacity", "0.45");
           node.setAttribute(
@@ -850,11 +861,9 @@ export class BoardRenderer {
         continue;
       }
       if (current) clearTypesetMath(current);
-      const replacement = itemNode(
-        item,
-        (assetId) => this.imageAssets.load(assetId),
-        this.resolveCreatorName(item.createdBy),
-        (width, height) => {
+      const replacement = itemNode(item, (assetId) => this.imageAssets.load(assetId), {
+        creatorName: this.resolveCreatorName(item.createdBy),
+        onTextSize: (width, height) => {
           if (this.model.setRenderedTextSize(id, item.version, width, height)) {
             this.refreshSelection();
             this.refreshComments();
@@ -864,7 +873,7 @@ export class BoardRenderer {
             this.onRenderedTextBoundsChange(id, item.version);
           }
         },
-      );
+      });
       if (current) {
         current.replaceWith(replacement);
       }
@@ -1282,11 +1291,16 @@ export class CanvasViewport {
   }
 }
 
+type ItemNodeOptions = {
+  creatorName?: string;
+  onTextSize?: (width: number, height: number) => void;
+  preview?: boolean;
+};
+
 function itemNode(
   item: BoardItem,
   loadImageAsset: (assetId: string) => Promise<string>,
-  creatorName?: string,
-  onTextSize?: (width: number, height: number) => void,
+  options: ItemNodeOptions = {},
 ): SVGGraphicsElement {
   let node: SVGGraphicsElement;
   switch (item.kind) {
@@ -1309,9 +1323,9 @@ function itemNode(
     case "text": {
       const video = item.geometry.embed === "video" ? videoEmbedFromText(item.geometry.text) : null;
       node = video
-        ? videoEmbedNode(item.geometry, item.style, video)
+        ? videoEmbedNode(item.geometry, item.style, video, options.preview === true)
         : containsMathMarkup(item.geometry.text)
-          ? mathTextNode(item.geometry, item.style, onTextSize)
+          ? mathTextNode(item.geometry, item.style, options.onTextSize)
           : textNode(item.geometry, item.style);
       break;
     }
@@ -1336,10 +1350,10 @@ function itemNode(
   node.classList.add("board-item", `board-item-${item.kind}`);
   node.setAttribute("transform", matrixAttribute(item.transform));
   if (
-    creatorName?.trim() &&
+    options.creatorName?.trim() &&
     (item.kind === "sticky" || item.kind === "image" || item.kind === "stamp")
   ) {
-    appendCreatorAttribution(node, item, creatorName.trim());
+    appendCreatorAttribution(node, item, options.creatorName.trim());
   }
   return node;
 }
@@ -1430,9 +1444,15 @@ function mathTextNode(
   return node;
 }
 
-function videoEmbedNode(geometry: TextGeometry, style: TextStyle, video: VideoEmbed): SVGGElement {
+function videoEmbedNode(
+  geometry: TextGeometry,
+  style: TextStyle,
+  video: VideoEmbed,
+  preview: boolean,
+): SVGGElement {
   const node = svgElement("g");
   node.classList.add("video-embed-item");
+  if (preview) node.classList.add("video-embed-preview-item");
   node.dataset.videoProvider = video.provider;
   node.setAttribute("role", "group");
   node.setAttribute("aria-label", video.title);
@@ -1445,23 +1465,35 @@ function videoEmbedNode(geometry: TextGeometry, style: TextStyle, video: VideoEm
 
   const card = document.createElement("div");
   card.className = "video-embed-card";
-  const heading = document.createElement("a");
-  heading.className = "video-embed-heading";
-  heading.href = video.sourceUrl;
-  heading.target = "_blank";
-  heading.rel = "noopener noreferrer";
-  heading.referrerPolicy = "no-referrer";
-  heading.textContent = `${video.title} · open in new tab`;
-  const frame = document.createElement("iframe");
-  frame.className = "video-embed-frame";
-  frame.src = video.embedUrl;
-  frame.title = video.title;
-  frame.loading = "lazy";
-  frame.referrerPolicy = "strict-origin-when-cross-origin";
-  frame.allow =
-    "accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture; web-share";
-  frame.allowFullscreen = true;
-  card.append(heading, frame);
+  if (preview) {
+    const heading = document.createElement("div");
+    heading.className = "video-embed-heading";
+    heading.textContent = video.title;
+    const placeholder = document.createElement("div");
+    placeholder.className = "video-embed-preview";
+    placeholder.setAttribute("aria-hidden", "true");
+    placeholder.textContent = "Video preview";
+    card.append(heading, placeholder);
+  } else {
+    const heading = document.createElement("a");
+    heading.className = "video-embed-heading";
+    heading.dataset.boardLink = "true";
+    heading.href = video.sourceUrl;
+    heading.target = "_blank";
+    heading.rel = "noopener noreferrer";
+    heading.referrerPolicy = "no-referrer";
+    heading.textContent = `${video.title} · open in new tab`;
+    const frame = document.createElement("iframe");
+    frame.className = "video-embed-frame";
+    frame.src = video.embedUrl;
+    frame.title = video.title;
+    frame.loading = "lazy";
+    frame.referrerPolicy = "strict-origin-when-cross-origin";
+    frame.allow =
+      "accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture; web-share";
+    frame.allowFullscreen = true;
+    card.append(heading, frame);
+  }
   foreign.append(card);
 
   const border = svgElement("rect");

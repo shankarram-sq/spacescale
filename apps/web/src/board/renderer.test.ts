@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAX_RENDERED_VOTE_TABLES, VOTE_TABLE_STYLE } from "../activities/voting";
 import type { BoardItem, TableItem } from "../types";
 import {
+  BoardRenderer,
   CanvasViewport,
   commentMarkerNode,
   creatorBadge,
@@ -79,6 +80,62 @@ describe("canvas text rendering", () => {
     expect(link?.children[0]?.textContent).toBe("https://example.com/docs");
     expect(node.children.filter((child) => child.name === "a")).toHaveLength(1);
     expect(node.children.at(-1)?.textContent).toContain("javascript:alert(1)");
+  });
+});
+
+describe("video movement previews", () => {
+  beforeEach(() => {
+    vi.stubGlobal("document", {
+      createElement: (name: string) => fakeSvgNode(name),
+      createElementNS: (_namespace: string, name: string) => fakeSvgNode(name),
+    });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("renders a lightweight card without creating another video iframe", () => {
+    const item: Extract<BoardItem, { kind: "text" }> = {
+      id: "video-item",
+      kind: "text",
+      z: 1,
+      version: 1,
+      createdBy: "owner",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "text",
+        color: "#111827",
+        fontSize: 20,
+        fontFamily: "sans",
+        opacity: 1,
+      },
+      geometry: {
+        x: 20,
+        y: 40,
+        text: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        embed: "video",
+      },
+    };
+    const localLayer = fakeSvgNode("g");
+    const setSelection = vi.fn();
+    const renderer = {
+      clearLocalLayer: () => localLayer.replaceChildren(),
+      imageAssets: { load: vi.fn() },
+      localLayer,
+      model: { getItem: (id: string) => (id === item.id ? item : undefined) },
+      setSelection,
+    } as unknown as BoardRenderer;
+
+    BoardRenderer.prototype.showMovePreview.call(renderer, [item.id], 24, 12);
+
+    const preview = localLayer.children[0];
+    expect(preview?.classList.values.has("move-preview")).toBe(true);
+    expect(preview?.classList.values.has("video-embed-preview-item")).toBe(true);
+    const foreign = preview?.children.find((child) => child.name === "foreignObject");
+    const card = foreign?.children[0];
+    expect(card?.children.some((child) => child.name === "iframe")).toBe(false);
+    expect(card?.children[1]?.className).toBe("video-embed-preview");
+    expect(card?.children[1]?.textContent).toBe("Video preview");
+    expect(setSelection).toHaveBeenCalledWith([item.id], { x: 24, y: 12 });
   });
 });
 
@@ -415,6 +472,7 @@ describe("table cell text wrapping", () => {
 
 type FakeSvgNode = {
   name: string;
+  className?: string;
   attributes: Map<string, string>;
   children: FakeSvgNode[];
   dataset: Record<string, string>;
