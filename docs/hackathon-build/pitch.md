@@ -24,35 +24,7 @@ own device, with their own notes and their own rules, without anyone shipping
 a server, is rarer still. That combination is what SpaceScale builds, and it is
 what WebMCP uniquely enables.
 
-## What it looks like in a classroom
-
-A teacher assigns five problems. Every student has a Section of the board and
-works in it, typing or writing by hand on a pen tablet. The teacher starts a
-board watch from Codex with the class notes and a coaching skill loaded.
-
-From then on, without the teacher prompting again:
-
-- A student who finishes early gets a fast-finisher question pinned beside
-  their last answer.
-- A student stuck on question three gets a hint on that exact step. A hint, not
-  the answer, because the teacher's skill says so.
-- A student who is struggling across every problem gets a two-minute video
-  placed next to their work, chosen from the resources the teacher provided.
-
-Each of these lands as an ordinary canvas object, marked as AI-written,
-attributed to the teacher, visible to whoever should see it, and undoable in one
-click. The teacher never left the board.
-
-Two more scenes, same machinery, different skill:
-
-- **Brainstorm.** Six students each list problems near the school. The agent
-  notices that three of them chose traffic at the gate and leaves a comment
-  connecting them, so the groups form themselves.
-- **Debate.** Two sides argue. The agent comments on each side's Section with
-  the assumption their argument rests on, phrased as a question, so the next
-  round is about evidence rather than volume.
-
-## Three things only WebMCP makes possible here
+## Few special features of this implementation
 
 ### 1. Two-way WebMCP: the page can invoke the agent
 
@@ -73,10 +45,13 @@ tools drop straight onto it.
 
 ### 2. Collaboration on the site, knowledge on the client
 
-SpaceScale ships with no model key and no AI backend. Everything the agent
-knows about *this* class comes from the teacher's own machine: Codex, a skill
-file that encodes the pedagogy, and local documents such as the class notes,
-the marking scheme, or the video list.
+The logic of the lesson lives in the teacher's own skills and files. A skill
+file encodes the pedagogy: when to hint, when to hold back, when to reach for
+a video. Local documents supply the knowledge: the class notes, the marking
+scheme, the video list. The teacher adds or edits these on their own machine,
+and Codex applies them to the live board. What SpaceScale itself does not do
+today can be added the same way, as a skill or a file, without touching the
+site.
 
 The site does what only the site can do: hold the live state, show who wrote
 what, render handwriting to an image, collect a vote, and put the agent's
@@ -124,6 +99,34 @@ is not in any database. It is the live page: who is on which step, what they
 just saved, what they selected, how the class voted. WebMCP hands that context
 to the agent directly, and hands the agent's answer back to the page, without
 DOM scraping, a browser extension, or a second server.
+
+## What it looks like in a classroom
+
+A teacher assigns five problems. Every student has a Section of the board and
+works in it, typing or writing by hand on a pen tablet. The teacher starts a
+board watch from Codex with the class notes and a coaching skill loaded.
+
+From then on, without the teacher prompting again:
+
+- A student who finishes early gets a fast-finisher question pinned beside
+  their last answer.
+- A student stuck on question three gets a hint on that exact step. A hint, not
+  the answer, because the teacher's skill says so.
+- A student who is struggling across every problem gets a two-minute video
+  placed next to their work, chosen from the resources the teacher provided.
+
+Each of these lands as an ordinary canvas object, marked as AI-written,
+attributed to the teacher, visible to whoever should see it, and undoable in one
+click. The teacher never left the board.
+
+Two more scenes, same machinery, different skill:
+
+- **Brainstorm.** Six students each list problems near the school. The agent
+  notices that three of them chose traffic at the gate and leaves a comment
+  connecting them, so the groups form themselves.
+- **Debate.** Two sides argue. The agent comments on each side's Section with
+  the assumption their argument rests on, phrased as a question, so the next
+  round is about evidence rather than volume.
 
 ## Built for education, open to any room
 
