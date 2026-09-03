@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BoardItem, ServerAction } from "../types";
 import {
+  MAX_ASSIST_COMMENTS_PER_WATCH,
   MAX_WATCHED_ITEMS,
   PROBLEM_STEP_WATCH_DURATION_MS,
   ProblemStepWatchFeed,
@@ -821,6 +822,31 @@ describe("board-side assist requests", () => {
       { reply: { via: "conversation", note: expect.stringContaining("has been deleted") } },
     ]);
     expect((allGone.requests as Array<{ reply: object }>)[0]?.reply).not.toHaveProperty("call");
+  });
+
+  it("falls back to the conversation once the watch has spent its comment budget", async () => {
+    // The budget is refused at the comment target, so a plan naming a comment after it is spent
+    // is one the host cannot carry out.
+    const { feed } = watching();
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    for (let index = 0; index < MAX_ASSIST_COMMENTS_PER_WATCH; index += 1) {
+      feed.commentTarget(String(started.watchToken), "step_1").release(true);
+    }
+
+    feed.requestAssistance({ itemIds: [STICKY_ID], action: "ideate" });
+    const spent = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(spent.requests).toMatchObject([
+      {
+        reply: {
+          via: "conversation",
+          note: expect.stringContaining(`spent its ${MAX_ASSIST_COMMENTS_PER_WATCH} AI comments`),
+        },
+      },
+    ]);
+    expect((spent.requests as Array<{ reply: object }>)[0]?.reply).not.toHaveProperty("call");
   });
 
   it("answers every action in a comment, and falls back to the conversation when commenting is off", async () => {
