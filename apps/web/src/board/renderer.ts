@@ -1505,7 +1505,34 @@ function videoEmbedNode(
   border.setAttribute("rx", "12");
   border.setAttribute("pointer-events", "none");
   node.append(foreign, border);
+  if (!preview) node.append(videoDragHandleNode(geometry, style));
   return node;
+}
+
+function videoDragHandleNode(geometry: TextGeometry, style: TextStyle): SVGGElement {
+  const x = geometry.x + VIDEO_EMBED_WIDTH - 34;
+  const y = geometry.y - style.fontSize + 4;
+  const handle = svgElement("g");
+  handle.classList.add("video-embed-drag-handle");
+  handle.dataset.videoDragHandle = "true";
+
+  const surface = svgElement("rect");
+  surface.classList.add("video-embed-drag-surface");
+  surface.setAttribute("x", String(x));
+  surface.setAttribute("y", String(y));
+  surface.setAttribute("width", "30");
+  surface.setAttribute("height", "22");
+  surface.setAttribute("rx", "7");
+
+  const grip = svgElement("text");
+  grip.classList.add("video-embed-drag-grip");
+  grip.setAttribute("x", String(x + 15));
+  grip.setAttribute("y", String(y + 15));
+  grip.setAttribute("text-anchor", "middle");
+  grip.setAttribute("pointer-events", "none");
+  grip.textContent = "⠿";
+  handle.append(surface, grip);
+  return handle;
 }
 
 type MathForeignObjectOptions = {

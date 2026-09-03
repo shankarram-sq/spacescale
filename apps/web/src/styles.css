@@ -1369,6 +1369,26 @@ button:disabled {
   vector-effect: non-scaling-stroke;
 }
 
+.video-embed-drag-handle {
+  cursor: grab;
+}
+
+.video-embed-drag-handle:active {
+  cursor: grabbing;
+}
+
+.video-embed-drag-surface {
+  fill: #fff;
+  stroke: rgb(30 30 30 / 22%);
+  stroke-width: 1;
+}
+
+.video-embed-drag-grip {
+  fill: #686761;
+  font-size: 15px;
+  font-weight: 700;
+}
+
 .tool-glyph-video {
   color: #e5484d;
   font-size: 19px;

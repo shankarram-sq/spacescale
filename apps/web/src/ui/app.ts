@@ -3613,6 +3613,16 @@ export class BoardApp {
     if (!this.canCommit() || this.pendingRenderedTextSectionDetaches.has(itemId)) return;
     const operation = this.model.renderedTextSectionDetachOperation(itemId, expectedVersion);
     if (operation === null) return;
+    if (
+      !operationAllowedForActor(
+        operation,
+        this.bootstrap.actor.role,
+        this.bootstrap.actor.id,
+        this.model.authoritativeItems,
+      )
+    ) {
+      return;
+    }
     this.pendingRenderedTextSectionDetaches.add(itemId);
     void this.commit(operation).finally(() => {
       this.pendingRenderedTextSectionDetaches.delete(itemId);

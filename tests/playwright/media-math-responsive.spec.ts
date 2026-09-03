@@ -208,6 +208,23 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   await expect(page.locator("#drawing-area [data-math-state='ready']")).toHaveCount(5);
   await expect(page.locator("#drawing-area .video-embed-item")).toHaveCount(1);
   await expect(page.locator("#drawing-area .board-text-link")).toHaveCount(2);
+  const videoDragHandle = video.locator("[data-video-drag-handle]");
+  await expect(videoDragHandle).toHaveCount(1);
+  const handleBox = await videoDragHandle.boundingBox();
+  if (!handleBox) throw new Error("The embedded video drag handle has no rendered bounds.");
+  await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(
+    handleBox.x + handleBox.width / 2 + 20,
+    handleBox.y + handleBox.height / 2 + 10,
+  );
+  const videoMovePreview = page.locator(
+    "#local-preview-layer .move-preview.video-embed-preview-item",
+  );
+  await expect(videoMovePreview).toHaveCount(1);
+  await expect(videoMovePreview.locator("iframe")).toHaveCount(0);
+  await expect(videoMovePreview.locator(".video-embed-preview")).toHaveText("Video preview");
+  await page.mouse.up();
 
   await page.setViewportSize({ width: 840, height: 640 });
   await expect(page.locator(".comments-button-label")).toBeHidden();
