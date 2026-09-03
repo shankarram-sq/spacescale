@@ -1,3 +1,7 @@
+import { normalizeSingleDollarMath } from "@collab/geometry";
+
+export { normalizeSingleDollarMath };
+
 type MathJaxApi = {
   startup?: { promise?: Promise<void> };
   typesetClear?: (elements: HTMLElement[]) => void;
@@ -19,42 +23,6 @@ export function containsMathMarkup(value: string): boolean {
   return UNAMBIGUOUS_MATH_MARKUP.test(value) || normalizeSingleDollarMath(value) !== value;
 }
 
-export function normalizeSingleDollarMath(value: string): string {
-  let result = "";
-  let copiedThrough = 0;
-  for (let opening = 0; opening < value.length; opening += 1) {
-    if (
-      value[opening] !== "$" ||
-      dollarIsEscaped(value, opening) ||
-      value[opening - 1] === "$" ||
-      value[opening + 1] === "$"
-    ) {
-      continue;
-    }
-    const first = value[opening + 1];
-    if (first === undefined || /\s/u.test(first)) continue;
-    for (let closing = opening + 2; closing < value.length; closing += 1) {
-      if (value[closing] !== "$" || dollarIsEscaped(value, closing)) continue;
-      if (value[closing - 1] === "$" || value[closing + 1] === "$") break;
-      const previous = value[closing - 1];
-      const next = value[closing + 1];
-      const expression = value.slice(opening + 1, closing);
-      if (
-        previous !== undefined &&
-        !/\s/u.test(previous) &&
-        (next === undefined || !/\d/u.test(next)) &&
-        singleDollarExpressionIsMath(expression)
-      ) {
-        result += `${value.slice(copiedThrough, opening)}\\(${expression}\\)`;
-        copiedThrough = closing + 1;
-        opening = closing;
-      }
-      break;
-    }
-  }
-  return copiedThrough === 0 ? value : result + value.slice(copiedThrough);
-}
-
 export function splitMathMarkup(value: string): Array<{ kind: "math" | "text"; text: string }> {
   const normalized = normalizeSingleDollarMath(value);
   const result: Array<{ kind: "math" | "text"; text: string }> = [];
@@ -67,16 +35,6 @@ export function splitMathMarkup(value: string): Array<{ kind: "math" | "text"; t
   }
   if (cursor < normalized.length) result.push({ kind: "text", text: normalized.slice(cursor) });
   return result;
-}
-
-function singleDollarExpressionIsMath(value: string): boolean {
-  const first = value[0];
-  return (
-    first === undefined ||
-    !/\d/u.test(first) ||
-    /[+\-*/=^_<>\\]/u.test(value) ||
-    /^\d+(?:\.\d+)?[A-Za-z]/u.test(value)
-  );
 }
 
 function mathExpressionSource(markup: string): string {
@@ -100,14 +58,6 @@ function labelRenderedMath(container: HTMLElement, source: string): void {
     rendered.setAttribute("role", "math");
     rendered.setAttribute("aria-label", `Formula: ${formula}`);
   });
-}
-
-function dollarIsEscaped(value: string, index: number): boolean {
-  let backslashes = 0;
-  for (let cursor = index - 1; cursor >= 0 && value[cursor] === "\\"; cursor -= 1) {
-    backslashes += 1;
-  }
-  return backslashes % 2 === 1;
 }
 
 async function loadMathJax(): Promise<MathJaxApi> {

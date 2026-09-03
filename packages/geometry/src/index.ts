@@ -1087,6 +1087,65 @@ function codePointLength(value: string): number {
   return Array.from(value).length;
 }
 
+/**
+ * Converts only unambiguous single-dollar expressions to the delimiters used by the shared
+ * TeX parser. Currency-like pairs stay literal. The browser renderer and canonical geometry
+ * must use this same normalization so Section membership cannot disagree with MathJax.
+ */
+export function normalizeSingleDollarMath(value: string): string {
+  let result = "";
+  let copiedThrough = 0;
+  for (let opening = 0; opening < value.length; opening += 1) {
+    if (
+      value[opening] !== "$" ||
+      dollarIsEscaped(value, opening) ||
+      value[opening - 1] === "$" ||
+      value[opening + 1] === "$"
+    ) {
+      continue;
+    }
+    const first = value[opening + 1];
+    if (first === undefined || /\s/u.test(first)) continue;
+    for (let closing = opening + 2; closing < value.length; closing += 1) {
+      if (value[closing] !== "$" || dollarIsEscaped(value, closing)) continue;
+      if (value[closing - 1] === "$" || value[closing + 1] === "$") break;
+      const previous = value[closing - 1];
+      const next = value[closing + 1];
+      const expression = value.slice(opening + 1, closing);
+      if (
+        previous !== undefined &&
+        !/\s/u.test(previous) &&
+        (next === undefined || !/\d/u.test(next)) &&
+        singleDollarExpressionIsMath(expression)
+      ) {
+        result += `${value.slice(copiedThrough, opening)}\\(${expression}\\)`;
+        copiedThrough = closing + 1;
+        opening = closing;
+      }
+      break;
+    }
+  }
+  return copiedThrough === 0 ? value : result + value.slice(copiedThrough);
+}
+
+function singleDollarExpressionIsMath(value: string): boolean {
+  const first = value[0];
+  return (
+    first === undefined ||
+    !/\d/u.test(first) ||
+    /[+\-*/=^_<>\\]/u.test(value) ||
+    /^\d+(?:\.\d+)?[A-Za-z]/u.test(value)
+  );
+}
+
+function dollarIsEscaped(value: string, index: number): boolean {
+  let backslashes = 0;
+  for (let cursor = index - 1; cursor >= 0 && value[cursor] === "\\"; cursor -= 1) {
+    backslashes += 1;
+  }
+  return backslashes % 2 === 1;
+}
+
 const UNAMBIGUOUS_TEX_MARKUP = /\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\]|\$\$[\s\S]+?\$\$/gu;
 const TEX_ENVIRONMENT_COMMAND = /\\(?:begin|end)\s*\{[^{}]*\}/gu;
 const ZERO_WIDTH_TEX_LAYOUT_COMMAND =
@@ -1111,7 +1170,7 @@ const TEX_VERTICAL_DIMENSION_COMMAND = new RegExp(
   "gu",
 );
 const TEX_RULE_COMMAND = new RegExp(
-  String.raw`\\rule\s*(?:\[[^\]]*\])?\s*\{\s*(${TEX_DIMENSION})\s*\}\s*\{\s*(${TEX_DIMENSION})\s*\}`,
+  String.raw`\\rule\s*(?:\[\s*(${TEX_DIMENSION})\s*\])?\s*\{\s*(${TEX_DIMENSION})\s*\}\s*\{\s*(${TEX_DIMENSION})\s*\}`,
   "gu",
 );
 /** Sized commands left over once the parseable forms above are expanded. */
@@ -1172,31 +1231,41 @@ function texDimensionPixels(dimension: string, fontSize: number): number | null 
   return pixels === undefined ? null : amount * pixels;
 }
 
-function texWidthGlyphs(pixels: number, fontSize: number): string {
-  const glyphs = Math.ceil(Math.max(0, pixels) / Math.max(1, fontSize * TEXT_GLYPH_WIDTH_RATIO));
-  return "x".repeat(Math.min(TEX_MAX_ESTIMATE_GLYPHS, glyphs));
+function texWidthGlyphCount(pixels: number, fontSize: number): number {
+  return Math.ceil(Math.max(0, pixels) / Math.max(1, fontSize * TEXT_GLYPH_WIDTH_RATIO));
 }
 
-function texHeightLines(pixels: number, fontSize: number): string {
-  const lines = Math.ceil(Math.max(0, pixels) / Math.max(1, fontSize * TEXT_LINE_HEIGHT_RATIO));
-  return "\n".repeat(Math.min(TEX_MAX_ESTIMATE_LINES, lines));
+function texHeightLineCount(pixels: number, fontSize: number): number {
+  return Math.ceil(Math.max(0, pixels) / Math.max(1, fontSize * TEXT_LINE_HEIGHT_RATIO));
 }
 
-function expandTexDimensions(markup: string, fontSize: number): string {
+type TexExpansionBudget = { remainingGlyphs: number; remainingLines: number };
+
+function expandTexDimensions(markup: string, fontSize: number, budget: TexExpansionBudget): string {
+  const glyphRun = (requested: number): string => {
+    const count = Math.min(budget.remainingGlyphs, Math.max(0, requested));
+    budget.remainingGlyphs -= count;
+    return "x".repeat(count);
+  };
+  const lineRun = (requested: number): string => {
+    const count = Math.min(budget.remainingLines, Math.max(0, requested));
+    budget.remainingLines -= count;
+    return "\n".repeat(count);
+  };
   const width = (dimension: string | undefined): string => {
     const pixels = dimension === undefined ? null : texDimensionPixels(dimension, fontSize);
     return pixels === null
-      ? "x".repeat(TEX_UNSIZED_COMMAND_GLYPHS)
-      : texWidthGlyphs(pixels, fontSize);
+      ? glyphRun(TEX_UNSIZED_COMMAND_GLYPHS)
+      : glyphRun(texWidthGlyphCount(pixels, fontSize));
   };
   const height = (dimension: string | undefined): string => {
     const pixels = dimension === undefined ? null : texDimensionPixels(dimension, fontSize);
-    return pixels === null ? "\n" : texHeightLines(pixels, fontSize);
+    return pixels === null ? lineRun(1) : lineRun(texHeightLineCount(pixels, fontSize));
   };
   return markup
     .replace(
       TEX_RULE_COMMAND,
-      (_match, ruleWidth?: string, ruleHeight?: string) =>
+      (_match, _ruleRaise?: string, ruleWidth?: string, ruleHeight?: string) =>
         `${width(ruleWidth)}${height(ruleHeight)}`,
     )
     .replace(TEX_HORIZONTAL_DIMENSION_COMMAND, (_match, braced?: string, bare?: string) =>
@@ -1206,13 +1275,37 @@ function expandTexDimensions(markup: string, fontSize: number): string {
       height(braced ?? bare),
     )
     .replace(TEX_FIXED_SPACE, (match) =>
-      texWidthGlyphs((TEX_FIXED_SPACE_EM.get(match) ?? 0) * fontSize, fontSize),
+      glyphRun(texWidthGlyphCount((TEX_FIXED_SPACE_EM.get(match) ?? 0) * fontSize, fontSize)),
     )
-    .replace(TEX_UNSIZED_DIMENSION_COMMAND, "x".repeat(TEX_UNSIZED_COMMAND_GLYPHS));
+    .replace(TEX_UNSIZED_DIMENSION_COMMAND, () => glyphRun(TEX_UNSIZED_COMMAND_GLYPHS));
 }
 
-function texLayoutEstimateSource(markup: string, fontSize: number): string {
-  return expandTexDimensions(markup.slice(2, -2), fontSize)
+function raisedRuleVerticalExtents(
+  value: string,
+  fontSize: number,
+): { upward: number; downward: number } {
+  let upward = 0;
+  let downward = 0;
+  const maximum = TEX_MAX_ESTIMATE_LINES * fontSize * TEXT_LINE_HEIGHT_RATIO;
+  for (const markupMatch of normalizeSingleDollarMath(value).matchAll(UNAMBIGUOUS_TEX_MARKUP)) {
+    for (const ruleMatch of markupMatch[0].matchAll(TEX_RULE_COMMAND)) {
+      const raise = ruleMatch[1] === undefined ? 0 : texDimensionPixels(ruleMatch[1], fontSize);
+      const height = ruleMatch[3] === undefined ? null : texDimensionPixels(ruleMatch[3], fontSize);
+      if (raise === null || height === null) continue;
+      const edge = raise + height;
+      upward = Math.max(upward, Math.min(maximum, Math.max(0, raise, edge)));
+      downward = Math.max(downward, Math.min(maximum, Math.max(0, -raise, -edge)));
+    }
+  }
+  return { upward, downward };
+}
+
+function texLayoutEstimateSource(
+  markup: string,
+  fontSize: number,
+  budget: TexExpansionBudget,
+): string {
+  return expandTexDimensions(markup.slice(2, -2), fontSize, budget)
     .replace(TEX_ENVIRONMENT_COMMAND, "")
     .replace(/\\\\/gu, "\n")
     .replace(ZERO_WIDTH_TEX_LAYOUT_COMMAND, "")
@@ -1234,7 +1327,13 @@ export function textLayoutEstimateSource(
 ): string {
   const size =
     Number.isFinite(fontSize) && fontSize > 0 ? fontSize : DEFAULT_TEX_ESTIMATE_FONT_SIZE;
-  return value.replace(UNAMBIGUOUS_TEX_MARKUP, (markup) => texLayoutEstimateSource(markup, size));
+  const budget: TexExpansionBudget = {
+    remainingGlyphs: TEX_MAX_ESTIMATE_GLYPHS,
+    remainingLines: TEX_MAX_ESTIMATE_LINES,
+  };
+  return normalizeSingleDollarMath(value).replace(UNAMBIGUOUS_TEX_MARKUP, (markup) =>
+    texLayoutEstimateSource(markup, size, budget),
+  );
 }
 
 export type OutlineGeometryKind = "pencil" | "line" | "rectangle" | "ellipse" | "polygon";
@@ -1460,14 +1559,18 @@ export function geometryBounds(
       }
       const lines = textLayoutEstimateSource(text.text, textFontSize).split(/\r\n?|\n/u);
       const lineHeight = textFontSize * TEXT_LINE_HEIGHT_RATIO;
+      const ruleExtents = raisedRuleVerticalExtents(text.text, textFontSize);
       const width = Math.max(
         ...lines.map((line) => codePointLength(line) * textFontSize * TEXT_GLYPH_WIDTH_RATIO),
       );
       return {
         minX: text.x,
-        minY: text.y - textFontSize,
+        minY: Math.min(text.y - textFontSize, text.y - ruleExtents.upward),
         maxX: text.x + width,
-        maxY: text.y - textFontSize + Math.max(1, lines.length) * lineHeight,
+        maxY: Math.max(
+          text.y - textFontSize + Math.max(1, lines.length) * lineHeight,
+          text.y + ruleExtents.downward,
+        ),
       };
     }
   }

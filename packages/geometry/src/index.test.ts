@@ -667,10 +667,19 @@ describe("bounds and transforms", () => {
     // Collapsing \hspace to one glyph let a crafted item claim the width of a few letters
     // while MathJax rendered about 20 em, so a Section could accept a formula that spills out.
     expect(textLayoutEstimateSource("$$\\hspace{20em}x$$", 20)).toHaveLength(35);
+    expect(textLayoutEstimateSource("$\\hspace{20em}x$", 20)).toHaveLength(35);
     expect(
       itemBounds({
         kind: "text",
         geometry: { x: 0, y: 40, text: "$$\\hspace{20em}x$$" },
+        transform: [1, 0, 0, 1, 0, 0],
+        style: { kind: "text", fontSize: 20 },
+      }),
+    ).toEqual({ minX: 0, minY: 20, maxX: 420, maxY: 44 });
+    expect(
+      itemBounds({
+        kind: "text",
+        geometry: { x: 0, y: 40, text: "$\\hspace{20em}x$" },
         transform: [1, 0, 0, 1, 0, 0],
         style: { kind: "text", fontSize: 20 },
       }),
@@ -695,13 +704,29 @@ describe("bounds and transforms", () => {
         transform: [1, 0, 0, 1, 0, 0],
         style: { kind: "text", fontSize: 20 },
       }),
-    ).toEqual({ minX: 0, minY: 20, maxX: 108, maxY: 116 });
+    ).toEqual({ minX: 0, minY: -20, maxX: 108, maxY: 116 });
+    expect(
+      itemBounds({
+        kind: "text",
+        geometry: { x: 0, y: 440, text: "$$\\rule[20em]{1em}{1em}$$" },
+        transform: [1, 0, 0, 1, 0, 0],
+        style: { kind: "text", fontSize: 20 },
+      }),
+    ).toEqual({ minX: 0, minY: 20, maxX: 24, maxY: 468 });
 
     // A sized command with no dimension we model is over- rather than under-reported.
     expect(textLayoutEstimateSource("$$\\makebox{x}$$", 20)).toBe(`${"x".repeat(64)}x`);
 
     // A hostile dimension cannot expand the estimate without bound.
     expect(textLayoutEstimateSource("$$\\hspace{999999in}x$$", 20)).toHaveLength(4097);
+    const repeatedDimensions = `$$${"\\hspace{999999in}".repeat(200)}x$$`;
+    expect(repeatedDimensions.length).toBeLessThanOrEqual(5_000);
+    expect(textLayoutEstimateSource(repeatedDimensions, 20)).toHaveLength(4097);
+
+    // The budget applies across separate formula fragments in the same text item too.
+    const repeatedFormulae = `${"$$\\hspace{999999in}$$".repeat(200)}x`;
+    expect(repeatedFormulae.length).toBeLessThanOrEqual(5_000);
+    expect(textLayoutEstimateSource(repeatedFormulae, 20)).toHaveLength(4097);
   });
 
   it("does not count zero-width TeX syntax in canonical text bounds", () => {
