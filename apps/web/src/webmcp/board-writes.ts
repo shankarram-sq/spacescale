@@ -37,6 +37,15 @@ export const INSERT_VIDEO_TOOL = "insert_video";
 /** Matches the edge's comment limit, counted in code points like the server does. */
 const MAX_COMMENT_CODE_POINTS = 2_000;
 /**
+ * How many comments this page will write outside a watch before it refuses.
+ *
+ * A watch-targeted comment is already bounded by the watch's own cap, which the target
+ * resolution enforces. The location and selection forms have no such anchor, and the board
+ * itself only stops at 10,000 comments, so a host that loops or retries could bury a class's
+ * work. This is deliberately generous for a lesson and finite for a runaway caller.
+ */
+const MAX_UNWATCHED_COMMENTS = 50;
+/**
  * A generated PNG, JPEG, WebP or GIF arrives as a data URL rather than a link: SpaceScale never
  * fetches an external image. Base64 costs a third over the bytes, and the board's own upload
  * ceiling is 5 MiB, so this bounds the string a host may send before any decoding happens.
@@ -131,6 +140,10 @@ const LOCATION_SCHEMA = {
  */
 export class BoardWriteWebMcp {
   private readonly registration = new AbortController();
+  /** Comments written through the location and selection forms in this page's lifetime. */
+  private unwatchedComments = 0;
+  /** One comment at a time, so concurrent calls cannot race past the cap together. */
+  private commentInFlight = false;
 
   constructor(private readonly options: BoardWriteWebMcpOptions) {
     void this.register();
@@ -148,7 +161,7 @@ export class BoardWriteWebMcp {
         modelContext,
         {
           name: INSERT_COMMENT_TOOL,
-          description: `Post one comment on a saved object on this board. Name the object in one of three ways: pass watchToken and stepAlias to comment on a step of a live board watch, which is what a watch's reply plan asks for and the only way to answer a request the watch delivered; or pass location, a board coordinate the object covers; or pass neither, which comments on the one object selected in this browser. The comment is attributed to this browser's participant, carries a small AI tag, renders MathJax, is limited to ${MAX_COMMENT_CODE_POINTS} characters, and can be resolved by the class like any other comment. Never grade, label, rank, or profile a participant. ${WEBMCP_MATHJAX_GUIDANCE}`,
+          description: `Post one comment on a saved object on this board. Name the object in one of three ways: pass watchToken and stepAlias to comment on a step of a live board watch, which is what a watch's reply plan asks for and the only way to answer a request the watch delivered; or pass location, a board coordinate the object covers; or pass neither, which comments on the one object selected in this browser. The comment is attributed to this browser's participant, carries a small AI tag, renders MathJax, is limited to ${MAX_COMMENT_CODE_POINTS} characters, and can be resolved by the class like any other comment. A comment on a watched step counts against that watch's own cap; the location and selection forms are limited to ${MAX_UNWATCHED_COMMENTS} per page, and each result reports how many are left. Never grade, label, rank, or profile a participant. ${WEBMCP_MATHJAX_GUIDANCE}`,
           inputSchema: {
             type: "object",
             properties: {
@@ -291,10 +304,14 @@ export class BoardWriteWebMcp {
     if (!this.options.canComment()) {
       throw new Error("This browser cannot comment on this Space.");
     }
+    if (this.commentInFlight) {
+      throw new Error("Wait for the previous comment to finish before writing another.");
+    }
     const watched = this.watchedTarget(input);
     signal.throwIfAborted();
     if (watched) {
       // The watch counts this against its own comment cap either way, so release exactly once.
+      this.commentInFlight = true;
       try {
         await this.options.createComment(watched.target.itemId, body, {
           tool: INSERT_COMMENT_TOOL,
@@ -303,15 +320,36 @@ export class BoardWriteWebMcp {
       } catch (error) {
         watched.target.release(false);
         throw error;
+      } finally {
+        this.commentInFlight = false;
       }
       watched.target.release(true);
       this.options.notify(`The AI assistant commented on ${watched.stepAlias}.`, "info");
       return this.commentResult({ stepAlias: watched.stepAlias, characters });
     }
+    if (this.commentInFlight) {
+      throw new Error("Wait for the previous comment to finish before writing another.");
+    }
+    if (this.unwatchedComments >= MAX_UNWATCHED_COMMENTS) {
+      throw new Error(
+        `This page has written its limit of ${MAX_UNWATCHED_COMMENTS} AI comments outside a board watch. Comment on a watched step, or ask a participant to reload.`,
+      );
+    }
     const target = this.commentTarget(input.location);
-    await this.options.createComment(target.id, body, { tool: INSERT_COMMENT_TOOL });
+    this.commentInFlight = true;
+    try {
+      await this.options.createComment(target.id, body, { tool: INSERT_COMMENT_TOOL });
+    } finally {
+      this.commentInFlight = false;
+    }
+    // Only a comment the board accepted counts, so a refusal cannot spend the budget.
+    this.unwatchedComments += 1;
     this.options.notify("The AI assistant added a comment.", "info");
-    return this.commentResult({ objectKind: target.kind, characters });
+    return this.commentResult({
+      objectKind: target.kind,
+      characters,
+      remainingUnwatchedComments: MAX_UNWATCHED_COMMENTS - this.unwatchedComments,
+    });
   }
 
   private commentResult(extra: Record<string, unknown>): Record<string, unknown> {

@@ -421,6 +421,62 @@ describe("generic board writes", () => {
     writes.destroy();
   });
 
+  it("bounds comments written outside a watch, and reports what is left", async () => {
+    // Before this surface existed the only comment path was the watch's, capped at 20. The
+    // location and selection forms have no such anchor, and the board itself stops only at
+    // 10,000, so a looping host could bury a class's work.
+    const { writes, comments, call } = await ready({ itemAt: sticky() });
+    const at = (body: string) => call("insert_comment", { location: { x: 1, y: 1 }, body });
+    expect(await at("one")).toMatchObject({ remainingUnwatchedComments: 49 });
+
+    for (let index = 1; index < 50; index += 1) await at(`filler ${index}`);
+    expect(comments).toHaveLength(50);
+    await expect(at("one too many")).rejects.toThrow(
+      "limit of 50 AI comments outside a board watch",
+    );
+    expect(comments).toHaveLength(50);
+    writes.destroy();
+  });
+
+  it("does not spend the unwatched budget on a comment the board refused", async () => {
+    const context = harness({ itemAt: sticky() });
+    await vi.waitFor(() => expect(context.exposed.has("insert_comment")).toBe(true));
+    let refuse = true;
+    const posted: string[] = [];
+    const writes = new BoardWriteWebMcp({
+      canWrite: () => true,
+      canComment: () => true,
+      imagesEnabled: () => true,
+      featureIssue: () => null,
+      getStyle: context.styleFor(),
+      getPlacementCenter: () => [0, 0],
+      itemAt: () => sticky(),
+      getSelectedItem: () => null,
+      commit: async () => true,
+      createComment: async (_itemId, body) => {
+        if (refuse) throw new Error("The board refused the comment.");
+        posted.push(body);
+      },
+      storeImage: async () => {
+        throw new Error("unused");
+      },
+      revealItems: () => undefined,
+      notify: () => undefined,
+    });
+    const tool = webMcpToolDefinitions().get("insert_comment");
+    if (!tool) throw new Error("insert_comment is not defined.");
+    const signal = new AbortController().signal;
+    const run = (body: string) => tool.execute({ location: { x: 1, y: 1 }, body }, { signal });
+
+    await expect(run("refused")).rejects.toThrow("The board refused the comment.");
+    refuse = false;
+    // The refusal cost nothing, so the first accepted comment still reports a full budget.
+    expect(await run("accepted")).toMatchObject({ remainingUnwatchedComments: 49 });
+    expect(posted).toEqual(["accepted"]);
+    writes.destroy();
+    context.writes.destroy();
+  });
+
   it("withdraws its tools when the page tears down", async () => {
     const { writes, tools, exposed } = await ready();
     writes.destroy();
