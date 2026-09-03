@@ -332,7 +332,7 @@ export const ACTIVITY_TEMPLATES: readonly ActivityTemplate[] = [
     items: [
       zone(-430, -220, 530, 400, "Priya's working"),
       zone(150, 130, 400, 300, "Ask the AI to explain"),
-      text(-430, -300, "Sketch $y = x^2 + 7x + 10$. Mark where it crosses the $x$-axis.", 28),
+      text(-430, -300, "Sketch \\(y = x^2 + 7x + 10\\). Mark where it crosses the x-axis.", 28),
       text(
         -430,
         -262,
@@ -441,7 +441,7 @@ export const ACTIVITY_TEMPLATES: readonly ActivityTemplate[] = [
         -220,
         240,
         150,
-        "I think the roots are $x=-3$ and $x=-1$.",
+        "I think the roots are \\(x=-3\\) and \\(x=-1\\).",
         STICKY_COLOR_VALUES.yellow,
       ),
       sticky(
@@ -449,7 +449,7 @@ export const ACTIVITY_TEMPLATES: readonly ActivityTemplate[] = [
         -50,
         240,
         150,
-        "I checked $x=-3$: $9-21+10=-2$, not $0$.",
+        "I checked \\(x=-3\\): \\(9-21+10=-2\\), not zero.",
         STICKY_COLOR_VALUES.sky,
       ),
       text(-430, 210, "Run the demo:", 18),

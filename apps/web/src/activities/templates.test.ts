@@ -118,9 +118,24 @@ describe("classroom templates", () => {
       }
     }
 
+    // The wrong claim is what the AI corrects, written with MathJax's inline delimiters.
     const graph = byId.get("ai-feedback-graph");
     expect(
-      graph?.items.some((item) => item.kind === "sticky" && item.geometry.text.includes("$x=-3$")),
+      graph?.items.some(
+        (item) => item.kind === "sticky" && item.geometry.text.includes("\\(x=-3\\)"),
+      ),
     ).toBe(true);
+    // A lone $ is a dollar sign, so no demo board may lean on it for math.
+    for (const template of [byId.get("ai-feedback-graph"), byId.get("ai-explain-moon-phases")]) {
+      for (const item of template?.items ?? []) {
+        const text =
+          item.kind === "text" || item.kind === "sticky"
+            ? item.geometry.text
+            : item.kind === "zone"
+              ? item.geometry.title
+              : "";
+        expect(text.replace(/\$\$/gu, "")).not.toContain("$");
+      }
+    }
   });
 });
