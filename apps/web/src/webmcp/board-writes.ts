@@ -343,7 +343,7 @@ export class BoardWriteWebMcp {
         modelContext,
         {
           name: MOVE_STICKIES_TOOL,
-          description: `Move sticky notes that are already on this board, so notes carrying the same idea can be gathered together. Pass one entry per note in moves, up to ${MAX_STICKY_MOVES} at a time. Name each note either by stepAlias, an alias a live board watch reported, alongside that watch's watchToken; or by at, a board coordinate the note covers. Then say where it goes: to, the board coordinate its centre should land on, or by, how far to shift it in board pixels. The whole rearrangement lands as one realtime batch, so the class can put the board back with a single undo. Moving a note does not change whose note it is, and does not mark it as AI-written: this is the same edit a participant makes by dragging it. Only sticky notes move. A note that lands inside a Section joins it and one that leaves loses it, and a note grouped with other objects carries its group along, which can make the batch larger than the notes you named. Because a group moves as one unit, naming two notes of the same group and sending them to different places is refused rather than tearing the group apart: give them the same shift, or name one and let the rest follow. The result reports where each note started and where it now sits; nothing else on this board reports coordinates, so build an absolute layout in a region you choose rather than assuming what already occupies it. Never arrange notes so as to rank, grade, or single out a participant.`,
+          description: `Move sticky notes that are already on this board, so notes carrying the same idea can be gathered together. Pass one entry per note in moves, up to ${MAX_STICKY_MOVES} at a time. Name each note either by stepAlias, an alias a live board watch reported, alongside that watch's watchToken; or by at, a board coordinate the note covers. Then say where it goes: to, the board coordinate its centre should land on, or by, how far to shift it in board pixels. The whole rearrangement lands as one realtime batch, so the class can put the board back with a single undo. Moving a note does not change whose note it is, and does not mark it as AI-written: this is the same edit a participant makes by dragging it. Only sticky notes move. A note that lands inside a Section joins it and one that leaves loses it, and a note grouped with other objects carries its group along, which can make the batch larger than the notes you named. Notes the board moves as one unit — grouped together, or sitting in a Section another named note carries — must be given the same shift, and a note asked to stay put counts as a different shift; sending them to different places is refused rather than pulling that unit apart. Name one of them and let the rest follow, or give them all the same shift. The result reports where each note started and where it now sits; nothing else on this board reports coordinates, so build an absolute layout in a region you choose rather than assuming what already occupies it. Never arrange notes so as to rank, grade, or single out a participant.`,
           inputSchema: {
             type: "object",
             properties: {
@@ -735,7 +735,10 @@ export class BoardWriteWebMcp {
     // reporting a failure the board accepted would have a caller retry a relative shift and move
     // every note a second time.
     signal.throwIfAborted();
-    await apply(moved);
+    // The whole list goes over, the notes asked to stay put included. The board carries grouped
+    // objects and a Section's members along with a move, so a note left out of this call is one
+    // it could pick up and move despite this result saying it did not budge.
+    await apply(moves);
     this.options.revealItems(moved.map((move) => move.item.id));
     this.options.notify(
       moved.length === 1 ? "Sticky note moved." : `${moved.length} sticky notes moved.`,

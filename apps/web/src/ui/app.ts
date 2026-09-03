@@ -806,33 +806,68 @@ export function savedAuthoritativeItems(
 }
 
 /**
- * Why a set of per-note translations would tear an explicit group apart, or null when it would
- * not. Grouped objects move as one unit when a participant drags them, and
- * `buildTranslationMembershipOperations` only fills in the members a call left out — it never
- * overrides a delta the call supplied. So two members given different destinations would drift
- * apart while still sharing a groupId, which no drag can produce. Naming one member is fine: the
- * rest of the group follows it, exactly as a drag would.
+ * Why a set of per-note translations would tear apart objects the board moves as one, or null
+ * when it would not.
+ *
+ * `buildTranslationMembershipOperations` spreads a move outwards to a fixed point over two
+ * relations — everything sharing an explicit group travels together, and a Section that moves
+ * carries its members — but it never overrides a delta the call supplied. So when that spread
+ * reaches another named note holding a different delta, the two end up translated by different
+ * amounts while still grouped, or with a member drifting away from the Section it still claims:
+ * states no drag can produce, because a drag moves a whole selection by one delta.
+ *
+ * The walk mirrors that spread rather than approximating it. In particular the Section relation
+ * is one-way: a Section carries its members, but a member does not carry its Section, so two
+ * notes that merely share a Section are independent and are not refused. A note that already
+ * holds its own delta stops the walk, exactly as a direct update stops the propagation; its own
+ * walk covers whatever lies beyond it.
  */
-export function shearedGroupIssue(
-  items: readonly BoardItem[],
+export function conflictingMoveIssue(
+  named: readonly BoardItem[],
   deltaById: ReadonlyMap<string, { x: number; y: number }>,
+  boardItems: Iterable<BoardItem>,
 ): string | null {
-  const byGroup = new Map<string, { x: number; y: number }>();
-  for (const item of items) {
-    const groupId = item.groupId;
-    if (groupId === undefined || groupId === null) continue;
-    const delta = deltaById.get(item.id) ?? { x: 0, y: 0 };
-    const first = byGroup.get(groupId);
-    if (!first) {
-      byGroup.set(groupId, delta);
-      continue;
+  const byGroup = new Map<string, BoardItem[]>();
+  const bySection = new Map<string, BoardItem[]>();
+  for (const item of boardItems) {
+    if (item.groupId) byGroup.set(item.groupId, [...(byGroup.get(item.groupId) ?? []), item]);
+    if (item.sectionId) {
+      bySection.set(item.sectionId, [...(bySection.get(item.sectionId) ?? []), item]);
     }
-    if (first.x !== delta.x || first.y !== delta.y) {
-      return "Notes that are grouped together move as one unit, so sending two of them to different places would pull the group apart. Give every note in a group the same shift, or name just one of them and let the group follow it.";
+  }
+  const requested = new Map(named.map((item) => [item.id, deltaById.get(item.id) ?? ZERO_DELTA]));
+
+  for (const start of named) {
+    const delta = requested.get(start.id) ?? ZERO_DELTA;
+    const seen = new Set([start.id]);
+    const queue: BoardItem[] = [start];
+    for (let index = 0; index < queue.length; index += 1) {
+      const item = queue[index];
+      if (!item) continue;
+      const carried = [
+        ...(item.groupId ? (byGroup.get(item.groupId) ?? []) : []),
+        ...(item.kind === "zone" ? (bySection.get(item.id) ?? []) : []),
+      ];
+      for (const related of carried) {
+        if (seen.has(related.id)) continue;
+        seen.add(related.id);
+        const other = requested.get(related.id);
+        if (other) {
+          if (other.x !== delta.x || other.y !== delta.y) return CONFLICTING_MOVE_MESSAGE;
+          // Its own delta is what spreads from here, and its own walk already covers that.
+          continue;
+        }
+        queue.push(related);
+      }
     }
   }
   return null;
 }
+
+const ZERO_DELTA = { x: 0, y: 0 } as const;
+
+const CONFLICTING_MOVE_MESSAGE =
+  "Some of these notes are grouped together, or sit in a Section another of them carries, so the board moves them as one unit. Sending them to different places would pull that unit apart. Give every note the board moves together the same shift — a note asked to stay put counts as a different shift — or name just one of them and let the rest follow it.";
 
 export function lockedSectionIdForItem(
   item: BoardItem,
@@ -3751,19 +3786,27 @@ export class BoardApp {
       throw new Error("This arrangement includes a note this browser cannot modify.");
     }
     const deltaById = new Map(moves.map((move) => [move.item.id, move.delta]));
+    // Validated over every note the call named, the ones asked to stay put included: a note left
+    // out here is one the spread below could pick up and move behind the caller's back.
     if (this.bootstrap.board.features.grouping) {
-      const sheared = shearedGroupIssue(items, deltaById);
-      if (sheared) throw new Error(sheared);
+      const conflict = conflictingMoveIssue(items, deltaById, this.model.items.values());
+      if (conflict) throw new Error(conflict);
     }
-    const directUpdates = items.map((item) => {
+    // Only the notes that actually travel reach the batch. A note staying put is unreachable
+    // from any of them now that the check above has passed, so leaving it out cannot move it.
+    const directUpdates = items.flatMap((item) => {
       const delta = deltaById.get(item.id) ?? { x: 0, y: 0 };
-      return {
-        kind: "item.update" as const,
-        itemId: item.id,
-        expectedVersion: item.version,
-        patch: { transform: translateMatrix(item.transform, delta.x, delta.y) },
-      };
+      if (delta.x === 0 && delta.y === 0) return [];
+      return [
+        {
+          kind: "item.update" as const,
+          itemId: item.id,
+          expectedVersion: item.version,
+          patch: { transform: translateMatrix(item.transform, delta.x, delta.y) },
+        },
+      ];
     });
+    if (directUpdates.length === 0) return;
     let operations: BatchItemOperation[];
     try {
       operations = buildTranslationMembershipOperations(

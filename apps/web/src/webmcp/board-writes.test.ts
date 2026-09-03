@@ -663,6 +663,37 @@ describe("generic board writes", () => {
     writes.destroy();
   });
 
+  it("hands the board every note named, including one asked to stay where it is", async () => {
+    const still = sticky();
+    const travelling: BoardItem = { ...sticky(), id: `${STICKY_ID.slice(0, -1)}2` };
+    const { writes, movedBatches, call } = await ready({
+      resolveWatchedStickies: () =>
+        new Map([
+          ["step_1", still],
+          ["step_2", travelling],
+        ]),
+    });
+    const result = await call("move_stickies", {
+      watchToken: "watch-1",
+      moves: [
+        { stepAlias: "step_1", by: { x: 0, y: 0 } },
+        { stepAlias: "step_2", by: { x: 60, y: 0 } },
+      ],
+    });
+
+    // The board carries grouped objects and a Section's members along with a move, so a note
+    // dropped here for having nowhere to go is one the board could pick up and move anyway.
+    expect(movedBatches).toEqual([
+      [
+        { item: still, delta: { x: 0, y: 0 } },
+        { item: travelling, delta: { x: 60, y: 0 } },
+      ],
+    ]);
+    // Only the note that travelled is counted as moved.
+    expect(result).toMatchObject({ status: "moved", movedCount: 1 });
+    writes.destroy();
+  });
+
   it("refuses a list that names one note twice, before anything is written", async () => {
     const note = sticky();
     const { writes, movedBatches, call } = await ready({ itemAt: note });

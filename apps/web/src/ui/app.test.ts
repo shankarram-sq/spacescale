@@ -16,6 +16,7 @@ import {
   canResolveComment,
   clampImageAlt,
   clampStickyText,
+  conflictingMoveIssue,
   deriveCommentStates,
   effectiveTextFontWeight,
   elementColour,
@@ -32,7 +33,6 @@ import {
   STICKY_COLORS,
   savedAuthoritativeItems,
   serializeAttributedData,
-  shearedGroupIssue,
   tableCellDraftFromOperation,
   templateAvailabilityIssue,
   templateFeatureIssue,
@@ -727,7 +727,7 @@ describe("sticky note UI configuration", () => {
     ).toBeNull();
   });
 
-  it("refuses per-note moves that would tear an explicit group apart", () => {
+  it("refuses per-note moves the board's own propagation would tear apart", () => {
     const note: Extract<BoardItem, { kind: "sticky" }> = {
       id: "sticky-a",
       kind: "sticky",
@@ -738,40 +738,107 @@ describe("sticky note UI configuration", () => {
       style: { kind: "sticky", fill: "#fde68a", textColor: "#292524", fontSize: 20, opacity: 1 },
       geometry: { x: 10, y: 20, width: 180, height: 140, text: "First" },
     };
-    const grouped = { ...note, groupId: "group-1" };
-    const peer = { ...grouped, id: "sticky-b", version: 6 };
-    const ungrouped = { ...note, id: "sticky-c" };
+    const section: Extract<BoardItem, { kind: "zone" }> = {
+      id: "zone-1",
+      kind: "zone",
+      z: 0,
+      version: 2,
+      createdBy: "teacher",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "zone",
+        borderColor: "#0284c7",
+        fill: "#e0f2fe",
+        textColor: "#0c4a6e",
+        fontSize: 18,
+        opacity: 1,
+      },
+      geometry: { x: 0, y: 0, width: 800, height: 600, title: "Ideas" },
+    };
+    const move = (x: number) => ({ x, y: 0 });
 
     // Two members of one group sent to different places would drift apart while still grouped.
+    const grouped = { ...note, groupId: "group-1" };
+    const peer = { ...grouped, id: "sticky-b", version: 6 };
     expect(
-      shearedGroupIssue(
+      conflictingMoveIssue(
         [grouped, peer],
         new Map([
-          ["sticky-a", { x: 10, y: 0 }],
-          ["sticky-b", { x: 40, y: 0 }],
+          ["sticky-a", move(10)],
+          ["sticky-b", move(40)],
         ]),
+        [grouped, peer],
       ),
-    ).toContain("pull the group apart");
-    // The same shift keeps the group intact, so it is allowed.
+    ).toContain("pull that unit apart");
+    // The same shift keeps the unit intact, and naming one member is how a drag moves a group.
     expect(
-      shearedGroupIssue(
+      conflictingMoveIssue(
         [grouped, peer],
         new Map([
-          ["sticky-a", { x: 10, y: 0 }],
-          ["sticky-b", { x: 10, y: 0 }],
+          ["sticky-a", move(10)],
+          ["sticky-b", move(10)],
         ]),
+        [grouped, peer],
       ),
     ).toBeNull();
-    // Naming one member is how a drag moves a group, so it is left to the board to propagate.
-    expect(shearedGroupIssue([grouped], new Map([["sticky-a", { x: 10, y: 0 }]]))).toBeNull();
-    // Notes in no group are independent however far apart they are sent.
     expect(
-      shearedGroupIssue(
-        [note, ungrouped],
+      conflictingMoveIssue([grouped], new Map([["sticky-a", move(10)]]), [grouped, peer]),
+    ).toBeNull();
+
+    // A note asked to stay put is a different shift, not an absence of one: the moving member
+    // would otherwise carry it along while the result claimed it had not budged.
+    expect(
+      conflictingMoveIssue(
+        [grouped, peer],
         new Map([
-          ["sticky-a", { x: 10, y: 0 }],
-          ["sticky-c", { x: 900, y: 0 }],
+          ["sticky-a", move(0)],
+          ["sticky-b", move(40)],
         ]),
+        [grouped, peer],
+      ),
+    ).toContain("pull that unit apart");
+
+    // A note grouped with a Section carries that Section, which carries the Section's own
+    // members — so a member named with a different shift conflicts two relations away.
+    const groupedWithSection = { ...note, groupId: "group-2" };
+    const sectionInGroup = { ...section, groupId: "group-2" };
+    const insideSection = { ...note, id: "sticky-c", version: 9, sectionId: "zone-1" };
+    const board = [groupedWithSection, sectionInGroup, insideSection];
+    expect(
+      conflictingMoveIssue(
+        [groupedWithSection, insideSection],
+        new Map([
+          ["sticky-a", move(10)],
+          ["sticky-c", move(40)],
+        ]),
+        board,
+      ),
+    ).toContain("pull that unit apart");
+
+    // Propagation runs one way: a Section carries its members, but a member never carries the
+    // Section, so two notes that merely share one stay independent however far apart they go.
+    const alsoInside = { ...insideSection, id: "sticky-d", version: 11 };
+    expect(
+      conflictingMoveIssue(
+        [insideSection, alsoInside],
+        new Map([
+          ["sticky-c", move(10)],
+          ["sticky-d", move(900)],
+        ]),
+        [section, insideSection, alsoInside],
+      ),
+    ).toBeNull();
+
+    // Notes in no group and no Section are independent.
+    const loose = { ...note, id: "sticky-e" };
+    expect(
+      conflictingMoveIssue(
+        [note, loose],
+        new Map([
+          ["sticky-a", move(10)],
+          ["sticky-e", move(900)],
+        ]),
+        [note, loose],
       ),
     ).toBeNull();
   });
