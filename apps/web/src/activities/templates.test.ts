@@ -18,19 +18,19 @@ function deterministicIds(): () => string {
 describe("classroom templates", () => {
   it("builds every template as a small valid ordinary-item batch", () => {
     const expectedCounts: Record<ActivityTemplateId, number> = {
+      "problem-set-six-students": 95,
+      "brainstorm-school-traffic": 29,
+      "student-questions": 27,
+      "debate-school-start": 14,
+      "tasks-four-projects": 29,
+      "marketing-ad-ideas": 36,
+      "graph-check": 13,
       "collective-inquiry-demo": 13,
       "exit-ticket": 7,
       kwl: 2,
       "sort-it": 12,
       "pair-share": 7,
       "vote-with-stamps": 4,
-      "graph-check": 13,
-      "student-questions": 27,
-      "brainstorm-school-traffic": 29,
-      "problem-set-six-students": 95,
-      "debate-school-start": 14,
-      "tasks-four-projects": 29,
-      "marketing-ad-ideas": 36,
     };
 
     expect(ACTIVITY_TEMPLATES.map(({ id }) => id)).toEqual(Object.keys(expectedCounts));

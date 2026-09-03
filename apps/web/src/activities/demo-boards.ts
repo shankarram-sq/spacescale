@@ -609,9 +609,9 @@ function marketingBoard(): DemoTemplate {
 }
 
 export const DEMO_BOARDS: readonly DemoTemplate[] = [
-  eclipseBoard(),
-  trafficBoard(),
   problemSetBoard(),
+  trafficBoard(),
+  eclipseBoard(),
   debateBoard(),
   tasksBoard(),
   marketingBoard(),
