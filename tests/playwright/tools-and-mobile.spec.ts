@@ -330,6 +330,20 @@ test("the complete board remains usable at a 320px viewport", async ({ page }, t
   expect(layout.shell?.right).toBeLessThanOrEqual(320);
   expect(layout.canvas?.width).toBeGreaterThan(240);
   expect(layout.canvas?.right).toBeLessThanOrEqual(320);
+  const title = page.getByTestId("board-title");
+  const mcpStatus = page.getByTestId("webmcp-status");
+  const [titleBounds, mcpBounds] = await Promise.all([
+    title.boundingBox(),
+    mcpStatus.boundingBox(),
+  ]);
+  expect(titleBounds).not.toBeNull();
+  expect(mcpBounds).not.toBeNull();
+  if (!titleBounds || !mcpBounds) throw new Error("The compact header controls are not rendered.");
+  expect(titleBounds.x + titleBounds.width).toBeLessThanOrEqual(mcpBounds.x - 4);
+  await title.click({
+    position: { x: Math.max(1, titleBounds.width - 2), y: titleBounds.height / 2 },
+  });
+  await expect(title).toBeFocused();
   const floatingControls = await page.evaluate(() => {
     const zoom = document.querySelector(".zoom-controls")?.getBoundingClientRect();
     return {

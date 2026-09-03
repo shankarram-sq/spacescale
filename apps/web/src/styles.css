@@ -3446,7 +3446,7 @@ button:disabled {
   }
 
   .board-identity {
-    width: min(100%, 270px);
+    width: min(100%, 270px, max(72px, calc(50vw - 78px)));
   }
 }
 
