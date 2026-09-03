@@ -55,6 +55,20 @@ export function normalizeSingleDollarMath(value: string): string {
   return copiedThrough === 0 ? value : result + value.slice(copiedThrough);
 }
 
+export function splitMathMarkup(value: string): Array<{ kind: "math" | "text"; text: string }> {
+  const normalized = normalizeSingleDollarMath(value);
+  const result: Array<{ kind: "math" | "text"; text: string }> = [];
+  let cursor = 0;
+  for (const match of normalized.matchAll(/\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\]|\$\$[\s\S]+?\$\$/gu)) {
+    const index = match.index;
+    if (index > cursor) result.push({ kind: "text", text: normalized.slice(cursor, index) });
+    result.push({ kind: "math", text: match[0] });
+    cursor = index + match[0].length;
+  }
+  if (cursor < normalized.length) result.push({ kind: "text", text: normalized.slice(cursor) });
+  return result;
+}
+
 function singleDollarExpressionIsMath(value: string): boolean {
   const first = value[0];
   return first === undefined || !/\d/u.test(first) || /[+\-*/=^_<>\\]/u.test(value);

@@ -36,11 +36,12 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   await page.mouse.click(stickyPoint.x, stickyPoint.y);
   const stickyEditor = page.getByTestId("canvas-text-editor");
   await expect(stickyEditor).toBeFocused();
-  await stickyEditor.fill("Energy is $E=mc^2$");
+  await stickyEditor.fill("Reference $\\text{https://example.com }$");
   await stickyEditor.press("Control+Enter");
   await expect(page.getByTestId("tool-select")).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator(".sticky-math-content")).toHaveAttribute("data-math-state", "ready");
   await expect(page.locator(".sticky-math-content mjx-container")).toHaveCount(1);
+  await expect(page.locator(".sticky-math-content a")).toHaveCount(0);
   expect(await page.locator(".sticky-math-content").evaluate((node) => node.style.opacity)).toBe(
     "",
   );

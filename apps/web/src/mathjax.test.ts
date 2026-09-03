@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { containsMathMarkup, normalizeSingleDollarMath } from "./mathjax";
+import { containsMathMarkup, normalizeSingleDollarMath, splitMathMarkup } from "./mathjax";
 
 describe("containsMathMarkup", () => {
   it("recognizes supported inline and display delimiters", () => {
@@ -29,5 +29,19 @@ describe("containsMathMarkup", () => {
     );
     expect(normalizeSingleDollarMath("$$a^2+b^2=c^2$$")).toBe("$$a^2+b^2=c^2$$");
     expect(normalizeSingleDollarMath("Check $2+2=4$.")).toBe("Check \\(2+2=4\\).");
+  });
+
+  it("segments normalized math before surrounding prose is linkified", () => {
+    expect(
+      splitMathMarkup(
+        "Read $\\text{https://inside.example }$ then https://outside.example and $$x=1$$.",
+      ),
+    ).toEqual([
+      { kind: "text", text: "Read " },
+      { kind: "math", text: "\\(\\text{https://inside.example }\\)" },
+      { kind: "text", text: " then https://outside.example and " },
+      { kind: "math", text: "$$x=1$$" },
+      { kind: "text", text: "." },
+    ]);
   });
 });

@@ -10,7 +10,7 @@ import {
 import { resolveTextFontWeight, textFontStack } from "@collab/protocol";
 import { STAMP_SVG_PATHS } from "@collab/svg-export";
 import { summarizeBoardVotes, type VoteSummary } from "../activities/voting";
-import { clearTypesetMath, containsMathMarkup, typesetMath } from "../mathjax";
+import { clearTypesetMath, containsMathMarkup, splitMathMarkup, typesetMath } from "../mathjax";
 import {
   isRotatableObjectItem,
   isScalableObjectItem,
@@ -1484,21 +1484,27 @@ type MathForeignObjectOptions = {
 };
 
 function appendLinkifiedHtml(container: HTMLElement, value: string): void {
-  for (const token of tokenizeSafeLinks(value)) {
-    if (token.kind === "text") {
-      container.append(token.text);
+  for (const segment of splitMathMarkup(value)) {
+    if (segment.kind === "math") {
+      container.append(segment.text);
       continue;
     }
-    container.classList.add("has-board-text-link");
-    const anchor = document.createElement("a");
-    anchor.classList.add("board-text-link");
-    anchor.dataset.boardLink = "true";
-    anchor.href = token.href;
-    anchor.target = "_blank";
-    anchor.rel = "noopener noreferrer";
-    anchor.referrerPolicy = "no-referrer";
-    anchor.textContent = token.text;
-    container.append(anchor);
+    for (const token of tokenizeSafeLinks(segment.text)) {
+      if (token.kind === "text") {
+        container.append(token.text);
+        continue;
+      }
+      container.classList.add("has-board-text-link");
+      const anchor = document.createElement("a");
+      anchor.classList.add("board-text-link");
+      anchor.dataset.boardLink = "true";
+      anchor.href = token.href;
+      anchor.target = "_blank";
+      anchor.rel = "noopener noreferrer";
+      anchor.referrerPolicy = "no-referrer";
+      anchor.textContent = token.text;
+      container.append(anchor);
+    }
   }
 }
 

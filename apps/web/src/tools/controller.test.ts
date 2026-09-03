@@ -738,6 +738,30 @@ describe("captured gesture operations", () => {
     });
   });
 
+  it("clears stale video markers while preserving valid replacement embeds", () => {
+    const geometry = {
+      x: 20,
+      y: 30,
+      text: "https://youtu.be/dQw4w9WgXcQ",
+      embed: "video" as const,
+    };
+    const edit = { itemId: ITEM_ID, expectedVersion: 13, geometry };
+    expect(buildCapturedTextUpdate(edit, "Plain text")).toEqual({
+      kind: "item.update",
+      itemId: ITEM_ID,
+      expectedVersion: 13,
+      patch: { geometry: { x: 20, y: 30, text: "Plain text" } },
+    });
+    expect(buildCapturedTextUpdate(edit, "https://vimeo.com/76979871")).toEqual({
+      kind: "item.update",
+      itemId: ITEM_ID,
+      expectedVersion: 13,
+      patch: {
+        geometry: { x: 20, y: 30, text: "https://vimeo.com/76979871", embed: "video" },
+      },
+    });
+  });
+
   it("clears Section membership when edited text grows outside its Section", () => {
     const section = sectionItem(100, 100);
     const item: Extract<BoardItem, { kind: "text" }> = {
