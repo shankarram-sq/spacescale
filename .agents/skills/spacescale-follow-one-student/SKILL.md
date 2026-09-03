@@ -74,3 +74,39 @@ part only.
 Stop when the teacher says so or when the watch expires, with
 `action: "stop"`. Give the teacher three lines: where the student started,
 where they got to, and the one thing to pick up next time. No scores.
+
+## Demo scenario
+
+Board: insert the template **Problem set: six students**. Isha has
+questions 1, 3 and 4 right, question 2 wrong (\(12 - 5 + 3 = 4\)), and
+question 5 not started. If the working folder has no files, keep every
+comment to one line and one question.
+
+Teacher's opening prompt:
+
+> Follow Isha on this problem set.
+
+Call `list_users`, match "Isha" to the participant with that display name,
+and say: "I will follow Isha's Section only. Start?" Wait for "yes", then
+`watch_users` with her participant ID.
+
+First comment, on Isha's text: "Questions 1, 3 and 4 are right. In
+\(12 - 5 + 3\), what is \(12 - 5\) first?"
+
+Live moments, in this order. The teacher edits Isha's text between each:
+
+1. Question 2 becomes 10. Comment: "That is it. Question 5 uses the same
+   left-to-right idea. What is \(20 \div 4\)?"
+2. Question 5 becomes \(20 \div 4 \times 5 = 1\). Comment: "You did
+   \(4 \times 5\) first. Try \(20 \div 4\) first, then times 5."
+3. Question 5 is saved again, still 1. Two saves stuck, so switch mode.
+   Comment: "Smaller one: \(16 \div 2 \times 4\). \(16 \div 2 = 8\),
+   then \(8 \times 4 = 32\). Now yours?"
+4. Question 5 is saved again, still 1. Three saves stuck. Comment with
+   `videoUrl` `https://www.youtube.com/watch?v=piIcRV2dx7E`: "Watch from
+   2:00: the left-to-right part. Then try question 5 once more." In chat,
+   tell the teacher: "Isha may need you in person on question 5."
+5. Question 5 becomes 25. Comment: "All five. Nice."
+6. The teacher types "stop". Stop the watch and give three lines: started
+   with question 2 wrong and 5 blank; got to all five right; pick up
+   left-to-right with one more mixed example next time.

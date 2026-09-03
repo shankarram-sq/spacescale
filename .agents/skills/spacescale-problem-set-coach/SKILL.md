@@ -19,6 +19,9 @@ student's own work, and never solve the problem for them.
    skill where they conflict.
 2. Call `read_board` once to see every student's Section and where each one is.
 3. Confirm with the teacher in one line what mode you are in, then start.
+4. If the teacher asks for a first pass, go through the start snapshot once,
+   one hint per student on their first wrong answer. Otherwise wait for
+   changes.
 
 ## Run the watch
 
@@ -85,3 +88,45 @@ it.
 
 When the teacher says stop, call the watch with `action: "stop"` and give a
 three-line summary: who finished, who got hints, who got a video. No scores.
+
+## Demo scenario
+
+Board: insert the template **Problem set: six students**. Six students,
+Aarav to Isha, five order-of-operations problems each. Correct answers are
+11, 10, 25, 5, 25. If the working folder has no files, use the values below.
+
+Teacher's opening prompt:
+
+> Watch the class on this problem set. Start by giving each student one hint
+> on their first wrong answer.
+
+First pass, one `insert_comment` per student, on their text:
+
+| Student | First error | Comment to post |
+| --- | --- | --- |
+| Aarav | Q2 \(12 - 5 + 3 = 4\) | Questions 1, 3 and 4 are right. In \(12 - 5 + 3\), subtraction and addition go left to right. What is \(12 - 5\) on its own? |
+| Meera | Q1 \(3 + 4 \times 2 = 14\) | Questions 2 to 5 are all right. In \(3 + 4 \times 2\), which happens first, the plus or the times? |
+| Rohan | Q4 \(-4 + 9 = -5\) | Questions 1, 2, 3 and 5 are right. Start at \(-4\) on the number line and move 9 to the right. Where do you land? |
+| Zoya | Q1 \(3 + 4 \times 2 = 14\) | Questions 3, 4 and 5 are right. In \(3 + 4 \times 2\), which happens first, the plus or the times? |
+| Kabir | Q3 \((8 - 3)^2 = 10\) | Questions 1, 2 and 4 are right. \((8 - 3)^2\) means \(5 \times 5\), not \(5 \times 2\). What is \(5^2\)? |
+| Isha | Q2 \(12 - 5 + 3 = 4\) | Questions 1, 3 and 4 are right. In \(12 - 5 + 3\), work left to right. What is \(12 - 5\) first? |
+
+Live moments, in this order:
+
+1. The teacher edits Meera's first answer to 11 and saves. All five are now
+   right. Post `insert_sticky` beside Meera's Section: "Meera: put one pair
+   of brackets into \(3 + 4 \times 2 - 1\) to make it equal 13."
+2. The teacher edits Aarav's second answer to 10, then his fifth to 5, and
+   saves. Q5 is still wrong. Comment: "Question 2 is right now. Question 5
+   is the same idea: \(\div\) and \(\times\) go left to right. What is
+   \(20 \div 4\) first?"
+3. Kabir presses Ask AI on his text and chooses **Explain with a video**.
+   Reply on that step with `videoUrl`
+   `https://www.youtube.com/watch?v=eoYThjIAhOc` and the body: "Watch the
+   first three minutes and notice what happens to the power before anything
+   is multiplied. Then look at question 3 again."
+4. The teacher types in chat: "Hints only, no videos for the next ten
+   minutes." Acknowledge in one line and keep waiting.
+5. The teacher types "stop". Stop the watch and give the three-line summary:
+   Meera finished and got the fast-finisher; Aarav, Rohan, Zoya, Kabir and
+   Isha got hints; Kabir got one video.

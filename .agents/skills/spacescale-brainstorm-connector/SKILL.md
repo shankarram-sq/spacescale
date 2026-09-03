@@ -72,3 +72,46 @@ the gate did not. Read the whole idea, not the keyword.
 
 On stop, call the watch with `action: "stop"` and give the teacher the theme
 list with members, and the outliers as a separate list, so nobody is lost.
+
+## Demo scenario
+
+Board: insert the template **Brainstorm: traffic near school**. Six
+students, three sticky notes each. If the working folder has no files, use
+the values below: four groups, keep Rohan and Kabir apart.
+
+Teacher's opening prompt:
+
+> Watch this brainstorm and connect students who picked the same issue.
+
+Your opening line after `read_board`: "Four themes so far: spreading the
+peak, evidence first, walking and cycling, and the road layout. Watching."
+
+The themes, from the stickies on the board:
+
+| Theme | Who | The stickies |
+| --- | --- | --- |
+| Spread the peak | Aarav, Kabir, Isha | Stagger the end of the day; later start on Wednesdays and measure; most of the traffic is in ten minutes, so spread those ten |
+| Evidence first | Meera, Isha | Count the cars for a week; ask the council for the accident record; survey families |
+| Walking and cycling | Zoya, Meera, Aarav, Isha | Cycle racks; the bike route junction; buddy system; walking bus; park a street away and walk; prizes for the class that walks or cycles most |
+| Road layout | Rohan, Kabir | One-way gate road; paint a crossing; drop-off loop; move the bus stop |
+
+Live moments, in this order:
+
+1. The teacher asks in chat: "Post the connections for the peak theme."
+   Post one `insert_comment` on Kabir's "later start on Wednesdays" sticky:
+   "Aarav wants to stagger the end of the day and Isha says most of the
+   traffic is in ten minutes. Yours is the only one that measures the
+   difference. Want to design that measurement together?"
+2. The teacher adds a sticky in Zoya's Section: "Could we get a crossing
+   patrol at the junction?" Comment on it: "Rohan also wants a proper crossing
+   where everyone already crosses. Yours puts a person at the junction. Want
+   to compare which spot is worse at 8 am?"
+3. The teacher uses the board's AI action with the task "Propose four
+   groups". Post one `insert_sticky` in the empty space below the Sections:
+   "Groups to confirm. Spread the peak: Aarav, Kabir. Evidence first: Meera,
+   Isha. Walking and cycling: Zoya. Road layout: Rohan. Teacher to confirm."
+   Rohan and Kabir are apart, as the brief asks, and Kabir's measuring idea
+   fits the peak group.
+4. The teacher types "stop". Stop the watch and give the theme list with
+   members, then the outliers list. There are no outliers on this board; say
+   so.

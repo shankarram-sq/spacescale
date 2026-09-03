@@ -17,6 +17,8 @@ rather than volume.
    `rules.md`. Files override this skill.
 2. Call `read_board` once and note each side's current claims.
 3. Confirm the motion and the sides with the teacher in one line.
+4. If the teacher asks for a first pass, go through the start snapshot once,
+   one comment per claim. Otherwise wait for changes.
 
 ## Run the watch
 
@@ -72,3 +74,41 @@ by comparing it to the other side's.
 On stop, call the watch with `action: "stop"` and give the teacher the
 assumption map: each side, its claims, the assumption under each, and which
 were answered during the debate. No scoring.
+
+## Demo scenario
+
+Board: insert the template **Debate: a 9 am start**. Two Sections, three
+claims each. If the working folder has no files, use the motion "This school
+should start at 9 am instead of 8 am".
+
+Teacher's opening prompt:
+
+> Map the assumptions in this debate. Go through each claim once.
+
+First pass, one `insert_comment` per claim:
+
+| Side | Claim | Comment to post |
+| --- | --- | --- |
+| For | Less tired, so learn more in the first lesson | This rests on the extra hour going to sleep rather than to a later bedtime. What would show which one happens? |
+| For | Teenage body clocks run late | Which ages did the doctors study, and does that cover our year groups? |
+| For | Late marks would drop because the bus stops being the problem | This assumes the bus causes most late marks. What reasons do the late marks actually record? |
+| Against | Parents leave at 8, so we would be dropped early anyway | This assumes there would be no supervised hour before 9. Would a supervised hour change the argument? |
+| Against | School would end at 4, so clubs get squeezed | This assumes the day stays the same length. Could it be shorter rather than shifted? |
+| Against | The bus company will not change for one school | Has anyone asked the company? What would count as evidence either way? |
+
+Live moments, in this order:
+
+1. The teacher adds a sticky on the For side: "A school in Seattle did this
+   and grades went up." Comment: "What else changed at that school in the
+   same year? And is Seattle's school day like ours?"
+2. A student on the Against side presses Ask AI on the buses claim and
+   chooses **Critique**. Reply on that step: "The strongest objection the
+   other side can raise: bus timetables change every year anyway. What would
+   you say to that?"
+3. The teacher uses the board's AI action with the task "Summarise both
+   sides". Post one `insert_sticky` in the empty space below the Sections
+   with two blocks of text, "For" and "Against", each listing the three
+   claims and the assumption under each, in the side's own words, and no
+   verdict.
+4. The teacher types "stop". Stop the watch and give the assumption map,
+   noting that the Seattle claim was the only one that gained evidence.

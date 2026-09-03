@@ -22,7 +22,8 @@ export type ActivityTemplateId =
   | "graph-check"
   | "student-questions"
   | "brainstorm-school-traffic"
-  | "problem-set-six-students";
+  | "problem-set-six-students"
+  | "debate-school-start";
 
 export type ActivityTemplateItem = {
   [Kind in NewBoardItem["kind"]]: Omit<Extract<NewBoardItem, { kind: Kind }>, "id" | "transform">;
@@ -870,6 +871,77 @@ export const ACTIVITY_TEMPLATES: readonly ActivityTemplate[] = [
         76,
         "1. \\(3 + 4 \\times 2 = 11\\)\n2. \\(12 - 5 + 3 = 4\\)\n3. \\((8 - 3)^2 = 25\\)\n4. \\(-4 + 9 = 5\\)\n5. not started",
         17,
+      ),
+    ],
+  },
+  {
+    id: "debate-school-start",
+    label: "Debate: a 9 am start",
+    description: "Two sides, one Section each, arguing whether school should start an hour later.",
+    items: [
+      text(-600, -262, "This school should start at 9 am instead of 8 am", 30),
+      text(
+        -600,
+        -224,
+        "Each side writes its claims in its own Section. Synthetic work.",
+        17,
+        MUTED,
+      ),
+      zone(-600, -180, 560, 330, "For a 9 am start"),
+      zone(0, -180, 560, 330, "Against a 9 am start"),
+      sticky(
+        -584,
+        -134,
+        528,
+        78,
+        "We would be less tired, so we would learn more in the first lesson.",
+        STICKY_COLOR_VALUES.mint,
+        16,
+      ),
+      sticky(
+        -584,
+        -46,
+        528,
+        78,
+        "Doctors say teenage body clocks run late, so 8 am is fighting biology.",
+        STICKY_COLOR_VALUES.mint,
+        16,
+      ),
+      sticky(
+        -584,
+        42,
+        528,
+        78,
+        "Late marks would drop, because the bus would stop being the problem.",
+        STICKY_COLOR_VALUES.mint,
+        16,
+      ),
+      sticky(
+        16,
+        -134,
+        528,
+        78,
+        "Most parents leave for work at 8, so we would be dropped off early anyway.",
+        STICKY_COLOR_VALUES.coral,
+        16,
+      ),
+      sticky(
+        16,
+        -46,
+        528,
+        78,
+        "School would end at 4, so clubs and sport get squeezed out.",
+        STICKY_COLOR_VALUES.coral,
+        16,
+      ),
+      sticky(
+        16,
+        42,
+        528,
+        78,
+        "The buses are timetabled around 8. The company will not change for one school.",
+        STICKY_COLOR_VALUES.coral,
+        16,
       ),
     ],
   },

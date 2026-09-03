@@ -28,6 +28,7 @@ describe("classroom templates", () => {
       "student-questions": 26,
       "brainstorm-school-traffic": 26,
       "problem-set-six-students": 14,
+      "debate-school-start": 10,
     };
 
     expect(ACTIVITY_TEMPLATES.map(({ id }) => id)).toEqual(Object.keys(expectedCounts));
@@ -102,6 +103,7 @@ describe("classroom templates", () => {
       "student-questions",
       "brainstorm-school-traffic",
       "problem-set-six-students",
+      "debate-school-start",
     ] as const;
 
     for (const id of demos) {
@@ -151,6 +153,12 @@ describe("classroom templates", () => {
         id,
       ).toBe(true);
     }
+
+    // The debate board gives each side one Section, so a comment lands on one side's claim.
+    const debate = byId.get("debate-school-start");
+    const sides = debate?.items.filter((item) => item.kind === "zone") ?? [];
+    expect(sides).toHaveLength(2);
+    expect(debate?.items.filter(({ kind }) => kind === "sticky")).toHaveLength(6);
 
     // One student is still short of the full set, so a reader can see who is mid-way.
     const problems = byId.get("problem-set-six-students");

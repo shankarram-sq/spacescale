@@ -115,7 +115,7 @@ A comment needs a target: pass the watch's `watchToken` and `stepAlias`, or a
 
 ## Demo boards
 
-Four templates stage a demo in one click, so no scene has to be drawn live. Each
+Five templates stage a demo in one click, so no scene has to be drawn live. Each
 one is student work and nothing else: there is no block waiting for the AI,
 because the AI answers in comments, which is the thing worth showing. Nothing on
 any of them belongs to a real student.
@@ -126,14 +126,18 @@ any of them belongs to a real student.
 | **Need to know: eclipses** | Six students, a Section each, three questions apiece before the topic starts |
 | **Brainstorm: traffic near school** | Six students, a Section each, ideas and objections about a real school problem |
 | **Problem set: six students** | Six students working the same five order-of-operations problems, each with mistakes, one still on question five |
+| **Debate: a 9 am start** | Two sides, one Section each, three claims apiece on whether school should start an hour later |
 
-The three class boards give every student a Section of their own, which is what
+The debate board gives each side a Section instead. The three class boards give every student a Section of their own, which is what
 makes per-student feedback legible: a comment lands on one person's work while
 the rest of the class stays visible beside it. The graph board is the
 handwriting case, so a watch on it returns a picture rather than a description.
 
 Insert one, start `watch_board`, then use the board's **AI** action or the
 selection toolbar's **Ask AI** button. The replies arrive as object comments.
+The five Codex skills under [`.agents/skills`](../../.agents/skills/README.md)
+each end with a scripted demo on one of these boards, with the exact prompts,
+expected comments, and files to use.
 
 ## Optional second story
 

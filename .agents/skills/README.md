@@ -62,6 +62,27 @@ missing, it will not link videos at all.
    on them between polls.
 5. Say "stop" for the summary.
 
+## Run the demos
+
+Every skill ends with a **Demo scenario**: the board template to insert, the
+teacher's exact opening prompt, the comments to expect on each student's
+work, and the live moments to act out. Each skill folder also carries a
+`demo/` folder with the files the scenario reads. Start Codex inside that
+`demo/` folder and the skill picks them up.
+
+| Skill | Board template | Start Codex in |
+| --- | --- | --- |
+| `spacescale-problem-set-coach` | Problem set: six students | `spacescale-problem-set-coach/demo` |
+| `spacescale-brainstorm-connector` | Brainstorm: traffic near school | `spacescale-brainstorm-connector/demo` |
+| `spacescale-debate-mapper` | Debate: a 9 am start | `spacescale-debate-mapper/demo` |
+| `spacescale-working-checker` | Graph check: one student's working | `spacescale-working-checker/demo` |
+| `spacescale-follow-one-student` | Problem set: six students | `spacescale-follow-one-student/demo` |
+
+All five boards ship in the **Templates** menu. Every student on them is
+synthetic. The videos in the `video-list.md` files are public Khan Academy
+and FuseSchool links; open each once before a demo to confirm it still
+plays.
+
 ## Limits to know
 
 - **Foreground only.** A Codex background agent has no access to the browser,
