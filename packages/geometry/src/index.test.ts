@@ -667,7 +667,8 @@ describe("bounds and transforms", () => {
     // Collapsing \hspace to one glyph let a crafted item claim the width of a few letters
     // while MathJax rendered about 20 em, so a Section could accept a formula that spills out.
     expect(textLayoutEstimateSource("$$\\hspace{20em}x$$", 20)).toHaveLength(35);
-    expect(textLayoutEstimateSource("$\\hspace{20em}x$", 20)).toHaveLength(35);
+    // A lone $ is a dollar sign, so this one is plain text and estimates as itself.
+    expect(textLayoutEstimateSource("$\\hspace{20em}x$", 20)).toBe("$\\hspace{20em}x$");
     expect(
       itemBounds({
         kind: "text",
@@ -676,15 +677,6 @@ describe("bounds and transforms", () => {
         style: { kind: "text", fontSize: 20 },
       }),
     ).toEqual({ minX: 0, minY: 20, maxX: 420, maxY: 44 });
-    expect(
-      itemBounds({
-        kind: "text",
-        geometry: { x: 0, y: 40, text: "$\\hspace{20em}x$" },
-        transform: [1, 0, 0, 1, 0, 0],
-        style: { kind: "text", fontSize: 20 },
-      }),
-    ).toEqual({ minX: 0, minY: 20, maxX: 420, maxY: 44 });
-
     // Absolute units resolve against the font size, so tiny kerns stay tiny.
     expect(textLayoutEstimateSource("$$\\kern 2pt x$$", 20)).toBe("x x");
 

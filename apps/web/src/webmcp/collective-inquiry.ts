@@ -1,6 +1,7 @@
 import "./collective-inquiry.css";
 
 import { ASSIST_ACTIONS, type AssistAction, type Assistance } from "@collab/protocol";
+import { mathExportOptions } from "../board/math-export";
 import type { BoardItem, ServerAction } from "../types";
 import { captureBoardImage, serializeVisualPreview, visualAlias } from "./board-image";
 import {
@@ -92,6 +93,8 @@ export class CollectiveInquiryWebMcp {
   private readonly registration = new AbortController();
   private destroyed = false;
   private visualObjectUrl: string | null = null;
+  /** Claimed while a review is being typeset, before the dialog itself is open. */
+  private visualReviewPending = false;
 
   constructor(private readonly options: CollectiveInquiryWebMcpOptions) {
     this.problemStepWatch = new ProblemStepWatchFeed({
@@ -555,11 +558,27 @@ export class CollectiveInquiryWebMcp {
       "[data-webmcp-visual-surface]",
     );
     if (!surface) throw new Error("The visual review surface is unavailable.");
-    if (this.visualReviewDialog.open) {
+    // Typesetting the preview takes a turn, so the dialog is claimed before that rather than
+    // after it: two inspections arriving together would otherwise both pass an open check that is
+    // still false, and the second would replace and then close the first participant's review.
+    if (this.visualReviewDialog.open || this.visualReviewPending) {
       throw new Error("Finish the current visual review before sharing another selection.");
     }
+    this.visualReviewPending = true;
+    try {
+      await this.renderVisualReview(surface, items, kindCounts);
+    } finally {
+      this.visualReviewPending = false;
+    }
+  }
+
+  private async renderVisualReview(
+    surface: HTMLElement,
+    items: readonly BoardItem[],
+    kindCounts: Readonly<Partial<Record<BoardItem["kind"], number>>>,
+  ): Promise<void> {
     this.clearVisualReview();
-    const preview = buildVisualPreview(items);
+    const preview = await buildVisualPreview(items);
     this.visualObjectUrl = preview.objectUrl;
     surface.replaceChildren(preview.image);
     const count = this.visualReviewDialog.querySelector<HTMLElement>(
@@ -627,11 +646,12 @@ export class CollectiveInquiryWebMcp {
   }
 }
 
-function buildVisualPreview(items: readonly BoardItem[]): {
+async function buildVisualPreview(items: readonly BoardItem[]): Promise<{
   image: HTMLImageElement;
   objectUrl: string;
-} {
-  const preview = serializeVisualPreview(items);
+}> {
+  // The review surface shows formulas, not their source, like every other view of the board.
+  const preview = serializeVisualPreview(items, await mathExportOptions(items));
   const markup = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${preview.viewBox}" role="img" aria-label="${preview.ariaLabel}">${preview.content}</svg>`;
   const objectUrl = URL.createObjectURL(new Blob([markup], { type: "image/svg+xml" }));
   const image = document.createElement("img");

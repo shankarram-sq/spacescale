@@ -18,7 +18,7 @@ import {
   validateClientFrame,
   validateDurableOperation,
 } from "@collab/protocol";
-import { boundsForSvgItems, renderSvgItem } from "@collab/svg-export";
+import { boundsForSvgItems, renderSvgItem, type SvgItemOptions } from "@collab/svg-export";
 import {
   buildOrganisationTemplateBatch,
   OrganisationTemplateError,
@@ -32,6 +32,7 @@ import {
 } from "../activities/templates";
 import { buildClearVoteDeletes, isVoteTable, summarizeVotes } from "../activities/voting";
 import { VIDEO_EMBED_HEIGHT, VIDEO_EMBED_WIDTH, videoEmbedFromText } from "../board/links";
+import { mathExportOptions } from "../board/math-export";
 import { BoardModel, SequenceError } from "../board/model";
 import { BoardRenderer, STICKY_PADDING } from "../board/renderer";
 import { randomBoardName } from "../board-name";
@@ -126,6 +127,13 @@ import {
   type WebMcpRegistryState,
   webMcpRegistryState,
 } from "../webmcp/shared";
+import { MathFieldPanel } from "./math-field";
+import {
+  type MathRegion,
+  mathRegionAtCaret,
+  replaceMathRegion,
+  unclosedOpeningAt,
+} from "./math-region";
 
 const TOOL_DEFINITIONS: Array<{
   name: ToolName;
@@ -1018,6 +1026,14 @@ export class BoardApp {
   private landingToolPending = true;
   private aiWatchState: WatchState = { phase: "idle", expiresAt: null, watchedItemIds: new Set() };
   private stopObservingWebMcp: (() => void) | null = null;
+  private mathFieldPanel: MathFieldPanel | null = null;
+  private mathFieldTarget: {
+    editor: HTMLTextAreaElement | HTMLInputElement;
+    region: MathRegion;
+    onValueChanged: () => void;
+    /** Finishes the edit the field belongs to, as that editor's own blur would. */
+    finish: (save: boolean) => void;
+  } | null = null;
   private aiWatchCountdown: number | null = null;
   private aiAssistSelectionKey = "";
   private readonly pendingRenderedTextSectionUpdates = new Set<string>();
@@ -1412,6 +1428,13 @@ export class BoardApp {
     this.renderWebMcpStatus(webMcpRegistryState());
     this.stopObservingWebMcp = observeWebMcpRegistry((state) => this.renderWebMcpStatus(state));
 
+    this.mathFieldPanel = new MathFieldPanel({
+      root: this.root,
+      onChange: this.applyMathField,
+      onDone: this.finishMathField,
+      onFocusLeft: this.leaveMathField,
+    });
+
     this.webMcp = new CollectiveInquiryWebMcp({
       root: this.root,
       getSelectedItems: () =>
@@ -1597,6 +1620,9 @@ export class BoardApp {
     this.webMcp = null;
     this.stopObservingWebMcp?.();
     this.stopObservingWebMcp = null;
+    this.mathFieldPanel?.destroy();
+    this.mathFieldPanel = null;
+    this.mathFieldTarget = null;
     this.setAiWatchState({ phase: "idle", expiresAt: null, watchedItemIds: new Set() });
     this.tools.destroy();
     this.renderer.destroy();
@@ -3145,9 +3171,9 @@ export class BoardApp {
     query(this.root, "[data-local-json]", HTMLButtonElement).addEventListener("click", () =>
       this.downloadLocalJson(),
     );
-    query(this.root, "[data-local-svg]", HTMLButtonElement).addEventListener("click", () =>
-      this.downloadLocalSvg(),
-    );
+    query(this.root, "[data-local-svg]", HTMLButtonElement).addEventListener("click", () => {
+      void this.downloadLocalSvg();
+    });
 
     query(this.root, "[data-zoom-out]", HTMLButtonElement).addEventListener("click", () =>
       this.zoomBy(0.8),
@@ -3638,7 +3664,13 @@ export class BoardApp {
       editor.value = value;
       editor.setSelectionRange(cursor, cursor);
     });
-    editor.addEventListener("blur", () => void this.closeTableCellEditor(true));
+    this.bindMathField(editor, (save) => void this.closeTableCellEditor(save));
+    editor.addEventListener("blur", (event) => {
+      // Reaching for the maths keyboard is not leaving the editor; the panel finishes the edit
+      // when focus leaves it too.
+      if (this.mathFieldPanel?.contains((event as FocusEvent).relatedTarget as Node | null)) return;
+      void this.closeTableCellEditor(true);
+    });
     editor.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -3659,6 +3691,7 @@ export class BoardApp {
     const editor = this.tableCellEditor;
     const edit = this.tableCellEdit;
     if (!editor) return;
+    this.dismissMathField(editor);
     const text = clampTableCellText(editor.value);
     const draft: TableCellDraftRecovery | null = edit
       ? {
@@ -3770,7 +3803,13 @@ export class BoardApp {
       editor.value = value;
       editor.setSelectionRange(cursor, cursor);
     });
-    editor.addEventListener("blur", () => void this.closeZoneTitleEditor(true));
+    this.bindMathField(editor, (save) => void this.closeZoneTitleEditor(save));
+    editor.addEventListener("blur", (event) => {
+      // Reaching for the maths keyboard is not leaving the editor; the panel finishes the edit
+      // when focus leaves it too.
+      if (this.mathFieldPanel?.contains((event as FocusEvent).relatedTarget as Node | null)) return;
+      void this.closeZoneTitleEditor(true);
+    });
     editor.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -3791,6 +3830,7 @@ export class BoardApp {
     const editor = this.zoneTitleEditor;
     const edit = this.zoneTitleEdit;
     if (!editor) return;
+    this.dismissMathField(editor);
     const title = clampZoneTitle(editor.value.replace(/[\r\n]/gu, " ")).trim() || "Section";
     const draft: ZoneTitleDraftRecovery | null = edit
       ? {
@@ -4671,7 +4711,13 @@ export class BoardApp {
       preview();
     };
     editor.addEventListener("input", schedule);
-    editor.addEventListener("blur", () => void this.closeTextEditor(true));
+    this.bindMathField(editor, (save) => void this.closeTextEditor(save), schedule);
+    editor.addEventListener("blur", (event) => {
+      // Reaching for the maths keyboard is not leaving the editor; the panel finishes the edit
+      // when focus leaves it too.
+      if (this.mathFieldPanel?.contains((event as FocusEvent).relatedTarget as Node | null)) return;
+      void this.closeTextEditor(true);
+    });
     editor.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -4692,6 +4738,7 @@ export class BoardApp {
   private async closeTextEditor(save: boolean): Promise<void> {
     const editor = this.textEditor;
     if (!editor) return;
+    this.dismissMathField(editor);
     if (!save) {
       this.discardTextEditor(editor);
       return;
@@ -7200,10 +7247,115 @@ export class BoardApp {
     }
   }
 
-  private downloadLocalSvg(): void {
+  /**
+   * Gives one text editor a maths keyboard. Typing an opening delimiter closes the pair and brings
+   * up MathLive's field over the editor, so a participant can build a formula without knowing TeX;
+   * the board still stores ordinary delimited TeX, which is what everything else here reads.
+   */
+  private bindMathField(
+    editor: HTMLTextAreaElement | HTMLInputElement,
+    finish: (save: boolean) => void,
+    onValueChanged: () => void = () => undefined,
+  ): void {
+    const sync = (): void => this.syncMathField(editor, finish, onValueChanged);
+    editor.addEventListener("input", () => {
+      this.closeMathDelimiter(editor, onValueChanged);
+      sync();
+    });
+    // The caret can move without the value changing, and that moves in and out of a formula.
+    editor.addEventListener("keyup", sync);
+    editor.addEventListener("click", sync);
+    sync();
+  }
+
+  /** Completes a delimiter pair the participant just opened, leaving the caret between the two. */
+  private closeMathDelimiter(
+    editor: HTMLTextAreaElement | HTMLInputElement,
+    onValueChanged: () => void,
+  ): void {
+    const caret = editor.selectionStart ?? editor.value.length;
+    const opening = unclosedOpeningAt(editor.value, caret);
+    if (!opening) return;
+    editor.value = `${editor.value.slice(0, caret)}${opening.close}${editor.value.slice(caret)}`;
+    editor.setSelectionRange(caret, caret);
+    onValueChanged();
+  }
+
+  private syncMathField(
+    editor: HTMLTextAreaElement | HTMLInputElement,
+    finish: (save: boolean) => void,
+    onValueChanged: () => void,
+  ): void {
+    const panel = this.mathFieldPanel;
+    if (!panel) return;
+    const caret = editor.selectionStart ?? editor.value.length;
+    const region = mathRegionAtCaret(editor.value, caret);
+    if (!region) {
+      this.mathFieldTarget = null;
+      panel.close();
+      return;
+    }
+    this.mathFieldTarget = { editor, region, onValueChanged, finish };
+    void panel.open(
+      `${region.delimiter.open}@${region.start}`,
+      region,
+      editor.value.slice(region.start, region.end),
+      editor.getBoundingClientRect(),
+    );
+  }
+
+  /** Writes the maths field's TeX back into the formula it was opened on. */
+  private readonly applyMathField = (tex: string): void => {
+    const target = this.mathFieldTarget;
+    if (!target) return;
+    const next = replaceMathRegion(target.editor.value, target.region, tex);
+    target.editor.value = next.value;
+    target.region = next.region;
+    const caret = next.region.end + next.region.delimiter.close.length;
+    target.editor.setSelectionRange(caret, caret);
+    target.onValueChanged();
+  };
+
+  /** Returns the participant to the text once the formula is written. */
+  private readonly finishMathField = (): void => {
+    const target = this.mathFieldTarget;
+    this.mathFieldPanel?.close();
+    this.mathFieldTarget = null;
+    target?.editor.focus();
+  };
+
+  /**
+   * Takes the maths field down with the editor it belongs to. An editor can close without focus
+   * ever reaching the panel, when a participant opens a formula and then clicks straight past it,
+   * and the panel would otherwise stay on screen writing into an editor that is already gone.
+   */
+  private dismissMathField(editor: HTMLTextAreaElement | HTMLInputElement): void {
+    if (this.mathFieldTarget?.editor !== editor) return;
+    this.mathFieldTarget = null;
+    this.mathFieldPanel?.close();
+  }
+
+  /**
+   * Focus left the maths field for something that is not the text it belongs to. The text editor
+   * declined to save when focus came to the field, so the edit is finished here instead; without
+   * it the editor would stay open and unsaved, and the next click on the canvas would discard it.
+   */
+  private readonly leaveMathField = (next: Node | null): void => {
+    const target = this.mathFieldTarget;
+    if (!target) return;
+    if (next !== null && (next === target.editor || target.editor.contains(next))) return;
+    this.mathFieldPanel?.close();
+    this.mathFieldTarget = null;
+    target.finish(true);
+  };
+
+  private async downloadLocalSvg(): Promise<void> {
+    const snapshot = this.model.toSnapshot(this.bootstrap.board.id);
+    // A downloaded picture should hold the formulas the board shows, not their source.
     const svg = localSvg(
-      this.model.toSnapshot(this.bootstrap.board.id),
+      snapshot,
       this.bootstrap.board.title,
+      await mathExportOptions(snapshot.items),
     );
     downloadBlob(`${safeFilename(this.bootstrap.board.title)}-local.svg`, "image/svg+xml", svg);
   }
@@ -7649,7 +7801,11 @@ function turnstileWhenReady(client: TurnstileClient): Promise<TurnstileClient> {
   });
 }
 
-export function localSvg(snapshot: BoardSnapshot, title: string): string {
+export function localSvg(
+  snapshot: BoardSnapshot,
+  title: string,
+  options: SvgItemOptions = {},
+): string {
   const items = [...snapshot.items]
     .map((item) => normalizeBoardItem(item))
     .sort((a, b) => a.z - b.z);
@@ -7658,7 +7814,7 @@ export function localSvg(snapshot: BoardSnapshot, title: string): string {
   const viewBox = bounds
     ? `${bounds.minX - pad} ${bounds.minY - pad} ${Math.max(1, bounds.maxX - bounds.minX + pad * 2)} ${Math.max(1, bounds.maxY - bounds.minY + pad * 2)}`
     : "0 0 1200 800";
-  const content = items.map(renderSvgItem).join("");
+  const content = items.map((item) => renderSvgItem(item, options)).join("");
   return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" role="img" aria-label="${escapeXml(title)}"><metadata>{&quot;format&quot;:&quot;cf-whiteboard-json&quot;,&quot;seq&quot;:${snapshot.seq}}</metadata><rect x="-1000000" y="-1000000" width="2000000" height="2000000" fill="#ffffff"/>${content}</svg>`;
 }
 
@@ -8180,8 +8336,11 @@ export class PendingCommitTracker {
 function isEditingTarget(target: EventTarget | null): boolean {
   return (
     target instanceof Element &&
-    target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])") !==
-      null
+    // MathLive's field is a custom element, and a key pressed inside it is retargeted to the host.
+    // Without it here, undo, redo and Delete would reach the board while a formula is being typed.
+    target.closest(
+      "input, textarea, select, math-field, [contenteditable]:not([contenteditable='false'])",
+    ) !== null
   );
 }
 

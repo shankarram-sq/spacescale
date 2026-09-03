@@ -1,55 +1,43 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  containsMathMarkup,
-  normalizeSingleDollarMath,
-  splitMathMarkup,
-  typesetMath,
-} from "./mathjax";
+import { containsMathMarkup, splitMathMarkup, typesetMath } from "./mathjax";
 
 describe("containsMathMarkup", () => {
-  it("recognizes supported inline and display delimiters", () => {
-    expect(containsMathMarkup("Energy: $E=mc^2$")).toBe(true);
+  it("recognizes MathJax's own delimiters", () => {
     expect(containsMathMarkup("Area: \\(\\pi r^2\\)")).toBe(true);
     expect(containsMathMarkup("\\[x = \\frac{-b}{2a}\\]")).toBe(true);
     expect(containsMathMarkup("$$a^2+b^2=c^2$$")).toBe(true);
   });
 
-  it("does not interpret ordinary currency or escaped dollars as math", () => {
+  it("leaves a lone dollar sign as a dollar sign", () => {
+    // A classroom board carries prices far more often than inline math, and no reading of a
+    // single $ can tell "$5 to $12" apart from a formula. $$ is the delimiter instead.
+    expect(containsMathMarkup("Energy: $E=mc^2$")).toBe(false);
+    expect(containsMathMarkup("Prices changed from $100 to $50.")).toBe(false);
+    expect(containsMathMarkup("Budget: $100 materials, $50 travel")).toBe(false);
     expect(containsMathMarkup("The total is $ 12.00 today.")).toBe(false);
     expect(containsMathMarkup("The total is \\$12.00 today.")).toBe(false);
-    expect(containsMathMarkup("Budget: $100 materials, $50 travel")).toBe(false);
-    expect(containsMathMarkup("Prices changed from $100 to $50.")).toBe(false);
+    expect(containsMathMarkup("It cost $5-$10 per kit.")).toBe(false);
     expect(containsMathMarkup("No formula here")).toBe(false);
   });
 
-  it("still recognizes single-dollar variables alongside currency", () => {
-    expect(containsMathMarkup("Budget: $100; rate: $r=0.05$")).toBe(true);
-    expect(containsMathMarkup("Check $2+2=4$ before continuing.")).toBe(true);
-    expect(containsMathMarkup("Scale by $2x$ before continuing.")).toBe(true);
-    expect(containsMathMarkup("Use \\(2+2=4\\) when a formula starts with a number.")).toBe(true);
-    expect(normalizeSingleDollarMath("Budget: $100; rate: $r=0.05$ and $p$.")).toBe(
-      "Budget: $100; rate: \\(r=0.05\\) and \\(p\\).",
-    );
-    expect(normalizeSingleDollarMath("Budget: $100 materials, $50 travel")).toBe(
-      "Budget: $100 materials, $50 travel",
-    );
-    expect(normalizeSingleDollarMath("$$a^2+b^2=c^2$$")).toBe("$$a^2+b^2=c^2$$");
-    expect(normalizeSingleDollarMath("Check $2+2=4$.")).toBe("Check \\(2+2=4\\).");
-    expect(normalizeSingleDollarMath("Use $2x$, but $100$ remains currency.")).toBe(
-      "Use \\(2x\\), but $100$ remains currency.",
-    );
-  });
-
-  it("segments normalized math before surrounding prose is linkified", () => {
+  it("segments math out before surrounding prose is linkified", () => {
     expect(
       splitMathMarkup(
-        "Read $\\text{https://inside.example }$ then https://outside.example and $$x=1$$.",
+        "Read \\(\\text{https://inside.example }\\) then https://outside.example and $$x=1$$.",
       ),
     ).toEqual([
       { kind: "text", text: "Read " },
       { kind: "math", text: "\\(\\text{https://inside.example }\\)" },
       { kind: "text", text: " then https://outside.example and " },
       { kind: "math", text: "$$x=1$$" },
+      { kind: "text", text: "." },
+    ]);
+  });
+
+  it("keeps a price beside a formula out of the formula", () => {
+    expect(splitMathMarkup("Kits cost $12 each, so $$c = 12n$$.")).toEqual([
+      { kind: "text", text: "Kits cost $12 each, so " },
+      { kind: "math", text: "$$c = 12n$$" },
       { kind: "text", text: "." },
     ]);
   });

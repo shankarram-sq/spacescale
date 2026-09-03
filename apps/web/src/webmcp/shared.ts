@@ -175,12 +175,12 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export const WEBMCP_MATHJAX_GUIDANCE =
-  "SpaceScale renders TeX with MathJax in canvas text, sticky notes, table cells, Section titles, and comments. Preserve or create math with $...$ or \\(...\\) for inline expressions and $$...$$ or \\[...\\] for display expressions.";
+  "SpaceScale renders TeX with MathJax in canvas text, sticky notes, table cells, Section titles, and comments. Preserve or create math with \\(...\\) for inline expressions and $$...$$ or \\[...\\] for display expressions. A single $ is a dollar sign, never a delimiter, so prices stay prices: write \\(x\\), not $x$.";
 
 export const WEBMCP_TEXT_RENDERING_CAPABILITY = {
   engine: "MathJax 4",
   syntax: "TeX",
-  inlineDelimiters: ["$...$", "\\(...\\)"],
+  inlineDelimiters: ["\\(...\\)"],
   displayDelimiters: ["$$...$$", "\\[...\\]"],
   surfaces: ["canvas_text", "sticky_notes", "table_cells", "section_titles", "comments"],
 } as const;

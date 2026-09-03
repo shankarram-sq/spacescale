@@ -1,13 +1,17 @@
 import { boundsForItems, boundsHeight, boundsWidth } from "@collab/geometry";
 import { normalizeBoardItem } from "@collab/protocol";
-import { renderSvgItem } from "@collab/svg-export";
+import { renderSvgItem, type SvgItemOptions } from "@collab/svg-export";
+import { mathExportOptions } from "../board/math-export";
 import type { BoardItem } from "../types";
 
 export function visualAlias(index: number): string {
   return `visual_${index + 1}`;
 }
 
-export function serializeVisualPreview(items: readonly BoardItem[]): {
+export function serializeVisualPreview(
+  items: readonly BoardItem[],
+  options: SvgItemOptions = {},
+): {
   viewBox: string;
   ariaLabel: string;
   content: string;
@@ -41,7 +45,7 @@ export function serializeVisualPreview(items: readonly BoardItem[]): {
   return {
     viewBox: `${minX} ${minY} ${viewWidth} ${viewHeight}`,
     ariaLabel: `Board visual containing ${items.length} browser-selected item${items.length === 1 ? "" : "s"}`,
-    content: `<rect x="${minX}" y="${minY}" width="${viewWidth}" height="${viewHeight}" fill="#ffffff"/>${sanitized.map(renderSvgItem).join("")}`,
+    content: `<rect x="${minX}" y="${minY}" width="${viewWidth}" height="${viewHeight}" fill="#ffffff"/>${sanitized.map((item) => renderSvgItem(item, options)).join("")}`,
   };
 }
 
@@ -91,7 +95,9 @@ export async function captureBoardImage(
 
   let preview: ReturnType<typeof serializeVisualPreview>;
   try {
-    preview = serializeVisualPreview(items);
+    // A picture of a board must show its formulas, not their source: an assistant reading the
+    // picture is exactly the reader who cannot fall back to the text.
+    preview = serializeVisualPreview(items, await mathExportOptions(items));
   } catch {
     return undefined;
   }

@@ -1,6 +1,4 @@
-import { normalizeSingleDollarMath } from "@collab/geometry";
-
-export { normalizeSingleDollarMath };
+import { splitTexSegments } from "@collab/geometry";
 
 type MathJaxApi = {
   startup?: { promise?: Promise<void> };
@@ -20,21 +18,11 @@ let mathJaxReady: Promise<MathJaxApi> | null = null;
 let mathJaxWork: Promise<void> = Promise.resolve();
 
 export function containsMathMarkup(value: string): boolean {
-  return UNAMBIGUOUS_MATH_MARKUP.test(value) || normalizeSingleDollarMath(value) !== value;
+  return UNAMBIGUOUS_MATH_MARKUP.test(value);
 }
 
 export function splitMathMarkup(value: string): Array<{ kind: "math" | "text"; text: string }> {
-  const normalized = normalizeSingleDollarMath(value);
-  const result: Array<{ kind: "math" | "text"; text: string }> = [];
-  let cursor = 0;
-  for (const match of normalized.matchAll(/\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\]|\$\$[\s\S]+?\$\$/gu)) {
-    const index = match.index;
-    if (index > cursor) result.push({ kind: "text", text: normalized.slice(cursor, index) });
-    result.push({ kind: "math", text: match[0] });
-    cursor = index + match[0].length;
-  }
-  if (cursor < normalized.length) result.push({ kind: "text", text: normalized.slice(cursor) });
-  return result;
+  return splitTexSegments(value).map(({ kind, text }) => ({ kind, text }));
 }
 
 function mathExpressionSource(markup: string): string {
@@ -92,16 +80,6 @@ async function loadMathJax(): Promise<MathJaxApi> {
   return mathJaxReady;
 }
 
-function normalizeSingleDollarTextNodes(root: Node): void {
-  for (const child of root.childNodes) {
-    if (child.nodeType === 3 && child.nodeValue !== null) {
-      child.nodeValue = normalizeSingleDollarMath(child.nodeValue);
-    } else if (child.nodeType === 1 && child.nodeName !== "A") {
-      normalizeSingleDollarTextNodes(child);
-    }
-  }
-}
-
 function enqueueMathJax<T>(operation: (mathJax: MathJaxApi) => T | Promise<T>): Promise<T> {
   const work = mathJaxWork.then(async () => operation(await loadMathJax()));
   mathJaxWork = work.then(
@@ -122,7 +100,6 @@ export type TypesetMathOptions = {
 export function typesetMath(container: HTMLElement, options: TypesetMathOptions = {}): void {
   const source = container.textContent ?? "";
   if (!containsMathMarkup(source)) return;
-  normalizeSingleDollarTextNodes(container);
   container.dataset.mathState = "loading";
   void enqueueMathJax(async (mathJax) => {
     if (!container.isConnected) return false;
@@ -174,4 +151,126 @@ export function clearTypesetMath(root: ParentNode): void {
   }
   if (containers.length === 0) return;
   void enqueueMathJax((mathJax) => mathJax.typesetClear?.(containers)).catch(() => undefined);
+}
+
+type MathJaxSvgApi = MathJaxApi & {
+  tex2svgPromise?: (tex: string, options?: { display?: boolean }) => Promise<HTMLElement>;
+};
+
+/** Cache key for one expression at one size. The same formula at two sizes is two pictures. */
+function mathKey(tex: string, fontSize: number, display: boolean): string {
+  return `${display ? "d" : "i"}:${fontSize}:${tex}`;
+}
+
+/**
+ * A formula typeset once as a standalone SVG element, measured in the board units of the text it
+ * sits in. `baseline` is the drop from the top of the box to the surrounding text's baseline, so
+ * a caller can place the picture on the line it belongs on.
+ */
+export type TypesetMathSvg = {
+  svg: string;
+  width: number;
+  height: number;
+  baseline: number;
+};
+
+/**
+ * The picture exporters draw synchronously, and MathJax typesets asynchronously, so every formula
+ * on a board is typeset up front and handed over as a lookup. Rendering into a detached host and
+ * measuring the result is what makes the sizes exact: nothing here guesses at font metrics.
+ */
+export async function typesetMathSvg(
+  expressions: Iterable<{ tex: string; fontSize: number; display: boolean }>,
+): Promise<Map<string, TypesetMathSvg>> {
+  const wanted = new Map<string, { tex: string; fontSize: number; display: boolean }>();
+  for (const expression of expressions) {
+    if (expression.tex.trim().length === 0 || !(expression.fontSize > 0)) continue;
+    wanted.set(mathKey(expression.tex, expression.fontSize, expression.display), expression);
+  }
+  const rendered = new Map<string, TypesetMathSvg>();
+  if (wanted.size === 0 || typeof document === "undefined") return rendered;
+
+  return enqueueMathJax(async (mathJax) => {
+    const typeset = (mathJax as MathJaxSvgApi).tex2svgPromise;
+    if (typeof typeset !== "function") return rendered;
+    const host = document.createElement("div");
+    host.setAttribute("aria-hidden", "true");
+    host.style.cssText = "position:fixed;left:-10000px;top:0;visibility:hidden;";
+    document.body.append(host);
+    try {
+      for (const [key, expression] of wanted) {
+        host.style.fontSize = `${expression.fontSize}px`;
+        let container: HTMLElement;
+        try {
+          container = await typeset(expression.tex, { display: expression.display });
+        } catch {
+          continue;
+        }
+        host.replaceChildren(container);
+        const svg = container.querySelector("svg");
+        if (!svg) continue;
+        const measured = measureTypesetSvg(svg);
+        if (measured) rendered.set(key, measured);
+      }
+    } finally {
+      host.remove();
+    }
+    return rendered;
+  }).catch(() => rendered);
+}
+
+/**
+ * Reads the rendered box from the live layout, and the baseline from MathJax's own viewBox, whose
+ * negative minimum Y is exactly the height above the baseline.
+ */
+function measureTypesetSvg(svg: SVGSVGElement): TypesetMathSvg | null {
+  const box = svg.getBoundingClientRect();
+  const width = box.width;
+  const height = box.height;
+  if (!(width > 0) || !(height > 0)) return null;
+  const viewBox = (svg.getAttribute("viewBox") ?? "").split(/\s+/u).map(Number);
+  const [, minY, , viewHeight] = viewBox;
+  const baseline =
+    viewBox.length === 4 &&
+    Number.isFinite(minY) &&
+    Number.isFinite(viewHeight) &&
+    (viewHeight ?? 0) > 0
+      ? (height * -(minY ?? 0)) / (viewHeight ?? 1)
+      : height;
+  const element = svg.cloneNode(true) as SVGSVGElement;
+  element.removeAttribute("style");
+  element.setAttribute("width", String(round(width)));
+  element.setAttribute("height", String(round(height)));
+  element.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  return {
+    svg: new XMLSerializer().serializeToString(element),
+    width: round(width),
+    height: round(height),
+    baseline: round(Math.min(Math.max(baseline, 0), height)),
+  };
+}
+
+function round(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+/** Every expression a set of board items holds, ready for typesetMathSvg. */
+export function mathExpressionsIn(
+  surfaces: Iterable<{ text: string; fontSize: number }>,
+): Array<{ tex: string; fontSize: number; display: boolean }> {
+  const expressions: Array<{ tex: string; fontSize: number; display: boolean }> = [];
+  for (const { text, fontSize } of surfaces) {
+    for (const segment of splitTexSegments(text)) {
+      if (segment.kind !== "math") continue;
+      expressions.push({ tex: segment.tex, fontSize, display: segment.display });
+    }
+  }
+  return expressions;
+}
+
+/** Wraps a typeset lookup as the renderer the SVG exporter accepts. */
+export function mathSvgRenderer(
+  rendered: ReadonlyMap<string, TypesetMathSvg>,
+): (tex: string, fontSize: number, display: boolean) => TypesetMathSvg | undefined {
+  return (tex, fontSize, display) => rendered.get(mathKey(tex, fontSize, display));
 }

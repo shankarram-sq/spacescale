@@ -1088,65 +1088,47 @@ function codePointLength(value: string): number {
 }
 
 /**
- * Converts only unambiguous single-dollar expressions to the delimiters used by the shared
- * TeX parser. Currency-like pairs stay literal. The browser renderer and canonical geometry
- * must use this same normalization so Section membership cannot disagree with MathJax.
+ * The board's TeX delimiters, which are MathJax's own defaults: `\(…\)` for inline math, and
+ * `\[…\]` or `$$…$$` for display math. A lone `$` is a dollar sign. Prices are far more common
+ * on a classroom board than inline math, and "$5 to $12" must never become a formula.
+ *
+ * The browser renderer, the canonical geometry, and the picture exporter all read math through
+ * this one pattern, so Section membership can never disagree with what MathJax typeset.
  */
-export function normalizeSingleDollarMath(value: string): string {
-  let result = "";
-  let copiedThrough = 0;
-  for (let opening = 0; opening < value.length; opening += 1) {
-    if (
-      value[opening] !== "$" ||
-      dollarIsEscaped(value, opening) ||
-      value[opening - 1] === "$" ||
-      value[opening + 1] === "$"
-    ) {
-      continue;
-    }
-    const first = value[opening + 1];
-    if (first === undefined || /\s/u.test(first)) continue;
-    for (let closing = opening + 2; closing < value.length; closing += 1) {
-      if (value[closing] !== "$" || dollarIsEscaped(value, closing)) continue;
-      if (value[closing - 1] === "$" || value[closing + 1] === "$") break;
-      const previous = value[closing - 1];
-      const next = value[closing + 1];
-      const expression = value.slice(opening + 1, closing);
-      if (
-        previous !== undefined &&
-        !/\s/u.test(previous) &&
-        (next === undefined || !/\d/u.test(next)) &&
-        singleDollarExpressionIsMath(expression)
-      ) {
-        result += `${value.slice(copiedThrough, opening)}\\(${expression}\\)`;
-        copiedThrough = closing + 1;
-        opening = closing;
-      }
-      break;
-    }
-  }
-  return copiedThrough === 0 ? value : result + value.slice(copiedThrough);
-}
+const UNAMBIGUOUS_TEX_MARKUP = /\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\]|\$\$[\s\S]+?\$\$/gu;
 
-function singleDollarExpressionIsMath(value: string): boolean {
-  const first = value[0];
-  return (
-    first === undefined ||
-    !/\d/u.test(first) ||
-    /[+\-*/=^_<>\\]/u.test(value) ||
-    /^\d+(?:\.\d+)?[A-Za-z]/u.test(value)
-  );
-}
-
-function dollarIsEscaped(value: string, index: number): boolean {
+/** True when the character at `index` is escaped by an odd run of backslashes before it. */
+function isEscaped(value: string, index: number): boolean {
   let backslashes = 0;
-  for (let cursor = index - 1; cursor >= 0 && value[cursor] === "\\"; cursor -= 1) {
-    backslashes += 1;
-  }
+  for (let cursor = index - 1; cursor >= 0 && value[cursor] === "\\"; cursor -= 1) backslashes += 1;
   return backslashes % 2 === 1;
 }
 
-const UNAMBIGUOUS_TEX_MARKUP = /\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\]|\$\$[\s\S]+?\$\$/gu;
+/**
+ * Every formula in a value, skipping any whose opening delimiter is escaped. MathJax is configured
+ * with processEscapes, so `\$` is a dollar sign a participant asked for literally; reading it as a
+ * delimiter would let a picture of the board, and the bounds that decide Section membership,
+ * disagree with what the board actually shows.
+ */
+function texMarkupMatches(value: string): Array<{ markup: string; index: number }> {
+  const matches: Array<{ markup: string; index: number }> = [];
+  let cursor = 0;
+  while (cursor < value.length) {
+    UNAMBIGUOUS_TEX_MARKUP.lastIndex = cursor;
+    const match = UNAMBIGUOUS_TEX_MARKUP.exec(value);
+    if (!match) break;
+    const index = match.index;
+    if (isEscaped(value, index)) {
+      // Step past the escaped delimiter and keep looking; a later one may still be real.
+      cursor = index + 1;
+      continue;
+    }
+    matches.push({ markup: match[0], index });
+    cursor = index + match[0].length;
+  }
+  UNAMBIGUOUS_TEX_MARKUP.lastIndex = 0;
+  return matches;
+}
 const TEX_ENVIRONMENT_COMMAND = /\\(?:begin|end)\s*\{[^{}]*\}/gu;
 const ZERO_WIDTH_TEX_LAYOUT_COMMAND =
   /\\(?:displaystyle|textstyle|scriptstyle|scriptscriptstyle|frac|dfrac|tfrac|binom|dbinom|tbinom|left|right|middle|text|textrm|textsf|texttt|textnormal|mathrm|mathbf|mathit|mathsf|mathtt|mathcal|mathbb|boldsymbol|operatorname|overline|underline|hat|widehat|bar|vec|dot|ddot|tilde|widetilde|overbrace|underbrace)\b/gu;
@@ -1292,8 +1274,8 @@ function raisedRuleVerticalExtents(
   let upward = 0;
   let downward = 0;
   const maximum = TEX_MAX_ESTIMATE_LINES * fontSize * TEXT_LINE_HEIGHT_RATIO;
-  for (const markupMatch of normalizeSingleDollarMath(value).matchAll(UNAMBIGUOUS_TEX_MARKUP)) {
-    for (const ruleMatch of markupMatch[0].matchAll(TEX_RULE_COMMAND)) {
+  for (const markupMatch of texMarkupMatches(value)) {
+    for (const ruleMatch of markupMatch.markup.matchAll(TEX_RULE_COMMAND)) {
       const raise = ruleMatch[1] === undefined ? 0 : texDimensionPixels(ruleMatch[1], fontSize);
       const height = ruleMatch[3] === undefined ? null : texDimensionPixels(ruleMatch[3], fontSize);
       if (raise === null || height === null) continue;
@@ -1312,11 +1294,11 @@ function texHorizontalMovementExtents(
   let left = 0;
   let right = 0;
   const maximum = TEX_MAX_ESTIMATE_GLYPHS * fontSize * TEXT_GLYPH_WIDTH_RATIO;
-  for (const markupMatch of normalizeSingleDollarMath(value).matchAll(UNAMBIGUOUS_TEX_MARKUP)) {
+  for (const markupMatch of texMarkupMatches(value)) {
     let cursor = 0;
     let minimum = 0;
     let maximumCursor = 0;
-    for (const movementMatch of markupMatch[0].matchAll(TEX_HORIZONTAL_MOVEMENT)) {
+    for (const movementMatch of markupMatch.markup.matchAll(TEX_HORIZONTAL_MOVEMENT)) {
       const dimension = movementMatch[1] ?? movementMatch[2];
       const fixedSpace = movementMatch[3];
       const pixels =
@@ -1367,9 +1349,38 @@ export function textLayoutEstimateSource(
     remainingGlyphs: TEX_MAX_ESTIMATE_GLYPHS,
     remainingLines: TEX_MAX_ESTIMATE_LINES,
   };
-  return normalizeSingleDollarMath(value).replace(UNAMBIGUOUS_TEX_MARKUP, (markup) =>
-    texLayoutEstimateSource(markup, size, budget),
-  );
+  // Rebuilt rather than replaced, so an escaped delimiter is left exactly as the participant
+  // typed it: the estimate has to describe the same text MathJax will draw.
+  let estimated = "";
+  let copied = 0;
+  for (const { markup, index } of texMarkupMatches(value)) {
+    estimated += value.slice(copied, index) + texLayoutEstimateSource(markup, size, budget);
+    copied = index + markup.length;
+  }
+  return estimated + value.slice(copied);
+}
+
+/** One run of a text value: either literal characters or one TeX expression. */
+export type TexSegment =
+  | { kind: "text"; text: string }
+  | { kind: "math"; text: string; tex: string; display: boolean };
+
+/**
+ * Splits a text value into literal runs and TeX expressions. Renderers that draw math and
+ * renderers that only measure it share this, so a picture of a board can never disagree with the
+ * board about where a formula begins.
+ */
+export function splitTexSegments(value: string): TexSegment[] {
+  const segments: TexSegment[] = [];
+  let cursor = 0;
+  for (const { markup, index } of texMarkupMatches(value)) {
+    if (index > cursor) segments.push({ kind: "text", text: value.slice(cursor, index) });
+    const display = markup.startsWith("$$") || markup.startsWith("\\[");
+    segments.push({ kind: "math", text: markup, tex: markup.slice(2, -2), display });
+    cursor = index + markup.length;
+  }
+  if (cursor < value.length) segments.push({ kind: "text", text: value.slice(cursor) });
+  return segments;
 }
 
 export type OutlineGeometryKind = "pencil" | "line" | "rectangle" | "ellipse" | "polygon";
