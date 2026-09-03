@@ -63,6 +63,11 @@ const webMcpCalls: WebMcpCallRecord[] = [];
 export const MAX_WEBMCP_COMPLETED_CALLS = 100;
 let nextWebMcpCallId = 1;
 
+/** Watch polling is infrastructure noise rather than useful page-session activity. */
+export function isVisibleWebMcpActivityCall(call: Pick<WebMcpCallRecord, "toolName">): boolean {
+  return call.toolName !== "watch_board";
+}
+
 function hostPresent(): boolean {
   return (
     typeof document !== "undefined" && typeof document.modelContext?.registerTool === "function"
@@ -131,12 +136,17 @@ function finishToolCall(id: number, status: Exclude<WebMcpCallStatus, "active">)
   announceRegistryChange();
 }
 
-/** Retains every active call plus a bounded newest-first history of completed calls. */
+/** Retains every active call plus a bounded newest-first history of visible completed calls. */
 function trimCompletedCalls(): void {
   let completed = 0;
   for (let index = 0; index < webMcpCalls.length; index += 1) {
     const call = webMcpCalls[index];
     if (!call || call.status === "active") continue;
+    if (!isVisibleWebMcpActivityCall(call)) {
+      webMcpCalls.splice(index, 1);
+      index -= 1;
+      continue;
+    }
     completed += 1;
     if (completed <= MAX_WEBMCP_COMPLETED_CALLS) continue;
     webMcpCalls.splice(index, 1);

@@ -180,13 +180,13 @@ test("stamps converge, move, copy, delete, persist, and export", async ({
       movedTransform,
     );
 
-    await page.getByRole("button", { name: "Copy selected items" }).click();
+    await page.keyboard.press("Control+d");
     await expect(page.locator("#drawing-area .board-item-stamp")).toHaveCount(3);
     await expect(editor.locator("#drawing-area .board-item-stamp")).toHaveCount(3);
     const copy = page.locator("#drawing-area .board-item-stamp").last();
     const copyId = await copy.getAttribute("data-item-id");
     expect(copyId).toBeTruthy();
-    await page.getByRole("button", { name: "Delete selected items" }).click();
+    await page.keyboard.press("Delete");
     await expect(page.locator("#drawing-area .board-item-stamp")).toHaveCount(2);
     await expect(editor.locator(`#drawing-area [data-item-id="${copyId}"]`)).toHaveCount(0);
 

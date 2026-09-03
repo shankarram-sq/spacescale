@@ -72,7 +72,7 @@ test("object comments follow moves, hide after orphaning, and resolve", async ({
     )
     .not.toEqual(originalMarkerPosition);
 
-  await page.getByRole("button", { name: "Delete selected items" }).click();
+  await page.keyboard.press("Delete");
   await expect(shape).toHaveCount(0);
   await expect(marker).toHaveCount(0);
   await openSettingsDrawer(page);

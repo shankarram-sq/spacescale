@@ -702,6 +702,12 @@ button:disabled {
   display: none;
 }
 
+.brush-preset-group {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
 [data-quick-colours] {
   display: flex;
   align-items: center;
@@ -710,38 +716,36 @@ button:disabled {
 }
 
 .brush-preset {
-  min-width: 66px;
+  width: 36px;
+  min-width: 36px;
   height: 34px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
-  padding: 0 9px;
+  padding: 0;
   border: 0;
   border-radius: 9px;
   background: transparent;
   cursor: pointer;
-  font-size: 10px;
-  font-weight: 650;
 }
 
-.brush-preset::before {
-  content: "";
-  width: 20px;
-  height: var(--brush-preview-width, 3px);
-  border-radius: 999px;
-  background: currentColor;
-  opacity: var(--brush-preview-opacity, 1);
-  transform: rotate(-12deg);
+.brush-preset > svg,
+.brush-preset .tool-glyph,
+.brush-preset .tool-glyph svg {
+  width: 19px;
+  height: 19px;
 }
 
-.brush-preset[data-brush-preset="marker"] {
-  --brush-preview-width: 7px;
+.brush-preset .tool-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.brush-preset[data-brush-preset="highlighter"] {
-  --brush-preview-width: 11px;
-  --brush-preview-opacity: 0.36;
+.brush-preset[data-brush-preset="highlighter"] .brush-highlighter-mark {
+  stroke: #f1c40f;
+  stroke-width: 4;
+  opacity: 0.62;
 }
 
 .brush-preset:hover,
@@ -1229,8 +1233,32 @@ button:disabled {
   color: #b7dfff;
 }
 
-.selection-actions button[data-selection-delete] {
-  color: #ff9c8a;
+.selection-actions .selection-colour-trigger {
+  padding: 0;
+}
+
+.selection-current-colour {
+  width: 19px;
+  height: 19px;
+  display: block;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 28%);
+}
+
+.selection-current-colour.is-mixed {
+  border-width: 1px;
+}
+
+.selection-comment-button svg,
+.selection-icon-button svg {
+  width: 18px;
+  height: 18px;
+}
+
+[data-selection-section-lock][data-section-locked="true"] .section-lock-icon-closed,
+[data-selection-section-lock][data-section-locked="false"] .section-lock-icon-open {
+  display: none;
 }
 
 .selection-arrange-wrap {
@@ -3441,7 +3469,7 @@ button:disabled {
   }
 
   .board-identity {
-    width: min(100%, 270px);
+    width: min(100%, 270px, max(72px, calc(50vw - 78px)));
   }
 }
 

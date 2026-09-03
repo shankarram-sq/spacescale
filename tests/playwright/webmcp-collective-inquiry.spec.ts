@@ -106,10 +106,22 @@ test("a board participant can use headless WebMCP tools with neutral board attri
 
   // The compact header control reports readiness and opens a page-session call history.
   const webMcpStatus = page.getByTestId("webmcp-status");
+  const webMcpStatusTime = page.getByTestId("webmcp-status-time");
   const mcpActivity = page.getByTestId("mcp-activity-menu");
   await expect(webMcpStatus).toHaveAttribute("data-state", "ready");
   await expect(webMcpStatus).toHaveAttribute("data-host", "linked");
-  await expect(webMcpStatus).toHaveText("MCP");
+  await expect(webMcpStatus).toContainText("MCP");
+  await expect(webMcpStatusTime).toHaveText("Ready");
+  const [topbarBounds, mcpBounds] = await Promise.all([
+    page.locator(".topbar").boundingBox(),
+    webMcpStatus.boundingBox(),
+  ]);
+  expect(topbarBounds).not.toBeNull();
+  expect(mcpBounds).not.toBeNull();
+  if (!topbarBounds || !mcpBounds) throw new Error("The MCP header control has no layout bounds.");
+  expect(
+    Math.abs(topbarBounds.x + topbarBounds.width / 2 - (mcpBounds.x + mcpBounds.width / 2)),
+  ).toBeLessThan(1);
   await expect(page.getByTestId("save-status")).not.toContainText("·");
   await webMcpStatus.click();
   await expect(mcpActivity).toBeVisible();
@@ -119,7 +131,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   await expect(mcpActivity).toBeHidden();
   // The AI button exists only while a problem-step watch is live in this browser.
   await expect(page.locator("[data-selection-ai-wrap]")).toBeHidden();
-  await expect(page.getByTestId("ai-watch-indicator")).toBeHidden();
+  await expect(page.getByTestId("ai-watch-indicator")).toHaveCount(0);
   await expect(page.getByTestId("tool-ai")).toBeHidden();
   expect(
     await page.evaluate(() => window.__spaceScaleWebMcpTools.watch_board?.annotations),
@@ -256,8 +268,8 @@ test("a board participant can use headless WebMCP tools with neutral board attri
     canComment: true,
     steps: expect.arrayContaining([expect.objectContaining({ kind: "sticky" })]),
   });
-  await expect(page.getByTestId("ai-watch-indicator")).toBeVisible();
-  await expect(page.getByTestId("ai-watch-indicator")).toContainText("AI watching");
+  await expect(page.getByTestId("ai-watch-indicator")).toHaveCount(0);
+  await expect(webMcpStatusTime).toHaveText(/^\d+ min left$/u);
   await expect(webMcpStatus).toHaveAttribute("data-state", "watch");
 
   // Ask AI acts on the selection, which the scope checks above deliberately emptied.
@@ -268,6 +280,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   const askAi = page.getByTestId("selection-ai");
   await expect(askAi).toBeVisible();
   await expect(askAi).toBeEnabled();
+  await expect(askAi.locator(".ai-sparkle")).toHaveCSS("color", "rgb(201, 167, 255)");
 
   // A request from the board resolves the host's pending wait with a reply plan that names
   // the generic comment write.
@@ -343,9 +356,12 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   expect(answered).toMatchObject({ status: "commented", stepAlias, writtenBy: "ai" });
   await expect(page.locator("[data-comments-count]")).toHaveText("1");
   await expect(webMcpStatus).toHaveAttribute("data-state", "watch");
+  await expect(webMcpStatusTime).not.toHaveText(/^\d+ min left$/u);
+  await expect(webMcpStatusTime).not.toHaveText("Ready");
   await webMcpStatus.click();
   await expect(mcpActivity).toContainText("insert_comment");
   await expect(mcpActivity).toContainText("Completed");
+  await expect(mcpActivity).not.toContainText("watch_board");
   await webMcpStatus.click();
   await expect(mcpActivity).toBeHidden();
   await openSettingsDrawer(page);
@@ -401,7 +417,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
     return tool.execute({ action: "stop", watchToken }, { signal: new AbortController().signal });
   }, String(watchStart.watchToken));
   await expect(page.locator("[data-selection-ai-wrap]")).toBeHidden();
-  await expect(page.getByTestId("ai-watch-indicator")).toBeHidden();
+  await expect(page.getByTestId("ai-watch-indicator")).toHaveCount(0);
   await expect(page.getByTestId("tool-ai")).toBeHidden();
 
   // Each generic write lands one object where the call asks, tagged as written by AI.

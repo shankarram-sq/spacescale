@@ -121,9 +121,11 @@ import {
   ASSIST_GUIDANCE,
   ASSIST_NOTE_MAX_LENGTH,
   assistActionLabel,
+  PROBLEM_STEP_WATCH_DURATION_MS,
   type WatchState,
 } from "../webmcp/problem-step-watch";
 import {
+  isVisibleWebMcpActivityCall,
   observeWebMcpRegistry,
   type WebMcpRegistryState,
   webMcpRegistryState,
@@ -153,9 +155,25 @@ const TOOL_DEFINITIONS: Array<{
   { name: "pan", label: "Pan canvas", dockLabel: "Hand", shortcut: "H", glyph: "✋" },
   { name: "pencil", label: "Pencil", dockLabel: "Draw", shortcut: "P", glyph: "✎" },
   { name: "line", label: "Straight line", dockLabel: "Line", shortcut: "L", glyph: "╱" },
-  { name: "rectangle", label: "Shapes", dockLabel: "Shape", shortcut: "R", glyph: "□" },
+  {
+    name: "rectangle",
+    label: "Shapes",
+    dockLabel: "Shape",
+    shortcut: "R",
+    glyph: "",
+    iconSvg:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false" aria-hidden="true"><path d="M12 4 21 20H3Z"/></svg>',
+  },
   { name: "text", label: "Text", dockLabel: "Text", shortcut: "T", glyph: "T" },
-  { name: "sticky", label: "Sticky note", dockLabel: "Sticky", shortcut: "N", glyph: "▣" },
+  {
+    name: "sticky",
+    label: "Sticky note",
+    dockLabel: "Sticky",
+    shortcut: "N",
+    glyph: "",
+    iconSvg:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false" aria-hidden="true"><path d="M5 3h14v12l-6 6H5Z"/><path d="M13 21v-6h6"/></svg>',
+  },
   {
     name: "image",
     label: "Add image",
@@ -167,7 +185,15 @@ const TOOL_DEFINITIONS: Array<{
   },
   { name: "table", label: "Table", dockLabel: "Table", shortcut: "G", glyph: "▦" },
   { name: "stamp", label: "Stamp", dockLabel: "Stamp", shortcut: "K", glyph: "★" },
-  { name: "zone", label: "Section", dockLabel: "Section", shortcut: "Z", glyph: "▭" },
+  {
+    name: "zone",
+    label: "Section",
+    dockLabel: "Section",
+    shortcut: "Z",
+    glyph: "",
+    iconSvg:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false" aria-hidden="true"><path d="M8 4H4v4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><path d="M8 8h8v8H8z" opacity=".45"/></svg>',
+  },
   {
     name: "eraser",
     label: "Eraser",
@@ -1036,7 +1062,7 @@ export class BoardApp {
     /** Finishes the edit the field belongs to, as that editor's own blur would. */
     finish: (save: boolean) => void;
   } | null = null;
-  private aiWatchCountdown: number | null = null;
+  private webMcpWatchCountdown: number | null = null;
   private aiAssistSelectionKey = "";
   private readonly pendingRenderedTextSectionUpdates = new Set<string>();
   private bootstrap: Bootstrap;
@@ -1176,10 +1202,9 @@ export class BoardApp {
   private readonly aiAssistMenu: HTMLElement;
   private readonly aiAssistScope: HTMLElement;
   private readonly aiAssistNote: HTMLInputElement;
-  private readonly aiWatchIndicator: HTMLElement;
-  private readonly aiWatchIndicatorText: HTMLElement;
   private readonly webMcpStatus: HTMLButtonElement;
   private readonly webMcpStatusText: HTMLElement;
+  private readonly webMcpStatusTime: HTMLElement;
   private readonly mcpActivityMenu: HTMLElement;
   private readonly mcpActivitySummary: HTMLElement;
   private readonly mcpActivityList: HTMLOListElement;
@@ -1306,10 +1331,9 @@ export class BoardApp {
     this.aiAssistMenu = query(this.selectionActions, "[data-testid='ai-assist-menu']", HTMLElement);
     this.aiAssistScope = query(this.aiAssistMenu, "[data-ai-assist-scope]", HTMLElement);
     this.aiAssistNote = query(this.aiAssistMenu, "[data-ai-assist-note]", HTMLInputElement);
-    this.aiWatchIndicator = query(this.root, "[data-ai-watch-indicator]", HTMLElement);
-    this.aiWatchIndicatorText = query(this.root, "[data-ai-watch-indicator-text]", HTMLElement);
     this.webMcpStatus = query(this.root, "[data-webmcp-status]", HTMLButtonElement);
     this.webMcpStatusText = query(this.root, "[data-webmcp-status-text]", HTMLElement);
+    this.webMcpStatusTime = query(this.root, "[data-webmcp-status-time]", HTMLElement);
     this.mcpActivityMenu = query(this.root, "[data-testid='mcp-activity-menu']", HTMLElement);
     this.mcpActivitySummary = query(
       this.mcpActivityMenu,
@@ -1642,6 +1666,10 @@ export class BoardApp {
 
   destroy(): void {
     window.clearInterval(this.previewExpiryTimer);
+    if (this.webMcpWatchCountdown !== null) {
+      window.clearInterval(this.webMcpWatchCountdown);
+      this.webMcpWatchCountdown = null;
+    }
     this.toolRailResizeObserver?.disconnect();
     this.toolRailResizeObserver = null;
     this.stopBroadcastingSpotlight();
@@ -1721,7 +1749,10 @@ export class BoardApp {
                   <path d="m5 4 14 7.2-6.1 2.1-2.2 6.2L5 4Z"></path>
                   <path d="m12.9 13.3 4.4 4.4"></path>
                 </svg>
-                <span data-webmcp-status-text>MCP</span>
+                <span class="webmcp-status-copy">
+                  <span data-webmcp-status-text>MCP</span>
+                  <small class="webmcp-status-time" data-webmcp-status-time data-testid="webmcp-status-time">Ready</small>
+                </span>
               </button>
               <section class="floating-menu mcp-activity-menu" data-testid="mcp-activity-menu" id="mcp-activity-menu" role="dialog" aria-label="MCP call activity" hidden>
                 <header class="mcp-activity-heading">
@@ -1735,10 +1766,6 @@ export class BoardApp {
                 <ol class="mcp-activity-list" data-mcp-activity-list aria-live="polite"></ol>
               </section>
             </div>
-            <span class="ai-watch-indicator" data-ai-watch-indicator data-testid="ai-watch-indicator" role="status" aria-live="polite" hidden>
-              <span class="ai-mark" aria-hidden="true">AI</span>
-              <span data-ai-watch-indicator-text>AI watching</span>
-            </span>
             <div class="menu-wrap activities-wrap">
               <button class="topbar-button activities-button" type="button" data-testid="activities-button" aria-label="Add a template" aria-haspopup="menu" aria-controls="activities-menu" aria-expanded="false" hidden>
                 <span class="activities-button-mark" aria-hidden="true">＋</span>
@@ -1823,7 +1850,7 @@ export class BoardApp {
             <div class="selection-actions" data-testid="selection-actions" hidden>
               <button type="button" data-selection-alt aria-label="Edit image alt text" hidden>Edit alt text</button>
               <div class="selection-colour-wrap" hidden>
-                <button type="button" data-selection-colour aria-label="Change selected element colour" aria-haspopup="menu" aria-controls="selection-colour-menu" aria-expanded="false">Colour</button>
+                <button class="selection-colour-trigger" type="button" data-selection-colour aria-label="Change selected element colour" title="Colour" aria-haspopup="menu" aria-controls="selection-colour-menu" aria-expanded="false"><span class="selection-current-colour" data-selection-current-colour aria-hidden="true"></span></button>
                 <div class="selection-colour-menu" data-testid="selection-colour-menu" id="selection-colour-menu" role="menu" aria-label="Element colour" hidden></div>
               </div>
               <div class="selection-font-controls" data-selection-font-controls hidden>
@@ -1860,9 +1887,8 @@ export class BoardApp {
                   <p class="ai-assist-menu-note">Your request and the selected step text go to the AI assistant already watching this Space. Replies appear on the board with a small AI tag.</p>
                 </div>
               </div>
-              <button type="button" data-selection-comment aria-label="Comment on selected object">Comment</button>
-              <button type="button" data-selection-section-lock aria-label="Lock Section" aria-pressed="false" hidden>Lock Section</button>
-              <button type="button" data-selection-copy aria-label="Copy selected items">Copy</button>
+              <button class="selection-comment-button" type="button" data-selection-comment aria-label="Comment on selected object" title="Comment"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h9a4 4 0 0 1 4 4Z"/><path d="M8 9h8M8 13h5"/></svg></button>
+              <button class="selection-icon-button" type="button" data-selection-section-lock data-section-locked="false" aria-label="Lock Section" title="Lock Section" aria-pressed="false" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path class="section-lock-icon-closed" d="M8 10V7a4 4 0 0 1 8 0v3"/><path class="section-lock-icon-open" d="M16 10V7a4 4 0 0 0-7.8-1.2"/><circle cx="12" cy="15.5" r="1"/></svg></button>
               <button type="button" data-selection-group aria-label="Group selected items" hidden>Group</button>
               <button type="button" data-selection-ungroup aria-label="Ungroup selected items" hidden>Ungroup</button>
               <div class="selection-arrange-wrap">
@@ -1880,13 +1906,14 @@ export class BoardApp {
                 </div>
               </div>
               <button type="button" data-selection-clear-votes aria-label="Clear votes from selected template" hidden>Clear votes</button>
-              <button type="button" data-selection-delete aria-label="Delete selected items">Delete</button>
             </div>
             <div class="quick-style-bar" data-testid="quick-style-bar" aria-label="Brush and colour" hidden>
-              <button class="brush-preset" type="button" data-brush-preset="pen" aria-pressed="true">Pen</button>
-              <button class="brush-preset" type="button" data-brush-preset="marker" aria-pressed="false">Marker</button>
-              <button class="brush-preset" type="button" data-brush-preset="highlighter" aria-pressed="false">Highlighter</button>
-              <span class="quick-style-divider" aria-hidden="true"></span>
+              <div class="brush-preset-group" data-brush-preset-group>
+                <button class="brush-preset" type="button" data-brush-preset="pen" aria-label="Pen" title="Pen" aria-pressed="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 20 4.2-1 10.5-10.5a2.1 2.1 0 0 0-3-3L5.2 16Z"/><path d="m13.8 7.4 3 3"/></svg></button>
+                <button class="brush-preset" type="button" data-brush-preset="marker" aria-label="Marker" title="Marker" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15.2 4.1 4.7 4.7-9.4 9.4-6.4 1.7 1.7-6.4Z"/><path d="m12.8 6.5 4.7 4.7M4 21h16"/></svg></button>
+                <button class="brush-preset" type="button" data-brush-preset="highlighter" aria-label="Highlighter" title="Highlighter" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m14.8 3.8 5.4 5.4-9.8 9.8-6.5 1.1 1.1-6.5Z"/><path d="m12.1 6.5 5.4 5.4"/><path class="brush-highlighter-mark" d="M3 21h18"/></svg></button>
+              </div>
+              <span class="quick-style-divider" data-quick-style-divider aria-hidden="true"></span>
               <div data-quick-colours></div>
             </div>
             <div class="zoom-controls" aria-label="Canvas zoom">
@@ -1938,7 +1965,7 @@ export class BoardApp {
             </fieldset>
             <label class="range-row" data-style-stroke-row><span>Stroke</span><output data-width-output>2</output><input type="range" min="1" max="32" value="2" step="1" data-style-stroke /></label>
             <label class="style-checkbox-row" data-line-arrow-row hidden><input type="checkbox" data-line-arrow /> <span>End arrow</span><span class="line-arrow-preview" aria-hidden="true">→</span></label>
-            <label class="range-row"><span>Opacity</span><output data-opacity-output>100%</output><input type="range" min="10" max="100" value="100" step="5" data-style-opacity /></label>
+            <label class="range-row" data-style-opacity-row><span>Opacity</span><output data-opacity-output>100%</output><input type="range" min="10" max="100" value="100" step="5" data-style-opacity /></label>
             <label class="style-select-row" data-style-font-family-row><span>Font</span><select data-style-font-family>
               <option value="sans">Sans</option>
               <option value="serif">Serif</option>
@@ -2097,6 +2124,10 @@ export class BoardApp {
         glyph.className = "shape-choice-glyph";
         label.className = "";
         shapeGrid.append(button);
+      } else if (definition.name === "eraser") {
+        button.classList.add("brush-preset");
+        label.remove();
+        query(this.root, "[data-brush-preset-group]", HTMLElement).append(button);
       } else if (MORE_TOOL_NAMES.has(definition.name)) {
         button.setAttribute("role", "menuitem");
         button.classList.add("more-tool-choice");
@@ -2903,7 +2934,8 @@ export class BoardApp {
         if (!preset) return;
         this.style.width = BRUSH_PRESETS[preset].width;
         this.style.opacity = BRUSH_PRESETS[preset].opacity;
-        this.updateStyleControls();
+        this.tools.setTool("pencil");
+        this.setActiveToolButton("pencil");
       });
     }
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-sticky-color]")) {
@@ -3036,10 +3068,6 @@ export class BoardApp {
       "click",
       () => void this.toggleSelectedSectionLock(),
     );
-    query(this.root, "[data-selection-copy]", HTMLButtonElement).addEventListener(
-      "click",
-      () => void this.tools.copySelection(),
-    );
     query(this.root, "[data-selection-group]", HTMLButtonElement).addEventListener(
       "click",
       () => void this.tools.groupSelection(),
@@ -3047,10 +3075,6 @@ export class BoardApp {
     query(this.root, "[data-selection-ungroup]", HTMLButtonElement).addEventListener(
       "click",
       () => void this.tools.ungroupSelection(),
-    );
-    query(this.root, "[data-selection-delete]", HTMLButtonElement).addEventListener(
-      "click",
-      () => void this.tools.deleteSelection(),
     );
     query(this.root, "[data-selection-clear-votes]", HTMLButtonElement).addEventListener(
       "click",
@@ -6967,6 +6991,7 @@ export class BoardApp {
     const line = this.tools.tool === "line";
     const text = this.tools.tool === "text";
     const pencil = this.tools.tool === "pencil";
+    const eraser = this.tools.tool === "eraser";
     const activeColor = sticky
       ? this.style.stickyFill
       : stamp
@@ -7002,9 +7027,12 @@ export class BoardApp {
     query(this.root, "[data-custom-color]", HTMLElement).hidden = sticky;
     query(this.root, "[data-style-stroke-row]", HTMLElement).hidden = sticky || stamp;
     query(this.root, "[data-line-arrow-row]", HTMLElement).hidden = !line;
-    query(this.root, "[data-style-font-row]", HTMLElement).hidden = !(sticky || text);
+    query(this.root, "[data-style-opacity-row]", HTMLElement).hidden = sticky;
+    query(this.root, "[data-style-font-row]", HTMLElement).hidden = !text;
     query(this.root, "[data-style-font-family-row]", HTMLElement).hidden = !text;
-    query(this.root, "[data-testid='quick-style-bar']", HTMLElement).hidden = !pencil;
+    query(this.root, "[data-testid='quick-style-bar']", HTMLElement).hidden = !(pencil || eraser);
+    query(this.root, "[data-quick-style-divider]", HTMLElement).hidden = eraser;
+    query(this.root, "[data-quick-colours]", HTMLElement).hidden = eraser;
     query(this.root, "[data-style-color-label]", HTMLElement).textContent = sticky
       ? "Sticky colour"
       : stamp
@@ -7134,23 +7162,14 @@ export class BoardApp {
     this.arrangeButton.hidden = ids.size < 2;
     this.arrangeButton.disabled = enabledArrangeActions === 0;
     if (this.arrangeButton.hidden || this.arrangeButton.disabled) this.setArrangeMenuOpen(false);
-    const copyReady =
-      canEdit &&
-      allSelectedAuthoritative &&
-      allSelectedUnlocked &&
-      selectedIds.length <= maxBatchItems;
     const mutationReady =
       canEdit && allSelectedAuthoritative && selectedIds.length <= maxBatchItems;
-    const copy = query(this.selectionActions, "[data-selection-copy]", HTMLButtonElement);
-    const remove = query(this.selectionActions, "[data-selection-delete]", HTMLButtonElement);
     const comment = query(this.selectionActions, "[data-selection-comment]", HTMLButtonElement);
     comment.disabled = !this.canComment() || selectedIds.length !== 1 || !allSelectedAuthoritative;
     comment.title = allSelectedAuthoritative
       ? ""
       : "Wait for the selected object to finish saving.";
     this.updateAiAssistAction(selectedIds, allSelectedAuthoritative);
-    copy.disabled = !copyReady;
-    remove.disabled = !mutationReady || !allSelectedOwned;
     const group = query(this.selectionActions, "[data-selection-group]", HTMLButtonElement);
     const ungroup = query(this.selectionActions, "[data-selection-ungroup]", HTMLButtonElement);
     const selectedGroupIds = new Set(
@@ -7176,14 +7195,8 @@ export class BoardApp {
         : !allSelectedOwned
           ? "You can edit only work that you created."
           : "";
-    copy.title = !allSelectedAuthoritative
-      ? "Wait for the selected items to finish saving."
-      : !allSelectedUnlocked
-        ? "This Section is locked. Unlock it before copying its contents."
-        : "";
     group.title = pendingTitle;
     ungroup.title = pendingTitle;
-    remove.title = pendingTitle;
 
     const colourWrap = query(this.selectionActions, ".selection-colour-wrap", HTMLElement);
     const allFillItems =
@@ -7217,6 +7230,14 @@ export class BoardApp {
       }),
     );
     const selectedColour = selectedColours.size === 1 ? [...selectedColours][0] : undefined;
+    const currentColour = query(
+      this.selectionActions,
+      "[data-selection-current-colour]",
+      HTMLElement,
+    );
+    currentColour.style.background =
+      selectedColour ?? "conic-gradient(#f7cf52 0 25%, #ff8c69 0 50%, #6eb6ff 0 75%, #8dd8a4 0)";
+    currentColour.classList.toggle("is-mixed", selectedColour === undefined);
     for (const button of this.selectionColourMenu.querySelectorAll<HTMLButtonElement>(
       "[data-selection-colour]",
     )) {
@@ -7231,7 +7252,9 @@ export class BoardApp {
       "[data-selection-font-controls]",
       HTMLElement,
     );
-    const textItems = selectedItems.filter(supportsTextStyling);
+    const textItems = selectedItems.filter(
+      (item) => item.kind !== "sticky" && supportsTextStyling(item),
+    );
     const allText =
       selectedItems.length === selectedIds.length &&
       selectedItems.length > 0 &&
@@ -7301,7 +7324,7 @@ export class BoardApp {
     const sectionLocked = selectedSection?.geometry.locked === true;
     sectionLock.hidden = this.bootstrap.actor.role !== "owner" || selectedSection === undefined;
     sectionLock.disabled = !canEdit || !allSelectedAuthoritative || selectedSection === undefined;
-    sectionLock.textContent = sectionLocked ? "Unlock Section" : "Lock Section";
+    sectionLock.dataset.sectionLocked = String(sectionLocked);
     sectionLock.setAttribute("aria-label", sectionLocked ? "Unlock Section" : "Lock Section");
     sectionLock.setAttribute("aria-pressed", String(sectionLocked));
     sectionLock.title = sectionLock.disabled
@@ -7549,12 +7572,32 @@ export class BoardApp {
   private renderWebMcpStatus(state: WebMcpRegistryState): void {
     this.webMcpState = state;
     const { activeCallCount, calls, hostPresent, toolCount } = state;
+    const activityCalls = calls.filter(isVisibleWebMcpActivityCall);
     const watching = this.aiWatchState.phase !== "idle";
     const visualState = activeCallCount > 0 ? "active" : watching ? "watch" : "ready";
     this.webMcpStatus.dataset.state = visualState;
     this.webMcpStatus.dataset.host = hostPresent ? "linked" : "unlinked";
     this.mcpActivityMenu.dataset.state = visualState;
     this.webMcpStatusText.textContent = "MCP";
+    const watchStartedAt =
+      watching && this.aiWatchState.expiresAt !== null
+        ? this.aiWatchState.expiresAt - PROBLEM_STEP_WATCH_DURATION_MS
+        : null;
+    const latestActivity = activityCalls.find(
+      (call) => watchStartedAt === null || call.startedAt >= watchStartedAt,
+    );
+    const watchMinutes =
+      watching && this.aiWatchState.expiresAt !== null
+        ? Math.ceil(Math.max(0, this.aiWatchState.expiresAt - Date.now()) / 60_000)
+        : null;
+    this.webMcpStatusTime.textContent = latestActivity
+      ? new Date(latestActivity.startedAt).toLocaleTimeString([], {
+          hour: "numeric",
+          minute: "2-digit",
+        })
+      : watchMinutes !== null
+        ? `${watchMinutes} min left`
+        : "Ready";
 
     this.mcpActivitySummary.textContent =
       activeCallCount > 0
@@ -7564,9 +7607,13 @@ export class BoardApp {
           : hostPresent
             ? `${toolCount} site ${toolCount === 1 ? "tool" : "tools"} ready`
             : "Waiting for an MCP-capable browser";
-    this.mcpActivityEmpty.hidden = calls.length > 0;
+    this.mcpActivityEmpty.hidden = activityCalls.length > 0;
+    this.mcpActivityEmpty.textContent =
+      calls.length > 0
+        ? "Watch activity is hidden for this session."
+        : "No MCP calls in this tab yet.";
     this.mcpActivityList.replaceChildren(
-      ...calls.map((call) => {
+      ...activityCalls.map((call) => {
         const row = document.createElement("li");
         row.className = "mcp-activity-row";
         row.dataset.state = call.status;
@@ -7618,9 +7665,9 @@ export class BoardApp {
       ? `${toolCount} site ${toolCount === 1 ? "tool is" : "tools are"} available.`
       : "No MCP host is linked to this browser.";
     const callDescription =
-      calls.length === 0
+      activityCalls.length === 0
         ? "No calls in this tab yet."
-        : `${calls.length} ${calls.length === 1 ? "call" : "calls"} in this tab.`;
+        : `${activityCalls.length} ${activityCalls.length === 1 ? "call" : "calls"} in this tab.`;
     const description = `${stateDescription} ${connectionDescription} ${callDescription} Click to view activity.`;
     this.webMcpStatus.title = description;
     this.webMcpStatus.setAttribute("aria-label", description);
@@ -7677,29 +7724,19 @@ export class BoardApp {
     this.aiWatchState = state;
     this.renderWebMcpStatus(this.webMcpState);
     const watching = state.phase !== "idle";
-    this.aiWatchIndicator.hidden = !watching;
     this.aiShareButton.hidden = !watching;
     if (!watching) this.setAiShareMenuOpen(false);
-    if (this.aiWatchCountdown !== null) {
-      window.clearInterval(this.aiWatchCountdown);
-      this.aiWatchCountdown = null;
+    if (this.webMcpWatchCountdown !== null) {
+      window.clearInterval(this.webMcpWatchCountdown);
+      this.webMcpWatchCountdown = null;
     }
     if (watching) {
-      this.renderAiWatchIndicator();
-      this.aiWatchCountdown = window.setInterval(() => this.renderAiWatchIndicator(), 30_000);
+      this.webMcpWatchCountdown = window.setInterval(
+        () => this.renderWebMcpStatus(this.webMcpState),
+        30_000,
+      );
     }
     this.updateSelectionActions(this.tools.selection);
-  }
-
-  private renderAiWatchIndicator(): void {
-    const { phase, expiresAt } = this.aiWatchState;
-    if (phase === "idle" || expiresAt === null) return;
-    const remaining = Math.max(0, expiresAt - Date.now());
-    const minutes = Math.ceil(remaining / 60_000);
-    const label = phase === "listening" ? "AI listening" : "AI watching";
-    this.aiWatchIndicatorText.textContent = `${label} · ${minutes} min left`;
-    this.aiWatchIndicator.title =
-      "The AI assistant is following your selected steps. Select a step and use Ask AI to send it a request.";
   }
 
   private sendAiAssistRequest(action: AssistAction): void {

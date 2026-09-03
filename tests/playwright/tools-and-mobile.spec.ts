@@ -330,6 +330,20 @@ test("the complete board remains usable at a 320px viewport", async ({ page }, t
   expect(layout.shell?.right).toBeLessThanOrEqual(320);
   expect(layout.canvas?.width).toBeGreaterThan(240);
   expect(layout.canvas?.right).toBeLessThanOrEqual(320);
+  const title = page.getByTestId("board-title");
+  const mcpStatus = page.getByTestId("webmcp-status");
+  const [titleBounds, mcpBounds] = await Promise.all([
+    title.boundingBox(),
+    mcpStatus.boundingBox(),
+  ]);
+  expect(titleBounds).not.toBeNull();
+  expect(mcpBounds).not.toBeNull();
+  if (!titleBounds || !mcpBounds) throw new Error("The compact header controls are not rendered.");
+  expect(titleBounds.x + titleBounds.width).toBeLessThanOrEqual(mcpBounds.x - 4);
+  await title.click({
+    position: { x: Math.max(1, titleBounds.width - 2), y: titleBounds.height / 2 },
+  });
+  await expect(title).toBeFocused();
   const floatingControls = await page.evaluate(() => {
     const zoom = document.querySelector(".zoom-controls")?.getBoundingClientRect();
     return {
@@ -358,10 +372,23 @@ test("the complete board remains usable at a 320px viewport", async ({ page }, t
   await expect.poll(async () => rail.evaluate((node) => node.scrollLeft)).toBe(0);
 
   const tools = page.getByTestId("tool-rail").locator("button[data-tool]");
-  await expect(tools).toHaveCount(8);
+  await expect(tools).toHaveCount(7);
   await expect(page.getByTestId("tool-image")).toHaveAttribute("aria-label", "Add image (I)");
   await expect(page.getByTestId("tool-image").locator("svg")).toHaveCount(1);
-  await expect(page.getByTestId("tool-eraser").locator("svg")).toHaveCount(1);
+  await expect(page.getByTestId("tool-rectangle").locator("svg")).toHaveCount(1);
+  await expect(page.getByTestId("tool-sticky").locator("svg")).toHaveCount(1);
+  await expect(page.getByTestId("tool-zone").locator("svg")).toHaveCount(1);
+  await expect(page.getByTestId("tool-rail").getByTestId("tool-eraser")).toHaveCount(0);
+  await page.getByTestId("tool-pencil").click();
+  const brushBar = page.getByTestId("quick-style-bar");
+  await expect(brushBar).toBeVisible();
+  await expect(brushBar.getByRole("button", { name: "Pen" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(brushBar.getByRole("button", { name: "Marker" }).locator("svg")).toHaveCount(1);
+  await expect(brushBar.getByRole("button", { name: "Highlighter" }).locator("svg")).toHaveCount(1);
+  await expect(brushBar.getByTestId("tool-eraser").locator("svg")).toHaveCount(1);
   await expect(page.getByTestId("tool-image")).toBeEnabled();
   await openMoreTools(page);
   const moreMenu = page.getByTestId("tools-menu");

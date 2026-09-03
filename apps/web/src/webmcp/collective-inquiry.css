@@ -219,21 +219,6 @@ button:is(:hover, :focus-visible) .ai-sparkle-spark-late {
   }
 }
 
-.ai-watch-indicator {
-  height: 32px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 9px;
-  border: 1px solid #d8cdf0;
-  border-radius: 999px;
-  background: #f7f4fb;
-  color: #5f477f;
-  font-size: 11px;
-  font-weight: 650;
-  white-space: nowrap;
-}
-
 .selection-ai-wrap {
   position: relative;
 }
@@ -242,6 +227,11 @@ button:is(:hover, :focus-visible) .ai-sparkle-spark-late {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+}
+
+.selection-actions button[data-selection-ai] .ai-sparkle {
+  color: #c9a7ff;
+  filter: drop-shadow(0 0 5px rgb(174 118 255 / 48%));
 }
 
 .ai-assist-menu {
@@ -296,15 +286,24 @@ button:is(:hover, :focus-visible) .ai-sparkle-spark-late {
   display: flex;
 }
 
+.topbar .mcp-status-wrap {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 2;
+  translate: -50% -50%;
+}
+
 /* Compact site-tool indicator: white at rest, green while watching, blue during a call. */
 .webmcp-status {
   appearance: none;
-  height: 32px;
+  min-width: 58px;
+  height: 38px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 0 9px 0 8px;
+  gap: 5px;
+  padding: 0 8px 0 7px;
   border: 1px solid #d8d5cd;
   border-radius: 999px;
   background: #fff;
@@ -324,6 +323,27 @@ button:is(:hover, :focus-visible) .ai-sparkle-spark-late {
     background 160ms ease,
     box-shadow 160ms ease,
     color 160ms ease;
+}
+
+.webmcp-status-copy {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+  line-height: 1;
+  text-align: left;
+}
+
+.webmcp-status-time {
+  overflow: hidden;
+  max-width: 48px;
+  opacity: 0.76;
+  font-size: 8px;
+  font-weight: 540;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
 }
 
 .webmcp-status:hover {
@@ -529,10 +549,6 @@ button:is(:hover, :focus-visible) .ai-sparkle-spark-late {
 }
 
 @media (max-width: 650px) {
-  .ai-watch-indicator {
-    display: none;
-  }
-
   .mcp-activity-menu {
     position: fixed;
     top: 58px;

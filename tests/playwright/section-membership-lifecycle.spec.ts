@@ -99,7 +99,7 @@ test("translated copies and Section deletion keep exported membership current", 
     originalBounds.y + originalBounds.height / 2,
   );
   await expect(page.getByTestId("selection-actions")).toBeVisible();
-  await page.getByRole("button", { name: "Copy selected items" }).click();
+  await page.keyboard.press("Control+d");
   await expect(page.locator("#drawing-area .board-item-rectangle")).toHaveCount(2);
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
 
@@ -121,8 +121,7 @@ test("translated copies and Section deletion keep exported membership current", 
     titleBounds.x + titleBounds.width / 2,
     titleBounds.y + titleBounds.height / 2,
   );
-  await expect(page.getByRole("button", { name: "Delete selected items" })).toBeEnabled();
-  await page.getByRole("button", { name: "Delete selected items" }).click();
+  await page.keyboard.press("Delete");
   await expect(page.locator("#drawing-area .board-item-zone")).toHaveCount(0);
   await expect(page.locator("#drawing-area .board-item-rectangle")).toHaveCount(2);
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
@@ -188,8 +187,7 @@ test("Section deletion by its creator detaches foreign members without deleting 
       titleBounds.x + titleBounds.width / 2,
       titleBounds.y + titleBounds.height / 2,
     );
-    await expect(editor.getByRole("button", { name: "Delete selected items" })).toBeEnabled();
-    await editor.getByRole("button", { name: "Delete selected items" }).click();
+    await editor.keyboard.press("Delete");
     await expect(editor.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
 
     // The Section's creator may detach members they do not own, so the Section
