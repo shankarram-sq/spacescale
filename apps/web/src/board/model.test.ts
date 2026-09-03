@@ -265,11 +265,12 @@ describe("BoardModel", () => {
     expect(model.setRenderedTextSize(ITEM_ID, 0, 500, 500)).toBe(false);
   });
 
-  it("builds a durable detach when measured MathJax bounds leave a Section", () => {
+  it("builds a durable detach when measured and canonical bounds both leave a Section", () => {
     const section = zone();
     section.geometry.width = 260;
     section.geometry.height = 100;
     const item = textItem();
+    item.geometry.text = Array.from({ length: 5 }, () => "$$\\frac{1}{2}$$").join("\n");
     item.sectionId = section.id;
     const model = new BoardModel();
     model.load(snapshot([section]));
@@ -312,6 +313,22 @@ describe("BoardModel", () => {
       expectedVersion: 1,
       patch: { sectionId: null },
     });
+  });
+
+  it("keeps Section membership when only the local measurement leaves the Section", () => {
+    const section = zone();
+    section.geometry.width = 260;
+    section.geometry.height = 100;
+    const item = textItem();
+    item.sectionId = section.id;
+    const model = new BoardModel();
+    model.load(snapshot([section, item], 1));
+
+    // A client whose MathJax measurement overflows the Section must not detach while the
+    // shared canonical estimate still fits, or clients that measure the same formula
+    // differently take turns detaching and reattaching it forever.
+    expect(model.setRenderedTextSize(ITEM_ID, 1, 240, 180)).toBe(true);
+    expect(model.renderedTextSectionMembershipOperation(ITEM_ID, 1)).toBeNull();
   });
 
   it("builds a durable attachment when measured MathJax bounds fit a Section", () => {

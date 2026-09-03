@@ -152,32 +152,63 @@ function normalizeSingleDollarTextNodes(root: Node): void {
   }
 }
 
-function enqueueMathJax(operation: (mathJax: MathJaxApi) => void | Promise<void>): Promise<void> {
+function enqueueMathJax<T>(operation: (mathJax: MathJaxApi) => T | Promise<T>): Promise<T> {
   const work = mathJaxWork.then(async () => operation(await loadMathJax()));
-  mathJaxWork = work.catch(() => undefined);
+  mathJaxWork = work.then(
+    () => undefined,
+    () => undefined,
+  );
   return work;
 }
 
+export type TypesetMathOptions = {
+  /** Runs once the container holds typeset math. Its failures never discard that math. */
+  onReady?: () => void;
+  /** Rebuilds the plain-text container when MathJax cannot render it. */
+  restore?: (container: HTMLElement) => void;
+};
+
 /** Lazily typesets one plain-text container and preserves the source on failure. */
-export function typesetMath(container: HTMLElement, onReady?: () => void): void {
+export function typesetMath(container: HTMLElement, options: TypesetMathOptions = {}): void {
   const source = container.textContent ?? "";
   if (!containsMathMarkup(source)) return;
   normalizeSingleDollarTextNodes(container);
   container.dataset.mathState = "loading";
   void enqueueMathJax(async (mathJax) => {
-    if (!container.isConnected) return;
+    if (!container.isConnected) return false;
     mathJax.typesetClear?.([container]);
     await mathJax.typesetPromise?.([container]);
-    if (!container.isConnected) return;
+    if (!container.isConnected) return false;
     labelRenderedMath(container, source);
     container.dataset.mathState = "ready";
-    onReady?.();
-  }).catch(() => {
-    if (!container.isConnected) return;
-    container.textContent = source;
-    container.title = "Math could not be rendered.";
-    container.dataset.mathState = "error";
-  });
+    return true;
+  })
+    .catch(() => {
+      if (!container.isConnected) return false;
+      // Rebuilding from the caller keeps anchors and other markup that plain text would flatten.
+      if (options.restore) options.restore(container);
+      else container.textContent = source;
+      container.title = "Math could not be rendered.";
+      container.dataset.mathState = "error";
+      return false;
+    })
+    // onReady runs outside the operation so a caller's failure cannot be mistaken for a
+    // MathJax failure, which would replace correctly typeset math with its raw source and
+    // swallow the real error.
+    .then((typeset) => {
+      if (typeset) reportMathReady(options.onReady);
+    });
+}
+
+function reportMathReady(onReady?: () => void): void {
+  if (!onReady) return;
+  try {
+    onReady();
+  } catch (error) {
+    queueMicrotask(() => {
+      throw error;
+    });
+  }
 }
 
 /** Releases MathJax's references before rendered DOM is replaced or removed. */

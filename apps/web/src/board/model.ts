@@ -215,7 +215,16 @@ export class BoardModel {
     let sectionId: string | undefined;
     if (item.sectionId !== undefined) {
       const section = this.rendered.get(item.sectionId);
-      if (section?.kind === "zone" && boundsContains(itemBounds(section), itemBounds(item))) {
+      // Detaching and attaching both require the shared canonical estimate to agree with the
+      // local measurement, so their preconditions can never hold at once. Without that, two
+      // clients whose MathJax measurements straddle a Section edge take turns detaching and
+      // reattaching the same formula forever, writing an unbounded stream of item.update
+      // history. A dangling sectionId still detaches so the reference is cleaned up.
+      if (
+        section?.kind === "zone" &&
+        (boundsContains(itemBounds(section), itemBounds(item)) ||
+          boundsContains(canonicalBounds(section), canonicalBounds(item)))
+      ) {
         return null;
       }
     } else {

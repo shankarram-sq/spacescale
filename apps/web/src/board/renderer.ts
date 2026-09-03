@@ -861,6 +861,16 @@ export class BoardRenderer {
         this.itemNodes.delete(id);
         continue;
       }
+      if (current && reuseItemNode(current, item)) {
+        const z = String(item.z);
+        const movedInPaintOrder = current.dataset.z !== z;
+        current.dataset.z = z;
+        current.setAttribute("transform", matrixAttribute(item.transform));
+        // Re-inserting detaches the node, so only reorder when this item's own z changed;
+        // siblings that moved are reordered by their own pass through this loop.
+        if (movedInPaintOrder) this.insertInPaintOrder(current, item.z);
+        continue;
+      }
       if (current) clearTypesetMath(current);
       const replacement = itemNode(item, (assetId) => this.imageAssets.load(assetId), {
         creatorName: this.resolveCreatorName(item.createdBy),
@@ -1298,6 +1308,17 @@ type ItemNodeOptions = {
   preview?: boolean;
 };
 
+/**
+ * Updates an authoritative node in place when only its placement changed. Video cards hold a
+ * live iframe, so rebuilding them on every board update would reload the player.
+ */
+function reuseItemNode(node: SVGGraphicsElement, item: BoardItem): boolean {
+  if (item.kind !== "text" || item.geometry.embed !== "video") return false;
+  const video = videoEmbedFromText(item.geometry.text);
+  if (!video) return false;
+  return updateVideoEmbedNode(node, item.geometry, item.style, video, false);
+}
+
 function itemNode(
   item: BoardItem,
   loadImageAsset: (assetId: string) => Promise<string>,
@@ -1454,6 +1475,69 @@ function mathTextNode(
   return node;
 }
 
+/**
+ * Positioned parts of a rendered video card, kept so a moved or remotely updated item can be
+ * repositioned in place. Rebuilding or re-inserting the node would detach its iframe, which
+ * reloads the player and restarts playback at the beginning for everyone watching.
+ */
+type VideoEmbedParts = {
+  video: VideoEmbed;
+  preview: boolean;
+  foreign: SVGForeignObjectElement;
+  border: SVGRectElement;
+  handleSurface?: SVGRectElement;
+  handleGrip?: SVGTextElement;
+};
+
+const videoEmbedParts = new WeakMap<Element, VideoEmbedParts>();
+
+function layoutVideoEmbedNode(
+  node: SVGGElement,
+  parts: VideoEmbedParts,
+  geometry: TextGeometry,
+  style: TextStyle,
+): void {
+  const x = geometry.x;
+  const y = geometry.y - style.fontSize;
+  node.setAttribute("opacity", String(style.opacity));
+  for (const box of [parts.foreign, parts.border]) {
+    box.setAttribute("x", String(x));
+    box.setAttribute("y", String(y));
+  }
+  const handleX = x + VIDEO_EMBED_WIDTH - 34;
+  const handleY = y + 4;
+  parts.handleSurface?.setAttribute("x", String(handleX));
+  parts.handleSurface?.setAttribute("y", String(handleY));
+  parts.handleGrip?.setAttribute("x", String(handleX + 15));
+  parts.handleGrip?.setAttribute("y", String(handleY + 15));
+}
+
+/**
+ * Repositions an already rendered video card when it still shows the same video, so the live
+ * player keeps playing. Returns false when the node must be rebuilt instead.
+ */
+function updateVideoEmbedNode(
+  node: SVGGraphicsElement,
+  geometry: TextGeometry,
+  style: TextStyle,
+  video: VideoEmbed,
+  preview: boolean,
+): boolean {
+  const parts = videoEmbedParts.get(node);
+  if (
+    parts === undefined ||
+    parts.preview !== preview ||
+    parts.video.provider !== video.provider ||
+    parts.video.embedUrl !== video.embedUrl ||
+    parts.video.sourceUrl !== video.sourceUrl ||
+    parts.video.title !== video.title
+  ) {
+    return false;
+  }
+  layoutVideoEmbedNode(node as SVGGElement, parts, geometry, style);
+  return true;
+}
+
 function videoEmbedNode(
   geometry: TextGeometry,
   style: TextStyle,
@@ -1464,13 +1548,10 @@ function videoEmbedNode(
   node.classList.add("video-embed-item");
   if (preview) node.classList.add("video-embed-preview-item");
   node.dataset.videoProvider = video.provider;
-  node.setAttribute("opacity", String(style.opacity));
   node.setAttribute("role", "group");
   node.setAttribute("aria-label", video.title);
 
   const foreign = svgElement("foreignObject");
-  foreign.setAttribute("x", String(geometry.x));
-  foreign.setAttribute("y", String(geometry.y - style.fontSize));
   foreign.setAttribute("width", String(VIDEO_EMBED_WIDTH));
   foreign.setAttribute("height", String(VIDEO_EMBED_HEIGHT));
 
@@ -1509,41 +1590,47 @@ function videoEmbedNode(
 
   const border = svgElement("rect");
   border.classList.add("video-embed-border");
-  border.setAttribute("x", String(geometry.x));
-  border.setAttribute("y", String(geometry.y - style.fontSize));
   border.setAttribute("width", String(VIDEO_EMBED_WIDTH));
   border.setAttribute("height", String(VIDEO_EMBED_HEIGHT));
   border.setAttribute("rx", "12");
   border.setAttribute("pointer-events", "none");
   node.append(foreign, border);
-  if (!preview) node.append(videoDragHandleNode(geometry, style));
+  const handle = preview ? undefined : videoDragHandleNode();
+  if (handle) node.append(handle.node);
+  const parts: VideoEmbedParts = {
+    video,
+    preview,
+    foreign,
+    border,
+    ...(handle ? { handleSurface: handle.surface, handleGrip: handle.grip } : {}),
+  };
+  videoEmbedParts.set(node, parts);
+  layoutVideoEmbedNode(node, parts, geometry, style);
   return node;
 }
 
-function videoDragHandleNode(geometry: TextGeometry, style: TextStyle): SVGGElement {
-  const x = geometry.x + VIDEO_EMBED_WIDTH - 34;
-  const y = geometry.y - style.fontSize + 4;
+function videoDragHandleNode(): {
+  node: SVGGElement;
+  surface: SVGRectElement;
+  grip: SVGTextElement;
+} {
   const handle = svgElement("g");
   handle.classList.add("video-embed-drag-handle");
   handle.dataset.videoDragHandle = "true";
 
   const surface = svgElement("rect");
   surface.classList.add("video-embed-drag-surface");
-  surface.setAttribute("x", String(x));
-  surface.setAttribute("y", String(y));
   surface.setAttribute("width", "30");
   surface.setAttribute("height", "22");
   surface.setAttribute("rx", "7");
 
   const grip = svgElement("text");
   grip.classList.add("video-embed-drag-grip");
-  grip.setAttribute("x", String(x + 15));
-  grip.setAttribute("y", String(y + 15));
   grip.setAttribute("text-anchor", "middle");
   grip.setAttribute("pointer-events", "none");
   grip.textContent = "⠿";
   handle.append(surface, grip);
-  return handle;
+  return { node: handle, surface, grip };
 }
 
 type MathForeignObjectOptions = {
@@ -1609,15 +1696,22 @@ function mathForeignObject(
     content.style.minHeight = "0";
   }
   foreign.append(content);
-  typesetMath(content, () => {
-    if (!options.fitContent || !foreign.isConnected) return;
-    const renderedWidth = Math.ceil(
-      Math.min(MAX_MATH_TEXT_WIDTH, Math.max(1, content.scrollWidth)),
-    );
-    const renderedHeight = Math.ceil(Math.max(1, content.scrollHeight));
-    foreign.setAttribute("width", String(renderedWidth));
-    foreign.setAttribute("height", String(renderedHeight));
-    options.onSize?.(renderedWidth, renderedHeight);
+  typesetMath(content, {
+    onReady: () => {
+      if (!options.fitContent || !foreign.isConnected) return;
+      const renderedWidth = Math.ceil(
+        Math.min(MAX_MATH_TEXT_WIDTH, Math.max(1, content.scrollWidth)),
+      );
+      const renderedHeight = Math.ceil(Math.max(1, content.scrollHeight));
+      foreign.setAttribute("width", String(renderedWidth));
+      foreign.setAttribute("height", String(renderedHeight));
+      options.onSize?.(renderedWidth, renderedHeight);
+    },
+    // Falling back to plain text would flatten the safe-link anchors, so rebuild them.
+    restore: (target) => {
+      target.replaceChildren();
+      appendLinkifiedHtml(target, value);
+    },
   });
   return foreign;
 }

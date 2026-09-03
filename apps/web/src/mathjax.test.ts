@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { containsMathMarkup, normalizeSingleDollarMath, splitMathMarkup } from "./mathjax";
+import { describe, expect, it, vi } from "vitest";
+import {
+  containsMathMarkup,
+  normalizeSingleDollarMath,
+  splitMathMarkup,
+  typesetMath,
+} from "./mathjax";
 
 describe("containsMathMarkup", () => {
   it("recognizes supported inline and display delimiters", () => {
@@ -47,5 +52,49 @@ describe("containsMathMarkup", () => {
       { kind: "math", text: "$$x=1$$" },
       { kind: "text", text: "." },
     ]);
+  });
+});
+
+describe("typesetMath", () => {
+  /** MathJax cannot load in this environment, so every typeset attempt takes the failure path. */
+  function failingContainer(text: string) {
+    return {
+      childNodes: [] as Node[],
+      dataset: {} as Record<string, string>,
+      isConnected: true,
+      textContent: text,
+      title: "",
+    };
+  }
+
+  async function settle(): Promise<void> {
+    for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  it("rebuilds the container through the caller's hook instead of flattening it to text", async () => {
+    const container = failingContainer("Energy: $$E=mc^2$$");
+    const restore = vi.fn();
+    const onReady = vi.fn();
+
+    typesetMath(container as unknown as HTMLElement, { restore, onReady });
+    await settle();
+
+    // Assigning textContent would destroy the safe-link anchors the caller built.
+    expect(restore).toHaveBeenCalledWith(container);
+    expect(container.textContent).toBe("Energy: $$E=mc^2$$");
+    expect(container.dataset.mathState).toBe("error");
+    expect(container.title).toBe("Math could not be rendered.");
+    expect(onReady).not.toHaveBeenCalled();
+  });
+
+  it("still falls back to plain source when the caller supplies no hook", async () => {
+    const container = failingContainer("Energy: $$E=mc^2$$");
+
+    typesetMath(container as unknown as HTMLElement);
+    await settle();
+
+    expect(container.dataset.mathState).toBe("error");
+    expect(container.textContent).toBe("Energy: $$E=mc^2$$");
   });
 });

@@ -130,11 +130,10 @@ export function parseVideoEmbedReference(value: string): VideoEmbedReference | n
           : null;
     if (!videoId || !/^\d{5,12}$/u.test(videoId)) return null;
     const pathHash = !playerUrl && parts.length === 2 ? parts[1] : undefined;
-    const queryHash = parsed.searchParams.has("h") ? parsed.searchParams.get("h") : undefined;
-    if (
-      (pathHash !== undefined && queryHash !== undefined && pathHash !== queryHash) ||
-      (queryHash === null && parsed.searchParams.has("h"))
-    ) {
+    // A present "h" always yields a string, so an empty ?h= stays defined and is rejected
+    // below by the hash pattern rather than silently falling back to the path hash.
+    const queryHash = parsed.searchParams.get("h") ?? undefined;
+    if (pathHash !== undefined && queryHash !== undefined && pathHash !== queryHash) {
       return null;
     }
     const vimeoHash = queryHash ?? pathHash;

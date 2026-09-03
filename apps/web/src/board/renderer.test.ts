@@ -139,6 +139,147 @@ describe("lightweight movement previews", () => {
     expect(setSelection).toHaveBeenCalledWith([item.id], { x: 24, y: 12 });
   });
 
+  it("repositions a rendered video card in place so its player is not reloaded", () => {
+    const iframes: FakeSvgNode[] = [];
+    vi.stubGlobal("document", {
+      createElement: (name: string) => {
+        const node = fakeSvgNode(name);
+        if (name === "iframe") iframes.push(node);
+        return node;
+      },
+      createElementNS: (_namespace: string, name: string) => fakeSvgNode(name),
+    });
+
+    const item: Extract<BoardItem, { kind: "text" }> = {
+      id: "video-item",
+      kind: "text",
+      z: 1,
+      version: 1,
+      createdBy: "owner",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "text",
+        color: "#111827",
+        fontSize: 20,
+        fontFamily: "sans",
+        opacity: 1,
+      },
+      geometry: {
+        x: 20,
+        y: 40,
+        text: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        embed: "video",
+      },
+    };
+    const drawingArea = fakeSvgNode("g");
+    const itemNodes = new Map<string, FakeSvgNode>();
+    const insertInPaintOrder = vi.fn((node: FakeSvgNode) => drawingArea.append(node));
+    const renderer = {
+      drawingArea,
+      imageAssets: { load: vi.fn(), retain: vi.fn() },
+      insertInPaintOrder,
+      itemNodes,
+      model: {
+        getItem: (id: string) => (id === item.id ? item : undefined),
+        items: new Map([[item.id, item]]),
+      },
+      renderCommentMarkers: vi.fn(),
+      renderVoteCounts: vi.fn(),
+      resolveCreatorName: () => "",
+      selectedIds: new Set<string>(),
+      setSelection: vi.fn(),
+    } as unknown as BoardRenderer;
+    const render = (
+      BoardRenderer.prototype as unknown as {
+        render: (this: BoardRenderer, changedIds: ReadonlySet<string> | null) => void;
+      }
+    ).render;
+
+    render.call(renderer, new Set([item.id]));
+    const created = itemNodes.get(item.id);
+    expect(iframes).toHaveLength(1);
+    expect(insertInPaintOrder).toHaveBeenCalledTimes(1);
+
+    item.geometry.x = 120;
+    render.call(renderer, new Set([item.id]));
+
+    // Rebuilding or re-inserting the node would detach the iframe and restart playback.
+    expect(itemNodes.get(item.id)).toBe(created);
+    expect(iframes).toHaveLength(1);
+    expect(insertInPaintOrder).toHaveBeenCalledTimes(1);
+    const foreign = created?.children.find((child) => child.name === "foreignObject");
+    const border = created?.children.find((child) =>
+      child.classList.values.has("video-embed-border"),
+    );
+    expect(foreign?.attributes.get("x")).toBe("120");
+    expect(border?.attributes.get("x")).toBe("120");
+  });
+
+  it("rebuilds a video card when the item points at a different video", () => {
+    const iframes: FakeSvgNode[] = [];
+    vi.stubGlobal("document", {
+      createElement: (name: string) => {
+        const node = fakeSvgNode(name);
+        if (name === "iframe") iframes.push(node);
+        return node;
+      },
+      createElementNS: (_namespace: string, name: string) => fakeSvgNode(name),
+    });
+
+    const item: Extract<BoardItem, { kind: "text" }> = {
+      id: "video-item",
+      kind: "text",
+      z: 1,
+      version: 1,
+      createdBy: "owner",
+      transform: [1, 0, 0, 1, 0, 0],
+      style: {
+        kind: "text",
+        color: "#111827",
+        fontSize: 20,
+        fontFamily: "sans",
+        opacity: 1,
+      },
+      geometry: {
+        x: 20,
+        y: 40,
+        text: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        embed: "video",
+      },
+    };
+    const drawingArea = fakeSvgNode("g");
+    const itemNodes = new Map<string, FakeSvgNode>();
+    const renderer = {
+      drawingArea,
+      imageAssets: { load: vi.fn(), retain: vi.fn() },
+      insertInPaintOrder: vi.fn((node: FakeSvgNode) => drawingArea.append(node)),
+      itemNodes,
+      model: {
+        getItem: (id: string) => (id === item.id ? item : undefined),
+        items: new Map([[item.id, item]]),
+      },
+      renderCommentMarkers: vi.fn(),
+      renderVoteCounts: vi.fn(),
+      resolveCreatorName: () => "",
+      selectedIds: new Set<string>(),
+      setSelection: vi.fn(),
+    } as unknown as BoardRenderer;
+    const render = (
+      BoardRenderer.prototype as unknown as {
+        render: (this: BoardRenderer, changedIds: ReadonlySet<string> | null) => void;
+      }
+    ).render;
+
+    render.call(renderer, new Set([item.id]));
+    const created = itemNodes.get(item.id);
+
+    item.geometry.text = "https://vimeo.com/76979871";
+    render.call(renderer, new Set([item.id]));
+
+    expect(itemNodes.get(item.id)).not.toBe(created);
+    expect(iframes).toHaveLength(2);
+  });
+
   it("renders formula source without queueing MathJax work", () => {
     const item: Extract<BoardItem, { kind: "text" }> = {
       id: "math-item",
@@ -618,6 +759,7 @@ type FakeSvgNode = {
   className?: string;
   attributes: Map<string, string>;
   children: FakeSvgNode[];
+  parent?: FakeSvgNode;
   dataset: Record<string, string>;
   textContent: string | null;
   classList: { values: Set<string>; add: (...names: string[]) => void };
@@ -626,6 +768,9 @@ type FakeSvgNode = {
   addEventListener: (type: string, listener: (event: Event) => void) => void;
   dispatchEvent: (event: Event) => boolean;
   replaceChildren: (...children: FakeSvgNode[]) => void;
+  replaceWith: (next: FakeSvgNode) => void;
+  remove: () => void;
+  querySelectorAll: () => FakeSvgNode[];
 };
 
 function fakeDescendants(node: FakeSvgNode): FakeSvgNode[] {
@@ -646,12 +791,33 @@ function fakeSvgNode(name: string): FakeSvgNode {
       },
     },
     setAttribute: (attribute, value) => node.attributes.set(attribute, value),
-    append: (...children) => node.children.push(...children),
+    append: (...children) => {
+      for (const child of children) child.parent = node;
+      node.children.push(...children);
+    },
     addEventListener: () => undefined,
     dispatchEvent: () => true,
     replaceChildren: (...children) => {
+      for (const child of children) child.parent = node;
       node.children = [...children];
     },
+    replaceWith: (next) => {
+      const parent = node.parent;
+      if (!parent) return;
+      const index = parent.children.indexOf(node);
+      if (index === -1) return;
+      next.parent = parent;
+      parent.children.splice(index, 1, next);
+      node.parent = undefined;
+    },
+    remove: () => {
+      const parent = node.parent;
+      if (!parent) return;
+      const index = parent.children.indexOf(node);
+      if (index !== -1) parent.children.splice(index, 1);
+      node.parent = undefined;
+    },
+    querySelectorAll: () => [],
   };
   return node;
 }

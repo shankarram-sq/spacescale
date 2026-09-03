@@ -106,6 +106,8 @@ describe("geometry normalization", () => {
     ).toThrow(/supported HTTPS YouTube or Vimeo/);
     expect(parseVideoEmbedReference("https://vimeo.com/76979871/bad/hash")).toBeNull();
     expect(parseVideoEmbedReference("https://vimeo.com/76979871/a?h=b")).toBeNull();
+    expect(parseVideoEmbedReference("https://vimeo.com/76979871?h=")).toBeNull();
+    expect(parseVideoEmbedReference("https://vimeo.com/76979871/abc123def4?h=")).toBeNull();
   });
 
   it("canonicalizes legacy rectangles and persists an explicit square subtype", () => {
