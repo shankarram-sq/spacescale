@@ -127,6 +127,13 @@ one student is therefore a narrowing of what the assistant sees, not a widening 
 a participant watch reports strictly less than a board watch of the same board,
 and never reports anyone the caller did not name.
 
+That holds for who edits as well as for whose work. A watched person's object can
+be changed by somebody else — an owner tidying a board, a partner fixing a shared
+note. The change is still in scope, because the work is, but the editor is not:
+a participant watch reports it as coming from someone outside the watch rather
+than naming them. Scoping a watch to a student must not become a way to see who
+is touching whose work.
+
 What the scope must not become is a file on a child. Every one of these tools
 instructs the model not to grade, rank, profile, or infer ability from what one
 person's work shows, and the prohibition in this document against grading,

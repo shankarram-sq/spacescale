@@ -419,8 +419,8 @@ export class ProblemStepWatchFeed {
     // updated would leave the change unrecorded while future diffs compare against the new
     // text, hiding it forever, and the caller only surfaces a warning.
     const changedAt = changeTimestamp(action.acceptedAt);
-    const actor = { displayName: action.actor.displayName };
     for (const session of this.sessions.values()) {
+      const actor = changeActor(session.scope, action.actor);
       const steps: StepChange[] = [];
       let outgrown = false;
       const applied = new Map<string, WatchedStep | undefined>();
@@ -1144,6 +1144,25 @@ export class ProblemStepWatchFeed {
     pending.reject(reason);
     this.emitState();
   }
+}
+
+/**
+ * Who a change is reported as coming from.
+ *
+ * A participant watch answers a question about named people, so it must not name anyone else:
+ * when a third party edits one of their objects — an owner tidying a board, a partner fixing a
+ * shared note — the change still matters and is still in scope, but the editor is not. Saying
+ * that someone else made it keeps the change honest without turning a scoped watch into a way
+ * to see who is touching whose work.
+ */
+function changeActor(
+  scope: WatchScope,
+  actor: { id: string; displayName: string },
+): { displayName: string } {
+  if (scope.kind !== "participants" || scope.participantIds.has(actor.id)) {
+    return { displayName: actor.displayName };
+  }
+  return { displayName: "Someone outside this watch" };
 }
 
 /** The tool a caller must use to continue a watch, which differs by how it was scoped. */
