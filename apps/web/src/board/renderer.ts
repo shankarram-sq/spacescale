@@ -1715,6 +1715,18 @@ function appendLinkifiedHtml(container: HTMLElement, value: string): void {
  */
 const MATH_FIT_PADDING = 3;
 
+/**
+ * How far the content sits below the top of its box, in board units. Both rectangles come back in
+ * screen pixels, so they are converted through the element's own scale rather than by asking the
+ * viewport, which keeps this correct at any zoom.
+ */
+function verticalOffsetWithin(box: SVGForeignObjectElement, content: HTMLElement): number {
+  const contentRect = content.getBoundingClientRect();
+  const scale = contentRect.height > 0 ? contentRect.height / Math.max(1, content.offsetHeight) : 0;
+  if (!(scale > 0)) return 0;
+  return Math.max(0, (contentRect.top - box.getBoundingClientRect().top) / scale);
+}
+
 function mathForeignObject(
   x: number,
   y: number,
@@ -1754,7 +1766,12 @@ function mathForeignObject(
     foreign.setAttribute("width", String(MAX_MATH_TEXT_WIDTH));
     const measured = Math.max(1, content.scrollWidth) + MATH_FIT_PADDING;
     const renderedWidth = Math.ceil(Math.min(MAX_MATH_TEXT_WIDTH, measured));
-    const renderedHeight = Math.ceil(Math.max(1, content.scrollHeight));
+    // scrollHeight is the content's own height and says nothing about where the content sits. A
+    // margin on the typeset maths shifts it down inside the box, and a box sized from that height
+    // alone ends below the glyphs, which is what sliced them. Measure the offset too.
+    const renderedHeight = Math.ceil(
+      Math.max(1, content.scrollHeight) + verticalOffsetWithin(foreign, content),
+    );
     foreign.setAttribute("width", String(renderedWidth));
     foreign.setAttribute("height", String(renderedHeight));
     options.onSize?.(renderedWidth, renderedHeight);
