@@ -1059,6 +1059,54 @@ describe("character budget over the life of a watch", () => {
     });
     feed.destroy();
   });
+
+  it("charges fallback visual labels to the result text budget", async () => {
+    const writing = sticky("short");
+    const stamp: Extract<BoardItem, { kind: "stamp" }> = {
+      id: "018f0000-0000-7000-8000-0000000000b8",
+      kind: "stamp",
+      z: 2,
+      version: 1,
+      createdBy: ACTOR_ID,
+      transform: [1, 0, 0, 1, 0, 0],
+      style: { kind: "stamp", color: "#e5484d", opacity: 1 },
+      geometry: { x: 100, y: 80, size: 72, stamp: "star" },
+    };
+    const board: BoardItem[] = [writing, stamp];
+    const items = new Map(board.map((item) => [item.id, item]));
+    let sequence = 7;
+    const feed = new ProblemStepWatchFeed({
+      getBoardItems: () => board,
+      getAuthoritativeItem: (itemId) => items.get(itemId),
+      getSequence: () => sequence,
+      getParticipantDisplayName: () => "Sam",
+    });
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+
+    const grown = sticky("y".repeat(200_000), 2);
+    board[0] = grown;
+    items.set(grown.id, grown);
+    sequence = 8;
+    feed.recordAuthoritativeAction(serverAction(sequence, grown), new Set([grown.id]));
+    sequence = 9;
+    feed.recordAuthoritativeReload(sequence);
+
+    const resync = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    const steps = resync.steps as Array<{
+      text?: string;
+      visual?: { description: string };
+    }>;
+    const deliveredCodePoints = steps.reduce(
+      (total, step) => total + [...(step.text ?? step.visual?.description ?? "")].length,
+      0,
+    );
+    expect(deliveredCodePoints).toBe(120_000);
+    expect(steps[1]?.visual?.description).toBe("");
+    feed.destroy();
+  });
 });
 
 describe("whole-board reconciliation and queued shares", () => {

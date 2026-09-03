@@ -240,7 +240,7 @@ export class CollectiveInquiryWebMcp {
               },
               stepAlias: {
                 type: "string",
-                pattern: "^step_[1-9][0-9]{0,3}$",
+                pattern: "^step_(?:[1-9][0-9]{0,3}|10000)$",
                 description: "The step_N alias of the watched step to comment on.",
               },
               action: {
@@ -323,7 +323,7 @@ export class CollectiveInquiryWebMcp {
     if (!isRecord(input)) throw new Error("Comment input must be an object.");
     const watchToken = requiredText(input.watchToken, "watchToken", 128);
     const stepAlias = requiredText(input.stepAlias, "stepAlias", 16);
-    if (!/^step_[1-9][0-9]{0,3}$/u.test(stepAlias)) {
+    if (!/^step_(?:[1-9][0-9]{0,3}|10000)$/u.test(stepAlias)) {
       throw new Error("stepAlias must look like step_1.");
     }
     const action =

@@ -1185,9 +1185,13 @@ function withinTextBudget<
         remaining -= described.length;
         return step;
       }
-      remaining = 0;
       // Falls back to the bare kind rather than a description cut off mid-sentence.
-      return { ...step, visual: { ...step.visual, description: step.kind ?? "object" } };
+      const fallback = [...(step.kind ?? "object")];
+      if (fallback.length > remaining) {
+        return { ...step, visual: { ...step.visual, description: "" } };
+      }
+      remaining -= fallback.length;
+      return { ...step, visual: { ...step.visual, description: fallback.join("") } };
     }
     if (step.text === undefined) return step;
     const points = [...step.text];

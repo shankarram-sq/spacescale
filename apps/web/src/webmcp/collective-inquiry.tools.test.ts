@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BoardItem } from "../types";
 import { CollectiveInquiryWebMcp } from "./collective-inquiry";
+import { MAX_WATCHED_ITEMS } from "./problem-step-watch";
 import { webMcpRegistryState } from "./shared";
 import type { WebMcpRegisterToolOptions, WebMcpToolDefinition } from "./types";
 
@@ -39,8 +40,9 @@ function fakeDialog(): HTMLDialogElement {
   } as unknown as HTMLDialogElement;
 }
 
-function harness(options: { canComment?: boolean; canWrite?: boolean } = {}) {
+function harness(options: { canComment?: boolean; canWrite?: boolean; board?: BoardItem[] } = {}) {
   const tools = new Map<string, WebMcpToolDefinition>();
+  const board = options.board ?? [sticky()];
   vi.stubGlobal("document", {
     createElement: () => fakeDialog(),
     modelContext: {
@@ -56,9 +58,9 @@ function harness(options: { canComment?: boolean; canWrite?: boolean } = {}) {
   const notices: string[] = [];
   const inquiry = new CollectiveInquiryWebMcp({
     root: { append: () => undefined } as unknown as HTMLElement,
-    getSelectedItems: () => [sticky()],
-    getBoardItems: () => [sticky()],
-    getAuthoritativeItem: (itemId) => (itemId === STICKY_ID ? sticky() : undefined),
+    getSelectedItems: () => board,
+    getBoardItems: () => board,
+    getAuthoritativeItem: (itemId) => board.find((item) => item.id === itemId),
     getSequence: () => 3,
     getParticipantDisplayName: () => "Sam",
     notify: (message) => notices.push(message),
@@ -92,6 +94,33 @@ describe("watch reply tools", () => {
     });
     inquiry.destroy();
     expect(tools.size).toBe(0);
+  });
+
+  it("accepts the highest generated watch alias in the schema and runtime", async () => {
+    const board: BoardItem[] = Array.from({ length: MAX_WATCHED_ITEMS }, (_, index) => ({
+      ...sticky(),
+      id: `018f0000-0000-7000-8000-${String(index + 1).padStart(12, "0")}`,
+    }));
+    const finalItem = board.at(-1);
+    if (!finalItem) throw new Error("Expected the watch-limit fixture to contain an item.");
+    const { inquiry, tools, created, call } = harness({ board });
+    await vi.waitFor(() => expect(tools.has("comment_on_watched_step")).toBe(true));
+    expect(tools.get("comment_on_watched_step")?.inputSchema).toMatchObject({
+      properties: {
+        stepAlias: { pattern: "^step_(?:[1-9][0-9]{0,3}|10000)$" },
+      },
+    });
+
+    const started = await call("watch_board", { action: "start" });
+    const commented = await call("comment_on_watched_step", {
+      watchToken: started.watchToken,
+      stepAlias: "step_10000",
+      body: "Check this final object.",
+    });
+
+    expect(commented).toMatchObject({ status: "commented", stepAlias: "step_10000" });
+    expect(created.at(-1)?.itemId).toBe(finalItem.id);
+    inquiry.destroy();
   });
 
   it("mints a selection token the add_* tools can resolve and posts a tagged comment", async () => {
