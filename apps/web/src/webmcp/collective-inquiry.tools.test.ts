@@ -266,7 +266,8 @@ describe("registered tool surface", () => {
       expect(watch.description).not.toContain(withheld);
     }
     expect(watch.description).toContain("insert_comment");
-    expect(watch.description).toContain("insert_sticky");
+    // Every action is answered in a comment now, so the description must not offer a card.
+    expect(watch.description).not.toContain("insert_sticky");
     inquiry.destroy();
   });
 

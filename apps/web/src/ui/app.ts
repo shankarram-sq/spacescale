@@ -1200,7 +1200,6 @@ export class BoardApp {
   private readonly aiAssistWrap: HTMLElement;
   private readonly aiAssistButton: HTMLButtonElement;
   private readonly aiAssistMenu: HTMLElement;
-  private readonly aiAssistScope: HTMLElement;
   private readonly aiAssistNote: HTMLInputElement;
   private readonly webMcpStatus: HTMLButtonElement;
   private readonly webMcpStatusText: HTMLElement;
@@ -1329,7 +1328,6 @@ export class BoardApp {
     this.aiAssistWrap = query(this.selectionActions, "[data-selection-ai-wrap]", HTMLElement);
     this.aiAssistButton = query(this.selectionActions, "[data-selection-ai]", HTMLButtonElement);
     this.aiAssistMenu = query(this.selectionActions, "[data-testid='ai-assist-menu']", HTMLElement);
-    this.aiAssistScope = query(this.aiAssistMenu, "[data-ai-assist-scope]", HTMLElement);
     this.aiAssistNote = query(this.aiAssistMenu, "[data-ai-assist-note]", HTMLInputElement);
     this.webMcpStatus = query(this.root, "[data-webmcp-status]", HTMLButtonElement);
     this.webMcpStatusText = query(this.root, "[data-webmcp-status-text]", HTMLElement);
@@ -1878,13 +1876,11 @@ export class BoardApp {
               <div class="selection-ai-wrap" data-selection-ai-wrap hidden>
                 <button type="button" data-selection-ai data-testid="selection-ai" aria-label="Ask the AI assistant about the selection" title="Ask AI" aria-haspopup="menu" aria-controls="ai-assist-menu" aria-expanded="false">${aiSparkleIcon()}<span>Ask AI</span></button>
                 <div class="arrange-menu ai-assist-menu" data-testid="ai-assist-menu" id="ai-assist-menu" role="menu" aria-label="Ask the AI assistant" hidden>
-                  <span class="arrange-menu-label" data-ai-assist-scope>Selected steps</span>
                   ${ASSIST_ACTIONS.map(
                     (action) =>
                       `<button type="button" role="menuitem" data-ai-action="${action}">${ASSIST_GUIDANCE[action].label}</button>`,
                   ).join("")}
-                  <label class="ai-assist-note"><span>Add a note (optional)</span><input type="text" maxlength="${ASSIST_NOTE_MAX_LENGTH}" data-ai-assist-note placeholder="What are you unsure about?" autocomplete="off" /></label>
-                  <p class="ai-assist-menu-note">Your request and the selected step text go to the AI assistant already watching this Space. Replies appear on the board with a small AI tag.</p>
+                  <label class="ai-assist-note"><span>Other instruction</span><input type="text" maxlength="${ASSIST_NOTE_MAX_LENGTH}" data-ai-assist-note placeholder="What are you unsure about?" autocomplete="off" /></label>
                 </div>
               </div>
               <button class="selection-comment-button" type="button" data-selection-comment aria-label="Comment on selected object" title="Comment"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h9a4 4 0 0 1 4 4Z"/><path d="M8 9h8M8 13h5"/></svg></button>
@@ -1948,7 +1944,7 @@ export class BoardApp {
                   `<button type="button" role="menuitem" data-ai-share-action="${action}">${aiSparkleIcon("ai-sparkle-menu")}<span>${ASSIST_GUIDANCE[action].label}</span></button>`,
               ).join("")}
             </div>
-            <label class="ai-assist-note"><span>Add a note (optional)</span><input type="text" maxlength="${ASSIST_NOTE_MAX_LENGTH}" data-ai-share-note placeholder="What should the assistant do?" autocomplete="off" /></label>
+            <label class="ai-assist-note"><span>Other instruction</span><input type="text" maxlength="${ASSIST_NOTE_MAX_LENGTH}" data-ai-share-note placeholder="What should the assistant do?" autocomplete="off" /></label>
             <p class="ai-assist-menu-note">Asks the assistant watching this Space to do what you picked, across the whole board.</p>
           </section>
           <section class="style-popover" data-testid="style-popover" id="style-popover" aria-label="Drawing style" hidden>
@@ -7555,11 +7551,6 @@ export class BoardApp {
         : allSaved
           ? ""
           : "Wait for the selected object to finish saving.";
-    const scope =
-      selectedIds.length === 0
-        ? `All ${watched.size} watched step${watched.size === 1 ? "" : "s"}`
-        : `${selectedIds.length} selected step${selectedIds.length === 1 ? "" : "s"}`;
-    this.aiAssistScope.textContent = scope;
     const selectionKey = [...selectedIds].sort().join("\u0000");
     if (selectionKey !== this.aiAssistSelectionKey) {
       this.aiAssistSelectionKey = selectionKey;

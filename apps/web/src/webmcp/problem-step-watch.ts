@@ -32,7 +32,6 @@ const MAX_LIVE_SESSIONS = 5;
 const MAX_QUEUED_REQUESTS = 10;
 const COMMENT_BODY_PLACEHOLDER = "<your reply, at most 2000 characters>";
 const COMMENT_VIDEO_URL_PLACEHOLDER = "<a complete HTTPS YouTube or Vimeo link, or leave out>";
-const CARD_TEXT_PLACEHOLDER = "<the note's text, at most 1000 characters>";
 /** Largest millisecond value the Date type can represent. */
 const MAX_TIMESTAMP_MS = 8.64e15;
 
@@ -65,7 +64,7 @@ type WatchChange = {
 };
 
 /** How the participant's request should be answered, in order of preference. */
-export type ReplyChannel = "comment" | "board" | "conversation";
+export type ReplyChannel = "comment" | "conversation";
 
 export type WatchPhase = "idle" | "watching" | "listening";
 
@@ -868,7 +867,10 @@ export class ProblemStepWatchFeed {
         const request = this.refreshRequest(session, queued);
         return {
           ...request,
-          reply: replyPlan(session.token, request, { canComment, canWrite }),
+          reply: replyPlan(session.token, request, {
+            canComment,
+            commentsLeft: MAX_ASSIST_COMMENTS_PER_WATCH - session.commentsPosted,
+          }),
         };
       }),
       ...(droppedRequests > 0 ? { droppedRequests } : {}),
@@ -1179,7 +1181,7 @@ function byAlias(left: { alias: string }, right: { alias: string }): number {
   return left.alias.localeCompare(right.alias, undefined, { numeric: true });
 }
 
-type AssistGuidance = { label: string; instruction: string; replyVia: "comment" | "board" };
+type AssistGuidance = { label: string; instruction: string };
 
 /** Labels double as the board button captions, so the UI and the tool cannot disagree. */
 export const ASSIST_GUIDANCE: Record<AssistAction, AssistGuidance> = {
@@ -1187,37 +1189,31 @@ export const ASSIST_GUIDANCE: Record<AssistAction, AssistGuidance> = {
     label: "Explain",
     instruction:
       "Explain the step in plain language, define important terms, preserve equations and notation, and separate explicit claims from reasonable interpretation.",
-    replyVia: "comment",
   },
   ideate: {
     label: "Ideate",
     instruction:
       "Offer several genuinely different next moves or framings grounded in the step, including at least one unexpected connection and one open question.",
-    replyVia: "board",
   },
   critique: {
     label: "Critique",
     instruction:
       "Acknowledge what is valid, then name the first specific issue or unstated assumption and ask one useful next-step question. Do not solve ahead.",
-    replyVia: "comment",
   },
   check_work: {
     label: "Check my work",
     instruction:
       "Check the work step by step and reply as comments on the board. Say what is already correct, then name the first mistake. Do not give the answer: give the participant a way to debug it themselves, such as the check to run or the case to try. Do not assign a score, level, or grade.",
-    replyVia: "comment",
   },
   examples: {
     label: "Examples",
     instruction:
       "Give two or three worked examples of the same idea at similar difficulty, with one in a deliberately different surface form.",
-    replyVia: "board",
   },
   explain_with_video: {
     label: "Explain with a video",
     instruction:
       "Suggest what kind of short video would help and what to watch for. Name a specific title or search only when confident it exists.",
-    replyVia: "comment",
   },
 };
 
@@ -1226,20 +1222,25 @@ export function assistActionLabel(action: AssistAction): string {
 }
 
 /**
- * Picks the reply channel: comments for explanatory actions, an inserted card for generative
- * ones on a writable board, and the conversation when this browser can do neither. Every plan
- * names the exact next tool call so the host has nothing to infer.
+ * Every action is answered as a comment on the step it was asked about, so the reply sits with
+ * the work rather than somewhere else on the board. Only a browser that cannot comment falls
+ * back to the conversation. Every plan names the exact next tool call so the host has nothing
+ * to infer.
  */
 function replyPlan(
   watchToken: string,
   request: DeliveredAssistRequest,
-  permissions: { canComment: boolean; canWrite: boolean },
+  permissions: { canComment: boolean; commentsLeft: number },
 ): Record<string, unknown> {
   const guidance = ASSIST_GUIDANCE[request.action];
-  let via: ReplyChannel = guidance.replyVia;
-  if (via === "board" && !permissions.canWrite) via = "comment";
-  if (via === "comment" && !permissions.canComment) via = "conversation";
-  const firstAlias = request.steps[0]?.alias ?? "step_1";
+  // A step can be deleted between the request and the host's next wait. Commenting on one the
+  // board no longer holds is refused at the target, so the plan aims at the first step that
+  // survived, and only gives up when none did.
+  const target = request.steps.find((step) => step.deleted !== true);
+  // The watch's comment budget is refused at the same place, so a plan that names a comment
+  // once it is spent is a plan the host cannot carry out.
+  const canComment = permissions.canComment && permissions.commentsLeft > 0;
+  const via: ReplyChannel = canComment && target ? "comment" : "conversation";
   return {
     instruction: guidance.instruction,
     via,
@@ -1249,7 +1250,7 @@ function replyPlan(
             tool: "insert_comment",
             input: {
               watchToken,
-              stepAlias: firstAlias,
+              stepAlias: target?.alias ?? "step_1",
               action: request.action,
               body: COMMENT_BODY_PLACEHOLDER,
               // The participant asked for a video, so the comment offers to carry one.
@@ -1264,17 +1265,13 @@ function replyPlan(
             }`,
           },
         }
-      : via === "board"
-        ? {
-            call: {
-              tool: "insert_sticky",
-              input: { text: CARD_TEXT_PLACEHOLDER },
-              note: "Place the note beside the participant's work with a location, or leave it out to land at the centre of their view.",
-            },
-          }
-        : {
-            note: "This browser cannot post comments, so answer in the conversation.",
-          }),
+      : {
+          note: !permissions.canComment
+            ? "This browser cannot post comments, so answer in the conversation."
+            : permissions.commentsLeft <= 0
+              ? `This watch has spent its ${MAX_ASSIST_COMMENTS_PER_WATCH} AI comments, so answer in the conversation. A new watch starts a fresh budget.`
+              : "Every step this request named has been deleted, so there is nothing left to comment on. Answer in the conversation.",
+        }),
   };
 }
 

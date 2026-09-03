@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BoardItem, ServerAction } from "../types";
 import {
+  MAX_ASSIST_COMMENTS_PER_WATCH,
   MAX_WATCHED_ITEMS,
   PROBLEM_STEP_WATCH_DURATION_MS,
   ProblemStepWatchFeed,
@@ -752,7 +753,7 @@ describe("board-side assist requests", () => {
             { alias: "step_1", text: "Let $2x=6$, so $x=3$" },
             { alias: "step_2", kind: "text", deleted: true },
           ],
-          reply: { via: "board", call: { tool: "insert_sticky" } },
+          reply: { via: "comment", call: { tool: "insert_comment" } },
         },
       ],
     });
@@ -760,7 +761,7 @@ describe("board-side assist requests", () => {
     expect(minted.at(-1)).toMatchObject([{ alias: "idea_1", itemId: STICKY_ID, version: 2 }]);
   });
 
-  it("keeps queued requests when a wait is aborted and prefers cards for generative actions", async () => {
+  it("keeps queued requests when a wait is aborted, and answers every action in a comment", async () => {
     const { feed } = watching();
     const started = await feed.execute({ action: "start" }, new AbortController().signal);
     const controller = new AbortController();
@@ -780,29 +781,88 @@ describe("board-side assist requests", () => {
       requests: [
         {
           action: "ideate",
+          // Generative actions answer on the step too, so the reply sits with the work.
           reply: {
-            via: "board",
-            call: { tool: "insert_sticky", input: { text: expect.any(String) } },
+            via: "comment",
+            call: { tool: "insert_comment", input: { action: "ideate", stepAlias: "step_1" } },
           },
         },
       ],
     });
   });
 
-  it("falls back to a comment on a read-only board, and to the conversation when commenting is off", async () => {
+  it("aims a reply at a step that still exists, and gives up only when none do", async () => {
+    const { feed, items } = watching();
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    feed.requestAssistance({ itemIds: [STICKY_ID, TEXT_ID], action: "ideate" });
+    // The sticky is step_1; deleting it leaves the request aimed at a step that is gone.
+    items.delete(STICKY_ID);
+    feed.recordAuthoritativeAction(serverAction(8, sticky()), new Set([STICKY_ID]));
+    const result = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    // The plan aims past it at the canvas text that survived, rather than at a dead alias.
+    expect(result.requests).toMatchObject([
+      {
+        steps: [{ alias: "step_1", deleted: true }, { alias: "step_2" }],
+        reply: { via: "comment", call: { input: { stepAlias: "step_2" } } },
+      },
+    ]);
+
+    // With every requested step gone there is nothing to comment on.
+    feed.requestAssistance({ itemIds: [TEXT_ID], action: "ideate" });
+    items.delete(TEXT_ID);
+    feed.recordAuthoritativeAction(serverAction(9, canvasText()), new Set([TEXT_ID]));
+    const allGone = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(allGone.requests).toMatchObject([
+      { reply: { via: "conversation", note: expect.stringContaining("has been deleted") } },
+    ]);
+    expect((allGone.requests as Array<{ reply: object }>)[0]?.reply).not.toHaveProperty("call");
+  });
+
+  it("falls back to the conversation once the watch has spent its comment budget", async () => {
+    // The budget is refused at the comment target, so a plan naming a comment after it is spent
+    // is one the host cannot carry out.
+    const { feed } = watching();
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    for (let index = 0; index < MAX_ASSIST_COMMENTS_PER_WATCH; index += 1) {
+      feed.commentTarget(String(started.watchToken), "step_1").release(true);
+    }
+
+    feed.requestAssistance({ itemIds: [STICKY_ID], action: "ideate" });
+    const spent = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(spent.requests).toMatchObject([
+      {
+        reply: {
+          via: "conversation",
+          note: expect.stringContaining(`spent its ${MAX_ASSIST_COMMENTS_PER_WATCH} AI comments`),
+        },
+      },
+    ]);
+    expect((spent.requests as Array<{ reply: object }>)[0]?.reply).not.toHaveProperty("call");
+  });
+
+  it("answers every action in a comment, and falls back to the conversation when commenting is off", async () => {
     const { feed, setCanComment, setCanWrite } = watching();
     const started = await feed.execute({ action: "start" }, new AbortController().signal);
-    // A note can sit beside any step, so a generative action on a text step still writes a card.
+    // Every action answers in a comment on the step, whatever the step is.
     feed.requestAssistance({ itemIds: [TEXT_ID], action: "examples" });
     const textStep = await feed.execute(
       { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
       new AbortController().signal,
     );
     expect(textStep.requests).toMatchObject([
-      { reply: { via: "board", call: { tool: "insert_sticky" } } },
+      { reply: { via: "comment", call: { tool: "insert_comment" } } },
     ]);
 
-    // A browser that cannot add items must not be sent to a writer.
+    // A board this browser cannot write to changes nothing: the reply was a comment anyway.
     setCanWrite(false);
     feed.requestAssistance({ itemIds: [STICKY_ID], action: "ideate" });
     const readOnlyFallback = await feed.execute(
