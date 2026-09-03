@@ -244,7 +244,7 @@ export class CollectiveInquiryWebMcp {
                 maximum: 20_000,
                 default: 15_000,
                 description:
-                  "How long one wait call may remain pending before returning a timeout.",
+                  "How long one wait call may remain pending before returning a timeout. Every valid wait is also a keep-alive ping; three missed 15-second pings end the watching state.",
               },
             },
             required: ["action"],
@@ -362,7 +362,7 @@ export class CollectiveInquiryWebMcp {
                 maximum: 20_000,
                 default: 15_000,
                 description:
-                  "How long one wait call may remain pending before returning a timeout.",
+                  "How long one wait call may remain pending before returning a timeout. Every valid wait is also a keep-alive ping; three missed 15-second pings end the watching state.",
               },
             },
             required: ["action"],

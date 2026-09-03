@@ -28,6 +28,8 @@ import {
   MAX_WATCHED_ITEMS,
   PROBLEM_STEP_WATCH_DURATION_MS,
   PROBLEM_STEP_WATCH_MAX_WAIT_MS,
+  PROBLEM_STEP_WATCH_MISSED_PINGS,
+  PROBLEM_STEP_WATCH_PING_INTERVAL_MS,
   PROBLEM_STEP_WATCH_TOOL,
 } from "./problem-step-watch";
 import {
@@ -751,6 +753,8 @@ export class EducationPartnerWebMcp {
         scope: "entire_board",
         durationSeconds: PROBLEM_STEP_WATCH_DURATION_MS / 1_000,
         maximumWaitMs: PROBLEM_STEP_WATCH_MAX_WAIT_MS,
+        keepAlivePingMs: PROBLEM_STEP_WATCH_PING_INTERVAL_MS,
+        missedPingsBeforeStop: PROBLEM_STEP_WATCH_MISSED_PINGS,
         maximumObjects: MAX_WATCHED_ITEMS,
         reports: "authoritative_saved_changes",
         watchesEveryObjectKind: true,
