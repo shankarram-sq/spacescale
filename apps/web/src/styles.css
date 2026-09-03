@@ -4610,6 +4610,148 @@ button:disabled {
   font-weight: 680;
 }
 
+.comment-attachment {
+  display: grid;
+  gap: 7px;
+  margin-top: 9px;
+  padding: 9px 10px;
+  border: 1px solid #d8d0f4;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.comment-attachment-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.comment-attachment-label {
+  color: #5746af;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.comment-attachment-row button {
+  min-height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 680;
+}
+
+.comment-attachment-alt input {
+  width: 100%;
+  min-height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
+
+.comment-video-field {
+  display: grid;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.comment-video-field input {
+  width: 100%;
+  min-height: 32px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
+
+.comment-video-field button {
+  justify-self: start;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 680;
+}
+
+.comment-media {
+  display: grid;
+  gap: 7px;
+  margin: 10px 0 0;
+}
+
+.comment-media img {
+  display: block;
+  width: 100%;
+  max-height: 220px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f4f2fb;
+  object-fit: contain;
+}
+
+.comment-media figcaption {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.comment-media-error {
+  margin: 0;
+  color: #ad3b19;
+  font-size: 11px;
+}
+
+.comment-media-video-link {
+  overflow: hidden;
+  color: #5746af;
+  font-size: 11px;
+  font-weight: 680;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comment-media-play,
+.comment-media-stop {
+  justify-self: start;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 680;
+}
+
+.comment-media-player {
+  display: grid;
+  gap: 7px;
+}
+
+.comment-media-frame {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 0;
+  border-radius: 10px;
+  background: #111827;
+}
+
 @media (max-width: 650px) {
   .comments-button {
     padding-inline: 7px;

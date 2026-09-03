@@ -48,7 +48,12 @@ function harness(
     },
   });
   const committed: DurableOperation[] = [];
-  const comments: Array<{ itemId: string; body: string; assistance: unknown }> = [];
+  const comments: Array<{
+    itemId: string;
+    body: string;
+    assistance: unknown;
+    media?: unknown;
+  }> = [];
   const revealed: string[][] = [];
   const notices: string[] = [];
   const stored: string[] = [];
@@ -77,8 +82,8 @@ function harness(
         committed.push(operation);
         return true;
       }),
-    createComment: async (itemId, body, assistance) => {
-      comments.push({ itemId, body, assistance });
+    createComment: async (itemId, body, assistance, media) => {
+      comments.push({ itemId, body, assistance, media });
     },
     storeImage: async (imageDataUrl) => {
       stored.push(imageDataUrl);
@@ -260,6 +265,84 @@ describe("generic board writes", () => {
     ]);
     expect(result).toMatchObject({ status: "commented", objectKind: "sticky", writtenBy: "ai" });
     writes.destroy();
+  });
+
+  it("carries a picture on a comment through the board's own asset path", async () => {
+    const { writes, comments, stored, call } = await ready({ itemAt: sticky() });
+    const result = await call("insert_comment", {
+      location: { x: 20, y: 20 },
+      body: "Compare your sketch with this one.",
+      imageDataUrl: PNG,
+      alt: "  A parabola opening upward  ",
+    });
+
+    expect(stored).toEqual([PNG]);
+    expect(comments[0]?.media).toEqual({
+      kind: "image",
+      assetId: `asset_${"A".repeat(43)}`,
+      mimeType: "image/png",
+      intrinsicWidth: 1_200,
+      intrinsicHeight: 600,
+      alt: "A parabola opening upward",
+    });
+    expect(result).toMatchObject({ status: "commented", media: "image" });
+    writes.destroy();
+  });
+
+  it("carries a public video on a comment without storing anything", async () => {
+    const { writes, comments, stored, call } = await ready({ itemAt: sticky() });
+    const result = await call("insert_comment", {
+      body: "This clip walks through the same step.",
+      location: { x: 20, y: 20 },
+      videoUrl: "https://youtu.be/dQw4w9WgXcQ",
+    });
+
+    expect(stored).toEqual([]);
+    expect(comments[0]?.media).toEqual({
+      kind: "video",
+      provider: "youtube",
+      url: "https://youtu.be/dQw4w9WgXcQ",
+    });
+    expect(result).toMatchObject({ status: "commented", media: "video" });
+    writes.destroy();
+  });
+
+  it("refuses comment media it cannot take, before claiming a comment target", async () => {
+    const { writes, comments, call } = await ready({ itemAt: sticky() });
+    await expect(
+      call("insert_comment", { body: "Both?", imageDataUrl: PNG, alt: "A sketch", videoUrl: "x" }),
+    ).rejects.toThrow("one picture or one video");
+    await expect(call("insert_comment", { body: "No picture", alt: "A sketch" })).rejects.toThrow(
+      "alt describes imageDataUrl",
+    );
+    await expect(
+      call("insert_comment", { body: "Watch", videoUrl: "https://example.com/clip" }),
+    ).rejects.toThrow("YouTube or Vimeo");
+    await expect(
+      call("insert_comment", { body: "Look", imageDataUrl: "https://example.com/a.png", alt: "A" }),
+    ).rejects.toThrow("never fetches an external image");
+    await expect(call("insert_comment", { body: "Look", imageDataUrl: PNG })).rejects.toThrow(
+      "alt must be text",
+    );
+    await expect(
+      call("insert_comment", { body: "Look", imageDataUrl: PNG, alt: "   " }),
+    ).rejects.toThrow("alt must contain 1-");
+    expect(comments).toHaveLength(0);
+    writes.destroy();
+
+    const off = await ready({ itemAt: sticky(), imagesEnabled: false });
+    await expect(
+      off.call("insert_comment", { body: "Look", imageDataUrl: PNG, alt: "A sketch" }),
+    ).rejects.toThrow("Images are disabled");
+    expect(off.comments).toHaveLength(0);
+    off.writes.destroy();
+
+    const readOnly = await ready({ itemAt: sticky(), canWrite: false });
+    await expect(
+      readOnly.call("insert_comment", { body: "Look", imageDataUrl: PNG, alt: "A sketch" }),
+    ).rejects.toThrow("board edit access");
+    expect(readOnly.comments).toHaveLength(0);
+    readOnly.writes.destroy();
   });
 
   it("falls back to the lone selection, and says so when it cannot find a target", async () => {

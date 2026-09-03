@@ -2,6 +2,7 @@ import {
   PROTOCOL_VERSION as SHARED_PROTOCOL_VERSION,
   type Assistance as SharedAssistance,
   type BoardFeatures as SharedBoardFeatures,
+  type CommentMedia as SharedCommentMedia,
   type TextDecoration as SharedTextDecoration,
   type TextFontFamily as SharedTextFontFamily,
   type TextFontStyle as SharedTextFontStyle,
@@ -14,6 +15,8 @@ export type Role = "viewer" | "editor" | "owner";
 export type DrawingPolicy = "editors_enabled" | "owner_only" | "locked";
 export type AccessMode = "private" | "link_view";
 export type BoardFeatures = SharedBoardFeatures;
+/** The one picture or video a comment can carry beside its text. */
+export type CommentMedia = SharedCommentMedia;
 export type ToolName =
   | "select"
   | "pencil"
@@ -362,6 +365,8 @@ export type BoardComment = {
   assistedBy?: "ai";
   /** Present iff `assistedBy === "ai"`: which WebMCP tool wrote it and the action it answered. */
   assistance?: SharedAssistance;
+  /** A picture already stored on this board, or a public video, shown under the comment text. */
+  media?: CommentMedia;
 };
 
 export type CanonicalOperation = DurableOperation & {

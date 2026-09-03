@@ -104,6 +104,9 @@ If the host does not choose the tools automatically:
   reply plan. Say what is already right, then point at `x = -4`.”
 - Correction card: “Call `insert_sticky` with a `location` beside the plot, a
   counterexample checking `x = -4`, and a question the class can act on.”
+- Worked example or clip: “Call `insert_comment` on the same step, and pass
+  `imageDataUrl` with `alt` for a picture of the correct sketch, or `videoUrl`
+  with a public YouTube or Vimeo link, so the material sits with the work.”
 
 If a write fails unexpectedly, confirm that the participant has edit access,
 that the Space has that object kind enabled, and that the step finished saving.

@@ -3,6 +3,7 @@ import {
   ASSIST_ACTIONS,
   type AssistAction,
   type Assistance,
+  type CommentMedia,
   MAX_IMAGE_ALT_CODE_POINTS,
   MAX_STICKY_TEXT_CODE_POINTS,
 } from "@collab/protocol";
@@ -112,7 +113,12 @@ export type BoardWriteWebMcpOptions = {
   ) => WatchedStepTarget;
   commit: (operation: DurableOperation) => Promise<boolean>;
   /** Posts a comment as this browser's participant, tagged with the writing tool. */
-  createComment: (itemId: string, body: string, assistance: Assistance) => Promise<void>;
+  createComment: (
+    itemId: string,
+    body: string,
+    assistance: Assistance,
+    media?: CommentMedia,
+  ) => Promise<void>;
   /** Sanitizes and privately stores one inline image, returning what an image card needs. */
   storeImage: (imageDataUrl: string, signal: AbortSignal) => Promise<ImageAssetMetadata>;
   /** Selects what was just written, as the board's own insert paths do. */
@@ -161,7 +167,7 @@ export class BoardWriteWebMcp {
         modelContext,
         {
           name: INSERT_COMMENT_TOOL,
-          description: `Post one comment on a saved object on this board. Name the object in one of three ways: pass watchToken and stepAlias to comment on a step of a live board watch, which is what a watch's reply plan asks for and the only way to answer a request the watch delivered; or pass location, a board coordinate the object covers; or pass neither, which comments on the one object selected in this browser. The comment is attributed to this browser's participant, carries a small AI tag, renders MathJax, is limited to ${MAX_COMMENT_CODE_POINTS} characters, and can be resolved by the class like any other comment. A comment on a watched step counts against that watch's own cap; the location and selection forms are limited to ${MAX_UNWATCHED_COMMENTS} per page, and each result reports how many are left. Never grade, label, rank, or profile a participant. ${WEBMCP_MATHJAX_GUIDANCE}`,
+          description: `Post one comment on a saved object on this board. Name the object in one of three ways: pass watchToken and stepAlias to comment on a step of a live board watch, which is what a watch's reply plan asks for and the only way to answer a request the watch delivered; or pass location, a board coordinate the object covers; or pass neither, which comments on the one object selected in this browser. A comment may also carry one picture or one video, the same material insert_image and insert_video place on the canvas: pass imageDataUrl with alt for a picture, or videoUrl for a public YouTube or Vimeo link, never both. Use a comment when the material belongs to the work someone is already looking at, and insert_image or insert_video when it belongs on the canvas itself. The comment is attributed to this browser's participant, carries a small AI tag, renders MathJax, is limited to ${MAX_COMMENT_CODE_POINTS} characters, and can be resolved by the class like any other comment. A comment on a watched step counts against that watch's own cap; the location and selection forms are limited to ${MAX_UNWATCHED_COMMENTS} per page, and each result reports how many are left. Never grade, label, rank, or profile a participant. ${WEBMCP_MATHJAX_GUIDANCE}`,
           inputSchema: {
             type: "object",
             properties: {
@@ -188,6 +194,25 @@ export class BoardWriteWebMcp {
                 minLength: 1,
                 maxLength: MAX_COMMENT_CODE_POINTS,
                 description: "The comment. Plain text with optional TeX; no HTML.",
+              },
+              imageDataUrl: {
+                type: "string",
+                maxLength: MAX_INLINE_IMAGE_DATA_URL_LENGTH,
+                description:
+                  "A picture to show under the comment, as a PNG, JPEG, WebP or GIF data URL. External URLs are refused, and the picture is sanitized and stored in this board's own bucket. Pass alt with it. Needs board edit access, like an image card.",
+              },
+              alt: {
+                type: "string",
+                minLength: 1,
+                maxLength: MAX_IMAGE_ALT_CODE_POINTS,
+                description:
+                  "What the picture shows, for participants who cannot see it. Required with imageDataUrl.",
+              },
+              videoUrl: {
+                type: "string",
+                maxLength: 2_048,
+                description:
+                  "A complete HTTPS YouTube or Vimeo link to show under the comment, played through a privacy-conscious embed when a participant chooses to.",
               },
             },
             required: ["body"],
@@ -307,16 +332,25 @@ export class BoardWriteWebMcp {
     if (this.commentInFlight) {
       throw new Error("Wait for the previous comment to finish before writing another.");
     }
+    // Resolved before a watch step is claimed, so a refused or slow picture cannot hold a
+    // reservation the caller never gets to use.
+    const media = await this.commentMedia(input, signal);
+    signal.throwIfAborted();
     const watched = this.watchedTarget(input);
     signal.throwIfAborted();
     if (watched) {
       // The watch counts this against its own comment cap either way, so release exactly once.
       this.commentInFlight = true;
       try {
-        await this.options.createComment(watched.target.itemId, body, {
-          tool: INSERT_COMMENT_TOOL,
-          ...(watched.target.action === undefined ? {} : { action: watched.target.action }),
-        });
+        await this.options.createComment(
+          watched.target.itemId,
+          body,
+          {
+            tool: INSERT_COMMENT_TOOL,
+            ...(watched.target.action === undefined ? {} : { action: watched.target.action }),
+          },
+          media ?? undefined,
+        );
       } catch (error) {
         watched.target.release(false);
         throw error;
@@ -325,7 +359,11 @@ export class BoardWriteWebMcp {
       }
       watched.target.release(true);
       this.options.notify(`The AI assistant commented on ${watched.stepAlias}.`, "info");
-      return this.commentResult({ stepAlias: watched.stepAlias, characters });
+      return this.commentResult({
+        stepAlias: watched.stepAlias,
+        characters,
+        ...(media === null ? {} : { media: media.kind }),
+      });
     }
     if (this.commentInFlight) {
       throw new Error("Wait for the previous comment to finish before writing another.");
@@ -338,7 +376,12 @@ export class BoardWriteWebMcp {
     const target = this.commentTarget(input.location);
     this.commentInFlight = true;
     try {
-      await this.options.createComment(target.id, body, { tool: INSERT_COMMENT_TOOL });
+      await this.options.createComment(
+        target.id,
+        body,
+        { tool: INSERT_COMMENT_TOOL },
+        media ?? undefined,
+      );
     } finally {
       this.commentInFlight = false;
     }
@@ -348,8 +391,57 @@ export class BoardWriteWebMcp {
     return this.commentResult({
       objectKind: target.kind,
       characters,
+      ...(media === null ? {} : { media: media.kind }),
       remainingUnwatchedComments: MAX_UNWATCHED_COMMENTS - this.unwatchedComments,
     });
+  }
+
+  /**
+   * The one picture or video this comment will carry, or null when it carries neither. A
+   * picture takes the same route an image card's does: never fetched from a URL, sanitized and
+   * stored in this board's private bucket, and refused when the Space has images switched off.
+   */
+  private async commentMedia(
+    input: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<CommentMedia | null> {
+    const hasImage = input.imageDataUrl !== undefined;
+    const hasVideo = input.videoUrl !== undefined;
+    if (hasImage && hasVideo) {
+      throw new Error("A comment carries one picture or one video, not both.");
+    }
+    if (!hasImage && input.alt !== undefined) {
+      throw new Error("alt describes imageDataUrl, so pass them together.");
+    }
+    if (hasVideo) {
+      if (typeof input.videoUrl !== "string") throw new Error("videoUrl must be text.");
+      const video = videoEmbedFromText(input.videoUrl);
+      if (!video) {
+        throw new Error("videoUrl must be a complete HTTPS YouTube or Vimeo video link.");
+      }
+      return { kind: "video", provider: video.provider, url: video.sourceUrl };
+    }
+    if (!hasImage) return null;
+    // A picture is stored on the board itself, so it needs the same access a card does.
+    this.requireWritable("image");
+    if (!this.options.imagesEnabled()) throw new Error("Images are disabled for this Space.");
+    const imageDataUrl = requiredImageDataUrl(input.imageDataUrl);
+    const alt = requiredImageAlt(input.alt);
+    const asset = await this.options.storeImage(imageDataUrl, signal);
+    signal.throwIfAborted();
+    // Permission can change while the upload is in flight; the comment is what needs the check.
+    this.requireWritable("image");
+    if (!this.options.imagesEnabled()) {
+      throw new Error("The image was stored, but images were disabled before it could be shown.");
+    }
+    return {
+      kind: "image",
+      assetId: asset.assetId,
+      mimeType: asset.mimeType,
+      intrinsicWidth: asset.intrinsicWidth,
+      intrinsicHeight: asset.intrinsicHeight,
+      alt,
+    };
   }
 
   private commentResult(extra: Record<string, unknown>): Record<string, unknown> {
@@ -447,22 +539,9 @@ export class BoardWriteWebMcp {
     if (!isRecord(input)) throw new Error("Image input must be an object.");
     this.requireWritable("image");
     if (!this.options.imagesEnabled()) throw new Error("Image cards are disabled for this Space.");
-    if (typeof input.imageDataUrl !== "string") throw new Error("imageDataUrl must be text.");
-    const imageDataUrl = input.imageDataUrl.trim();
-    if (!imageDataUrl.startsWith("data:image/")) {
-      throw new Error(
-        "imageDataUrl must be an inline data URL such as data:image/png;base64,.... SpaceScale never fetches an external image.",
-      );
-    }
-    if (imageDataUrl.length > MAX_INLINE_IMAGE_DATA_URL_LENGTH) {
-      throw new Error("That image is larger than this board accepts. Send a smaller one.");
-    }
-    if (typeof input.alt !== "string") throw new Error("alt must be text.");
-    const alt = input.alt.trim();
+    const imageDataUrl = requiredImageDataUrl(input.imageDataUrl);
+    const alt = requiredImageAlt(input.alt);
     const altCharacters = [...alt].length;
-    if (altCharacters === 0 || altCharacters > MAX_IMAGE_ALT_CODE_POINTS) {
-      throw new Error(`alt must contain 1-${MAX_IMAGE_ALT_CODE_POINTS} characters.`);
-    }
     const point = this.placement(input.location);
 
     const asset = await this.options.storeImage(imageDataUrl, signal);
@@ -564,6 +643,31 @@ export class BoardWriteWebMcp {
         "Only what you supplied was written to the board. No board, item, or participant identifiers were returned.",
     };
   }
+}
+
+/** The inline picture a write may carry: an image data URL this board is willing to store. */
+function requiredImageDataUrl(value: unknown): string {
+  if (typeof value !== "string") throw new Error("imageDataUrl must be text.");
+  const imageDataUrl = value.trim();
+  if (!imageDataUrl.startsWith("data:image/")) {
+    throw new Error(
+      "imageDataUrl must be an inline data URL such as data:image/png;base64,.... SpaceScale never fetches an external image.",
+    );
+  }
+  if (imageDataUrl.length > MAX_INLINE_IMAGE_DATA_URL_LENGTH) {
+    throw new Error("That image is larger than this board accepts. Send a smaller one.");
+  }
+  return imageDataUrl;
+}
+
+function requiredImageAlt(value: unknown): string {
+  if (typeof value !== "string") throw new Error("alt must be text.");
+  const alt = value.trim();
+  const characters = [...alt].length;
+  if (characters === 0 || characters > MAX_IMAGE_ALT_CODE_POINTS) {
+    throw new Error(`alt must contain 1-${MAX_IMAGE_ALT_CODE_POINTS} characters.`);
+  }
+  return alt;
 }
 
 function stickyFill(value: unknown): string | undefined {

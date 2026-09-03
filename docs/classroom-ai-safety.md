@@ -127,6 +127,15 @@ guessing a target. The comment is capped at 2,000 characters, is attributed to
 the requesting participant with a visible AI tag, and can be resolved by the class
 like any other comment.
 
+A comment may also carry one picture or one video, never both. A picture takes
+the same route `insert_image` does—inline bytes only, decoded, re-encoded, size
+and dimension bounded, stored in the board's private bucket—so it needs the
+participant's edit access and the Space's Images setting, and the comment names
+the stored asset rather than any URL. A video is a public YouTube or Vimeo link
+checked by the same parser the canvas embeds use, and it stays a link in the
+drawer until a participant chooses to play it. The board refuses a picture it
+does not already hold and a link it cannot recognize.
+
 `insert_image` is an output-only image use case. It does not send existing board
 images or file metadata to a model, and it never fetches an external URL: the
 model supplies an inline PNG, JPEG, WebP, or GIF, which SpaceScale decodes and
