@@ -38,7 +38,6 @@ const WITHHELD_TOOLS = [
   "add_thinking_expansion",
   "comment_on_watched_step",
   "explain_selected_ideas",
-  "insert_filled_template",
   "inspect_selected_board_visual",
   "inspire_from_selected_ideas",
   "list_class_collaboration_modes",
@@ -80,15 +79,18 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   await expect(settingsDrawer.getByRole("checkbox", { name: "Enable Images" })).toBeChecked();
   await page.getByTestId("settings-button").click();
 
-  // The shipped surface: three reads and the four generic writes, and nothing else.
+  // The shipped surface: the reads, the generic inserts, the template fill, the move, and
+  // nothing else.
   await expect
     .poll(() => page.evaluate(() => Object.keys(window.__spaceScaleWebMcpTools).sort()))
     .toEqual([
       "insert_comment",
+      "insert_filled_template",
       "insert_image",
       "insert_sticky",
       "insert_video",
       "list_users",
+      "move_stickies",
       "read_board",
       "read_live_class_vote",
       "read_selection",
@@ -161,7 +163,10 @@ test("a board participant can use headless WebMCP tools with neutral board attri
     if (!tool) throw new Error("The template reader was not registered.");
     return tool.execute({}, { signal: new AbortController().signal });
   });
-  expect(templates).toMatchObject({ scope: "board_activity_templates", writeTool: null });
+  expect(templates).toMatchObject({
+    scope: "board_activity_templates",
+    writeTool: "insert_filled_template",
+  });
   expect(Number(templates.templateCount)).toBeGreaterThan(0);
   expect(JSON.stringify(templates)).not.toContain("itemId");
 
@@ -529,4 +534,74 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   expect(refusals[1]).toContain("YouTube or Vimeo");
   expect(refusals[2]).toContain("never fetches an external image");
   await expect(canvasItems).toHaveCount(13);
+
+  // Grouping work: the move rearranges notes already on the board rather than adding any.
+  const grouped = await page.evaluate(async () => {
+    const signal = new AbortController().signal;
+    const insert = window.__spaceScaleWebMcpTools.insert_sticky;
+    const move = window.__spaceScaleWebMcpTools.move_stickies;
+    if (!insert || !move) throw new Error("The move write was not registered.");
+    await insert.execute({ location: { x: 200, y: 700 }, text: "Group me" }, { signal });
+    return move.execute(
+      // The centre of the 180x140 note just written at 200, 700.
+      { moves: [{ at: { x: 290, y: 770 }, to: { x: 900, y: 900 } }] },
+      { signal },
+    );
+  });
+  expect(grouped).toMatchObject({
+    status: "moved",
+    movedCount: 1,
+    notes: [{ from: { x: 290, y: 770 }, to: { x: 900, y: 900 }, by: { x: 610, y: 130 } }],
+    undoable: true,
+  });
+  expect(JSON.stringify(grouped)).not.toContain("itemId");
+  await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+  // One note was added and then moved, so the board grew by one rather than by two.
+  await expect(canvasItems).toHaveCount(14);
+  const movedNote = page.locator('#drawing-area [data-assisted-by="ai"]');
+  await expect(movedNote).toHaveCount(1);
+  await expect(movedNote).toHaveAttribute("transform", "matrix(1 0 0 1 610 130)");
+
+  // The rearrangement is one step, so a single undo puts the note back where it started.
+  await page.getByTestId("undo-button").click();
+  await expect(movedNote).toHaveAttribute("transform", "matrix(1 0 0 1 0 0)");
+  await expect(canvasItems).toHaveCount(14);
+
+  // The template fill is a two-call flow: the read names the slots, the write fills them.
+  const filled = await page.evaluate(async () => {
+    const signal = new AbortController().signal;
+    const read = window.__spaceScaleWebMcpTools.read_templates;
+    const insert = window.__spaceScaleWebMcpTools.insert_filled_template;
+    if (!read || !insert) throw new Error("The template fill flow was not registered.");
+    const catalogue = (await read.execute({ templateId: "kwl" }, { signal })) as {
+      writeTool?: string;
+      templates: Array<{ templateId: string; slots: Array<{ slot: string }> }>;
+    };
+    const template = catalogue.templates[0];
+    const first = template?.slots[0];
+    if (!template || !first) throw new Error("The K-W-L template reported no slots.");
+    const written = await insert.execute(
+      { templateId: template.templateId, fills: [{ slot: first.slot, text: "Volcanoes" }] },
+      { signal },
+    );
+    return { writeTool: catalogue.writeTool, slot: first.slot, written };
+  });
+  // The read hands the host straight on to the writer it just used.
+  expect(filled.writeTool).toBe("insert_filled_template");
+  expect(filled.written).toMatchObject({
+    status: "inserted",
+    templateId: "kwl",
+    filledSlotCount: 1,
+    filledSlots: [filled.slot],
+    aiAttributed: true,
+    undoable: true,
+  });
+  expect(JSON.stringify(filled.written)).not.toContain("itemId");
+  await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+  await expect(page.locator("#drawing-area")).toContainText("Volcanoes");
+
+  // The whole template is one batch, so one undo takes all of it back off the board.
+  await page.getByTestId("undo-button").click();
+  await expect(canvasItems).toHaveCount(14);
+  await expect(page.locator("#drawing-area")).not.toContainText("Volcanoes");
 });

@@ -167,11 +167,12 @@ describe("read_templates", () => {
     expect(result).toMatchObject({
       scope: "board_activity_templates",
       templateCount: ACTIVITY_TEMPLATES.length,
-      // The writer is withheld by ENABLED_WEBMCP_TOOLS, so the read must not send a host to it.
-      writeTool: null,
+      // The read is the first half of the fill flow, so it names the writer it hands off to.
+      writeTool: "insert_filled_template",
     });
-    expect(result).not.toHaveProperty("fillGuidance");
-    expect(JSON.stringify(result)).not.toContain("insert_filled_template");
+    expect(result.fillGuidance).toMatchObject({
+      leaveForStudents: expect.stringContaining("blank"),
+    });
     const listed = result.templates as Array<Record<string, unknown>>;
     const kwl = listed.find((entry) => entry.templateId === "kwl");
     expect(kwl).toMatchObject({ label: "K-W-L", objectCount: 2 });
@@ -264,12 +265,12 @@ describe("read_templates", () => {
     context.templates.destroy();
   });
 
-  it("never names the withheld writer in the contract a host reads", async () => {
+  it("sends a host on to the writer in the contract it reads", async () => {
     const { templates, exposed } = await ready();
     const read = exposed.get("read_templates");
     if (!read) throw new Error("read_templates was not offered to the host.");
-    expect(read.description).not.toContain("insert_filled_template");
-    expect(read.description).toContain("no template writer");
+    expect(read.description).toContain("Use this before insert_filled_template");
+    expect(read.description).not.toContain("no template writer");
     templates.destroy();
   });
 
@@ -436,12 +437,11 @@ describe("insert_filled_template", () => {
     templates.destroy();
   });
 
-  it("exposes only the read to a host and withdraws both definitions on teardown", async () => {
+  it("exposes both halves of the fill flow and withdraws them on teardown", async () => {
     const { templates, tools, exposed } = await ready();
     expect(tools.has("read_templates")).toBe(true);
-    // The write keeps its definition, but ENABLED_WEBMCP_TOOLS withholds it from every host.
     expect(exposed.has("read_templates")).toBe(true);
-    expect(exposed.has("insert_filled_template")).toBe(false);
+    expect(exposed.has("insert_filled_template")).toBe(true);
     templates.destroy();
     expect(tools.has("read_templates")).toBe(false);
     expect(tools.has("insert_filled_template")).toBe(false);

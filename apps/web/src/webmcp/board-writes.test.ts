@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { BoardItem, DurableOperation, NewBoardItem } from "../types";
-import { BoardWriteWebMcp, type WatchedStepTarget } from "./board-writes";
+import { BoardWriteWebMcp, type StickyMove, type WatchedStepTarget } from "./board-writes";
 import { webMcpToolDefinitions } from "./shared";
 import type { RegisteredWebMcpTool, WebMcpRegisterToolOptions } from "./types";
 
@@ -32,6 +32,11 @@ function harness(
     itemAt?: BoardItem | undefined;
     selected?: BoardItem | null;
     resolveWatchedStep?: (watchToken: string, stepAlias: string) => WatchedStepTarget;
+    resolveWatchedStickies?: (
+      watchToken: string,
+      stepAliases: readonly string[],
+    ) => Map<string, BoardItem>;
+    moveItems?: (moves: readonly StickyMove[]) => Promise<void>;
     commit?: (operation: DurableOperation) => Promise<boolean>;
   } = {},
 ) {
@@ -55,6 +60,7 @@ function harness(
     media?: unknown;
   }> = [];
   const revealed: string[][] = [];
+  const movedBatches: StickyMove[][] = [];
   const notices: string[] = [];
   const stored: string[] = [];
   const writes = new BoardWriteWebMcp({
@@ -76,6 +82,14 @@ function harness(
     itemAt: () => options.itemAt,
     getSelectedItem: () => options.selected ?? null,
     ...(options.resolveWatchedStep ? { resolveWatchedStep: options.resolveWatchedStep } : {}),
+    ...(options.resolveWatchedStickies
+      ? { resolveWatchedStickies: options.resolveWatchedStickies }
+      : {}),
+    moveItems:
+      options.moveItems ??
+      (async (moves) => {
+        movedBatches.push([...moves]);
+      }),
     commit:
       options.commit ??
       (async (operation) => {
@@ -115,7 +129,19 @@ function harness(
     textFontFamily: "sans" as const,
     textOpacity: 1,
   });
-  return { writes, tools, exposed, committed, comments, revealed, notices, stored, call, styleFor };
+  return {
+    writes,
+    tools,
+    exposed,
+    committed,
+    comments,
+    revealed,
+    movedBatches,
+    notices,
+    stored,
+    call,
+    styleFor,
+  };
 }
 
 function createdItem(
@@ -134,13 +160,14 @@ async function ready(...args: Parameters<typeof harness>) {
 describe("generic board writes", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("exposes exactly the four generic writes to a host", async () => {
+  it("exposes exactly the generic writes to a host", async () => {
     const { writes, exposed } = await ready();
     expect([...exposed.keys()].sort()).toEqual([
       "insert_comment",
       "insert_image",
       "insert_sticky",
       "insert_video",
+      "move_stickies",
     ]);
     writes.destroy();
   });
@@ -558,6 +585,228 @@ describe("generic board writes", () => {
     expect(posted).toEqual(["accepted"]);
     writes.destroy();
     context.writes.destroy();
+  });
+
+  it("moves a watched note to an absolute destination, from the centre it holds now", async () => {
+    const note = sticky();
+    const { writes, movedBatches, revealed, call } = await ready({
+      resolveWatchedStickies: () => new Map([["step_2", note]]),
+    });
+    // The note spans 0,0 to 180,140, so its centre sits at 90,70 and the delta is what closes
+    // the gap between that centre and the destination.
+    const result = await call("move_stickies", {
+      watchToken: "watch-1",
+      moves: [{ stepAlias: "step_2", to: { x: 400, y: 300 } }],
+    });
+
+    expect(movedBatches).toEqual([[{ item: note, delta: { x: 310, y: 230 } }]]);
+    expect(result).toMatchObject({
+      status: "moved",
+      movedCount: 1,
+      notes: [
+        {
+          stepAlias: "step_2",
+          from: { x: 90, y: 70 },
+          to: { x: 400, y: 300 },
+          by: { x: 310, y: 230 },
+        },
+      ],
+      undoable: true,
+    });
+    expect(revealed).toEqual([[STICKY_ID]]);
+    writes.destroy();
+  });
+
+  it("shifts a note by a relative amount and reports where it landed", async () => {
+    const note = sticky();
+    const { writes, movedBatches, call } = await ready({
+      resolveWatchedStickies: () => new Map([["step_1", note]]),
+    });
+    const result = await call("move_stickies", {
+      watchToken: "watch-1",
+      moves: [{ stepAlias: "step_1", by: { x: -25.5, y: 12 } }],
+    });
+
+    expect(movedBatches).toEqual([[{ item: note, delta: { x: -25.5, y: 12 } }]]);
+    expect(result).toMatchObject({
+      notes: [{ from: { x: 90, y: 70 }, to: { x: 64.5, y: 82 }, by: { x: -25.5, y: 12 } }],
+    });
+    writes.destroy();
+  });
+
+  it("moves a note named by a point it covers, with no watch involved", async () => {
+    const note = sticky();
+    const { writes, movedBatches, call } = await ready({ itemAt: note });
+    const result = await call("move_stickies", {
+      moves: [{ at: { x: 10, y: 10 }, by: { x: 40, y: 0 } }],
+    });
+
+    expect(movedBatches).toEqual([[{ item: note, delta: { x: 40, y: 0 } }]]);
+    // Nothing named an alias, so nothing reports one.
+    expect(result.notes).toEqual([
+      { from: { x: 90, y: 70 }, to: { x: 130, y: 70 }, by: { x: 40, y: 0 } },
+    ]);
+    writes.destroy();
+  });
+
+  it("writes nothing when every note is already where it was asked to go", async () => {
+    const note = sticky();
+    const { writes, movedBatches, notices, call } = await ready({ itemAt: note });
+    // The destination is the centre the note already holds, so the delta comes out zero.
+    const result = await call("move_stickies", {
+      moves: [{ at: { x: 10, y: 10 }, to: { x: 90, y: 70 } }],
+    });
+
+    expect(result).toMatchObject({ status: "unchanged", movedCount: 0, changedCanvas: false });
+    expect(movedBatches).toEqual([]);
+    expect(notices).toEqual([]);
+    writes.destroy();
+  });
+
+  it("hands the board every note named, including one asked to stay where it is", async () => {
+    const still = sticky();
+    const travelling: BoardItem = { ...sticky(), id: `${STICKY_ID.slice(0, -1)}2` };
+    const { writes, movedBatches, call } = await ready({
+      resolveWatchedStickies: () =>
+        new Map([
+          ["step_1", still],
+          ["step_2", travelling],
+        ]),
+    });
+    const result = await call("move_stickies", {
+      watchToken: "watch-1",
+      moves: [
+        { stepAlias: "step_1", by: { x: 0, y: 0 } },
+        { stepAlias: "step_2", by: { x: 60, y: 0 } },
+      ],
+    });
+
+    // The board carries grouped objects and a Section's members along with a move, so a note
+    // dropped here for having nowhere to go is one the board could pick up and move anyway.
+    expect(movedBatches).toEqual([
+      [
+        { item: still, delta: { x: 0, y: 0 } },
+        { item: travelling, delta: { x: 60, y: 0 } },
+      ],
+    ]);
+    // Only the note that travelled is counted as moved.
+    expect(result).toMatchObject({ status: "moved", movedCount: 1 });
+    writes.destroy();
+  });
+
+  it("refuses a list that names one note twice, before anything is written", async () => {
+    const note = sticky();
+    const { writes, movedBatches, call } = await ready({ itemAt: note });
+    await expect(
+      call("move_stickies", {
+        moves: [
+          { at: { x: 10, y: 10 }, to: { x: 400, y: 300 } },
+          { at: { x: 20, y: 20 }, to: { x: 500, y: 300 } },
+        ],
+      }),
+    ).rejects.toThrow("moves[1] names the same note as moves[0]");
+    expect(movedBatches).toEqual([]);
+    writes.destroy();
+  });
+
+  it("moves sticky notes only", async () => {
+    const text: BoardItem = {
+      ...sticky(),
+      kind: "text",
+      geometry: { x: 0, y: 0, text: "A heading" },
+    } as BoardItem;
+    const { writes, movedBatches, call } = await ready({ itemAt: text });
+    await expect(
+      call("move_stickies", { moves: [{ at: { x: 1, y: 1 }, by: { x: 10, y: 10 } }] }),
+    ).rejects.toThrow("moves[0] names a text, and this tool moves sticky notes only.");
+    expect(movedBatches).toEqual([]);
+    writes.destroy();
+  });
+
+  it("insists on exactly one way to name a note and one way to place it", async () => {
+    const { writes, call } = await ready({ itemAt: sticky() });
+    await expect(
+      call("move_stickies", {
+        moves: [{ stepAlias: "step_1", at: { x: 1, y: 1 }, by: { x: 1, y: 1 } }],
+      }),
+    ).rejects.toThrow("moves[0] must name its note either by stepAlias or by at");
+    await expect(call("move_stickies", { moves: [{ by: { x: 1, y: 1 } }] })).rejects.toThrow(
+      "moves[0] must name its note either by stepAlias or by at",
+    );
+    await expect(
+      call("move_stickies", {
+        moves: [{ at: { x: 1, y: 1 }, to: { x: 2, y: 2 }, by: { x: 1, y: 1 } }],
+      }),
+    ).rejects.toThrow("moves[0] must give either to, a destination, or by, a shift");
+    await expect(call("move_stickies", { moves: [{ at: { x: 1, y: 1 } }] })).rejects.toThrow(
+      "moves[0] must give either to, a destination, or by, a shift",
+    );
+    writes.destroy();
+  });
+
+  it("keeps watchToken and stepAlias together", async () => {
+    const { writes, call } = await ready({ itemAt: sticky() });
+    await expect(
+      call("move_stickies", {
+        watchToken: "watch-1",
+        moves: [{ at: { x: 1, y: 1 }, by: { x: 1, y: 1 } }],
+      }),
+    ).rejects.toThrow("watchToken names the watch a stepAlias came from");
+    await expect(
+      call("move_stickies", { moves: [{ stepAlias: "step_1", by: { x: 1, y: 1 } }] }),
+    ).rejects.toThrow("watchToken must be text.");
+    writes.destroy();
+  });
+
+  it("refuses to move anything without board edit access", async () => {
+    const { writes, movedBatches, call } = await ready({ canWrite: false, itemAt: sticky() });
+    await expect(
+      call("move_stickies", { moves: [{ at: { x: 1, y: 1 }, by: { x: 10, y: 0 } }] }),
+    ).rejects.toThrow("board edit access");
+    expect(movedBatches).toEqual([]);
+    writes.destroy();
+  });
+
+  it("reports the move the board accepted even when the host aborts mid-commit", async () => {
+    const note = sticky();
+    const controller = new AbortController();
+    const applied: StickyMove[][] = [];
+    const { writes, tools } = harness({
+      itemAt: note,
+      moveItems: async (moves) => {
+        // The board takes the batch, then the host walks away before the answer arrives.
+        applied.push([...moves]);
+        controller.abort();
+      },
+    });
+    await vi.waitFor(() => expect(tools.has("move_stickies")).toBe(true));
+    const tool = tools.get("move_stickies");
+    if (!tool) throw new Error("move_stickies is not defined.");
+
+    // Telling the caller it failed would have it retry the shift and move the note twice.
+    const result = await tool.execute(
+      { moves: [{ at: { x: 1, y: 1 }, by: { x: 30, y: 0 } }] },
+      { signal: controller.signal },
+    );
+    expect(result).toMatchObject({ status: "moved", movedCount: 1 });
+    expect(applied).toHaveLength(1);
+    writes.destroy();
+  });
+
+  it("passes the board's refusal back to the caller", async () => {
+    const note = sticky();
+    const { writes, revealed, notices, call } = await ready({
+      itemAt: note,
+      moveItems: async () => {
+        throw new Error("This arrangement includes a note this browser cannot modify.");
+      },
+    });
+    await expect(
+      call("move_stickies", { moves: [{ at: { x: 1, y: 1 }, by: { x: 10, y: 0 } }] }),
+    ).rejects.toThrow("This arrangement includes a note this browser cannot modify.");
+    expect(revealed).toEqual([]);
+    expect(notices).toEqual([]);
+    writes.destroy();
   });
 
   it("withdraws its tools when the page tears down", async () => {

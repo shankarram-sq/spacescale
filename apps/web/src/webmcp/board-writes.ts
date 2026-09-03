@@ -4,10 +4,12 @@ import {
   type AssistAction,
   type Assistance,
   type CommentMedia,
+  MAX_BATCH_OPERATIONS,
   MAX_IMAGE_ALT_CODE_POINTS,
   MAX_STICKY_TEXT_CODE_POINTS,
 } from "@collab/protocol";
 import { VIDEO_EMBED_HEIGHT, VIDEO_EMBED_WIDTH, videoEmbedFromText } from "../board/links";
+import { itemBounds } from "../board/model";
 import {
   buildImageCreateOperation,
   buildStickyCreateOperation,
@@ -34,6 +36,7 @@ export const INSERT_COMMENT_TOOL = "insert_comment";
 export const INSERT_STICKY_TOOL = "insert_sticky";
 export const INSERT_IMAGE_TOOL = "insert_image";
 export const INSERT_VIDEO_TOOL = "insert_video";
+export const MOVE_STICKIES_TOOL = "move_stickies";
 
 /** Matches the edge's comment limit, counted in code points like the server does. */
 const MAX_COMMENT_CODE_POINTS = 2_000;
@@ -52,6 +55,13 @@ const MAX_UNWATCHED_COMMENTS = 50;
  * ceiling is 5 MiB, so this bounds the string a host may send before any decoding happens.
  */
 const MAX_INLINE_IMAGE_DATA_URL_LENGTH = 7_100_000;
+
+/**
+ * Notes one move call may carry. A rearrangement lands as one batch so the class can undo it in
+ * one step, and the board refuses a batch larger than this, so the schema says so up front
+ * rather than letting a host build a layout the commit will reject.
+ */
+const MAX_STICKY_MOVES = MAX_BATCH_OPERATIONS;
 
 /** The sticky palette a host may pick from, named rather than given as free-form hex. */
 export const STICKY_FILLS = {
@@ -88,6 +98,12 @@ export type WatchedStepTarget = {
   release: (posted: boolean) => void;
 };
 
+/** One note the board has been asked to move, with how far it should travel. */
+export type StickyMove = {
+  item: BoardItem;
+  delta: { x: number; y: number };
+};
+
 export type BoardWriteWebMcpOptions = {
   /** Whether this browser's participant may add objects to the board. */
   canWrite: () => boolean;
@@ -111,6 +127,21 @@ export type BoardWriteWebMcpOptions = {
     stepAlias: string,
     action?: AssistAction,
   ) => WatchedStepTarget;
+  /**
+   * Resolves a live watch's step aliases to the saved objects behind them, keyed by alias, or
+   * throws saying why it cannot. A watch reports no coordinates, so this is how a rearrangement
+   * names the notes it moves.
+   */
+  resolveWatchedStickies?: (
+    watchToken: string,
+    stepAliases: readonly string[],
+  ) => Map<string, BoardItem>;
+  /**
+   * Translates saved objects as one AI-attributed batch, or throws saying why it cannot. The
+   * board owns Section membership and grouping, so this hands over the notes and their deltas
+   * rather than the operations themselves.
+   */
+  moveItems?: (moves: readonly StickyMove[]) => Promise<void>;
   commit: (operation: DurableOperation) => Promise<boolean>;
   /** Posts a comment as this browser's participant, tagged with the writing tool. */
   createComment: (
@@ -305,6 +336,62 @@ export class BoardWriteWebMcp {
           },
           annotations: { readOnlyHint: false },
           execute: (input, { signal }) => this.insertVideo(input, signal),
+        },
+        { signal: this.registration.signal },
+      );
+      await registerWebMcpTool(
+        modelContext,
+        {
+          name: MOVE_STICKIES_TOOL,
+          description: `Move sticky notes that are already on this board, so notes carrying the same idea can be gathered together. Pass one entry per note in moves, up to ${MAX_STICKY_MOVES} at a time. Name each note either by stepAlias, an alias a live board watch reported, alongside that watch's watchToken; or by at, a board coordinate the note covers. Then say where it goes: to, the board coordinate its centre should land on, or by, how far to shift it in board pixels. The whole rearrangement lands as one realtime batch, so the class can put the board back with a single undo. Moving a note does not change whose note it is, and does not mark it as AI-written: this is the same edit a participant makes by dragging it. Only sticky notes move. A note that lands inside a Section joins it and one that leaves loses it, and a note grouped with other objects carries its group along, which can make the batch larger than the notes you named. Notes the board moves as one unit — grouped together, or sitting in a Section another named note carries — must be given the same shift, and a note asked to stay put counts as a different shift; sending them to different places is refused rather than pulling that unit apart. Name one of them and let the rest follow, or give them all the same shift. The result reports where each note started and where it now sits; nothing else on this board reports coordinates, so build an absolute layout in a region you choose rather than assuming what already occupies it. Never arrange notes so as to rank, grade, or single out a participant.`,
+          inputSchema: {
+            type: "object",
+            properties: {
+              watchToken: {
+                type: "string",
+                maxLength: 128,
+                description:
+                  "Opaque token from watch_board, required when any entry names its note by stepAlias.",
+              },
+              moves: {
+                type: "array",
+                minItems: 1,
+                maxItems: MAX_STICKY_MOVES,
+                description: "One entry per sticky note to move.",
+                items: {
+                  type: "object",
+                  properties: {
+                    stepAlias: {
+                      type: "string",
+                      pattern: "^step_(?:[1-9][0-9]{0,3}|10000)$",
+                      description:
+                        "The step_N alias of the note to move, from the watch named by watchToken. Give this or at, not both.",
+                    },
+                    at: {
+                      ...LOCATION_SCHEMA,
+                      description:
+                        "A board coordinate the note covers, for naming a note without a watch. Give this or stepAlias, not both.",
+                    },
+                    to: {
+                      ...LOCATION_SCHEMA,
+                      description:
+                        "Where the note's centre should land, in board coordinates. Give this or by, not both.",
+                    },
+                    by: {
+                      ...LOCATION_SCHEMA,
+                      description:
+                        "How far to shift the note, in board pixels: x is rightwards and y is downwards. Give this or to, not both.",
+                    },
+                  },
+                  additionalProperties: false,
+                },
+              },
+            },
+            required: ["moves"],
+            additionalProperties: false,
+          },
+          annotations: { readOnlyHint: false },
+          execute: (input, { signal }) => this.moveStickies(input, signal),
         },
         { signal: this.registration.signal },
       );
@@ -598,6 +685,129 @@ export class BoardWriteWebMcp {
     return this.writeResult("video", point, { provider: video.provider });
   }
 
+  private async moveStickies(
+    input: unknown,
+    signal: AbortSignal,
+  ): Promise<Record<string, unknown>> {
+    signal.throwIfAborted();
+    if (!isRecord(input)) throw new Error("Move input must be an object.");
+    this.requireWritable("sticky");
+    const apply = this.options.moveItems;
+    if (!apply) throw new Error("This browser cannot move objects on this Space.");
+    const requests = moveRequests(input.moves);
+    const notes = this.moveTargets(input.watchToken, requests);
+    signal.throwIfAborted();
+
+    const moves: StickyMove[] = [];
+    const report: Array<Record<string, unknown>> = [];
+    for (const [index, request] of requests.entries()) {
+      const note = notes[index];
+      if (!note) throw new Error(`moves[${index}] names no note.`);
+      const bounds = itemBounds(note);
+      const from = {
+        x: roundBoard((bounds.minX + bounds.maxX) / 2),
+        y: roundBoard((bounds.minY + bounds.maxY) / 2),
+      };
+      const delta =
+        request.by === undefined
+          ? { x: roundBoard(request.to[0] - from.x), y: roundBoard(request.to[1] - from.y) }
+          : { x: request.by[0], y: request.by[1] };
+      moves.push({ item: note, delta });
+      report.push({
+        ...(request.stepAlias === undefined ? {} : { stepAlias: request.stepAlias }),
+        from,
+        to: { x: roundBoard(from.x + delta.x), y: roundBoard(from.y + delta.y) },
+        by: { x: delta.x, y: delta.y },
+      });
+    }
+
+    const moved = moves.filter((move) => move.delta.x !== 0 || move.delta.y !== 0);
+    if (moved.length === 0) {
+      return {
+        status: "unchanged",
+        movedCount: 0,
+        notes: report,
+        changedCanvas: false,
+        message: "Every note named is already where the move asked for, so nothing was written.",
+      };
+    }
+    // Cancellation is checked before the batch is sent, never after the board acknowledged it:
+    // reporting a failure the board accepted would have a caller retry a relative shift and move
+    // every note a second time.
+    signal.throwIfAborted();
+    // The whole list goes over, the notes asked to stay put included. The board carries grouped
+    // objects and a Section's members along with a move, so a note left out of this call is one
+    // it could pick up and move despite this result saying it did not budge.
+    await apply(moves);
+    this.options.revealItems(moved.map((move) => move.item.id));
+    this.options.notify(
+      moved.length === 1 ? "Sticky note moved." : `${moved.length} sticky notes moved.`,
+      "info",
+    );
+    return {
+      status: "moved",
+      movedCount: moved.length,
+      notes: report,
+      changedCanvas: true,
+      undoable: true,
+      message:
+        "Moved as one acknowledged realtime batch, reversed by a single undo from any participant. The notes keep their own authors and are not marked as AI-written; only their positions changed.",
+      privacy:
+        "Only the aliases you supplied and the coordinates the notes now hold were returned. No board, item, or participant identifiers were returned.",
+    };
+  }
+
+  /**
+   * The notes each move entry names, in the order they were asked for. Aliases resolve through
+   * the watch in one call so a partly-valid list fails before anything is written, and a note
+   * named twice is refused rather than moved twice over.
+   */
+  private moveTargets(watchToken: unknown, requests: readonly MoveRequest[]): BoardItem[] {
+    const aliases = requests.flatMap((request) =>
+      request.stepAlias === undefined ? [] : [request.stepAlias],
+    );
+    let watched = new Map<string, BoardItem>();
+    if (aliases.length > 0) {
+      // The caller's own mistake is reported before a capability it cannot do anything about.
+      const token = requiredText(watchToken, "watchToken", 128);
+      const resolve = this.options.resolveWatchedStickies;
+      if (!resolve) throw new Error("This browser cannot move a watched note.");
+      watched = resolve(token, [...new Set(aliases)]);
+    } else if (watchToken !== undefined) {
+      throw new Error("watchToken names the watch a stepAlias came from, so pass them together.");
+    }
+
+    const notes: BoardItem[] = [];
+    const seen = new Map<string, number>();
+    for (const [index, request] of requests.entries()) {
+      const note =
+        request.stepAlias === undefined
+          ? this.options.itemAt(request.at)
+          : watched.get(request.stepAlias);
+      if (!note) {
+        throw new Error(
+          request.stepAlias === undefined
+            ? `No saved object covers ${request.at[0]}, ${request.at[1]}. Name a point on the note you want to move.`
+            : `${request.stepAlias} is not part of this watch.`,
+        );
+      }
+      if (note.kind !== "sticky") {
+        throw new Error(
+          `moves[${index}] names a ${note.kind}, and this tool moves sticky notes only.`,
+        );
+      }
+      const first = seen.get(note.id);
+      if (first !== undefined) {
+        throw new Error(
+          `moves[${index}] names the same note as moves[${first}]. Give each note one destination.`,
+        );
+      }
+      seen.set(note.id, index);
+      notes.push(note);
+    }
+    return notes;
+  }
+
   private requireWritable(kind: "sticky" | "image" | "video"): void {
     if (!this.options.canWrite()) {
       throw new Error("This browser needs board edit access to write to this Space.");
@@ -678,9 +888,51 @@ function stickyFill(value: unknown): string | undefined {
   return STICKY_FILLS[value as StickyFillName];
 }
 
-function boardPoint(value: unknown): Point {
-  if (!isRecord(value)) throw new Error("location must be an object with x and y.");
-  return [boardCoordinate(value.x, "location.x"), boardCoordinate(value.y, "location.y")];
+/** One validated entry of a move call: which note, and where it goes. */
+type MoveRequest = ({ stepAlias: string; at?: undefined } | { at: Point; stepAlias?: undefined }) &
+  ({ to: Point; by?: undefined } | { by: Point; to?: undefined });
+
+function moveRequests(value: unknown): MoveRequest[] {
+  if (!Array.isArray(value)) throw new Error("moves must be an array of notes to move.");
+  if (value.length === 0) throw new Error("moves must name at least one note.");
+  if (value.length > MAX_STICKY_MOVES) {
+    throw new Error(`Move ${MAX_STICKY_MOVES} notes or fewer at a time.`);
+  }
+  return value.map((entry, index) => moveRequest(entry, index));
+}
+
+function moveRequest(value: unknown, index: number): MoveRequest {
+  if (!isRecord(value)) throw new Error(`moves[${index}] must be an object.`);
+  const named = value.stepAlias !== undefined;
+  const located = value.at !== undefined;
+  if (named === located) {
+    throw new Error(
+      `moves[${index}] must name its note either by stepAlias or by at, and not by both.`,
+    );
+  }
+  const absolute = value.to !== undefined;
+  const relative = value.by !== undefined;
+  if (absolute === relative) {
+    throw new Error(
+      `moves[${index}] must give either to, a destination, or by, a shift, and not both.`,
+    );
+  }
+  const destination = absolute
+    ? { to: boardPoint(value.to, `moves[${index}].to`) }
+    : { by: boardPoint(value.by, `moves[${index}].by`) };
+  if (named) {
+    const stepAlias = requiredText(value.stepAlias, `moves[${index}].stepAlias`, 16);
+    if (!/^step_(?:[1-9][0-9]{0,3}|10000)$/u.test(stepAlias)) {
+      throw new Error(`moves[${index}].stepAlias must look like step_1.`);
+    }
+    return { stepAlias, ...destination } as MoveRequest;
+  }
+  return { at: boardPoint(value.at, `moves[${index}].at`), ...destination } as MoveRequest;
+}
+
+function boardPoint(value: unknown, field = "location"): Point {
+  if (!isRecord(value)) throw new Error(`${field} must be an object with x and y.`);
+  return [boardCoordinate(value.x, `${field}.x`), boardCoordinate(value.y, `${field}.y`)];
 }
 
 function boardCoordinate(value: unknown, field: string): number {

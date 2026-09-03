@@ -12,10 +12,11 @@ canvas where students are working.**
 
 SpaceScale turns classroom AI from a text reply into visible collaboration.
 Students and teachers draw, write, organize, embed videos, react, and vote
-together. A compatible AI host discovers twelve WebMCP tools from the open board,
+together. A compatible AI host discovers fourteen WebMCP tools from the open board,
 reads or follows the whole board, a selection, or one person's work, catches
-reasoning errors, and writes comments, notes, pictures, and videos that everyone
-can discuss, revise, and undo.
+reasoning errors, writes comments, notes, pictures, and videos, and gathers
+related notes together — all of it visible, and all of it something everyone can
+discuss, revise, and undo.
 
 ![AI feedback correcting a mistaken hand-drawn quadratic](docs/submission-assets/ai-feedback-correction.png)
 
@@ -71,12 +72,13 @@ SpaceScale started from the open-source
 foundation. During the challenge period, it was extended into a classroom
 collaboration product with:
 
-- twelve discoverable WebMCP tools: one reading or a bounded live watch of the
+- fourteen discoverable WebMCP tools: one reading or a bounded live watch of the
   whole board, the browser selection, or a named participant's work, a
-  participant list, an aggregate vote reader, a template reader, and four
-  generic writes;
+  participant list, an aggregate vote reader, a template reader, four generic
+  inserts, a filled-template insert, and a sticky-note move;
 - permission-aware, acknowledged, realtime, atomic, and undoable writers that
-  place one object where the call asks;
+  place one object where the call asks, or gather notes already on the board
+  into one undoable rearrangement;
 - shared YouTube/Vimeo cards, MathJax learning content, comments that carry a
   picture or a video, grouping, sections, templates, and live participant roles;
 - contract, unit, edge, and Chromium coverage for the permission and WebMCP
@@ -199,13 +201,15 @@ on shapes, sticky notes, tables, image cards, and sections. V1 stores the snappe
 coordinates as ordinary line geometry, so moving the target later does not move
 the connector automatically.
 
-Codex and other compatible browser hosts discover twelve WebMCP tools directly from every
+Codex and other compatible browser hosts discover thirteen WebMCP tools directly from every
 board browser. Six read: `read_board`, `read_selection` and `read_user` each take one reading
 of a scope; `list_users` names the people with saved work and hands back the participant IDs
 the user tools take; `read_live_class_vote` reports aggregate counts; `read_templates` lists
 the board's activity templates. Two follow the same three scopes live: `watch_board`, with
-`scope` board or selection, and `watch_users`. Four write: `insert_comment`, `insert_sticky`,
-`insert_image` and `insert_video`.
+`scope` board or selection, and `watch_users`. Six write: `insert_comment`, `insert_sticky`,
+`insert_image` and `insert_video` each add one object; `insert_filled_template` adds a whole
+template with its text slots filled in; and `move_stickies` rearranges notes already on the
+board.
 
 A scope is the same question whether you read it once or follow it, so a read and a watch
 never disagree about what is in it. A board watch takes in work saved after it begins; a
@@ -215,9 +219,18 @@ anyone else's objects. `list_users` is built from saved board content, so someon
 work does not appear, and its object counts describe how much work exists, never how well
 anyone is doing.
 
-Each write takes a board location and the content it needs, and lands one object as a single
-acknowledged realtime command. Write tools use the board's normal edit permission and cannot
-bypass read-only access, and each refuses an object kind the Space owner has switched off.
+Each insert takes a board location and the content it needs, and lands one object as a single
+acknowledged realtime command. `insert_filled_template` is a two-call
+flow: `read_templates` names a template's text slots, and the write passes that templateId
+with the slot fills, landing the whole template as one batch. `move_stickies` takes a list
+instead: each entry names a sticky note, by an alias a live watch reported or by a point the
+note covers, and gives either an absolute destination for its centre or a relative shift in
+board pixels. The whole
+rearrangement lands as one batch, so a class puts the board back with a single undo, and the
+result reports where every note started and where it now sits. Moving a note changes only its
+position: it keeps its author and is not marked as AI-written. Write tools use the board's
+normal edit permission and cannot bypass read-only access, and each refuses an object kind the
+Space owner has switched off.
 `insert_image` never fetches an external URL: it accepts inline PNG, JPEG, WebP, or GIF data
 and reuses the private board-asset pipeline that a participant's own upload goes through.
 `insert_comment` attaches to a watched step by `watchToken` and `stepAlias`, to whatever saved

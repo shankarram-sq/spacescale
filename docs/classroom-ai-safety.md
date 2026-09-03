@@ -141,15 +141,25 @@ kinds, and the text slots it holds, plus a rendered picture of templates that
 draw. No board content, participant, or identifier is involved, so the read
 carries nothing about a class at all.
 
+`insert_filled_template` is the second half of that flow: it takes a templateId
+and a list of slot-and-text pairs the read named, and lands the whole template as
+one batch at the centre of the requesting participant's view. It can only fill
+slots the template already defines, within the length each slot allows, so it
+cannot invent structure or write outside one; a slot the call omits keeps the
+placeholder the template ships with. The tool is instructed to fill the prompts,
+questions, headings and category labels that frame the work, and to leave the
+answer cells, votes, ratings and the class's own conclusions blank.
+
 ### Generic board writes
 
 `insert_comment`, `insert_sticky`, `insert_image`, and `insert_video` each add
-one thing to the board where the call asks. There is no separate authorization:
-every one refuses without the participant's own edit access, refuses an object
-kind the Space owner has switched off, and enters the same acknowledged realtime
-path as that participant's own edit, so it inherits the board's locks, limits,
-validation, history, and undo. Each returns what it wrote and where, and no board,
-item, or participant identifier.
+one thing to the board where the call asks, `insert_filled_template` adds one
+template, and `move_stickies` rearranges notes that are already on the board. There is no separate authorization: every one refuses
+without the participant's own edit access, refuses an object kind the Space owner
+has switched off, and enters the same acknowledged realtime path as that
+participant's own edit, so it inherits the board's locks, limits, validation,
+history, and undo. Each returns what it wrote and where, and no board, item, or
+participant identifier.
 
 `insert_comment` attaches to a saved object rather than to empty canvas: either
 the object covering the board coordinate the call names, or the one object
@@ -178,6 +188,23 @@ instructed to depict no real student and not to ridicule or target an individual
 
 `insert_video` accepts only a complete HTTPS YouTube or Vimeo link, which the
 board plays through its existing privacy-conscious embed.
+
+`move_stickies` moves sticky notes so that notes carrying the same idea can be
+gathered together. It names each note the way a comment does—by an alias a live
+watch reported, or by a point the note covers—and never by an item id, and it
+moves nothing else: a call that names a drawing, a text object, or a Section is
+refused rather than partly applied, as is a call that names one note twice. The
+board's own rules then decide what travels with each note, so a note leaving or
+entering a Section changes membership and a grouped note brings its group, which
+in turn carries that Section's own members. Whenever that reaches another note
+the same call placed elsewhere, the call is refused rather than pulling the unit
+apart, since no drag can produce that state; a note asked to stay put counts as
+a placement, so it cannot be quietly carried along either. The
+whole rearrangement is one batch within the Space's batch limit, so a class
+reverses it with a single undo. Moving a note changes only its position: the note
+keeps its author and is not marked as AI-written, because rearranging someone's
+work is not authoring it. The tool is instructed never to arrange notes so as to
+rank, grade, or single out a participant.
 
 This control set is suitable for the synthetic hackathon demo; a real classroom
 rollout still requires the provider, age-appropriateness, school approval, and

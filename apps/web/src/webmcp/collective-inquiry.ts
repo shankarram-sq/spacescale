@@ -150,6 +150,15 @@ export class CollectiveInquiryWebMcp {
     return this.problemStepWatch.commentTarget(watchToken, stepAlias, action);
   }
 
+  /**
+   * Resolves watched step aliases to the objects behind them, for the write that moves sticky
+   * notes. A watch is the only place a host learns an alias, so this is how a rearrangement
+   * names the notes it is grouping.
+   */
+  watchedStepItems(watchToken: string, stepAliases: readonly string[]): Map<string, BoardItem> {
+    return this.problemStepWatch.watchedItems(watchToken, stepAliases);
+  }
+
   /** Board-side entry point: the AI button hands the participant's request to the live watch. */
   requestAssistance(input: AssistRequestInput): AssistRequestReceipt {
     return this.problemStepWatch.requestAssistance(input);
