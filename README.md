@@ -1,14 +1,118 @@
-# Cloudflare Collab Canvas
+# SpaceScale
 
-A secure collaborative SVG whiteboard built for Cloudflare Workers, Workers
-Static Assets, SQLite-backed Durable Objects, R2, and Turnstile.
+**A WebMCP-enabled visual classroom where AI can understand handwriting,
+challenge a mistaken diagram, and add actionable feedback to the same live
+canvas where students are working.**
 
-The browser renders gestures immediately, while one `BoardRoom` Durable Object
-per board validates, commits, sequences, and broadcasts every durable action
-through the shared board reducer. SQLite is authoritative; private R2 objects
-provide immutable recovery checkpoints and named snapshots.
+[Live demo](https://webmcp.spacescale.net/) ·
+[Devpost submission draft](devpost-submission.md) ·
+[3-minute demo runbook](docs/hackathon-build/demo-runbook.md) ·
+[Implementation spec](docs/hackathon-build/spec.md) ·
+[MIT license and authorship](LICENSE)
 
-## Space collaboration tools
+SpaceScale turns classroom AI from a text reply into visible collaboration.
+Students and teachers draw, write, organize, embed videos, react, and vote
+together. A compatible AI host discovers fifteen WebMCP tools from the open
+board, inspects selected handwriting and spatial work, catches reasoning errors,
+and adds source-linked feedback that everyone can discuss, revise, and undo.
+
+![AI feedback correcting a mistaken hand-drawn quadratic](docs/submission-assets/ai-feedback-correction.png)
+
+## Why WebMCP matters here
+
+The useful context is not hidden in a backend API. It is the live state already
+under a participant's hand: their current canvas selection, a spatial sketch,
+the latest saved reasoning step, or an aggregate class vote. WebMCP lets the
+visiting agent use that exact page context without DOM automation, a browser
+extension, or a separate MCP server.
+
+The result is collaborative rather than conversational-only:
+
+- **Visual collaboration:** AI contributions become ordinary, source-linked
+  canvas objects that appear to every participant in real time.
+- **Handwriting and sketch support:** the agent can inspect selected saved strokes
+  and spatial context, identify a possible reasoning error, and return a
+  source-linked feedback prompt the whole class can act on.
+- **Video support:** participants can place public YouTube and Vimeo material on
+  the shared canvas, then discuss it beside notes, drawings, formulas, comments,
+  and AI-generated structures.
+- **Live learning loops:** the agent can watch only explicitly selected saved
+  problem steps for up to 15 minutes, or help a class move from ideas to a
+  visible inquiry map, aggregate vote, and dissent-preserving decision.
+- **Participant-scoped permissions:** a WebMCP write enters the same
+  `commitAndWait` path as the authorizing participant's own edit. The agent gets
+  no service account and no elevated identity.
+
+## Permission inheritance
+
+SpaceScale does not give the agent a parallel authorization system. WebMCP tools
+run in the signed-in browser session and use its actor ID, role, durable outbox,
+WebSocket commit protocol, and server acknowledgement. Client checks give fast
+feedback; the Cloudflare Worker revalidates roles, ownership, section locks,
+versions, and the complete atomic batch before saving it.
+
+| Authorizing participant | Effective WebMCP write access |
+| --- | --- |
+| Owner or co-owner | May change unlocked board content, exactly like that participant can in the UI. |
+| Editor | May create new content and change only content they created; copying creates a new editor-owned object. |
+| Viewer | Read-only. WebMCP write tools cannot commit. |
+
+Every accepted agent-assisted batch is attributed to the responsible
+participant, saved through the authoritative reducer, broadcast in real time,
+and undoable. Internal origin metadata records that WebMCP assisted the content
+without replacing participant authorship or adding privileged AI-only objects.
+
+## What was built for the WebMCP Challenge
+
+SpaceScale started from the open-source
+[Cloudflare Collab Canvas](https://github.com/stayqrious/cloudflare-collab-canvas)
+foundation. During the challenge period, it was extended into a classroom
+collaboration product with:
+
+- fifteen discoverable WebMCP tools and 27 schema-enforced learning modes;
+- selected-only typed, visual, explanatory, inspiration, vote, and bounded
+  saved-step read surfaces;
+- permission-aware, source-linked, acknowledged, realtime, atomic, and undoable
+  writers;
+- isolated handwriting/sketch inspection with unselected-board masking;
+- shared YouTube/Vimeo cards, MathJax learning content, comments, grouping,
+  sections, templates, and live participant roles;
+- inquiry-map and class-decision previews that make participant approval visible;
+- contract, unit, edge, and Chromium coverage for the permission and WebMCP
+  boundaries.
+
+The complete technical delta and safety constraints are documented in the
+[implementation spec](docs/hackathon-build/spec.md).
+
+## Try the judge path
+
+1. Open the [public demo](https://webmcp.spacescale.net/) in ChatGPT's in-app
+   browser or another compatible WebMCP host and create a Space.
+2. Write `x² + 7x + 10 = 0`, deliberately sketch the wrong intercepts `-3` and
+   `-1`, and add a sticky with that student claim.
+3. Select the visual work and ask the agent to inspect the graph. Then select
+   the claim sticky and ask: “Add a counterexample that checks `x = -4` and asks
+   the student to correct the plot.”
+4. Confirm the WebMCP-generated feedback card shows `y = -2` at `x = -4`, links
+   back to the student's claim, appears for collaborators, and disappears with
+   one undo.
+5. Open the board as a viewer and repeat the write request to verify that the
+   agent cannot exceed that participant's permissions.
+6. Use **Video** to add a public YouTube or Vimeo link and show that it remains a
+   normal shared, selectable, persistent canvas object.
+
+For the recording-ready sequence, exact prompts, recovery prompts, and timing,
+see the [demo runbook](docs/hackathon-build/demo-runbook.md).
+
+## Architecture at a glance
+
+The browser renders gestures optimistically. One `BoardRoom` Durable Object per
+board validates, sequences, persists, and broadcasts each durable action through
+the shared reducer. SQLite is authoritative; private R2 objects hold image
+assets, immutable recovery checkpoints, and named snapshots. The app still
+works as a collaborative canvas when `document.modelContext` is unavailable.
+
+## Product capabilities
 
 Alongside freehand drawing, shapes, and plain text, the board supports durable
 sticky notes for brainstorming, exit tickets, sorting, and feedback. Choose

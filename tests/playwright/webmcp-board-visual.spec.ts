@@ -49,13 +49,51 @@ test("a board participant can expose only selected handwriting as an isolated We
     ),
   ).toEqual({ readOnlyHint: true, untrustedContentHint: true });
 
-  const start = await canvasPoint(page, 0.3, 0.42);
-  const end = { x: start.x + 160, y: start.y + 90 };
-  const handwriting = await drawShape(page, "Pencil", start, end);
-  const handwritingId = await handwriting.getAttribute("data-item-id");
-  expect(handwritingId).toBeTruthy();
+  const equationPoint = await canvasPoint(page, 0.36, 0.22);
+  await page.getByTestId("tool-text").click();
+  await page.mouse.click(equationPoint.x, equationPoint.y);
+  const equationEditor = page.getByTestId("canvas-text-editor");
+  await equationEditor.fill("x² + 7x + 10 = 0");
+  await equationEditor.press("Control+Enter");
+  const equation = page.locator("#drawing-area .board-item-text").last();
+  await expect(equation).toContainText("x² + 7x + 10 = 0");
 
-  const privatePoint = await canvasPoint(page, 0.72, 0.42);
+  const start = await canvasPoint(page, 0.34, 0.47);
+  const points = [
+    { x: start.x + 35, y: start.y - 15 },
+    { x: start.x + 65, y: start.y + 35 },
+    { x: start.x + 95, y: start.y + 75 },
+    { x: start.x + 130, y: start.y + 90 },
+    { x: start.x + 165, y: start.y + 75 },
+    { x: start.x + 195, y: start.y + 35 },
+    { x: start.x + 225, y: start.y - 15 },
+  ];
+  const handwriting = [
+    await drawShape(
+      page,
+      "Pencil",
+      { x: start.x, y: start.y + 50 },
+      { x: start.x + 260, y: start.y + 50 },
+    ),
+    await drawShape(
+      page,
+      "Pencil",
+      { x: start.x + 130, y: start.y - 60 },
+      { x: start.x + 130, y: start.y + 150 },
+    ),
+  ];
+  for (const [index, point] of points.slice(0, -1).entries()) {
+    handwriting.push(
+      await drawShape(page, "Pencil", point, points[index + 1] as { x: number; y: number }),
+    );
+  }
+  const selectedItemIds = [
+    await equation.getAttribute("data-item-id"),
+    ...(await Promise.all(handwriting.map((stroke) => stroke.getAttribute("data-item-id")))),
+  ];
+  expect(selectedItemIds.every(Boolean)).toBe(true);
+
+  const privatePoint = await canvasPoint(page, 0.78, 0.45);
   await page.getByTestId("tool-sticky").click();
   await page.mouse.click(privatePoint.x, privatePoint.y);
   const editor = page.getByTestId("canvas-text-editor");
@@ -65,13 +103,19 @@ test("a board participant can expose only selected handwriting as an isolated We
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
 
   await page.getByRole("button", { name: /^Select/u }).click();
-  const handwritingBounds = await handwriting.boundingBox();
-  expect(handwritingBounds).not.toBeNull();
-  if (!handwritingBounds) throw new Error("The handwriting stroke has no layout bounds.");
-  await page.mouse.click(
-    handwritingBounds.x + handwritingBounds.width / 2,
-    handwritingBounds.y + handwritingBounds.height / 2,
-  );
+  const selectedVisuals = [equation, ...handwriting];
+  const selectedBounds = await Promise.all(selectedVisuals.map((item) => item.boundingBox()));
+  if (selectedBounds.some((bounds) => bounds === null)) {
+    throw new Error("A selected equation or handwriting stroke has no layout bounds.");
+  }
+  for (const [index, bounds] of selectedBounds.entries()) {
+    if (index === 1) await page.keyboard.down("Shift");
+    const target = bounds as NonNullable<(typeof selectedBounds)[number]>;
+    const x = index === 1 ? target.x + target.width * 0.08 : target.x + target.width / 2;
+    const y = index === 2 ? target.y + target.height * 0.08 : target.y + target.height / 2;
+    await page.mouse.click(x, y);
+  }
+  await page.keyboard.up("Shift");
   await expect(page.getByTestId("selection-actions")).toBeVisible();
 
   const result = await page.evaluate(() => {
@@ -84,30 +128,43 @@ test("a board participant can expose only selected handwriting as an isolated We
     preview: {
       state: "open_in_live_page",
       scope: "browser_selected_saved_items_only",
-      itemCount: 1,
-      itemKinds: { pencil: 1 },
+      itemCount: 9,
+      itemKinds: { pencil: 8, text: 1 },
       containsHandwriting: true,
       privateImagesRenderedAsPlaceholders: 0,
-      aliases: [
-        {
-          alias: "visual_1",
-          kind: "pencil",
-          action: { type: "created", objectKind: "pencil" },
-          createdBy: {
-            participantId: expect.any(String),
-            displayName: expect.any(String),
-          },
-        },
-      ],
     },
   });
+  const aliases = (result.preview as { aliases: Array<{ kind: string }> }).aliases;
+  expect(aliases).toHaveLength(9);
+  expect(aliases.map((alias) => alias.kind).sort()).toEqual([
+    "pencil",
+    "pencil",
+    "pencil",
+    "pencil",
+    "pencil",
+    "pencil",
+    "pencil",
+    "pencil",
+    "text",
+  ]);
+  for (const alias of aliases) {
+    expect(alias).toMatchObject({
+      action: { type: "created", objectKind: alias.kind },
+      createdBy: {
+        participantId: expect.any(String),
+        displayName: expect.any(String),
+      },
+    });
+  }
   expect(JSON.stringify(result)).not.toContain("Unknown participant");
-  expect(JSON.stringify(result)).not.toContain(handwritingId as string);
+  for (const selectedItemId of selectedItemIds) {
+    expect(JSON.stringify(result)).not.toContain(selectedItemId as string);
+  }
 
   const review = page.getByTestId("webmcp-visual-review-dialog");
   await expect(review).toBeVisible();
   await expect(review).toContainText("Selected visual inspection");
-  await expect(review).toContainText("1 handwriting stroke");
+  await expect(review).toContainText("8 handwriting strokes");
   const visual = review.locator('img[data-visual-scope="browser-selected-items-only"]');
   await expect(visual).toBeVisible();
   await expect(visual).toHaveAttribute("src", /^blob:/u);
@@ -121,7 +178,9 @@ test("a board participant can expose only selected handwriting as an isolated We
   });
   expect(visualMarkup.naturalWidth).toBeGreaterThan(0);
   expect(visualMarkup.naturalHeight).toBeGreaterThan(0);
-  expect(visualMarkup.outerHTML).not.toContain(handwritingId as string);
+  for (const selectedItemId of selectedItemIds) {
+    expect(visualMarkup.outerHTML).not.toContain(selectedItemId as string);
+  }
   expect(visualMarkup.outerHTML).not.toContain("UNSELECTED PRIVATE NOTE");
 
   await page.screenshot({ path: "/tmp/spacescale-webmcp-handwriting-visual.png", fullPage: true });

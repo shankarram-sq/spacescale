@@ -1,117 +1,133 @@
-# WebMCP hackathon demo runbook
+# WebMCP Challenge demo runbook
 
-## Setup
+This recording script is designed for a public YouTube demo under three
+minutes. Lead with a concrete AI intervention on visual student work, then prove
+that the same tool remains permission-bound and collaborative.
 
-1. Open SpaceScale in a Codex or compatible browser environment with WebMCP enabled.
-2. Use GPT-5.6 Sol or GPT-5.6 Terra. Site tools are not currently available in Enterprise or Edu workspaces.
-3. Open the board as any participant. Use a participant with edit access for write-tool demos, and open two more invitation/browser sessions for a convincing live vote.
-4. From **Templates**, add **Collective inquiry demo**. Wait until the seeded objects finish saving.
+## Before recording
 
-The template contains the challenge “How might our school reduce cafeteria waste?”, eight contrasting contributions, and a live three-option vote table.
+1. Open [webmcp.spacescale.net](https://webmcp.spacescale.net/) in ChatGPT's
+   in-app browser or another compatible WebMCP host.
+2. Create a Space named **AI feedback on a quadratic**. Keep a second browser
+   session open as a viewer.
+3. Add `x² + 7x + 10 = 0`, a hand-drawn graph that incorrectly marks roots at
+   `-3` and `-1`, and a sticky saying “I think the roots are x = -3 and x = -1.”
+4. Add one relevant public YouTube or Vimeo lesson video with **Video**. Keep it
+   paused beside the work.
+5. Hide notifications, close unrelated tabs, set browser zoom to 100%, test the
+   microphone, and rehearse once. Use only synthetic student work.
 
 ## Three-minute story
 
-### 0:00–0:30 — establish the problem
+### 0:00–0:20 — one shared AI workspace
 
-Show that several students are editing one canvas. Say:
+Show the equation, mistaken graph, sticky, video card, and two participant
+avatars. Say:
 
-> Most classroom AI creates 30 private conversations for 30 students. SpaceScale gives the class one shared, visible conversation with an AI thinking partner.
+> Most classroom AI disappears into private chats. SpaceScale gives people and
+> AI one visual workspace, so feedback becomes visible work the class can
+> inspect, discuss, and improve together.
 
-Select the eight sticky notes, then ask Codex to inspect the board's available WebMCP tools. SpaceScale needs no dedicated AI button or status chrome.
+Point out **WebMCP enabled**. There is no extension, separate MCP server, or
+SpaceScale model API key.
 
-### 0:30–1:20 — first collaborative loop
+### 0:20–1:18 — AI catches a mistake in visual work
 
-Ask the agent:
+Select the equation and hand-drawn graph. Ask:
 
-> Use SpaceScale’s site tools to read the selected class ideas. Find three meaningful themes, two surprising bridges across the class, one productive tension, and a next question. Then stage a collective inquiry map for participant review.
+> Inspect this selected visual and check whether the plotted curve is consistent
+> with the equation. Explain the first concrete issue without solving everything
+> for the student.
 
-Show both human-control moments:
+Let the agent reason about the drawing. Then select the student's claim sticky
+and ask:
 
-1. The WebMCP host shows the selected-ideas tool call; the result includes board-visible creator attribution.
-2. SpaceScale previews the proposed themes, bridges, tension, and operation count before changing the canvas.
+> Read this selected claim. Use a Counterexample Challenge to add AI feedback
+> that checks x = -4 and asks the student to plot the resulting point before
+> correcting the curve.
 
-Approve the map. Point out that it appears as shared canvas objects, not private chat text, and is one undoable realtime update.
+Show the new source-linked card:
 
-### 1:20–2:05 — students change the state
+- heading: **AI feedback · Check x = -4**;
+- calculation: `16 - 28 + 10 = -2`;
+- prompt: **Can you plot (-4, -2) and use it to correct the curve?**
 
-Have students react to the shared map and place one stamp each in the vote table. Emphasize that student response—not an isolated prompt—determines the next AI contribution.
+Say:
 
-Select only the vote table.
+> The AI did not just answer in chat. Its feedback is a WebMCP-generated canvas
+> object with AI provenance, a visible link to the student's claim, realtime
+> synchronization, and one-step undo.
 
-### 2:05–2:45 — second collaborative loop
+### 1:18–1:58 — the AI cannot outrank its author
 
-Ask the agent:
+Switch to the viewer session and attempt the same write. Show that it cannot
+commit. Say:
 
-> Read the live class vote. Propose a small pilot based on the response, but keep the strongest minority concern visible and leave the class with a next question. Stage the decision for teacher review.
+> The agent has exactly the permissions of the person who invited it. There is
+> no privileged bot identity. A viewer's agent stays read-only; an editor's
+> agent can create feedback but cannot rewrite another person's work. The Worker
+> checks role, actor, ownership, locks, and the complete batch before saving.
 
-Show the aggregate bars in the decision preview. Approve it. Point out the four visible outcomes:
+Switch back and undo, then redo or rerun the feedback if useful.
 
-- class choice and rationale;
-- dissent the class will not erase;
-- small pilot and success measure;
-- next question that keeps inquiry open.
+### 1:58–2:33 — feedback lives with the lesson
 
-### 2:45–3:00 — close
+Pan to the YouTube or Vimeo card and the work around it. Move the video once and
+show the second session update. Say:
 
-Undo the decision once to prove participant control, then redo it if useful. End with:
+> Learning is visual and multimedia. Lesson video, handwriting, formulas,
+> comments, student claims, and AI feedback stay on one durable shared canvas
+> instead of being split across tools and transcripts.
 
-> The AI has a seat at the table, not the teacher’s chair.
+### 2:33–2:58 — close
+
+Show the mistaken plot, the AI correction card, and both synchronized sessions.
+End with:
+
+> SpaceScale gives AI a visible seat at the table—not the teacher's chair. Every
+> contribution is source-linked, permission-bound, attributable, and
+> reversible.
+
+End on the product name and public URL.
 
 ## Recovery prompts
 
-If the agent does not call the tools automatically:
+If the host does not choose the tools automatically:
 
-> Inspect the available SpaceScale site tools. Start with `read_selected_class_ideas`, then use its selection token with `stage_collective_inquiry`.
+- Visual reasoning: “Call `inspect_selected_board_visual` on my current
+  selection and check the graph against the equation.”
+- Correction card: “Call `read_selected_class_ideas`, then call
+  `add_collective_reasoning` in `counterexample_challenge` mode. Include a
+  claim card and a counterexample card checking `x = -4`, connected with the
+  label `checks`.”
+- Capability discovery: “Call `list_class_collaboration_modes` and find the
+  smallest reasoning mode for correcting a visual misconception.”
 
-For the second loop:
+If a write fails unexpectedly, confirm that the participant has edit access,
+the sticky finished saving, and the selection token came from the same browser
+session.
 
-> Use `read_live_class_vote` on the selected table, then use its vote token with `stage_class_decision`. Include a concrete minority concern.
+## Optional second story
 
-## Judge exploration: the broader education toolkit
+For group decisions, use the **Collective inquiry demo** template. Read selected
+ideas, stage and approve an inquiry map, let participants vote with stamps, read
+the aggregate vote, and stage a decision that preserves one minority concern.
+This shows how human response changes the agent's next contribution.
 
-The core three-minute story uses the two previewed loops. If a judge asks what else the WebMCP integration enables, call `list_class_collaboration_modes`, let Codex follow the returned entry/role/connection contract, keep the same browser-selection token, and try one prompt from each family:
+For live problem coaching, select the exact saved items containing a student's
+steps and ask the host to call `watch_selected_problem_steps`. It follows
+server-acknowledged changes for up to 15 minutes and prompts the agent to respond
+after each saved step.
 
-- **Expand thinking:** “Use Gap Finder to add only two missing perspectives as testable questions.”
-- **Understand ideas:** “Offer exactly two alternative clusterings and ask what each organization reveals or hides.”
-- **Improve reasoning:** “Map one claim, one assumption and one counterexample; connect them and ask what evidence would change our minds.”
-- **Support decisions:** “Draft criteria from the discussion, but leave every class weight blank for students.”
-- **Turn ideas into action:** “Convert one selected hypothesis into a prediction, evidence need and small reversible test.”
-- **Make the thinking memorable:** “Create one classroom-safe meme from two selected ideas. Make the joke reveal a connection, add alt text, and ask what the meme helps us notice or oversimplifies.”
+## Final recording checklist
 
-These calls use `add_thinking_expansion`, `add_idea_sensemaking`, `add_collective_reasoning`, `add_group_decision_scaffold`, `add_learning_action_plan`, and `add_content_visuals`. They add no new feature-specific interface: Codex supplies the reasoning and visual concept, SpaceScale validates the structure and source aliases, and normal board edit permission governs writes. Meme cards render locally; generated raster images are sanitized into the existing private board asset path. Cross-Group Jigsaw is intentionally deferred to the separately tested section-context integration.
-
-### Optional handwriting moment
-
-Draw or paste synthetic handwritten strokes on an otherwise quiet part of the board, select only those strokes and any context the class wants to include, then ask:
-
-> Inspect the selected board visual. Carefully transcribe what is legible, mark anything uncertain, and suggest two connections plus one question the class should discuss together.
-
-Codex calls `inspect_selected_board_visual`. SpaceScale directly opens a selected-only visual review with an opaque backdrop. Point out that the SVG contains ephemeral aliases instead of board IDs, unselected notes are absent, private image pixels are placeholders, and closing the review leaves the shared canvas unchanged.
-
-### Optional live problem-coaching moment
-
-Select the exact saved notes, text items, table, or Section title that contain the
-participant's working steps, then ask:
-
-> Watch these selected problem steps for 15 minutes. Whenever I save a changed step, comment briefly on whether the reasoning follows, identify the first issue or uncertainty, ask one useful next-step question, and keep watching. Do not solve ahead unless I ask.
-
-Codex calls `watch_selected_problem_steps` with `action: "start"`, then alternates
-short feedback with bounded `wait` calls. Edit and finish saving a selected item
-to demonstrate immediate feedback. Point out that the tool observes only
-authoritative saved changes—not keystrokes—and that selecting a Section shares
-its title only, never its contents. Ask Codex to stop early, or let the watch end
-automatically after 15 minutes.
-
-## Demo checks
-
-- Site tools menu lists all fifteen tools; `list_class_collaboration_modes` reports 27 live modes, the bounded problem-step watch and visual tool, an enforceable input contract for every mode, the reserved section boundary, and no unselected board data.
-- Selection results include selected text, action type, and the creator's board-visible name and stable participant ID.
-- Thinking expansion rejects more than three additions; every critique card ends in a question.
-- Decision scaffolds leave weights, ratings, votes, response counts, and final choice blank.
-- Every generated card has source connectors and the responsible participant's ordinary author badge; no AI-specific label is added to the board.
-- A visual call adds only one to three private images, each with alt text, a source-linked caption, and a discussion question; external URLs and student likenesses are rejected by contract.
-- Cancelling either proposal leaves the board unchanged.
-- Approval appears in a second browser session.
-- Tool success arrives after the server acknowledgement.
-- Undo removes the approved generated batch.
-- Vote results contain counts only and never expose identities.
+- Public or unlisted YouTube video, under three minutes, with clear spoken audio.
+- Public URL visible at least once.
+- A visible WebMCP visual read and permission-bound write.
+- The student's incorrect `-3`/`-1` claim is readable.
+- The generated card visibly checks `x = -4` and asks for `(-4, -2)`.
+- The feedback card is source-linked, synchronized, and undoable.
+- The viewer write is visibly refused.
+- The lesson video is visible as a shared canvas object.
+- No invitation token, recovery link, email, key, or real student content is
+  shown.
