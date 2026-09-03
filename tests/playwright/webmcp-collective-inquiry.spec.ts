@@ -56,6 +56,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
       "add_idea_sensemaking",
       "add_learning_action_plan",
       "add_thinking_expansion",
+      "comment_on_watched_step",
       "explain_selected_ideas",
       "inspect_selected_board_visual",
       "inspire_from_selected_ideas",
@@ -67,7 +68,9 @@ test("a board participant can use headless WebMCP tools with neutral board attri
       "watch_selected_problem_steps",
     ]);
   await expect(page.locator("[data-webmcp-status]")).toHaveCount(0);
-  await expect(page.locator("[data-selection-ai]")).toHaveCount(0);
+  // The AI button exists only while a problem-step watch is live in this browser.
+  await expect(page.locator("[data-selection-ai-wrap]")).toBeHidden();
+  await expect(page.getByTestId("ai-watch-indicator")).toBeHidden();
   expect(
     await page.evaluate(
       () => window.__spaceScaleWebMcpTools.read_selected_class_ideas?.annotations,
@@ -175,8 +178,92 @@ test("a board participant can use headless WebMCP tools with neutral board attri
     status: "started",
     durationSeconds: 900,
     nextSeq: expect.any(Number),
+    canComment: true,
+    selectionToken: expect.any(String),
     steps: expect.arrayContaining([expect.objectContaining({ kind: "sticky" })]),
   });
+  await expect(page.getByTestId("ai-watch-indicator")).toBeVisible();
+  await expect(page.getByTestId("ai-watch-indicator")).toContainText("AI watching");
+  const askAi = page.getByTestId("selection-ai");
+  await expect(askAi).toBeVisible();
+  await expect(askAi).toBeEnabled();
+
+  // A request from the board resolves the host's pending wait with a reply plan.
+  const requestedResult = page.evaluate(
+    ({ watchToken, afterSeq }) => {
+      const tool = window.__spaceScaleWebMcpTools.watch_selected_problem_steps;
+      if (!tool) throw new Error("The problem-step watch was not registered.");
+      return tool.execute(
+        { action: "wait", watchToken, afterSeq, waitMs: 20_000 },
+        { signal: new AbortController().signal },
+      );
+    },
+    { watchToken: String(watchStart.watchToken), afterSeq: Number(watchStart.nextSeq) },
+  );
+  await askAi.click();
+  const aiMenu = page.getByTestId("ai-assist-menu");
+  await expect(aiMenu).toBeVisible();
+  await expect(aiMenu.getByRole("menuitem")).toHaveCount(6);
+  await expect(aiMenu.getByRole("menuitem", { name: "Grade" })).toHaveCount(0);
+  await aiMenu.locator("[data-ai-assist-note]").fill("Not sure about the second step");
+  await aiMenu.getByRole("menuitem", { name: "Critique" }).click();
+  await expect(aiMenu).toBeHidden();
+  await expect(page.getByTestId("toast-region")).toContainText(
+    "Sent to the AI assistant: Critique",
+  );
+  const requested = await requestedResult;
+  expect(requested).toMatchObject({
+    status: "requested",
+    continueWatching: true,
+    canComment: true,
+    requests: [
+      {
+        action: "critique",
+        note: "Not sure about the second step",
+        reply: {
+          via: "comment",
+          call: { tool: "comment_on_watched_step", input: { action: "critique" } },
+        },
+      },
+    ],
+  });
+  const requestedSteps = (
+    requested.requests as Array<{ steps: Array<{ alias: string; kind: string }> }>
+  )[0]?.steps;
+  expect(requestedSteps?.length).toBeGreaterThan(0);
+  // The minted selection token covers sticky-note steps only, so reply on one of those.
+  const repliedAlias = requestedSteps?.find((step) => step.kind === "sticky")?.alias ?? "step_1";
+
+  // The reply lands as a comment on the step, attributed to the participant and tagged AI.
+  const commented = await page.evaluate(
+    ({ watchToken, stepAlias }) => {
+      const tool = window.__spaceScaleWebMcpTools.comment_on_watched_step;
+      if (!tool) throw new Error("The comment tool was not registered.");
+      return tool.execute(
+        {
+          watchToken,
+          stepAlias,
+          action: "critique",
+          body: "Check the division step: $6/2=3$, so $x=3$.",
+        },
+        { signal: new AbortController().signal },
+      );
+    },
+    { watchToken: String(watchStart.watchToken), stepAlias: repliedAlias },
+  );
+  expect(commented).toMatchObject({
+    status: "commented",
+    stepAlias: repliedAlias,
+    writtenBy: "ai",
+  });
+  await expect(page.locator("[data-comments-count]")).toHaveText("1");
+  await page.getByTestId("comments-button").click();
+  const commentsDrawer = page.getByTestId("comments-drawer");
+  await expect(commentsDrawer.locator(".comment-card")).toHaveCount(1);
+  await expect(commentsDrawer.locator(".comment-card .assistance-tag")).toHaveText("AI · Critique");
+  await expect(commentsDrawer.locator(".comment-card strong").first()).not.toHaveText("AI");
+  await page.getByTestId("comments-button").click();
+
   const watchResult = page.evaluate(
     ({ watchToken, afterSeq }) => {
       const tool = window.__spaceScaleWebMcpTools.watch_selected_problem_steps;
@@ -202,8 +289,13 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   await stickyEditor.fill(`${await stickyEditor.inputValue()}\nA newly saved problem step.`);
   await stickyEditor.press("Control+Enter");
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
-  await expect(watchResult).resolves.toMatchObject({
+  const changedResult = await watchResult;
+  expect(changedResult).toMatchObject({
     status: "changed",
+    selectionToken: expect.any(String),
+    selectionSources: expect.arrayContaining([
+      { stepAlias: repliedAlias, sourceAlias: expect.stringMatching(/^idea_[1-9]/u) },
+    ]),
     changes: [
       {
         steps: [
@@ -222,6 +314,8 @@ test("a board participant can use headless WebMCP tools with neutral board attri
     if (!tool) throw new Error("The problem-step watch was not registered.");
     return tool.execute({ action: "stop", watchToken }, { signal: new AbortController().signal });
   }, String(watchStart.watchToken));
+  await expect(page.locator("[data-selection-ai-wrap]")).toBeHidden();
+  await expect(page.getByTestId("ai-watch-indicator")).toBeHidden();
 
   const readResult = await page.evaluate(() => {
     const tool = window.__spaceScaleWebMcpTools.read_selected_class_ideas;
@@ -420,8 +514,6 @@ test("a board participant can use headless WebMCP tools with neutral board attri
                 title: "The lunch-line plot twist",
                 caption:
                   "The meme connects less packaging with a faster lunch line, then asks the class to inspect that connection.",
-                altText:
-                  "A bright meme card with a recycling emoji. Top text says less packaging enters; bottom text says faster lunch line appears.",
                 sourceAliases: ["idea_1", "idea_4"],
                 discussionPrompt:
                   "What does this joke help us notice, and what does it oversimplify?",
@@ -523,8 +615,10 @@ test("a board participant can use headless WebMCP tools with neutral board attri
     0,
   );
   await expect(canvasItems).toHaveCount(13 + educationItemCount);
-  await expect(page.locator('#drawing-area [data-creator-assistance="ai"]')).toHaveCount(0);
-  await expect(page.locator("#drawing-area .creator-badge-ai")).toHaveCount(0);
+  await expect(page.locator('#drawing-area [data-assisted-by="ai"]')).toHaveCount(
+    educationItemCount,
+  );
+  await expect(page.locator("#drawing-area .creator-badge-ai").first()).toBeVisible();
   await expect(page.locator("#drawing-area .creator-badge").first()).toBeVisible();
   await expect(page.locator("#drawing-area")).not.toContainText("AI-assisted");
   let remainingEducationItems = 13 + educationItemCount;
@@ -606,12 +700,65 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   const createdItemCount = stageResult.createdItemCount as number;
   expect(createdItemCount).toBeGreaterThan(0);
   await expect(canvasItems).toHaveCount(13 + createdItemCount);
-  await expect(page.locator('#drawing-area [data-creator-assistance="ai"]')).toHaveCount(0);
-  await expect(page.locator("#drawing-area .creator-badge-ai")).toHaveCount(0);
+  await expect(page.locator('#drawing-area [data-assisted-by="ai"]')).toHaveCount(createdItemCount);
   await expect(page.locator("#drawing-area")).not.toContainText("AI-assisted");
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
 
   await page.getByTestId("undo-button").click();
   await expect(canvasItems).toHaveCount(13);
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+
+  // Generative actions can use the minted selection token with the existing card tools.
+  // Runs last: inserting cards selects them and moves the viewport, and the earlier reads
+  // depend on the template selection and the 13-item baseline.
+  const expansion = await page.evaluate(
+    ({ selectionToken, sourceAliases }) => {
+      const tool = window.__spaceScaleWebMcpTools.add_thinking_expansion;
+      if (!tool) throw new Error("The thinking-expansion tool was not registered.");
+      return tool.execute(
+        {
+          selectionToken,
+          mode: "gap_finder",
+          title: "Gaps to test",
+          cards: [
+            {
+              id: "divide_by_three",
+              heading: "What if we divided by 3?",
+              body: "The step divides both sides by 2; a different divisor would change the result.",
+              sourceAliases,
+              question: "What happens to the equation if both sides are divided by 3 instead?",
+              role: "missing perspective",
+            },
+            {
+              id: "negative_x",
+              heading: "Does the step survive a negative value?",
+              body: "The work assumes a positive answer without checking the sign.",
+              sourceAliases,
+              question: "Which step would fail if $x$ were negative?",
+              role: "evidence gap",
+            },
+          ],
+          connections: [],
+        },
+        { signal: new AbortController().signal },
+      );
+    },
+    {
+      // The edit above bumped a version, so use the token the changed result re-minted, and
+      // cite the idea_N alias the writers accept rather than the step_N watch alias.
+      selectionToken: String(changedResult.selectionToken),
+      sourceAliases: [
+        (changedResult.selectionSources as Array<{ stepAlias: string; sourceAlias: string }>).find(
+          (source) => source.stepAlias === repliedAlias,
+        )?.sourceAlias ?? "idea_1",
+      ],
+    },
+  );
+  expect(expansion).toMatchObject({ status: expect.any(String) });
+  await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+  await expect(page.locator("#drawing-area [data-item-id][data-assisted-by='ai']")).not.toHaveCount(
+    0,
+  );
+  await expect(page.locator("#drawing-area .creator-badge-ai")).not.toHaveCount(0);
+  await expect(canvasItems).toHaveCount(13 + Number(expansion.createdItemCount));
 });

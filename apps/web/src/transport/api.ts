@@ -1,4 +1,11 @@
-import { type BoardFeatures, MAX_BATCH_OPERATIONS, normalizeBoardItem } from "@collab/protocol";
+import {
+  ASSIST_ACTIONS,
+  type AssistAction,
+  type Assistance,
+  type BoardFeatures,
+  MAX_BATCH_OPERATIONS,
+  normalizeBoardItem,
+} from "@collab/protocol";
 
 import type {
   AccessMode,
@@ -315,12 +322,21 @@ export class ApiClient {
     return values.map(parseBoardComment);
   }
 
-  async createComment(boardId: string, itemId: string, body: string): Promise<BoardComment> {
+  async createComment(
+    boardId: string,
+    itemId: string,
+    body: string,
+    assistance?: Assistance,
+  ): Promise<BoardComment> {
     const result = await this.request<unknown>(
       `/api/v1/boards/${encodeURIComponent(boardId)}/comments`,
       {
         method: "POST",
-        body: JSON.stringify({ itemId, body }),
+        body: JSON.stringify({
+          itemId,
+          body,
+          ...(assistance === undefined ? {} : { assistedBy: "ai", assistance }),
+        }),
       },
     );
     return parseBoardComment(result);
@@ -766,6 +782,7 @@ export function parseBoardComment(value: unknown): BoardComment {
   ) {
     throw invalidCommentResponse(value);
   }
+  const assistance = parseCommentAssistance(value);
   return {
     id: value.id,
     itemId: value.itemId,
@@ -783,6 +800,28 @@ export function parseBoardComment(value: unknown): BoardComment {
           resolvedAt: value.resolvedAt as number,
         }
       : {}),
+    ...(assistance === null ? {} : { assistedBy: "ai" as const, assistance }),
+  };
+}
+
+/** Validates the optional writer metadata pair; both fields must be present together. */
+function parseCommentAssistance(value: Record<string, unknown>): Assistance | null {
+  if (value.assistedBy === undefined && value.assistance === undefined) return null;
+  const assistance = value.assistance;
+  if (
+    value.assistedBy !== "ai" ||
+    !isRecord(assistance) ||
+    typeof assistance.tool !== "string" ||
+    assistance.tool.length === 0 ||
+    (assistance.action !== undefined &&
+      (typeof assistance.action !== "string" ||
+        !(ASSIST_ACTIONS as readonly string[]).includes(assistance.action)))
+  ) {
+    throw invalidCommentResponse(value);
+  }
+  return {
+    tool: assistance.tool,
+    ...(assistance.action === undefined ? {} : { action: assistance.action as AssistAction }),
   };
 }
 

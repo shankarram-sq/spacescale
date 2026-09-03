@@ -204,6 +204,22 @@ export const BOARD_ROLES = ["viewer", "editor", "owner"] as const;
 export const DRAWING_POLICIES = ["editors_enabled", "owner_only", "locked"] as const;
 export const ACCESS_MODES = ["private", "link_view"] as const;
 export const ITEM_ASSISTANCE = ["ai"] as const;
+/**
+ * Actions a participant can request from the board's AI button while a WebMCP problem-step
+ * watch is live. Shared so the web tool schema, the comment metadata the edge validates, and
+ * the catalog cannot drift apart.
+ */
+export const ASSIST_ACTIONS = [
+  "explain",
+  "ideate",
+  "critique",
+  "check_work",
+  "examples",
+  "explain_with_video",
+] as const;
+/** Longest tool name the comment assistance metadata accepts. */
+export const MAX_ASSISTANCE_TOOL_LENGTH = 64;
+export const ASSISTANCE_TOOL_PATTERN = /^[a-z][a-z0-9_]{0,63}$/u;
 
 export type ItemKind = (typeof ITEM_KINDS)[number];
 export type BoardItemKind = ItemKind;
@@ -211,6 +227,12 @@ export type BoardRole = (typeof BOARD_ROLES)[number];
 export type DrawingPolicy = (typeof DRAWING_POLICIES)[number];
 export type AccessMode = (typeof ACCESS_MODES)[number];
 export type ItemAssistance = (typeof ITEM_ASSISTANCE)[number];
+export type AssistAction = (typeof ASSIST_ACTIONS)[number];
+/** Which WebMCP tool wrote an assisted comment, and the participant action it answered. */
+export type Assistance = {
+  tool: string;
+  action?: AssistAction;
+};
 
 export interface BoardAccessPolicy {
   accessMode: AccessMode;

@@ -1,5 +1,8 @@
 import { ZONE_TITLE_PADDING, zoneTitleBandHeight } from "@collab/geometry";
 import {
+  ASSIST_ACTIONS,
+  type AssistAction,
+  type Assistance,
   BOARD_FEATURE_KEYS,
   type BoardFeatureKey,
   type BoardFeatures,
@@ -108,6 +111,12 @@ import { ClassDecisionWebMcp } from "../webmcp/class-decision";
 import { CollectiveInquiryWebMcp } from "../webmcp/collective-inquiry";
 import { EducationPartnerWebMcp, type EducationVisualSource } from "../webmcp/education-partner";
 import { InquiryMapWebMcp } from "../webmcp/inquiry-map";
+import {
+  ASSIST_GUIDANCE,
+  ASSIST_NOTE_MAX_LENGTH,
+  assistActionLabel,
+  type WatchState,
+} from "../webmcp/problem-step-watch";
 
 const TOOL_DEFINITIONS: Array<{
   name: ToolName;
@@ -954,6 +963,9 @@ export class BoardApp {
   private readonly pendingWebMcpCommits = new PendingCommitTracker();
   /** True until the board first becomes editable, when the landing tool is chosen. */
   private landingToolPending = true;
+  private aiWatchState: WatchState = { phase: "idle", expiresAt: null, watchedItemIds: new Set() };
+  private aiWatchCountdown: number | null = null;
+  private aiAssistSelectionKey = "";
   private readonly pendingRenderedTextSectionUpdates = new Set<string>();
   private bootstrap: Bootstrap;
   private phase: ConnectionPhase = "idle";
@@ -1071,6 +1083,13 @@ export class BoardApp {
   private readonly stylePopover: HTMLElement;
   private readonly exportMenu: HTMLElement;
   private readonly selectionActions: HTMLElement;
+  private readonly aiAssistWrap: HTMLElement;
+  private readonly aiAssistButton: HTMLButtonElement;
+  private readonly aiAssistMenu: HTMLElement;
+  private readonly aiAssistScope: HTMLElement;
+  private readonly aiAssistNote: HTMLInputElement;
+  private readonly aiWatchIndicator: HTMLElement;
+  private readonly aiWatchIndicatorText: HTMLElement;
   private readonly selectionColourButton: HTMLButtonElement;
   private readonly selectionColourMenu: HTMLElement;
   private readonly arrangeButton: HTMLButtonElement;
@@ -1163,6 +1182,13 @@ export class BoardApp {
     this.stylePopover = query(this.root, "[data-testid='style-popover']", HTMLElement);
     this.exportMenu = query(this.root, "[data-testid='export-menu']", HTMLElement);
     this.selectionActions = query(this.root, "[data-testid='selection-actions']", HTMLElement);
+    this.aiAssistWrap = query(this.selectionActions, "[data-selection-ai-wrap]", HTMLElement);
+    this.aiAssistButton = query(this.selectionActions, "[data-selection-ai]", HTMLButtonElement);
+    this.aiAssistMenu = query(this.selectionActions, "[data-testid='ai-assist-menu']", HTMLElement);
+    this.aiAssistScope = query(this.aiAssistMenu, "[data-ai-assist-scope]", HTMLElement);
+    this.aiAssistNote = query(this.aiAssistMenu, "[data-ai-assist-note]", HTMLInputElement);
+    this.aiWatchIndicator = query(this.root, "[data-ai-watch-indicator]", HTMLElement);
+    this.aiWatchIndicatorText = query(this.root, "[data-ai-watch-indicator-text]", HTMLElement);
     this.selectionColourButton = query(
       this.selectionActions,
       "[data-selection-colour]",
@@ -1331,6 +1357,10 @@ export class BoardApp {
       getSequence: () => this.model.lastAppliedSeq,
       getParticipantDisplayName: (participantId) => this.creatorNames.get(participantId) ?? null,
       notify: (message, kind) => this.notify(message, kind),
+      canComment: () => this.canComment(),
+      canWrite: () => this.canCommit(),
+      createComment: (itemId, body, assistance) => this.commentFromWebMcp(itemId, body, assistance),
+      onWatchStateChanged: (state) => this.setAiWatchState(state),
     });
 
     this.educationPartnerWebMcp = new EducationPartnerWebMcp({
@@ -1443,6 +1473,7 @@ export class BoardApp {
     this.inquiryMapWebMcp = null;
     this.webMcp?.destroy();
     this.webMcp = null;
+    this.setAiWatchState({ phase: "idle", expiresAt: null, watchedItemIds: new Set() });
     this.tools.destroy();
     this.renderer.destroy();
     window.removeEventListener("keydown", this.onGlobalKeyDown);
@@ -1469,6 +1500,10 @@ export class BoardApp {
               <span class="status-dot" aria-hidden="true"></span>
               <span data-save-status-text>Connecting…</span>
             </div>
+            <span class="ai-watch-indicator" data-ai-watch-indicator data-testid="ai-watch-indicator" role="status" aria-live="polite" hidden>
+              <span class="ai-mark" aria-hidden="true">AI</span>
+              <span data-ai-watch-indicator-text>AI watching</span>
+            </span>
             <div class="menu-wrap activities-wrap">
               <button class="topbar-button activities-button" type="button" data-testid="activities-button" aria-label="Add a template" aria-haspopup="menu" aria-controls="activities-menu" aria-expanded="false" hidden>
                 <span class="activities-button-mark" aria-hidden="true">＋</span>
@@ -1594,6 +1629,18 @@ export class BoardApp {
                 <button type="button" data-selection-text-decoration aria-label="Underline" aria-pressed="false"><u>U</u></button>
               </div>
               <span class="selection-actions-divider" data-selection-style-divider aria-hidden="true" hidden></span>
+              <div class="selection-ai-wrap" data-selection-ai-wrap hidden>
+                <button type="button" data-selection-ai data-testid="selection-ai" aria-label="Ask the AI assistant about the selection" aria-haspopup="menu" aria-controls="ai-assist-menu" aria-expanded="false"><span class="ai-mark" aria-hidden="true">AI</span><span>Ask AI</span></button>
+                <div class="arrange-menu ai-assist-menu" data-testid="ai-assist-menu" id="ai-assist-menu" role="menu" aria-label="Ask the AI assistant" hidden>
+                  <span class="arrange-menu-label" data-ai-assist-scope>Selected steps</span>
+                  ${ASSIST_ACTIONS.map(
+                    (action) =>
+                      `<button type="button" role="menuitem" data-ai-action="${action}">${ASSIST_GUIDANCE[action].label}</button>`,
+                  ).join("")}
+                  <label class="ai-assist-note"><span>Add a note (optional)</span><input type="text" maxlength="${ASSIST_NOTE_MAX_LENGTH}" data-ai-assist-note placeholder="What are you unsure about?" autocomplete="off" /></label>
+                  <p class="ai-assist-menu-note">Your request and the selected step text go to the AI assistant already watching this Space. Replies appear on the board with a small AI tag.</p>
+                </div>
+              </div>
               <button type="button" data-selection-comment aria-label="Comment on selected object">Comment</button>
               <button type="button" data-selection-section-lock aria-label="Lock Section" aria-pressed="false" hidden>Lock Section</button>
               <button type="button" data-selection-copy aria-label="Copy selected items">Copy</button>
@@ -2672,6 +2719,36 @@ export class BoardApp {
       this.setArrangeMenuOpen(opening);
       if (opening) this.arrangeMenu.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
     });
+    this.aiAssistButton.addEventListener("click", () => {
+      if (this.aiAssistButton.disabled) return;
+      const opening = this.aiAssistMenu.hidden !== false;
+      this.setAiAssistMenuOpen(opening);
+      if (opening) this.aiAssistMenu.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
+    });
+    for (const button of this.aiAssistMenu.querySelectorAll<HTMLButtonElement>(
+      "[data-ai-action]",
+    )) {
+      button.addEventListener("click", () => {
+        const action = button.dataset.aiAction;
+        if (action && (ASSIST_ACTIONS as readonly string[]).includes(action)) {
+          this.sendAiAssistRequest(action as AssistAction);
+        }
+      });
+    }
+    this.aiAssistMenu.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        this.setAiAssistMenuOpen(false);
+        this.aiAssistButton.focus();
+        return;
+      }
+      if (event.key === "Enter" && event.target === this.aiAssistNote) {
+        // Enter in the note picks the first action so keyboard users can send without tabbing back.
+        event.preventDefault();
+        this.aiAssistMenu.querySelector<HTMLButtonElement>("[data-ai-action]")?.click();
+      }
+    });
     for (const button of this.arrangeMenu.querySelectorAll<HTMLButtonElement>("[data-arrange]")) {
       button.addEventListener("click", () => {
         void this.arrangeSelection(button.dataset.arrange as ArrangeKind);
@@ -2945,6 +3022,13 @@ export class BoardApp {
         !shapeButton.contains(target)
       ) {
         this.setShapeMenuOpen(false);
+      }
+      if (
+        !this.aiAssistMenu.hidden &&
+        !this.aiAssistMenu.contains(target) &&
+        !this.aiAssistButton.contains(target)
+      ) {
+        this.setAiAssistMenuOpen(false);
       }
       if (
         !this.toolsMenu.hidden &&
@@ -5659,7 +5743,17 @@ export class BoardApp {
       const time = document.createElement("time");
       time.dateTime = new Date(comment.createdAt).toISOString();
       time.textContent = formatCommentTime(comment.createdAt);
-      identity.append(author, time);
+      identity.append(author);
+      if (comment.assistedBy === "ai") {
+        const tag = document.createElement("span");
+        tag.className = "assistance-tag";
+        tag.dataset.assistedBy = "ai";
+        const action = comment.assistance?.action;
+        tag.textContent = action ? `AI · ${assistActionLabel(action)}` : "AI";
+        tag.title = `Written by the AI assistant${comment.assistance ? ` through ${comment.assistance.tool}` : ""} on behalf of ${comment.author.displayName}`;
+        identity.append(tag);
+      }
+      identity.append(time);
       const state = document.createElement("span");
       state.className = "comment-state";
       state.textContent = comment.state;
@@ -6248,6 +6342,7 @@ export class BoardApp {
     comment.title = allSelectedAuthoritative
       ? ""
       : "Wait for the selected object to finish saving.";
+    this.updateAiAssistAction(selectedIds, allSelectedAuthoritative);
     copy.disabled = !copyReady;
     remove.disabled = !mutationReady || !allSelectedOwned;
     const group = query(this.selectionActions, "[data-selection-group]", HTMLButtonElement);
@@ -6590,6 +6685,114 @@ export class BoardApp {
     const next = open && !this.arrangeButton.disabled && !this.arrangeButton.hidden;
     this.arrangeMenu.hidden = !next;
     this.arrangeButton.setAttribute("aria-expanded", String(next));
+  }
+
+  private setAiAssistMenuOpen(open: boolean): void {
+    const next = open && !this.aiAssistButton.disabled && !this.aiAssistWrap.hidden;
+    this.aiAssistMenu.hidden = !next;
+    this.aiAssistButton.setAttribute("aria-expanded", String(next));
+  }
+
+  /**
+   * The AI button exists only while a WebMCP watch is live in this browser, because the
+   * watch's pending wait is the page's only channel back to the agent. It sends only steps
+   * the watch already covers, so the watch contract never widens from the board side.
+   */
+  private updateAiAssistAction(selectedIds: readonly string[], allSaved: boolean): void {
+    const watching = this.aiWatchState.phase !== "idle";
+    const watched = this.aiWatchState.watchedItemIds;
+    this.aiAssistWrap.hidden = !watching;
+    const unwatched = selectedIds.filter((id) => !watched.has(id));
+    const ready = watching && allSaved && unwatched.length === 0 && watched.size > 0;
+    this.aiAssistButton.disabled = !ready;
+    this.aiAssistButton.title = !watching
+      ? ""
+      : unwatched.length > 0
+        ? "Only steps in the current AI watch can be sent. Ask the assistant to start a new watch to include this item."
+        : allSaved
+          ? ""
+          : "Wait for the selected object to finish saving.";
+    const scope =
+      selectedIds.length === 0
+        ? `All ${watched.size} watched step${watched.size === 1 ? "" : "s"}`
+        : `${selectedIds.length} selected step${selectedIds.length === 1 ? "" : "s"}`;
+    this.aiAssistScope.textContent = scope;
+    const selectionKey = [...selectedIds].sort().join("\u0000");
+    if (selectionKey !== this.aiAssistSelectionKey) {
+      this.aiAssistSelectionKey = selectionKey;
+      this.setAiAssistMenuOpen(false);
+    }
+    if (this.aiAssistWrap.hidden || this.aiAssistButton.disabled) this.setAiAssistMenuOpen(false);
+  }
+
+  private setAiWatchState(state: WatchState): void {
+    this.aiWatchState = state;
+    const watching = state.phase !== "idle";
+    this.aiWatchIndicator.hidden = !watching;
+    if (this.aiWatchCountdown !== null) {
+      window.clearInterval(this.aiWatchCountdown);
+      this.aiWatchCountdown = null;
+    }
+    if (watching) {
+      this.renderAiWatchIndicator();
+      this.aiWatchCountdown = window.setInterval(() => this.renderAiWatchIndicator(), 30_000);
+    }
+    this.updateSelectionActions(this.tools.selection);
+  }
+
+  private renderAiWatchIndicator(): void {
+    const { phase, expiresAt } = this.aiWatchState;
+    if (phase === "idle" || expiresAt === null) return;
+    const remaining = Math.max(0, expiresAt - Date.now());
+    const minutes = Math.ceil(remaining / 60_000);
+    const label = phase === "listening" ? "AI listening" : "AI watching";
+    this.aiWatchIndicatorText.textContent = `${label} · ${minutes} min left`;
+    this.aiWatchIndicator.title =
+      "The AI assistant is following your selected steps. Select a step and use Ask AI to send it a request.";
+  }
+
+  private sendAiAssistRequest(action: AssistAction): void {
+    const label = assistActionLabel(action);
+    const note = this.aiAssistNote.value.trim();
+    try {
+      const receipt = this.webMcp?.requestAssistance({
+        itemIds: [...this.tools.selection],
+        action,
+        ...(note.length > 0 ? { note } : {}),
+      });
+      if (!receipt) throw new Error("The AI assistant is not available in this browser.");
+      this.setAiAssistMenuOpen(false);
+      this.aiAssistNote.value = "";
+      this.aiAssistButton.focus();
+      const steps = `${receipt.stepAliases.length} step${receipt.stepAliases.length === 1 ? "" : "s"}`;
+      this.notify(
+        receipt.delivered
+          ? `Sent to the AI assistant: ${label} (${steps}).`
+          : `Queued for the AI assistant: ${label} (${steps}). It will see it on its next check.`,
+        "info",
+      );
+    } catch (error) {
+      this.notify(
+        error instanceof Error
+          ? error.message
+          : "The request could not be sent to the AI assistant.",
+        "warning",
+      );
+    }
+  }
+
+  /** The comment tool's write path: same three steps as the composer, tagged as AI-written. */
+  private async commentFromWebMcp(
+    itemId: string,
+    body: string,
+    assistance: Assistance,
+  ): Promise<void> {
+    if (!this.model.getItem(itemId)) throw new Error("That step is no longer on the board.");
+    if (!this.canComment()) throw new Error("This browser cannot comment on this Space.");
+    const comment = await this.api.createComment(this.bootstrap.board.id, itemId, body, assistance);
+    this.comments.upsert(comment);
+    this.applyCommentChange();
+    this.liveRegion.textContent = "AI comment added.";
   }
 
   private setSelectionColourMenuOpen(open: boolean): void {

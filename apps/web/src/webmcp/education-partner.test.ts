@@ -203,6 +203,43 @@ describe("education partner WebMCP contract", () => {
     expect(selected.length).toBe(visualResult.createdItemCount);
     expect(storeVisualImages).toHaveBeenCalledTimes(1);
 
+    const untitledAltResult = (await visualTool.execute(
+      {
+        selectionToken: "selected-ideas",
+        title: "Alt text left to the title",
+        safetyConfirmation: "classroom_safe_no_student_likeness_or_targeting",
+        visuals: [
+          {
+            id: "queue_meme_no_alt",
+            format: "meme_card",
+            title: "When both ideas click",
+            caption: "The joke connects packaging waste with queue flow.",
+            sourceAliases: ["idea_1"],
+            discussionPrompt: "What does the meme oversimplify?",
+            headline: "Less packaging enters",
+            punchline: "Faster lunch line appears",
+            emoji: "♻️",
+            palette: "confetti",
+          },
+        ],
+      },
+      { signal: new AbortController().signal },
+    )) as Record<string, unknown>;
+    expect(untitledAltResult).toMatchObject({
+      status: "participant_requested_and_added",
+      visualCount: 1,
+    });
+    expect(committed).toHaveLength(3);
+    const noAltBatch = committed[2];
+    if (noAltBatch?.kind !== "items.batch") throw new Error("Expected a visual batch.");
+    const noAltImage = noAltBatch.operations
+      .flatMap((operation) => (operation.kind === "item.create" ? [operation.item] : []))
+      .find((item) => item.kind === "image");
+    expect(noAltImage?.kind === "image" ? noAltImage.geometry.alt : "").toBe(
+      "When both ideas click",
+    );
+    expect(storeVisualImages).toHaveBeenCalledTimes(2);
+
     await expect(
       visualTool.execute(
         {
@@ -225,8 +262,8 @@ describe("education partner WebMCP contract", () => {
         { signal: new AbortController().signal },
       ),
     ).rejects.toThrow("inline PNG, JPEG, WebP, or GIF data URL");
-    expect(storeVisualImages).toHaveBeenCalledTimes(1);
-    expect(committed).toHaveLength(2);
+    expect(storeVisualImages).toHaveBeenCalledTimes(2);
+    expect(committed).toHaveLength(3);
 
     partner.destroy();
     expect(tools.size).toBe(0);
@@ -318,7 +355,12 @@ describe("education partner WebMCP contract", () => {
         }>;
       }>;
       sectionIntegration: { live: boolean; reservedMode: string };
+      visualTool: { requiresAltText: boolean; requiresDiscussionPrompt: boolean };
     };
+    expect(capabilities.visualTool).toMatchObject({
+      requiresAltText: false,
+      requiresDiscussionPrompt: true,
+    });
     const publishedModes = capabilities.families.flatMap((family) => family.modes);
     expect(capabilities.availableModeCount).toBe(27);
     expect(publishedModes).toHaveLength(27);

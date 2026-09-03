@@ -2,7 +2,7 @@
 
 ## Outcome
 
-SpaceScale turns an AI agent into a shared thinking partner in a live classroom conversation. Every browser that can open the board discovers the WebMCP tools, and the agent reads only that browser's saved selection—exact typed content, a bounded 15-minute stream of saved problem-step changes, or an isolated visual rendering for handwriting and sketches. It can expand, connect, challenge, structure decisions, turn thinking into action through 27 live non-section education modes, or turn the discussion into a playful source-linked image or meme. Cross-Group Jigsaw is reserved for the separately tested section-context integration, bringing the complete catalog to 28 after that push lands. Every canvas mutation still requires normal board edit permission and is atomic, realtime, source-linked, attributed to the responsible participant, and undoable. Internal origin metadata is retained without AI-specific board labels.
+SpaceScale turns an AI agent into a shared thinking partner in a live classroom conversation. Every browser that can open the board discovers the WebMCP tools, and the agent reads only that browser's saved selection—exact typed content, a bounded 15-minute stream of saved problem-step changes, or an isolated visual rendering for handwriting and sketches. It can expand, connect, challenge, structure decisions, turn thinking into action through 27 live non-section education modes, or turn the discussion into a playful source-linked image or meme. Cross-Group Jigsaw is reserved for the separately tested section-context integration, bringing the complete catalog to 28 after that push lands. Every canvas mutation still requires normal board edit permission and is atomic, realtime, source-linked, attributed to the responsible participant, and undoable. Internal `assistedBy` metadata is retained and every AI-written item and comment carries a small AI mark beside the responsible participant's attribution.
 
 One-line pitch:
 
@@ -66,6 +66,8 @@ for 15 minutes so Codex can comment as a participant works through a problem.
 - The tool tells the host to comment briefly after every changed step—checking the reasoning, acknowledging what is valid, identifying the first concrete issue or uncertainty, and asking one useful next-step question—then continue waiting.
 - Only server-acknowledged changes enter the feed. Unsaved keystrokes, video embeds, unselected items, Section children, coordinates, presence, history, stable board/item/participant IDs, and contact or authentication data are excluded.
 - `stop`, request cancellation, page navigation, or the fixed 15-minute expiry ends the watch. Sessions and up to 100 retained change groups live only in page memory.
+- While a watch is live the board shows an **Ask AI** button in the selection toolbar. A participant's request (a watched step, one of `explain`, `ideate`, `critique`, `check_work`, `examples`, `explain_with_video`, and an optional 280-character note) is delivered as the next `wait` result with status `requested`, carrying the step text and a reply plan that names the exact next tool call. Up to 10 requests queue between polls; the oldest are dropped and counted. `nextSeq` is unchanged, so queued changes follow on the next wait.
+- Replies go back to the board: `comment_on_watched_step` posts one object comment on a watched step (attributed to the participant, tagged as AI-written, at most 20 per watch), and every `start`, `changed`, `resync`, and `requested` result mints a fresh `selectionToken` over the watch's sticky-note steps, using the `idea_N` aliases the writers' schemas accept and reporting the `step_N` → `idea_N` mapping as `selectionSources`, so the `add_*` tools can insert cards without a second read call. Generative replies fall back to a comment when the browser cannot add items.
 
 ### Five education collaboration tools
 
@@ -83,7 +85,7 @@ These tools use a `selectionToken` and add ordinary board objects directly after
 
 Adds one to three playful visual responses to the approved class discussion without introducing a feature-specific meme interface.
 
-- Every visual cites one to five aliases from `read_selected_class_ideas`, includes meaningful alt text and a class discussion question, and is connected back to its source cards on the canvas.
+- Every visual cites one to five aliases from `read_selected_class_ideas`, includes a class discussion question, and is connected back to its source cards on the canvas. Alt text is optional; when omitted, the visual title is used as the image alt text.
 - `meme_card` lets ChatGPT supply the joke, emoji, and palette while SpaceScale renders a deterministic 1200×675 raster locally.
 - `inline_image` accepts an LLM-generated PNG, JPEG, WebP, or GIF only as an inline data URL. HTTPS URLs and SVG are rejected, so SpaceScale never hotlinks, expands CSP, or creates a server-side URL-fetch/SSRF path.
 - Before upload, the browser decodes, bounds-checks, and re-encodes the raster through the existing privacy-safe image path. The existing private per-board R2 asset endpoint validates it again and addresses it by content hash.
@@ -110,8 +112,9 @@ Turns a browser-selection token into two to four themes, source-to-theme connect
 - The agent supplies meaning; SpaceScale computes deterministic layout and safe board operations.
 - Opens a visual participant preview marked “no changes yet.”
 - On approval, commits one ordinary `items.batch`, waits for server acknowledgement, selects the created objects, and reports success.
-- Generated items retain internal `assistedBy` origin metadata but render with the
-  responsible participant's ordinary initials and no AI-specific board label.
+- Generated items retain internal `assistedBy` origin metadata, render with the
+  responsible participant's ordinary initials, and carry a small AI mark so tool and
+  human are always distinguishable.
 
 ### `read_live_class_vote`
 
@@ -147,8 +150,10 @@ Uses a vote token to propose a chosen direction, rationale, minority concern, sm
 
 For live problem coaching, the participant instead selects the exact working
 steps and asks Codex to start `watch_selected_problem_steps`. Codex alternates
-between bounded `wait` calls and short conversational feedback until 15 minutes
-elapse or the participant asks it to stop.
+between bounded `wait` calls and short feedback until 15 minutes elapse or the
+participant asks it to stop. While the watch is live the participant can also
+select a step and press **Ask AI** on the board; the request arrives in the next
+`wait` and Codex answers with a comment on that step or with cards.
 
 ## Architecture
 
