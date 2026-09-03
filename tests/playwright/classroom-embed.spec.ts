@@ -1,7 +1,12 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { expect, type Frame, type Page, test } from "@playwright/test";
-import { createBoard, isolatedContextOptions } from "./helpers";
+import {
+  chooseMoreTool,
+  createBoard,
+  expandToolPermissions,
+  isolatedContextOptions,
+} from "./helpers";
 
 const LOCAL_PARENT_URL = "http://localhost:4173/";
 const LOCAL_WORKER_ORIGIN = "https://127.0.0.1:8787";
@@ -224,7 +229,7 @@ test("canonical export is faithfully reproduced by the signed read-only viewer",
   const editor = frame.getByTestId("canvas-text-editor");
   await expect(editor).toBeVisible();
   await editor.fill("Shared viewer words");
-  await editor.press("Control+Enter");
+  await editor.press("Enter");
   await expect(frame.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
   await expect(frame.locator("#drawing-area .board-item-text")).toContainText(
     "Shared viewer words",
@@ -233,10 +238,11 @@ test("canonical export is faithfully reproduced by the signed read-only viewer",
   await frame.getByTestId("settings-button").click();
   const viewerFlowSettings = frame.getByTestId("settings-drawer");
   await expect(viewerFlowSettings).toBeVisible();
+  await expandToolPermissions(frame);
   await viewerFlowSettings.getByRole("checkbox", { name: "Enable Images" }).check();
   await viewerFlowSettings.getByRole("button", { name: "Close settings" }).click();
   const imageChooser = frame.page().waitForEvent("filechooser");
-  await frame.getByTestId("tool-image").click();
+  await chooseMoreTool(frame, "tool-image");
   await (await imageChooser).setFiles(VIEWER_PNG_FILE);
   const ownerImage = frame.locator("#drawing-area .board-item-image");
   await expect(ownerImage).toHaveCount(1);
@@ -403,7 +409,7 @@ test("Organisation owners share reusable templates across Spaces", async ({
 
   const sourceItemId = await drawRectangle(source);
   await selectItem(source, sourceItemId);
-  await source.getByTestId("activities-button").click();
+  await chooseMoreTool(source, "activities-button");
   const sourceMenu = source.getByTestId("activities-menu");
   await expect(sourceMenu).toBeVisible();
   await expect(sourceMenu.getByTestId("activity-exit-ticket")).toBeVisible();
@@ -443,7 +449,7 @@ test("Organisation owners share reusable templates across Spaces", async ({
         now,
       ),
     );
-    await destination.getByTestId("activities-button").click();
+    await chooseMoreTool(destination, "activities-button");
     const destinationMenu = destination.getByTestId("activities-menu");
     const addTemplate = destinationMenu.getByRole("menuitem", {
       name: `Add ${templateName} organisation template`,
@@ -468,7 +474,7 @@ test("Organisation owners share reusable templates across Spaces", async ({
     });
     await createBoard(ordinaryPage, `Ordinary Space ${randomUUID().slice(0, 8)}`);
     await expect.poll(() => ordinaryTemplateResponseSeen).toBe(true);
-    await ordinaryPage.getByTestId("activities-button").click();
+    await chooseMoreTool(ordinaryPage, "activities-button");
     const ordinaryMenu = ordinaryPage.getByTestId("activities-menu");
     await expect(ordinaryMenu.getByTestId("activity-exit-ticket")).toBeVisible();
     await expect(ordinaryMenu.locator("[data-organisation-templates-section]")).toBeHidden();

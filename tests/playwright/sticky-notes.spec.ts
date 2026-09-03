@@ -79,6 +79,12 @@ test("sticky notes focus, converge, persist, export safely, and remain editable"
     await canvas.focus();
     await collaborator.keyboard.press("n");
     await expect(collaborator.getByTestId("tool-sticky")).toHaveAttribute("aria-pressed", "true");
+    const stickyStyle = collaborator.getByTestId("style-popover");
+    await expect(stickyStyle).toBeVisible();
+    await collaborator.getByRole("button", { name: "Use coral sticky notes" }).click();
+    await expect(
+      collaborator.getByRole("button", { name: "Use coral sticky notes" }),
+    ).toHaveAttribute("aria-pressed", "true");
 
     const point = await canvasPoint(collaborator, 0.34, 0.38);
     await collaborator.mouse.click(point.x, point.y);
@@ -109,6 +115,11 @@ test("sticky notes focus, converge, persist, export safely, and remain editable"
     const collaboratorSticky = collaborator.locator("#drawing-area .board-item-sticky");
     await expect(ownerSticky).toHaveCount(1);
     await expect(collaboratorSticky).toHaveCount(1);
+    await expect(collaboratorSticky.locator(".sticky-background")).toHaveAttribute(
+      "fill",
+      "#ffafa3",
+    );
+    await expect(ownerSticky.locator(".sticky-background")).toHaveAttribute("fill", "#ffafa3");
     await expect(collaborator.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
     const stickyId = await collaboratorSticky.getAttribute("data-item-id");
     expect(stickyId).toBeTruthy();

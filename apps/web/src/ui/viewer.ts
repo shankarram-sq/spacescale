@@ -32,7 +32,7 @@ export const SPACE_VIEWER_CSS = `
   overflow: hidden;
   color: var(--viewer-ink);
   background: var(--viewer-canvas);
-  font: 14px/1.4 Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font: 14px/1.4 "Rubik Variable", Rubik, ui-sans-serif, system-ui, sans-serif;
 }
 
 .space-viewer__header {

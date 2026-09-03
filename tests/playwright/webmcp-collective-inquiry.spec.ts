@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { createBoard } from "./helpers";
+import { chooseMoreTool, createBoard, expandToolPermissions, openSettingsDrawer } from "./helpers";
 
 type RegisteredTool = {
   name: string;
@@ -45,6 +45,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "The WebMCP demo-path smoke runs in Chromium.");
+  test.setTimeout(60_000);
 
   await page.addInitScript(() => {
     const tools: Record<string, RegisteredTool> = {};
@@ -69,6 +70,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   await createBoard(page, "Collective inquiry demo");
   await page.getByTestId("settings-button").click();
   const settingsDrawer = page.getByTestId("settings-drawer");
+  await expandToolPermissions(page);
   await expect(settingsDrawer.getByRole("checkbox", { name: "Enable Images" })).toBeChecked();
   await page.getByTestId("settings-button").click();
 
@@ -91,11 +93,19 @@ test("a board participant can use headless WebMCP tools with neutral board attri
     ),
   ).toEqual([]);
 
-  // The header reports the tool surface a visiting host can see, and that a host is linked.
+  // The compact header control reports readiness and opens a page-session call history.
   const webMcpStatus = page.getByTestId("webmcp-status");
-  await expect(webMcpStatus).toHaveAttribute("data-state", "linked");
-  await expect(webMcpStatus).toContainText(/WebMCP · \d+ tools/u);
+  const mcpActivity = page.getByTestId("mcp-activity-menu");
+  await expect(webMcpStatus).toHaveAttribute("data-state", "ready");
+  await expect(webMcpStatus).toHaveAttribute("data-host", "linked");
+  await expect(webMcpStatus).toHaveText("MCP");
   await expect(page.getByTestId("save-status")).not.toContainText("·");
+  await webMcpStatus.click();
+  await expect(mcpActivity).toBeVisible();
+  await expect(mcpActivity).toContainText(/\d+ site tools ready/u);
+  await expect(mcpActivity).toContainText("No MCP calls in this tab yet.");
+  await webMcpStatus.click();
+  await expect(mcpActivity).toBeHidden();
   // The AI button exists only while a problem-step watch is live in this browser.
   await expect(page.locator("[data-selection-ai-wrap]")).toBeHidden();
   await expect(page.getByTestId("ai-watch-indicator")).toBeHidden();
@@ -132,7 +142,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   expect(Number(templates.templateCount)).toBeGreaterThan(0);
   expect(JSON.stringify(templates)).not.toContain("itemId");
 
-  await page.getByTestId("activities-button").click();
+  await chooseMoreTool(page, "activities-button");
   await page.getByTestId("activity-collective-inquiry-demo").click();
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
   const canvasItems = page.locator("#drawing-area [data-item-id]");
@@ -152,7 +162,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   });
   await expect(page.getByTestId("ai-watch-indicator")).toBeVisible();
   await expect(page.getByTestId("ai-watch-indicator")).toContainText("AI watching");
-
+  await expect(webMcpStatus).toHaveAttribute("data-state", "watch");
   const askAi = page.getByTestId("selection-ai");
   await expect(askAi).toBeVisible();
   await expect(askAi).toBeEnabled();
@@ -170,6 +180,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
     },
     { watchToken: String(watchStart.watchToken), afterSeq: Number(watchStart.nextSeq) },
   );
+  await expect(webMcpStatus).toHaveAttribute("data-state", "active");
   await askAi.click();
   const aiMenu = page.getByTestId("ai-assist-menu");
   await expect(aiMenu).toBeVisible();
@@ -229,10 +240,19 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   );
   expect(answered).toMatchObject({ status: "commented", stepAlias, writtenBy: "ai" });
   await expect(page.locator("[data-comments-count]")).toHaveText("1");
+  await expect(webMcpStatus).toHaveAttribute("data-state", "watch");
+  await webMcpStatus.click();
+  await expect(mcpActivity).toContainText("insert_comment");
+  await expect(mcpActivity).toContainText("Completed");
+  await webMcpStatus.click();
+  await expect(mcpActivity).toBeHidden();
+  await openSettingsDrawer(page);
   await page.getByTestId("comments-button").click();
   const answeredDrawer = page.getByTestId("comments-drawer");
+  await expect(answeredDrawer.locator(".comment-card")).toHaveCount(1);
   await expect(answeredDrawer.locator(".comment-card .assistance-tag")).toHaveText("AI · Critique");
-  await page.getByTestId("comments-button").click();
+  await expect(answeredDrawer.locator(".comment-card strong").first()).not.toHaveText("AI");
+  await answeredDrawer.getByRole("button", { name: "Close comments" }).click();
 
   const watchResult = page.evaluate(
     ({ watchToken, afterSeq }) => {
@@ -340,6 +360,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   });
   expect(commented).toMatchObject({ status: "commented", objectKind: "sticky", writtenBy: "ai" });
   await expect(page.locator("[data-comments-count]")).toHaveText("2");
+  await openSettingsDrawer(page);
   await page.getByTestId("comments-button").click();
   const commentsDrawer = page.getByTestId("comments-drawer");
   await expect(commentsDrawer.locator(".comment-card")).toHaveCount(2);
@@ -349,7 +370,8 @@ test("a board participant can use headless WebMCP tools with neutral board attri
     "AI · Critique",
   ]);
   await expect(commentsDrawer.locator(".comment-card strong").first()).not.toHaveText("AI");
-  await page.getByTestId("comments-button").click();
+  await commentsDrawer.getByRole("button", { name: "Close comments" }).click();
+  await openSettingsDrawer(page);
 
   // Every write is one ordinary command, so each undoes on its own.
   for (const remaining of [15, 14, 13]) {

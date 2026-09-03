@@ -11,6 +11,20 @@ export type WebMcpRegistryState = {
   hostPresent: boolean;
   /** Tools this page has registered with that host and not yet withdrawn. */
   toolCount: number;
+  /** Calls that have not settled yet. */
+  activeCallCount: number;
+  /** Every tool call made during this page session, newest first. */
+  calls: readonly WebMcpCallRecord[];
+};
+
+export type WebMcpCallStatus = "active" | "succeeded" | "failed";
+
+export type WebMcpCallRecord = {
+  id: number;
+  toolName: string;
+  status: WebMcpCallStatus;
+  startedAt: number;
+  completedAt: number | null;
 };
 
 /**
@@ -39,6 +53,9 @@ export function webMcpToolEnabled(name: string): boolean {
 const registeredToolNames = new Set<string>();
 const definedTools = new Map<string, WebMcpToolDefinition>();
 const registryListeners = new Set<(state: WebMcpRegistryState) => void>();
+const webMcpCalls: WebMcpCallRecord[] = [];
+export const MAX_WEBMCP_COMPLETED_CALLS = 100;
+let nextWebMcpCallId = 1;
 
 function hostPresent(): boolean {
   return (
@@ -56,7 +73,12 @@ export function webMcpToolDefinitions(): ReadonlyMap<string, WebMcpToolDefinitio
 }
 
 export function webMcpRegistryState(): WebMcpRegistryState {
-  return { hostPresent: hostPresent(), toolCount: registeredToolNames.size };
+  return {
+    hostPresent: hostPresent(),
+    toolCount: registeredToolNames.size,
+    activeCallCount: webMcpCalls.filter((call) => call.status === "active").length,
+    calls: webMcpCalls.map((call) => ({ ...call })),
+  };
 }
 
 /** Subscribes to registry changes and returns an unsubscribe function. */
@@ -80,6 +102,42 @@ function announceRegistryChange(): void {
   }
 }
 
+function startToolCall(toolName: string): number {
+  const id = nextWebMcpCallId++;
+  webMcpCalls.unshift({
+    id,
+    toolName,
+    status: "active",
+    startedAt: Date.now(),
+    completedAt: null,
+  });
+  announceRegistryChange();
+  return id;
+}
+
+function finishToolCall(id: number, status: Exclude<WebMcpCallStatus, "active">): void {
+  const index = webMcpCalls.findIndex((call) => call.id === id);
+  if (index === -1) return;
+  const call = webMcpCalls[index];
+  if (!call) return;
+  webMcpCalls[index] = { ...call, status, completedAt: Date.now() };
+  trimCompletedCalls();
+  announceRegistryChange();
+}
+
+/** Retains every active call plus a bounded newest-first history of completed calls. */
+function trimCompletedCalls(): void {
+  let completed = 0;
+  for (let index = 0; index < webMcpCalls.length; index += 1) {
+    const call = webMcpCalls[index];
+    if (!call || call.status === "active") continue;
+    completed += 1;
+    if (completed <= MAX_WEBMCP_COMPLETED_CALLS) continue;
+    webMcpCalls.splice(index, 1);
+    index -= 1;
+  }
+}
+
 /**
  * Registers one tool and keeps a page-wide count of what is currently exposed, so the board can
  * show how many tools a visiting host can see. A tool missing from ENABLED_WEBMCP_TOOLS is
@@ -94,10 +152,23 @@ export async function registerWebMcpTool(
 ): Promise<void> {
   if (options?.signal?.aborted) return;
   definedTools.set(tool.name, tool);
-  const exposed = withExecutionSignal(tool);
   options?.signal?.addEventListener("abort", () => definedTools.delete(tool.name), { once: true });
   if (!webMcpToolEnabled(tool.name)) return;
-  await modelContext.registerTool(exposed, options);
+  const trackedTool: WebMcpToolDefinition = {
+    ...tool,
+    execute: async (input, executionOptions) => {
+      const callId = startToolCall(tool.name);
+      try {
+        const result = await tool.execute(input, executionOptions);
+        finishToolCall(callId, "succeeded");
+        return result;
+      } catch (error) {
+        finishToolCall(callId, "failed");
+        throw error;
+      }
+    },
+  };
+  await modelContext.registerTool(withExecutionSignal(trackedTool), options);
   if (options?.signal?.aborted) return;
   registeredToolNames.add(tool.name);
   options?.signal?.addEventListener(

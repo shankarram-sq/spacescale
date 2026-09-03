@@ -1,12 +1,15 @@
 import { expect, type Page, test } from "@playwright/test";
 import {
   canvasPoint,
+  chooseMoreTool,
   closeAccessDrawer,
   createBoard,
   createInvite,
+  expandToolPermissions,
   isolatedContextOptions,
   moveItem,
   openInvite,
+  openMoreTools,
   waitForBoard,
 } from "./helpers";
 
@@ -23,6 +26,7 @@ async function enableImages(page: Page): Promise<void> {
   await page.getByTestId("settings-button").click();
   const drawer = page.getByTestId("settings-drawer");
   await expect(drawer).toBeVisible();
+  await expandToolPermissions(page);
   // Images are on by default; the helper only confirms the setting and the tool are live.
   const toggle = drawer.getByRole("checkbox", { name: "Enable Images" });
   await expect(toggle).toBeChecked();
@@ -33,7 +37,7 @@ async function enableImages(page: Page): Promise<void> {
 
 async function uploadWithPicker(page: Page): Promise<void> {
   const chooser = page.waitForEvent("filechooser");
-  await page.getByTestId("tool-image").click();
+  await chooseMoreTool(page, "tool-image");
   await (await chooser).setFiles(PNG_FILE);
 }
 
@@ -189,6 +193,7 @@ test("image cards converge, remain private, persist, and obey live classroom pol
     await page.getByTestId("settings-button").click();
     const drawer = page.getByTestId("settings-drawer");
     await expect(drawer).toBeVisible();
+    await expandToolPermissions(page);
     await drawer.locator("button[data-policy='owner_only']").click();
     await expect(editor.getByTestId("tool-image")).toBeDisabled();
     await expect(page.getByTestId("tool-image")).toBeEnabled();
@@ -252,6 +257,7 @@ test("failed, offline, paste, drop, and responsive image flows stay usable", asy
   await expect(images.last()).toHaveAttribute("data-image-state", "ready");
 
   await page.setViewportSize({ width: 360, height: 640 });
+  await openMoreTools(page);
   const imageTool = page.getByTestId("tool-image");
   await imageTool.scrollIntoViewIfNeeded();
   await expect(imageTool).toHaveAttribute("aria-label", "Add image (I)");

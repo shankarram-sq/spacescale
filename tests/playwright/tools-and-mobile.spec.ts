@@ -1,5 +1,13 @@
 import { expect, type Page, test } from "@playwright/test";
-import { canvasPoint, createBoard, dispatchSyntheticPointerGesture, drawShape } from "./helpers";
+import {
+  canvasPoint,
+  createBoard,
+  dispatchSyntheticPointerGesture,
+  drawShape,
+  expandToolPermissions,
+  openMoreTools,
+  openSettingsDrawer,
+} from "./helpers";
 
 async function setRange(page: Page, selector: string, value: number): Promise<void> {
   await page.locator(selector).evaluate((node, nextValue) => {
@@ -49,7 +57,7 @@ test("line, text, styles, constrained shapes, eraser, and pen input commit canon
   const editor = page.getByTestId("canvas-text-editor");
   await expect(editor).toBeVisible();
   await editor.fill("Shared words");
-  await editor.press("Control+Enter");
+  await editor.press("Enter");
   const text = page.locator("#drawing-area .board-item-text");
   await expect(text).toHaveCount(1);
   await expect(text).toContainText("Shared words");
@@ -217,10 +225,35 @@ test("board shortcuts stay disabled while text and sticky editors are active", a
   await expect(textEditor).toBeFocused();
   await expect(textEditor).toHaveValue(`Text ${shortcutText}`);
   await expect(textTool).toHaveAttribute("aria-pressed", "true");
+  await expect(textEditor).toHaveAttribute("rows", "1");
+  expect(
+    await textEditor.evaluate((node) => {
+      const style = getComputedStyle(node);
+      return {
+        width: style.width,
+        minHeight: style.minHeight,
+        padding: style.padding,
+        fontSize: style.fontSize,
+      };
+    }),
+  ).toEqual({
+    width: "240px",
+    minHeight: "32px",
+    padding: "3px 5px",
+    fontSize: "20px",
+  });
   await textEditor.press("Control+Enter");
+  await expect(textEditor).toBeVisible();
+  await expect(textEditor).toBeFocused();
+  await expect(textEditor).toHaveValue(`Text ${shortcutText}\n`);
+  await textEditor.type("Continued");
+  await textEditor.press("Enter");
+  await expect(textEditor).toHaveCount(0);
+  await expect(page.getByTestId("tool-select")).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#drawing-area .board-item-text")).toContainText(
     `Text ${shortcutText}`,
   );
+  await expect(page.locator("#drawing-area .board-item-text")).toContainText("Continued");
 
   const stickyPoint = await canvasPoint(page, 0.68, 0.3);
   const stickyTool = page.getByTestId("tool-sticky");
@@ -255,6 +288,7 @@ test("Settings feature toggles hide and restore a tool live", async ({ page }, t
   await page.getByTestId("settings-button").click();
   const settingsDrawer = page.getByTestId("settings-drawer");
   await expect(settingsDrawer).toBeVisible();
+  await expandToolPermissions(page);
   const pencilToggle = settingsDrawer.getByRole("checkbox", { name: "Enable Pencil" });
   await expect(pencilToggle).toBeChecked();
 
@@ -297,25 +331,55 @@ test("the complete board remains usable at a 320px viewport", async ({ page }, t
   expect(layout.canvas?.width).toBeGreaterThan(240);
   expect(layout.canvas?.right).toBeLessThanOrEqual(320);
   const floatingControls = await page.evaluate(() => {
-    const history = document.querySelector(".history-controls")?.getBoundingClientRect();
     const zoom = document.querySelector(".zoom-controls")?.getBoundingClientRect();
     return {
-      history: history ? { top: history.top, bottom: history.bottom } : null,
       zoom: zoom ? { top: zoom.top, bottom: zoom.bottom } : null,
     };
   });
-  expect(floatingControls.history).not.toBeNull();
   expect(floatingControls.zoom).not.toBeNull();
-  expect(floatingControls.history?.bottom ?? 0).toBeLessThan(
-    floatingControls.zoom?.top ?? Number.POSITIVE_INFINITY,
-  );
+  await expect(page.locator(".history-controls")).toHaveCount(0);
+  const mobileSettings = await openSettingsDrawer(page);
+  await expect(mobileSettings.locator(".settings-history-controls")).toBeVisible();
+  await mobileSettings.getByRole("button", { name: "Close settings" }).click();
+  const rail = page.getByTestId("tool-rail");
+  const scrollBack = page.getByRole("button", { name: "Scroll tools left" });
+  const scrollForward = page.getByRole("button", { name: "Scroll tools right" });
+  await expect(scrollBack).toBeVisible();
+  await expect(scrollForward).toBeVisible();
+  await expect(scrollBack).toBeDisabled();
+  await expect(scrollForward).toBeEnabled();
+  const initialScrollLeft = await rail.evaluate((node) => node.scrollLeft);
+  await scrollForward.click();
+  await expect
+    .poll(async () => rail.evaluate((node) => node.scrollLeft))
+    .toBeGreaterThan(initialScrollLeft);
+  await expect(scrollBack).toBeEnabled();
+  await scrollBack.click();
+  await expect.poll(async () => rail.evaluate((node) => node.scrollLeft)).toBe(0);
 
   const tools = page.getByTestId("tool-rail").locator("button[data-tool]");
-  await expect(tools).toHaveCount(13);
+  await expect(tools).toHaveCount(8);
   await expect(page.getByTestId("tool-image")).toHaveAttribute("aria-label", "Add image (I)");
   await expect(page.getByTestId("tool-image").locator("svg")).toHaveCount(1);
   await expect(page.getByTestId("tool-eraser").locator("svg")).toHaveCount(1);
-  await expect(page.getByTestId("tool-image")).toBeDisabled();
+  await expect(page.getByTestId("tool-image")).toBeEnabled();
+  await openMoreTools(page);
+  const moreMenu = page.getByTestId("tools-menu");
+  for (const testId of [
+    "tool-stamp",
+    "tool-image",
+    "tool-video",
+    "activities-button",
+    "tool-table",
+  ]) {
+    const nestedTool = moreMenu.getByTestId(testId);
+    await expect(nestedTool).toHaveCount(1);
+    expect(
+      await nestedTool.evaluate((node) => node.closest("[data-testid='tools-menu']") !== null),
+    ).toBe(true);
+  }
+  await page.keyboard.press("Escape");
+
   for (const tool of await tools.all()) {
     if (!(await tool.isVisible())) continue;
     await tool.scrollIntoViewIfNeeded();
@@ -328,6 +392,7 @@ test("the complete board remains usable at a 320px viewport", async ({ page }, t
   await page.getByTestId("tool-rectangle").click();
   const shapeMenu = page.getByTestId("shape-menu");
   await expect(shapeMenu).toBeVisible();
+  await expect(shapeMenu.getByTestId("tool-line")).toBeVisible();
   // The menu must open directly above the tool rail, not float mid-canvas.
   const railBounds = await page.getByTestId("tool-rail").boundingBox();
   const menuBounds = await shapeMenu.boundingBox();
@@ -356,7 +421,7 @@ test("the complete board remains usable at a 320px viewport", async ({ page }, t
   await page.getByRole("button", { name: /^Text/u }).click();
   await page.mouse.click(textPoint.x, textPoint.y);
   await page.getByTestId("canvas-text-editor").fill("Mobile note");
-  await page.getByTestId("canvas-text-editor").press("Control+Enter");
+  await page.getByTestId("canvas-text-editor").press("Enter");
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
   await page.getByTestId("tool-select").click();
   await page.locator("#drawing-area .board-item-text").click();
@@ -389,4 +454,5 @@ test("the complete board remains usable at a 320px viewport", async ({ page }, t
   await drawer.getByRole("button", { name: "Close access panel" }).click();
   await expect(drawer).toBeHidden();
   await expect(page.locator("#board-canvas")).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("pocket-canvas.png") });
 });

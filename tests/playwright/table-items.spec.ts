@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
+  chooseMoreTool,
   closeAccessDrawer,
   createBoard,
   createInvite,
@@ -26,7 +27,7 @@ test("tables insert, edit collaboratively, copy, delete, and reload", async ({
 
     // Editors may only edit their own work, so the editor inserts the table and
     // the owner (who may edit anything) fills in the header cell.
-    await editor.getByTestId("tool-table").click();
+    await chooseMoreTool(editor, "tool-table");
     const picker = editor.getByTestId("table-picker");
     await expect(picker).toBeVisible();
     await expect(picker.getByLabel("Table columns")).toHaveValue("3");
