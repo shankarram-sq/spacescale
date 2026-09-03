@@ -5,6 +5,7 @@ challenge a mistaken diagram, and add actionable feedback to the same live
 canvas where students are working.**
 
 [Live demo](https://webmcp.spacescale.net/) ·
+[Hackathon pitch](docs/hackathon-build/pitch.md) ·
 [Devpost submission draft](devpost-submission.md) ·
 [3-minute demo runbook](docs/hackathon-build/demo-runbook.md) ·
 [Implementation spec](docs/hackathon-build/spec.md) ·
