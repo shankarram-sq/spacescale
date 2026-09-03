@@ -10,6 +10,7 @@ import {
 import { resolveTextFontWeight, textFontStack } from "@collab/protocol";
 import { STAMP_SVG_PATHS } from "@collab/svg-export";
 import { summarizeBoardVotes, type VoteSummary } from "../activities/voting";
+import { containsMathMarkup, typesetMath } from "../mathjax";
 import {
   isRotatableObjectItem,
   isScalableObjectItem,
@@ -50,7 +51,13 @@ import type {
   ZoneGeometry,
   ZoneStyle,
 } from "../types";
-import { tokenizeSafeLinks } from "./links";
+import {
+  tokenizeSafeLinks,
+  VIDEO_EMBED_HEIGHT,
+  VIDEO_EMBED_WIDTH,
+  type VideoEmbed,
+  videoEmbedFromText,
+} from "./links";
 import { type BoardModel, type Bounds, itemBounds as boardItemBounds } from "./model";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -1275,7 +1282,12 @@ function itemNode(
       node = protractorNode(item.geometry, item.style);
       break;
     case "text": {
-      node = textNode(item.geometry, item.style);
+      const video = videoEmbedFromText(item.geometry.text);
+      node = video
+        ? videoEmbedNode(item.geometry, item.style, video)
+        : containsMathMarkup(item.geometry.text)
+          ? mathTextNode(item.geometry, item.style)
+          : textNode(item.geometry, item.style);
       break;
     }
     case "sticky":
@@ -1364,6 +1376,104 @@ export function textNode(geometry: TextGeometry, style: TextStyle): SVGTextEleme
     appendLinkifiedLine(text, line, geometry.x, index > 0 ? "1.2em" : undefined);
   });
   return text;
+}
+
+function mathTextNode(geometry: TextGeometry, style: TextStyle): SVGGElement {
+  const lines = geometry.text.split("\n");
+  const estimatedWidth =
+    Math.max(1, ...lines.map((line) => [...line].length)) * style.fontSize * 0.7;
+  const width = Math.max(180, Math.min(720, estimatedWidth));
+  const height = Math.max(style.fontSize * 2.2, lines.length * style.fontSize * 1.5);
+  const node = svgElement("g");
+  node.classList.add("board-math-text");
+  node.append(
+    mathForeignObject(
+      geometry.x,
+      geometry.y - style.fontSize,
+      width,
+      height,
+      geometry.text,
+      style,
+      "board-math-content",
+    ),
+  );
+  return node;
+}
+
+function videoEmbedNode(geometry: TextGeometry, style: TextStyle, video: VideoEmbed): SVGGElement {
+  const node = svgElement("g");
+  node.classList.add("video-embed-item");
+  node.dataset.videoProvider = video.provider;
+  node.setAttribute("role", "group");
+  node.setAttribute("aria-label", video.title);
+
+  const foreign = svgElement("foreignObject");
+  foreign.setAttribute("x", String(geometry.x));
+  foreign.setAttribute("y", String(geometry.y - style.fontSize));
+  foreign.setAttribute("width", String(VIDEO_EMBED_WIDTH));
+  foreign.setAttribute("height", String(VIDEO_EMBED_HEIGHT));
+
+  const card = document.createElement("div");
+  card.className = "video-embed-card";
+  const heading = document.createElement("a");
+  heading.className = "video-embed-heading";
+  heading.href = video.sourceUrl;
+  heading.target = "_blank";
+  heading.rel = "noopener noreferrer";
+  heading.referrerPolicy = "no-referrer";
+  heading.textContent = `${video.title} · open in new tab`;
+  const frame = document.createElement("iframe");
+  frame.className = "video-embed-frame";
+  frame.src = video.embedUrl;
+  frame.title = video.title;
+  frame.loading = "lazy";
+  frame.referrerPolicy = "strict-origin-when-cross-origin";
+  frame.allow =
+    "accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture; web-share";
+  frame.allowFullscreen = true;
+  card.append(heading, frame);
+  foreign.append(card);
+
+  const border = svgElement("rect");
+  border.classList.add("video-embed-border");
+  border.setAttribute("x", String(geometry.x));
+  border.setAttribute("y", String(geometry.y - style.fontSize));
+  border.setAttribute("width", String(VIDEO_EMBED_WIDTH));
+  border.setAttribute("height", String(VIDEO_EMBED_HEIGHT));
+  border.setAttribute("rx", "12");
+  border.setAttribute("pointer-events", "none");
+  node.append(foreign, border);
+  return node;
+}
+
+function mathForeignObject(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  value: string,
+  style: TextStyle | StickyStyle | TableStyle | ZoneStyle,
+  className: string,
+  defaultWeight = "normal",
+): SVGForeignObjectElement {
+  const foreign = svgElement("foreignObject");
+  foreign.setAttribute("x", String(x));
+  foreign.setAttribute("y", String(y));
+  foreign.setAttribute("width", String(Math.max(1, width)));
+  foreign.setAttribute("height", String(Math.max(1, height)));
+  const content = document.createElement("div");
+  content.className = className;
+  content.textContent = value;
+  content.style.opacity = String(style.opacity);
+  content.style.color = "color" in style ? style.color : style.textColor;
+  content.style.fontSize = `${style.fontSize}px`;
+  content.style.fontFamily = textFontStack(style.fontFamily ?? "sans");
+  content.style.fontWeight = resolveTextFontWeight(style.fontWeight, defaultWeight);
+  content.style.fontStyle = style.fontStyle ?? "normal";
+  content.style.textDecoration = style.textDecoration ?? "none";
+  foreign.append(content);
+  typesetMath(content);
+  return foreign;
 }
 
 export function creatorInitials(displayName: string): string {
@@ -1485,20 +1595,32 @@ export function zoneNode(itemId: string, geometry: ZoneGeometry, style: ZoneStyl
   border.setAttribute("stroke-width", "1.5");
   border.setAttribute("vector-effect", "non-scaling-stroke");
 
-  const title = svgElement("text");
+  const normalizedTitle = geometry.title.replace(/\r\n?|\n/gu, " ");
+  const mathTitle = containsMathMarkup(normalizedTitle);
+  const title = mathTitle
+    ? mathForeignObject(
+        geometry.x + ZONE_TITLE_PADDING,
+        geometry.y + ZONE_TITLE_PADDING,
+        geometry.width - ZONE_TITLE_PADDING * 2,
+        titleBandHeight - ZONE_TITLE_PADDING,
+        normalizedTitle,
+        style,
+        "zone-math-content",
+        "700",
+      )
+    : svgElement("text");
   title.classList.add("zone-title");
-  title.setAttribute("x", String(geometry.x + ZONE_TITLE_PADDING));
-  title.setAttribute("y", String(geometry.y + ZONE_TITLE_PADDING + style.fontSize));
-  title.setAttribute("fill", style.textColor);
-  title.setAttribute("font-size", String(style.fontSize));
-  applyTypography(title, style, "700");
-  title.setAttribute("clip-path", `url(#${titleClipId})`);
-  title.setAttribute("xml:space", "preserve");
-  appendLinkifiedLine(
-    title,
-    geometry.title.replace(/\r\n?|\n/gu, " "),
-    geometry.x + ZONE_TITLE_PADDING,
-  );
+  if (!mathTitle) {
+    const plainTitle = title as SVGTextElement;
+    plainTitle.setAttribute("x", String(geometry.x + ZONE_TITLE_PADDING));
+    plainTitle.setAttribute("y", String(geometry.y + ZONE_TITLE_PADDING + style.fontSize));
+    plainTitle.setAttribute("fill", style.textColor);
+    plainTitle.setAttribute("font-size", String(style.fontSize));
+    applyTypography(plainTitle, style, "700");
+    plainTitle.setAttribute("clip-path", `url(#${titleClipId})`);
+    plainTitle.setAttribute("xml:space", "preserve");
+    appendLinkifiedLine(plainTitle, normalizedTitle, geometry.x + ZONE_TITLE_PADDING);
+  }
 
   const lockBadge = svgElement("g");
   lockBadge.classList.add("zone-lock-badge");
@@ -1616,7 +1738,20 @@ export function tableNode(itemId: string, geometry: TableGeometry, style: TableS
       cell.append(background);
 
       const lines = wrapTableCellText(value, columnWidth, rowHeight, style.fontSize);
-      if (lines.length > 0) {
+      if (value && containsMathMarkup(value)) {
+        const math = mathForeignObject(
+          x + TABLE_CELL_PADDING,
+          y + TABLE_CELL_PADDING,
+          columnWidth - TABLE_CELL_PADDING * 2,
+          rowHeight - TABLE_CELL_PADDING * 2,
+          value,
+          style,
+          "table-math-content",
+          isHeader ? "700" : "500",
+        );
+        math.setAttribute("clip-path", `url(#${clipId})`);
+        cell.append(math);
+      } else if (lines.length > 0) {
         const text = svgElement("text");
         text.classList.add("table-cell-text");
         text.setAttribute("x", String(x + TABLE_CELL_PADDING));
@@ -1815,26 +1950,40 @@ function stickyNode(geometry: StickyGeometry, style: StickyStyle): SVGSVGElement
   background.setAttribute("rx", String(STICKY_CORNER_RADIUS));
   background.setAttribute("fill", style.fill);
 
-  const text = svgElement("text");
+  const mathText = containsMathMarkup(geometry.text);
+  const text = mathText
+    ? mathForeignObject(
+        STICKY_PADDING,
+        STICKY_PADDING,
+        geometry.width - STICKY_PADDING * 2,
+        geometry.height - STICKY_PADDING * 2,
+        geometry.text,
+        style,
+        "sticky-text sticky-math-content",
+      )
+    : svgElement("text");
   text.classList.add("sticky-text");
-  text.setAttribute("x", String(STICKY_PADDING));
-  text.setAttribute("y", String(STICKY_PADDING + style.fontSize));
-  text.setAttribute("fill", style.textColor);
-  text.setAttribute("font-size", String(style.fontSize));
-  applyTypography(text, style);
-  text.setAttribute("xml:space", "preserve");
-  for (const [index, line] of wrapStickyText(
-    geometry.text,
-    geometry.width,
-    geometry.height,
-    style.fontSize,
-  ).entries()) {
-    appendLinkifiedLine(
-      text,
-      line,
-      STICKY_PADDING,
-      index > 0 ? `${STICKY_LINE_HEIGHT}em` : undefined,
-    );
+  if (!mathText) {
+    const plainText = text as SVGTextElement;
+    plainText.setAttribute("x", String(STICKY_PADDING));
+    plainText.setAttribute("y", String(STICKY_PADDING + style.fontSize));
+    plainText.setAttribute("fill", style.textColor);
+    plainText.setAttribute("font-size", String(style.fontSize));
+    applyTypography(plainText, style);
+    plainText.setAttribute("xml:space", "preserve");
+    for (const [index, line] of wrapStickyText(
+      geometry.text,
+      geometry.width,
+      geometry.height,
+      style.fontSize,
+    ).entries()) {
+      appendLinkifiedLine(
+        plainText,
+        line,
+        STICKY_PADDING,
+        index > 0 ? `${STICKY_LINE_HEIGHT}em` : undefined,
+      );
+    }
   }
   node.setAttribute("opacity", String(style.opacity));
   node.append(background, text);

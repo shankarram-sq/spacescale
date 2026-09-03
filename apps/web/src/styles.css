@@ -243,6 +243,12 @@ textarea:focus-visible,
   line-height: 1;
 }
 
+.access-button-mark {
+  display: none;
+  font-size: 17px;
+  line-height: 1;
+}
+
 .spotlight-toggle-mark {
   width: 9px;
   height: 9px;
@@ -445,7 +451,7 @@ button:disabled {
   left: 50%;
   bottom: max(14px, env(safe-area-inset-bottom));
   width: max-content;
-  max-width: calc(100% - 172px);
+  max-width: calc(100% - 24px);
   display: flex;
   flex-direction: row;
   align-items: center;
@@ -1268,13 +1274,90 @@ button:disabled {
 }
 
 .zoom-controls {
+  top: 12px;
   right: 12px;
-  bottom: max(12px, env(safe-area-inset-bottom));
+  bottom: auto;
 }
 
 .zoom-controls button[data-zoom-reset] {
   min-width: 52px;
   color: var(--muted);
+}
+
+.board-math-content,
+.sticky-math-content,
+.table-math-content,
+.zone-math-content {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.board-math-content mjx-container,
+.sticky-math-content mjx-container,
+.table-math-content mjx-container,
+.zone-math-content mjx-container,
+.comment-body mjx-container {
+  max-width: 100%;
+  margin-block: 0.1em;
+}
+
+.board-math-content mjx-container > svg,
+.sticky-math-content mjx-container > svg,
+.table-math-content mjx-container > svg,
+.zone-math-content mjx-container > svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.video-embed-card {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-rows: 30px minmax(0, 1fr);
+  overflow: hidden;
+  border-radius: 12px;
+  background: #111827;
+}
+
+.video-embed-heading {
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  overflow: hidden;
+  background: #fff;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 700;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-embed-heading:hover {
+  color: var(--blue);
+}
+
+.video-embed-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #111827;
+}
+
+.video-embed-border {
+  fill: none;
+  stroke: rgb(30 30 30 / 28%);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.tool-glyph-video {
+  color: #e5484d;
+  font-size: 19px;
 }
 
 .style-wrap {
@@ -2968,6 +3051,44 @@ button:disabled {
   }
 }
 
+@media (max-width: 980px) {
+  .topbar {
+    gap: 6px;
+  }
+
+  .wordmark-text,
+  .activities-button-label,
+  .spotlight-toggle-label,
+  .comments-button-label,
+  .access-button-label,
+  .wide-label {
+    display: none;
+  }
+
+  .topbar-actions {
+    gap: 3px;
+  }
+
+  .topbar-button,
+  .icon-button {
+    min-width: 34px;
+    padding-inline: 7px;
+  }
+
+  .access-button-mark {
+    display: inline;
+  }
+
+  .comments-button,
+  .people-button {
+    gap: 4px;
+  }
+
+  .board-title-wrap {
+    width: min(100%, 240px);
+  }
+}
+
 @media (max-width: 650px) {
   .workspace {
     grid-template-rows: 52px minmax(0, 1fr);
@@ -3052,11 +3173,7 @@ button:disabled {
   }
 
   .avatar-stack {
-    display: none;
-  }
-
-  .wide-label {
-    display: none;
+    display: inline-flex;
   }
 
   .board-stage {
@@ -3096,8 +3213,9 @@ button:disabled {
   }
 
   .zoom-controls {
+    top: 8px;
     right: 8px;
-    bottom: max(126px, calc(env(safe-area-inset-bottom) + 126px));
+    bottom: auto;
   }
 
   .zoom-controls button[data-zoom-fit],
@@ -3126,10 +3244,6 @@ button:disabled {
 
   .selection-actions select {
     min-width: 76px;
-  }
-
-  .canvas-wrap:has(.selection-actions:not([hidden])) .zoom-controls {
-    display: none;
   }
 }
 
@@ -4152,7 +4266,7 @@ button:disabled {
 }
 
 @media (max-width: 650px) {
-  .comments-button > span:nth-child(2) {
+  .comments-button-label {
     display: none;
   }
 

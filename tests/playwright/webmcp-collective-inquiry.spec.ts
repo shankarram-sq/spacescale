@@ -57,7 +57,9 @@ test("a board participant can use headless WebMCP tools with neutral board attri
       "add_idea_sensemaking",
       "add_learning_action_plan",
       "add_thinking_expansion",
+      "explain_selected_ideas",
       "inspect_selected_board_visual",
+      "inspire_from_selected_ideas",
       "list_class_collaboration_modes",
       "read_live_class_vote",
       "read_selected_class_ideas",
@@ -78,6 +80,11 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   });
   expect(capabilities).toMatchObject({
     availableModeCount: 27,
+    textRendering: {
+      engine: "MathJax 4",
+      syntax: "TeX",
+      surfaces: ["canvas_text", "sticky_notes", "table_cells", "section_titles", "comments"],
+    },
     visualReader: {
       tool: "inspect_selected_board_visual",
       purpose: "handwriting_sketch_and_spatial_analysis",
@@ -164,6 +171,27 @@ test("a board participant can use headless WebMCP tools with neutral board attri
     ),
   ).toBe(true);
   expect(JSON.stringify(readResult)).not.toContain("itemId");
+
+  const guidedReads = await page.evaluate(async () => {
+    const signal = new AbortController().signal;
+    const inspire = window.__spaceScaleWebMcpTools.inspire_from_selected_ideas;
+    const explain = window.__spaceScaleWebMcpTools.explain_selected_ideas;
+    if (!inspire || !explain) throw new Error("The inspire/explain tools were not registered.");
+    return Promise.all([inspire.execute({}, { signal }), explain.execute({}, { signal })]);
+  });
+  expect(guidedReads[0]).toMatchObject({
+    purpose: "inspire",
+    responseGuidance: {
+      distinguishSourceFromSuggestion: true,
+      preserveOriginalContributions: true,
+    },
+    textRendering: { engine: "MathJax 4" },
+  });
+  expect(guidedReads[1]).toMatchObject({
+    purpose: "explain",
+    responseGuidance: { citeSourceAliases: true, surfaceAmbiguity: true },
+    textRendering: { engine: "MathJax 4" },
+  });
 
   const rejectedSafeguards = await page.evaluate(
     async ({ selectionToken }) => {

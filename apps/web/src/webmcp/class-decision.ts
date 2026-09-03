@@ -8,7 +8,13 @@ import {
 import { isVoteTable, summarizeVotes } from "../activities/voting";
 import type { Bounds } from "../board/model";
 import type { BoardItem, DurableOperation } from "../types";
-import { awaitDialogDecision, isRecord, requiredText, trimSnapshots } from "./shared";
+import {
+  awaitDialogDecision,
+  isRecord,
+  requiredText,
+  trimSnapshots,
+  WEBMCP_MATHJAX_GUIDANCE,
+} from "./shared";
 
 const READ_VOTE_TOOL = "read_live_class_vote";
 const STAGE_DECISION_TOOL = "stage_class_decision";
@@ -75,8 +81,7 @@ export class ClassDecisionWebMcp {
       await modelContext.registerTool(
         {
           name: STAGE_DECISION_TOOL,
-          description:
-            "Stage a class decision from a live SpaceScale vote result. Propose a chosen direction, rationale, small pilot, success measure, an explicit minority concern that must remain visible, and the next open question. SpaceScale shows a preview and changes nothing until the participant approves in the app.",
+          description: `Stage a class decision from a live SpaceScale vote result. Propose a chosen direction, rationale, small pilot, success measure, an explicit minority concern that must remain visible, and the next open question. SpaceScale shows a preview and changes nothing until the participant approves in the app. ${WEBMCP_MATHJAX_GUIDANCE}`,
           inputSchema: {
             type: "object",
             additionalProperties: false,

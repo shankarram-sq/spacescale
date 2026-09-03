@@ -59,7 +59,14 @@ describe("gateway board routing", () => {
     const response = await SELF.fetch("http://localhost/");
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    const contentSecurityPolicy = response.headers.get("content-security-policy");
+    expect(contentSecurityPolicy).toContain("frame-ancestors 'none'");
+    expect(contentSecurityPolicy).toContain(
+      "frame-src https://challenges.cloudflare.com https://www.youtube-nocookie.com https://player.vimeo.com",
+    );
+    expect(contentSecurityPolicy).toContain("font-src 'self' data:");
+    expect(contentSecurityPolicy).toContain("style-src 'self' 'sha256-");
+    expect(contentSecurityPolicy).not.toContain("'unsafe-inline'");
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     expect(response.headers.get("x-frame-options")).toBe("DENY");
     expect(response.headers.get("cross-origin-opener-policy")).toBe("same-origin");

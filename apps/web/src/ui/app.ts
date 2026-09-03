@@ -27,6 +27,7 @@ import {
   buildActivityBatch,
 } from "../activities/templates";
 import { buildClearVoteDeletes, isVoteTable, summarizeVotes } from "../activities/voting";
+import { VIDEO_EMBED_HEIGHT, VIDEO_EMBED_WIDTH, videoEmbedFromText } from "../board/links";
 import { BoardModel, SequenceError } from "../board/model";
 import { BoardRenderer, STICKY_PADDING } from "../board/renderer";
 import {
@@ -35,6 +36,7 @@ import {
   PRODUCT_HOME_LABEL,
   PRODUCT_NAME,
 } from "../branding";
+import { typesetMath } from "../mathjax";
 import { DRAWING_COLOR_VALUES, DRAWING_COLORS, STICKY_COLORS, UI_COLORS } from "../palette";
 import {
   DurableOutbox,
@@ -979,6 +981,7 @@ export class BoardApp {
   private textEditorClosing = false;
   private textEditorCloseAttempt = 0;
   private imageUploadInFlight = false;
+  private videoEmbedPending = false;
   private imageAltEdit: ImageAltEdit | null = null;
   private tableCellEditor: HTMLTextAreaElement | null = null;
   private tableCellEdit: TableCellEdit | null = null;
@@ -1056,6 +1059,8 @@ export class BoardApp {
   private readonly arrangeButton: HTMLButtonElement;
   private readonly arrangeMenu: HTMLElement;
   private readonly imageInput: HTMLInputElement;
+  private readonly videoEmbedDialog: HTMLDialogElement;
+  private readonly videoEmbedUrl: HTMLInputElement;
   private readonly tablePickerDialog: HTMLDialogElement;
   private readonly imageAltDialog: HTMLDialogElement;
   private readonly imageAltInput: HTMLTextAreaElement;
@@ -1153,6 +1158,12 @@ export class BoardApp {
     );
     this.arrangeMenu = query(this.selectionActions, "[data-testid='arrange-menu']", HTMLElement);
     this.imageInput = query(this.root, "[data-image-input]", HTMLInputElement);
+    this.videoEmbedDialog = query(
+      this.root,
+      "[data-testid='video-embed-dialog']",
+      HTMLDialogElement,
+    );
+    this.videoEmbedUrl = query(this.videoEmbedDialog, "[data-video-url]", HTMLInputElement);
     this.tablePickerDialog = query(this.root, "[data-testid='table-picker']", HTMLDialogElement);
     this.imageAltDialog = query(this.root, "[data-testid='image-alt-dialog']", HTMLDialogElement);
     this.imageAltInput = query(this.imageAltDialog, "[data-image-alt-input]", HTMLTextAreaElement);
@@ -1389,6 +1400,7 @@ export class BoardApp {
     this.renderer.svg.removeEventListener("dragover", this.onImageDragOver);
     this.renderer.svg.removeEventListener("drop", this.onImageDrop);
     this.tablePickerDialog.close();
+    this.videoEmbedDialog.close();
     this.closeImageAltEditor();
     this.organisationTemplateDialog.close();
     void this.closeTableCellEditor(false);
@@ -1453,17 +1465,17 @@ export class BoardApp {
               <span class="spotlight-toggle-mark" aria-hidden="true"></span>
               <span class="spotlight-toggle-label">Follow me</span>
             </button>
-            <button class="topbar-button comments-button" type="button" data-testid="comments-button" aria-controls="comments-drawer" aria-expanded="false">
+            <button class="topbar-button comments-button" type="button" data-testid="comments-button" aria-label="Comments" aria-controls="comments-drawer" aria-expanded="false" title="Comments">
               <span class="comments-button-mark" aria-hidden="true">●</span>
-              <span>Comments</span>
+              <span class="comments-button-label">Comments</span>
               <span class="comments-count" data-comments-count>0</span>
             </button>
-            <button class="topbar-button people-button" type="button" data-testid="participants-button" aria-controls="participant-drawer" aria-expanded="false">
+            <button class="topbar-button people-button" type="button" data-testid="participants-button" aria-label="People here" aria-controls="participant-drawer" aria-expanded="false" title="People here">
               <span class="avatar-stack" aria-hidden="true"><i></i><i></i></span>
               <span data-participant-count>1</span>
               <span class="wide-label">here</span>
             </button>
-            <button class="topbar-button" type="button" data-testid="access-button" aria-controls="access-drawer" aria-expanded="false">Share</button>
+            <button class="topbar-button access-button" type="button" data-testid="access-button" aria-label="Share Space" aria-controls="access-drawer" aria-expanded="false" title="Share Space"><span class="access-button-mark" aria-hidden="true">↗</span><span class="access-button-label">Share</span></button>
             <button class="icon-button settings-button" type="button" data-testid="settings-button" aria-label="Space settings" aria-controls="settings-drawer" aria-expanded="false" title="Settings">⚙</button>
             <div class="menu-wrap">
               <button class="icon-button" type="button" data-testid="export-button" aria-label="Export board" aria-controls="export-menu" aria-expanded="false" title="Export">↓</button>
@@ -1511,6 +1523,19 @@ export class BoardApp {
                 <div class="dialog-actions">
                   <button type="button" data-table-picker-cancel>Cancel</button>
                   <button class="primary-button" type="submit">Choose placement</button>
+                </div>
+              </form>
+            </dialog>
+            <dialog class="claim-dialog video-embed-dialog" data-testid="video-embed-dialog" aria-labelledby="video-embed-title" aria-describedby="video-embed-note">
+              <form data-video-embed-form>
+                <span class="eyebrow">Video</span>
+                <h2 id="video-embed-title">Embed a video</h2>
+                <p id="video-embed-note">Paste a public YouTube or Vimeo link. SpaceScale uses privacy-conscious player URLs.</p>
+                <label><span>Video URL</span><input type="url" inputmode="url" autocomplete="url" placeholder="https://www.youtube.com/watch?v=…" data-video-url required /></label>
+                <p class="dialog-field-error" data-video-error role="alert"></p>
+                <div class="dialog-actions">
+                  <button type="button" data-video-cancel>Cancel</button>
+                  <button class="primary-button" type="submit" data-video-submit>Embed video</button>
                 </div>
               </form>
             </dialog>
@@ -1724,6 +1749,17 @@ export class BoardApp {
       label.textContent = definition.dockLabel;
       button.append(glyph, label);
       rail.append(button);
+      if (definition.name === "image") {
+        const video = document.createElement("button");
+        video.type = "button";
+        video.dataset.videoEmbed = "true";
+        video.dataset.testid = "tool-video";
+        video.setAttribute("aria-label", "Embed video");
+        video.title = "Embed a YouTube or Vimeo video";
+        video.innerHTML =
+          '<span class="tool-glyph tool-glyph-video" aria-hidden="true">▶</span><span class="tool-label">Video</span>';
+        rail.append(video);
+      }
     }
     const divider = document.createElement("span");
     divider.className = "tool-divider";
@@ -2657,6 +2693,24 @@ export class BoardApp {
       this.imageInput.value = "";
       if (image) void this.uploadImage(image, this.imagePlacementCenter());
     });
+    query(this.root, "[data-video-embed]", HTMLButtonElement).addEventListener("click", () =>
+      this.openVideoEmbedDialog(),
+    );
+    query(this.videoEmbedDialog, "[data-video-embed-form]", HTMLFormElement).addEventListener(
+      "submit",
+      (event) => {
+        event.preventDefault();
+        void this.addVideoEmbed();
+      },
+    );
+    query(this.videoEmbedDialog, "[data-video-cancel]", HTMLButtonElement).addEventListener(
+      "click",
+      () => this.videoEmbedDialog.close(),
+    );
+    this.videoEmbedDialog.addEventListener("close", () => {
+      this.videoEmbedUrl.value = "";
+      query(this.videoEmbedDialog, "[data-video-error]", HTMLElement).textContent = "";
+    });
     query(this.imageAltDialog, "[data-image-alt-form]", HTMLFormElement).addEventListener(
       "submit",
       (event) => {
@@ -2971,6 +3025,63 @@ export class BoardApp {
   private imagePlacementCenter(): Point {
     const bounds = this.renderer.viewport.viewBounds;
     return [(bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2];
+  }
+
+  private openVideoEmbedDialog(): void {
+    if (!this.canCommit()) {
+      this.notify("Drawing is read only.", "warning");
+      return;
+    }
+    query(this.videoEmbedDialog, "[data-video-error]", HTMLElement).textContent = "";
+    if (!this.videoEmbedDialog.open) this.videoEmbedDialog.showModal();
+    this.videoEmbedUrl.focus();
+  }
+
+  private async addVideoEmbed(): Promise<void> {
+    if (this.videoEmbedPending || !this.canCommit()) return;
+    const video = videoEmbedFromText(this.videoEmbedUrl.value);
+    const error = query(this.videoEmbedDialog, "[data-video-error]", HTMLElement);
+    if (!video) {
+      error.textContent = "Use a complete HTTPS YouTube or Vimeo video link.";
+      this.videoEmbedUrl.focus();
+      return;
+    }
+    error.textContent = "";
+    const submit = query(this.videoEmbedDialog, "[data-video-submit]", HTMLButtonElement);
+    this.videoEmbedPending = true;
+    submit.disabled = true;
+    try {
+      const center = this.imagePlacementCenter();
+      const itemId = createId();
+      const accepted = await this.commit({
+        kind: "item.create",
+        item: {
+          id: itemId,
+          kind: "text",
+          style: {
+            kind: "text",
+            color: this.style.color,
+            fontSize: this.style.fontSize,
+            fontFamily: this.style.fontFamily,
+            opacity: this.style.opacity,
+          },
+          transform: [1, 0, 0, 1, 0, 0],
+          geometry: {
+            x: center[0] - VIDEO_EMBED_WIDTH / 2,
+            y: center[1] - VIDEO_EMBED_HEIGHT / 2 + this.style.fontSize,
+            text: video.sourceUrl,
+          },
+        },
+      });
+      if (!accepted) return;
+      this.videoEmbedDialog.close();
+      this.tools.setTool("select");
+      this.tools.selectOnly([itemId]);
+      this.notify("Video embedded.", "info");
+    } finally {
+      this.videoEmbedPending = false;
+      submit.disabled = false;
+    }
   }
 
   private async uploadImage(image: File, center: Point): Promise<void> {
@@ -4299,6 +4410,10 @@ export class BoardApp {
     if (this.textEditor !== editor || attempt !== this.textEditorCloseAttempt) return;
     this.textEditorClosing = false;
     if (accepted) {
+      if (mode === "sticky" && context === null) {
+        this.tools.setTool("select");
+        this.tools.selectOnly([draftItemId]);
+      }
       this.discardTextEditor(editor);
       return;
     }
@@ -5492,6 +5607,7 @@ export class BoardApp {
       const body = document.createElement("p");
       body.className = "comment-body";
       body.textContent = comment.body;
+      typesetMath(body);
       const actions = document.createElement("div");
       actions.className = "comment-card-actions";
       const item = this.model.getItem(comment.itemId);
@@ -5790,6 +5906,11 @@ export class BoardApp {
         DRAW_TOOLS.has(name) &&
         (!canEdit || !enabled || (name === "image" && this.imageUploadInFlight));
     }
+    const videoButton = query(this.root, "[data-video-embed]", HTMLButtonElement);
+    const videoEnabled = this.bootstrap.board.features.text;
+    videoButton.hidden = !videoEnabled;
+    videoButton.disabled = !canEdit || !videoEnabled;
+    if (videoButton.disabled && this.videoEmbedDialog.open) this.videoEmbedDialog.close();
     this.setShapeMenuOpen(!this.shapeMenu.hidden);
     this.setToolsMenuOpen(!this.toolsMenu.hidden);
     this.accessButton.hidden = this.bootstrap.actor.role !== "owner" || archived;

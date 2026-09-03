@@ -29,6 +29,7 @@ import type {
   TableGeometry,
 } from "../types";
 import { isBoardItem } from "../types";
+import { VIDEO_EMBED_HEIGHT, VIDEO_EMBED_WIDTH, videoEmbedFromText } from "./links";
 
 export type Bounds = { minX: number; minY: number; maxX: number; maxY: number };
 
@@ -906,6 +907,14 @@ function geometryBounds(item: BoardItem): Bounds {
     case "stamp":
       return stampBounds(item.geometry);
     case "text": {
+      if (videoEmbedFromText(item.geometry.text)) {
+        return {
+          minX: item.geometry.x,
+          minY: item.geometry.y - item.style.fontSize,
+          maxX: item.geometry.x + VIDEO_EMBED_WIDTH,
+          maxY: item.geometry.y - item.style.fontSize + VIDEO_EMBED_HEIGHT,
+        };
+      }
       const lines = item.geometry.text.split("\n");
       const width =
         Math.max(1, ...lines.map((line) => [...line].length)) * item.style.fontSize * 0.61;

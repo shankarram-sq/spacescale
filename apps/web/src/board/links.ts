@@ -2,6 +2,16 @@ export type SafeLinkToken =
   | { kind: "text"; text: string }
   | { kind: "link"; text: string; href: string };
 
+export type VideoEmbed = {
+  provider: "youtube" | "vimeo";
+  sourceUrl: string;
+  embedUrl: string;
+  title: string;
+};
+
+export const VIDEO_EMBED_WIDTH = 360;
+export const VIDEO_EMBED_HEIGHT = 232;
+
 const HTTP_URL_CANDIDATE = /https?:\/\/[^\s<>"']+/giu;
 
 const SENTENCE_PUNCTUATION = new Set([".", ",", ";", ":", "!", "?", "…", "。", "，", "！", "？"]);
@@ -86,4 +96,60 @@ export function tokenizeSafeLinks(value: string): SafeLinkToken[] {
 
   appendText(tokens, value.slice(offset));
   return tokens;
+}
+
+/** Converts a complete YouTube or Vimeo URL into a privacy-conscious embed URL. */
+export function videoEmbedFromText(value: string): VideoEmbed | null {
+  const candidate = value.trim();
+  if (!candidate || /\s/u.test(candidate)) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password) return null;
+
+  const host = parsed.hostname.toLowerCase();
+  if (host === "youtu.be" || host === "www.youtu.be") {
+    return youtubeEmbed(parsed.pathname.split("/").filter(Boolean)[0], parsed.href);
+  }
+  if (
+    host === "youtube.com" ||
+    host === "www.youtube.com" ||
+    host === "m.youtube.com" ||
+    host === "youtube-nocookie.com" ||
+    host === "www.youtube-nocookie.com"
+  ) {
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const id =
+      parsed.pathname === "/watch"
+        ? parsed.searchParams.get("v")
+        : parts[0] === "embed" || parts[0] === "shorts" || parts[0] === "live"
+          ? parts[1]
+          : null;
+    return youtubeEmbed(id, parsed.href);
+  }
+  if (host === "vimeo.com" || host === "www.vimeo.com" || host === "player.vimeo.com") {
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const id = host === "player.vimeo.com" && parts[0] === "video" ? parts[1] : parts[0];
+    if (!id || !/^\d{5,12}$/u.test(id)) return null;
+    return {
+      provider: "vimeo",
+      sourceUrl: parsed.href,
+      embedUrl: `https://player.vimeo.com/video/${id}`,
+      title: "Vimeo video",
+    };
+  }
+  return null;
+}
+
+function youtubeEmbed(id: string | null | undefined, sourceUrl: string): VideoEmbed | null {
+  if (!id || !/^[A-Za-z0-9_-]{6,15}$/u.test(id)) return null;
+  return {
+    provider: "youtube",
+    sourceUrl,
+    embedUrl: `https://www.youtube-nocookie.com/embed/${id}`,
+    title: "YouTube video",
+  };
 }
