@@ -46,9 +46,23 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   await page.getByTestId("tool-text").click();
   await page.mouse.click(textPoint.x, textPoint.y);
   const textEditor = page.getByTestId("canvas-text-editor");
-  await textEditor.fill("Area: \\(\\pi r^2\\)");
+  await textEditor.fill(
+    "$$\\begin{pmatrix}\\frac{1}{2}\\\\\\frac{3}{4}\\\\\\frac{5}{6}\\\\\\frac{7}{8}\\end{pmatrix}$$",
+  );
   await textEditor.press("Control+Enter");
-  await expect(page.locator(".board-math-content")).toHaveAttribute("data-math-state", "ready");
+  const freeMath = page.locator(".board-math-content");
+  await expect(freeMath).toHaveAttribute("data-math-state", "ready");
+  const mathSize = await freeMath.evaluate((content) => {
+    const foreign = content.closest("foreignObject");
+    const fontSize = Number.parseFloat((content as HTMLElement).style.fontSize);
+    return {
+      height: Number(foreign?.getAttribute("height")),
+      initialHeight: fontSize * 2.2,
+      scrollHeight: (content as HTMLElement).scrollHeight,
+    };
+  });
+  expect(mathSize.height).toBeGreaterThan(mathSize.initialHeight);
+  expect(mathSize.height).toBeGreaterThanOrEqual(mathSize.scrollHeight);
 
   const sectionPoint = await canvasPoint(page, 0.28, 0.68);
   await page.getByTestId("tool-zone").click();
@@ -74,6 +88,15 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   await cellEditor.press("Control+Enter");
   await expect(table.locator(".table-math-content")).toHaveAttribute("data-math-state", "ready");
 
+  const urlTextPoint = await canvasPoint(page, 0.52, 0.5);
+  await page.getByTestId("tool-text").click();
+  await page.mouse.click(urlTextPoint.x, urlTextPoint.y);
+  const urlEditor = page.getByTestId("canvas-text-editor");
+  await urlEditor.fill("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+  await urlEditor.press("Control+Enter");
+  await expect(page.locator("#drawing-area .video-embed-item")).toHaveCount(0);
+  await expect(page.locator("#drawing-area .board-text-link")).toHaveCount(1);
+
   await page.getByTestId("tool-video").click();
   const videoDialog = page.getByRole("dialog", { name: "Embed a video" });
   await videoDialog.getByLabel("Video URL").fill("https://example.com/not-supported");
@@ -88,6 +111,11 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
     "src",
     "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ",
   );
+
+  await page.reload();
+  await expect(page.locator("#drawing-area [data-math-state='ready']")).toHaveCount(4);
+  await expect(page.locator("#drawing-area .video-embed-item")).toHaveCount(1);
+  await expect(page.locator("#drawing-area .board-text-link")).toHaveCount(1);
 
   await page.setViewportSize({ width: 840, height: 640 });
   await expect(page.locator(".comments-button-label")).toBeHidden();

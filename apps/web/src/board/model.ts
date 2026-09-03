@@ -907,7 +907,7 @@ function geometryBounds(item: BoardItem): Bounds {
     case "stamp":
       return stampBounds(item.geometry);
     case "text": {
-      if (videoEmbedFromText(item.geometry.text)) {
+      if (item.geometry.embed === "video" && videoEmbedFromText(item.geometry.text)) {
         return {
           minX: item.geometry.x,
           minY: item.geometry.y - item.style.fontSize,

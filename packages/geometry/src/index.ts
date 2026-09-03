@@ -74,6 +74,7 @@ export interface TextGeometry {
   x: number;
   y: number;
   text: string;
+  embed?: "video";
 }
 
 export interface StickyGeometry extends BoxGeometry {
@@ -509,14 +510,18 @@ export function normalizeProtractorGeometry(
 
 export function normalizeTextGeometry(value: unknown, path = "$geometry"): TextGeometry {
   const object = expectRecord(value, path);
-  expectOnlyKeys(object, ["x", "y", "text"], path);
+  expectKeys(object, ["x", "y", "text"], ["embed"], path);
   if (typeof object.text !== "string") {
     throw new GeometryValidationError("Expected text to be a string", `${path}.text`);
+  }
+  if (object.embed !== undefined && object.embed !== "video") {
+    throw new GeometryValidationError('Expected text embed to be "video"', `${path}.embed`);
   }
   return {
     x: normalizeCoordinate(object.x, `${path}.x`),
     y: normalizeCoordinate(object.y, `${path}.y`),
     text: object.text,
+    ...(object.embed === "video" ? { embed: "video" as const } : {}),
   };
 }
 

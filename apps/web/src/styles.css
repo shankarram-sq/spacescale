@@ -1296,6 +1296,12 @@ button:disabled {
   white-space: pre-wrap;
 }
 
+.board-math-content {
+  min-height: 100%;
+  height: auto;
+  overflow: visible;
+}
+
 .board-math-content mjx-container,
 .sticky-math-content mjx-container,
 .table-math-content mjx-container,

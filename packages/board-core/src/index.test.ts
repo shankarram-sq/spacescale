@@ -1578,6 +1578,36 @@ describe("authoritative replay and snapshots", () => {
     expect(unassisted.items[0]).not.toHaveProperty("assistedBy");
   });
 
+  it("round-trips the explicit video embed marker through canonical snapshots", () => {
+    const state = applyDurableOperation(
+      createBoardState(),
+      {
+        kind: "item.create",
+        item: {
+          ...text(),
+          geometry: {
+            ...text().geometry,
+            text: "https://vimeo.com/76979871",
+            embed: "video",
+          },
+        },
+      },
+      { seq: 1, actorId: ALICE },
+    ).state;
+    const input = {
+      boardId: "018f0000-0000-7000-8000-0000000000ff",
+      seq: 1,
+      createdAt: 1_785_840_000_000,
+      settings: { title: "Video" },
+      items: liveItemsInPaintOrder(state),
+    };
+    const snapshot = createCanonicalSnapshot(input);
+    expect(snapshot.items[0]).toMatchObject({ geometry: { embed: "video" } });
+    expect(normalizeBoardItem(JSON.parse(serializeCanonicalSnapshot(input)).items[0])).toEqual(
+      snapshot.items[0],
+    );
+  });
+
   it("serializes stable top-level/item order and paint order", () => {
     const first = applyDurableOperation(
       createBoardState(),

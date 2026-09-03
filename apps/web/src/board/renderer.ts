@@ -10,7 +10,7 @@ import {
 import { resolveTextFontWeight, textFontStack } from "@collab/protocol";
 import { STAMP_SVG_PATHS } from "@collab/svg-export";
 import { summarizeBoardVotes, type VoteSummary } from "../activities/voting";
-import { containsMathMarkup, typesetMath } from "../mathjax";
+import { clearTypesetMath, containsMathMarkup, typesetMath } from "../mathjax";
 import {
   isRotatableObjectItem,
   isScalableObjectItem,
@@ -399,6 +399,7 @@ export class BoardRenderer {
     this.cancelCommentRefresh();
     this.imageAssets.destroy();
     this.viewport.destroy();
+    clearTypesetMath(this.svg);
     this.svg.remove();
   }
 
@@ -550,7 +551,7 @@ export class BoardRenderer {
   }
 
   showLocalPencil(points: readonly Point[], style: StrokeStyle): void {
-    this.localLayer.replaceChildren();
+    this.clearLocalLayer();
     if (points.length === 0) return;
     const path = svgElement("path");
     path.classList.add("local-preview");
@@ -565,7 +566,7 @@ export class BoardRenderer {
     style: LineStyle | StrokeStyle,
     snapPoints: readonly Point[] = [],
   ): void {
-    this.localLayer.replaceChildren();
+    this.clearLocalLayer();
     const preview = shapeNode(kind, geometry, style);
     preview.classList.add("local-preview");
     this.localLayer.append(preview, ...snapPoints.map((point) => this.snapHalo(point)));
@@ -591,7 +592,7 @@ export class BoardRenderer {
     style: Pick<TextStyle, "color" | "fontSize" | "fontFamily" | "opacity">,
     transform: Matrix = [1, 0, 0, 1, 0, 0],
   ): void {
-    this.localLayer.replaceChildren();
+    this.clearLocalLayer();
     if (!value) return;
     const text = svgElement("text");
     text.classList.add("local-preview", "text-preview");
@@ -617,7 +618,7 @@ export class BoardRenderer {
     style: StickyStyle,
     transform: Matrix = [1, 0, 0, 1, 0, 0],
   ): void {
-    this.localLayer.replaceChildren();
+    this.clearLocalLayer();
     const sticky = stickyNode(geometry, style);
     sticky.classList.add("local-preview", "sticky-preview");
     sticky.setAttribute("transform", matrixAttribute(transform));
@@ -629,7 +630,7 @@ export class BoardRenderer {
     style: ZoneStyle,
     transform: Matrix = [1, 0, 0, 1, 0, 0],
   ): void {
-    this.localLayer.replaceChildren();
+    this.clearLocalLayer();
     const zone = zoneNode("local-zone-preview", geometry, style);
     zone.classList.add("local-preview", "zone-preview");
     zone.setAttribute("aria-hidden", "true");
@@ -638,7 +639,7 @@ export class BoardRenderer {
   }
 
   showMovePreview(ids: readonly string[], x: number, y: number, snapPoint?: Point): void {
-    this.localLayer.replaceChildren();
+    this.clearLocalLayer();
     for (const id of ids) {
       const item = this.model.getItem(id);
       if (!item) continue;
@@ -674,7 +675,7 @@ export class BoardRenderer {
     transform: Matrix,
     className: "rotation-preview" | "scale-preview",
   ): void {
-    this.localLayer.replaceChildren();
+    this.clearLocalLayer();
     const preview = { ...item, transform } as RotatableObjectItem;
     const node = itemNode(preview, (assetId) => this.imageAssets.load(assetId));
     node.classList.add("local-preview", className);
@@ -688,7 +689,7 @@ export class BoardRenderer {
   }
 
   showCardResizePreview(item: ResizableCardItem, geometry: StickyGeometry | ImageGeometry): void {
-    this.localLayer.replaceChildren();
+    this.clearLocalLayer();
     const preview = { ...item, geometry } as ResizableCardItem;
     const renderItem = {
       ...preview,
@@ -707,7 +708,7 @@ export class BoardRenderer {
     item: ResizableStructuredItem,
     geometry: TableGeometry | ZoneGeometry,
   ): void {
-    this.localLayer.replaceChildren();
+    this.clearLocalLayer();
     const preview = { ...item, geometry } as ResizableStructuredItem;
     const renderItem = {
       ...preview,
@@ -728,9 +729,14 @@ export class BoardRenderer {
   }
 
   clearLocalPreview(): void {
-    this.localLayer.replaceChildren();
+    this.clearLocalLayer();
     this.highlightForErase([]);
     this.setSelection(this.selectedIds);
+  }
+
+  private clearLocalLayer(): void {
+    clearTypesetMath(this.localLayer);
+    this.localLayer.replaceChildren();
   }
 
   renderRemotePreviews(previews: Iterable<RemotePreview>): void {
@@ -834,16 +840,22 @@ export class BoardRenderer {
       const current = this.itemNodes.get(id);
       const item = this.model.getItem(id);
       if (!item) {
-        current?.remove();
+        if (current) {
+          clearTypesetMath(current);
+          current.remove();
+        }
         this.itemNodes.delete(id);
         continue;
       }
+      if (current) clearTypesetMath(current);
       const replacement = itemNode(
         item,
         (assetId) => this.imageAssets.load(assetId),
         this.resolveCreatorName(item.createdBy),
       );
-      if (current) current.replaceWith(replacement);
+      if (current) {
+        current.replaceWith(replacement);
+      }
       this.itemNodes.set(id, replacement);
       this.insertInPaintOrder(replacement, item.z);
     }
@@ -1282,7 +1294,7 @@ function itemNode(
       node = protractorNode(item.geometry, item.style);
       break;
     case "text": {
-      const video = videoEmbedFromText(item.geometry.text);
+      const video = item.geometry.embed === "video" ? videoEmbedFromText(item.geometry.text) : null;
       node = video
         ? videoEmbedNode(item.geometry, item.style, video)
         : containsMathMarkup(item.geometry.text)
@@ -1395,6 +1407,8 @@ function mathTextNode(geometry: TextGeometry, style: TextStyle): SVGGElement {
       geometry.text,
       style,
       "board-math-content",
+      "normal",
+      true,
     ),
   );
   return node;
@@ -1455,6 +1469,7 @@ function mathForeignObject(
   style: TextStyle | StickyStyle | TableStyle | ZoneStyle,
   className: string,
   defaultWeight = "normal",
+  fitContent = false,
 ): SVGForeignObjectElement {
   const foreign = svgElement("foreignObject");
   foreign.setAttribute("x", String(x));
@@ -1472,7 +1487,11 @@ function mathForeignObject(
   content.style.fontStyle = style.fontStyle ?? "normal";
   content.style.textDecoration = style.textDecoration ?? "none";
   foreign.append(content);
-  typesetMath(content);
+  typesetMath(content, () => {
+    if (!fitContent || !foreign.isConnected) return;
+    foreign.setAttribute("width", String(Math.ceil(Math.max(width, content.scrollWidth))));
+    foreign.setAttribute("height", String(Math.ceil(Math.max(height, content.scrollHeight))));
+  });
   return foreign;
 }
 

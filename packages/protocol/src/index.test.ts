@@ -224,6 +224,31 @@ describe("durable operation validation", () => {
     ).toThrow(/Expected one of "ai"/);
   });
 
+  it("persists explicit video embeds without interpreting ordinary URL text as an embed", () => {
+    expect(
+      validateDurableOperation({
+        kind: "item.create",
+        item: {
+          ...text(),
+          geometry: {
+            ...text().geometry,
+            text: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            embed: "video",
+          },
+        },
+      }),
+    ).toMatchObject({ item: { geometry: { embed: "video" } } });
+    expect(validateDurableOperation({ kind: "item.create", item: text() })).not.toHaveProperty(
+      "item.geometry.embed",
+    );
+    expect(() =>
+      validateDurableOperation({
+        kind: "item.create",
+        item: { ...text(), geometry: { ...text().geometry, embed: "automatic" } },
+      }),
+    ).toThrow(/text embed/);
+  });
+
   it("normalizes explicit groups, Section membership, copy remapping, and block typography", () => {
     const groupedSticky = {
       ...sticky(),

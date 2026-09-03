@@ -155,7 +155,7 @@ export type RectangleGeometry = OutlineBoxGeometry & { shape: RectangleKind };
 export type PolygonKind = "triangle" | "rhombus" | "pentagon" | "hexagon";
 export type PolygonGeometry = OutlineBoxGeometry & { polygon: PolygonKind };
 export type ProtractorGeometry = { radius: number };
-export type TextGeometry = { x: number; y: number; text: string };
+export type TextGeometry = { x: number; y: number; text: string; embed?: "video" };
 export type StickyGeometry = {
   x: number;
   y: number;

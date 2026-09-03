@@ -36,7 +36,7 @@ import {
   PRODUCT_HOME_LABEL,
   PRODUCT_NAME,
 } from "../branding";
-import { typesetMath } from "../mathjax";
+import { clearTypesetMath, typesetMath } from "../mathjax";
 import { DRAWING_COLOR_VALUES, DRAWING_COLORS, STICKY_COLORS, UI_COLORS } from "../palette";
 import {
   DurableOutbox,
@@ -1396,6 +1396,7 @@ export class BoardApp {
     this.pendingZoneTitleDrafts.clear();
     this.rejectedZoneTitleDrafts.length = 0;
     this.pendingNewZoneTitles.clear();
+    clearTypesetMath(this.commentsList);
     document.removeEventListener("paste", this.onImagePaste);
     this.renderer.svg.removeEventListener("dragover", this.onImageDragOver);
     this.renderer.svg.removeEventListener("drop", this.onImageDrop);
@@ -3070,6 +3071,7 @@ export class BoardApp {
             x: center[0] - VIDEO_EMBED_WIDTH / 2,
             y: center[1] - VIDEO_EMBED_HEIGHT / 2 + this.style.fontSize,
             text: video.sourceUrl,
+            embed: "video",
           },
         },
       });
@@ -5572,6 +5574,7 @@ export class BoardApp {
         const rank = { open: 0, orphaned: 1, resolved: 2 } as const;
         return rank[left.state] - rank[right.state] || right.createdAt - left.createdAt;
       });
+    clearTypesetMath(this.commentsList);
     this.commentsList.replaceChildren();
     if (visible.length === 0) {
       const empty = document.createElement("p");
