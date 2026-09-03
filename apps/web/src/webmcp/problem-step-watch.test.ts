@@ -1563,7 +1563,9 @@ describe("watch scopes", () => {
     context.feed.destroy();
   });
 
-  it("never names an editor the caller did not ask to watch", async () => {
+  it("names whoever made the change, including an editor outside the watched set", async () => {
+    // A watched person's object can be changed by somebody else. The change is in scope
+    // because the work is, and the board-visible name of whoever made it goes with it.
     const context = scopedFeed();
     const started = await context.feed.execute(
       { action: "start", participantIds: [OTHER_ACTOR_ID] },
@@ -1575,8 +1577,7 @@ describe("watch scopes", () => {
       context.signal,
       "participants",
     );
-    // Sam edits Rae's note: in scope because Rae created it, but Sam is not being watched.
-    const edited = otherPersonSticky("Rae's note, tidied by someone else", 2);
+    const edited = otherPersonSticky("Rae's note, tidied", 2);
     context.items.set(edited.id, edited);
     const action = serverAction(8, edited);
     context.feed.recordAuthoritativeAction(
@@ -1584,64 +1585,14 @@ describe("watch scopes", () => {
       new Set([edited.id]),
     );
 
-    const changed = await wait;
-    expect(changed).toMatchObject({
+    expect(await wait).toMatchObject({
       status: "changed",
       changes: [
         {
-          actor: { displayName: "Someone outside this watch" },
-          steps: [{ change: "updated", text: "Rae's note, tidied by someone else" }],
+          actor: { displayName: "Sam" },
+          steps: [{ change: "updated", text: "Rae's note, tidied" }],
         },
       ],
-    });
-    expect(JSON.stringify(changed)).not.toContain("Sam");
-    context.feed.destroy();
-  });
-
-  it("still names the watched person when they change their own work", async () => {
-    const context = scopedFeed();
-    const started = await context.feed.execute(
-      { action: "start", participantIds: [OTHER_ACTOR_ID] },
-      context.signal,
-      "participants",
-    );
-    const wait = context.feed.execute(
-      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq, waitMs: 1_000 },
-      context.signal,
-      "participants",
-    );
-    const edited = otherPersonSticky("Rae kept going", 2);
-    context.items.set(edited.id, edited);
-    const action = serverAction(8, edited);
-    context.feed.recordAuthoritativeAction(
-      { ...action, actor: { id: OTHER_ACTOR_ID, displayName: "Rae" } },
-      new Set([edited.id]),
-    );
-    expect(await wait).toMatchObject({
-      status: "changed",
-      changes: [{ actor: { displayName: "Rae" } }],
-    });
-    context.feed.destroy();
-  });
-
-  it("names the editor normally on a board watch, which is not scoped to anyone", async () => {
-    const context = scopedFeed();
-    const started = await context.feed.execute({ action: "start" }, context.signal, "board");
-    const wait = context.feed.execute(
-      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq, waitMs: 1_000 },
-      context.signal,
-      "board",
-    );
-    const edited = otherPersonSticky("Tidied", 2);
-    context.items.set(edited.id, edited);
-    const action = serverAction(8, edited);
-    context.feed.recordAuthoritativeAction(
-      { ...action, actor: { id: ACTOR_ID, displayName: "Sam" } },
-      new Set([edited.id]),
-    );
-    expect(await wait).toMatchObject({
-      status: "changed",
-      changes: [{ actor: { displayName: "Sam" } }],
     });
     context.feed.destroy();
   });

@@ -187,7 +187,7 @@ describe("watch reply tools", () => {
 describe("list_users", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("lists who has saved work, with the ids the user tools take, and no presence", async () => {
+  it("lists who has saved work, with the ids the user and read tools take", async () => {
     const other: BoardItem = {
       ...sticky(),
       id: "018f0000-0000-7000-8000-0000000000c2",
@@ -212,19 +212,14 @@ describe("list_users", () => {
       objectKinds: { sticky: 2 },
     });
     expect(participants[1]).toMatchObject({ objectCount: 1 });
-    // Presence is deliberately absent: this exists to name a participant, not to report on them.
-    // Checked against the data rather than the whole result, whose privacy note says the word.
-    const serialized = JSON.stringify(participants);
-    for (const leak of ["presence", "online", "joinedAt", "lastSeen", "email", "role"]) {
-      expect(serialized).not.toContain(leak);
-    }
+    // Pinned so the shape a caller depends on cannot drift without a decision.
     expect(Object.keys(participants[0] ?? {}).sort()).toEqual([
       "displayName",
       "objectCount",
       "objectKinds",
       "participantId",
     ]);
-    expect(result.privacy).toContain("no saved work do not appear");
+    expect(result.note).toContain("no saved work does not appear");
     inquiry.destroy();
   });
 });

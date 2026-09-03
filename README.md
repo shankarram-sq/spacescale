@@ -211,9 +211,9 @@ A scope is the same question whether you read it once or follow it, so a read an
 never disagree about what is in it. A board watch takes in work saved after it begins; a
 selection watch is the fixed set the participant chose; a participant watch follows those
 people wherever their work sits, including what they save while it runs, and never reports
-anyone else's. `list_users` is derived from saved board content alone — it reports nobody's
-presence, connection state, or join and leave times, and its object counts describe how much
-work exists, never how well anyone is doing.
+anyone else's objects. `list_users` is built from saved board content, so someone with no saved
+work does not appear, and its object counts describe how much work exists, never how well
+anyone is doing.
 
 Each write takes a board location and the content it needs, and lands one object as a single
 acknowledged realtime command. Write tools use the board's normal edit permission and cannot

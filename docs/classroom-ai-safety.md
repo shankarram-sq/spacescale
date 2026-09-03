@@ -109,38 +109,29 @@ the confirmation, as it is for every generic write.
 
 The participant scope, reached through `list_users`, `read_user` and
 `watch_users`, is the one place this integration is pointed at a person rather
-than at a region of the board, so it is bounded more tightly than the others.
+than at a region of the board.
 
-`list_users` exists only to name someone: it reports each participant's
-board-visible display name, the stable opaque participant ID the other two tools
-take, and how many saved objects they have, by kind. All of that is derived from
-saved board content. It does not report who is currently connected, when anyone
-joined or left, what they are looking at, or any attribute of a person beyond the
-name the board already shows, and someone with no saved work does not appear at
-all. Object counts say how much work exists. They are not a measure of effort or
-ability, and the tool says so where a model will read it.
+`list_users` exists to name someone: it reports each participant's board-visible
+display name, the stable opaque participant ID the other two tools take, and how
+many saved objects they have, by kind. It is built from saved board content, so
+someone with no saved work does not appear. Object counts say how much work
+exists. They are not a measure of effort or ability, and the tool says so where a
+model will read it.
 
-`read_user` and `watch_users` return that person's saved work in exactly the shape
-the board scope returns anyone's: the same text, the same descriptions of drawn
-work, the same picture, the same absence of coordinates and identifiers. Following
-one student is therefore a narrowing of what the assistant sees, not a widening —
-a participant watch reports strictly less than a board watch of the same board,
-and never reports anyone the caller did not name.
+`read_user` and `watch_users` return that person's saved work in the same shape
+the board scope returns anyone's. A watched person's object can also be changed by
+somebody else — an owner tidying a board, a partner fixing a shared note — and the
+change carries the board-visible name of whoever made it, because a reply that
+misattributes an edit is worse than one that names the editor.
 
-That holds for who edits as well as for whose work. A watched person's object can
-be changed by somebody else — an owner tidying a board, a partner fixing a shared
-note. The change is still in scope, because the work is, but the editor is not:
-a participant watch reports it as coming from someone outside the watch rather
-than naming them. Scoping a watch to a student must not become a way to see who
-is touching whose work.
-
-What the scope must not become is a file on a child. Every one of these tools
+The constraint here is on use, not on what the tools return. Every one of them
 instructs the model not to grade, rank, profile, or infer ability from what one
 person's work shows, and the prohibition in this document against grading,
 profiling, ranking, discipline and consequential decisions applies with particular
-force here. A classroom rollout should treat "follow this student" as a teacher-
-initiated, visible, time-bounded action, and the 15-minute expiry and the board's
-own watch indicator exist so it cannot quietly become continuous observation.
+force to a scope built around an individual. A classroom rollout should treat
+"follow this student" as a teacher-initiated, visible, time-bounded action; the
+15-minute expiry and the board's own watch indicator exist so it cannot quietly
+become continuous observation.
 
 ### Activity templates
 
