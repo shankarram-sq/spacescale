@@ -952,6 +952,8 @@ export class BoardApp {
   private classDecisionWebMcp: ClassDecisionWebMcp | null = null;
   private educationPartnerWebMcp: EducationPartnerWebMcp | null = null;
   private readonly pendingWebMcpCommits = new PendingCommitTracker();
+  /** True until the board first becomes editable, when the landing tool is chosen. */
+  private landingToolPending = true;
   private readonly pendingRenderedTextSectionUpdates = new Set<string>();
   private bootstrap: Bootstrap;
   private phase: ConnectionPhase = "idle";
@@ -1530,7 +1532,7 @@ export class BoardApp {
           <nav class="tool-rail" aria-label="Drawing tools" data-testid="tool-rail"></nav>
           <section class="canvas-wrap" data-canvas-host>
             <p class="sr-only" id="canvas-help">Use the bottom toolbar to draw. Hold Space to pan. Scroll or pinch to zoom.</p>
-            <div class="canvas-hint" data-canvas-hint aria-hidden="true">Drag anywhere to begin</div>
+            <div class="canvas-hint" data-canvas-hint aria-hidden="true">Draw or add an element to get started</div>
             <dialog class="claim-dialog table-picker" data-testid="table-picker" aria-labelledby="table-picker-title" aria-describedby="table-picker-note">
               <form data-table-picker-form>
                 <span class="eyebrow">Table</span>
@@ -5957,6 +5959,13 @@ export class BoardApp {
     this.renderSpotlightState();
     if (!canEdit || !this.isToolEnabled(this.tools.tool)) {
       this.tools.setTool("select");
+    } else if (this.landingToolPending) {
+      // The first refresh runs before the socket is ready and forces select above; once
+      // drawing is possible, land on the pencil so a fresh board starts ready to draw.
+      this.landingToolPending = false;
+      if (this.tools.tool === "select" && this.isToolEnabled("pencil")) {
+        this.tools.setTool("pencil");
+      }
     }
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-tool]")) {
       const name = button.dataset.tool as ToolName;

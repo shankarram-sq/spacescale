@@ -941,9 +941,9 @@ describe("durable operation validation", () => {
     ).toThrow(/greater than or equal to 1/);
   });
 
-  it("normalizes an exact, complete board feature map with safe image defaults", () => {
+  it("normalizes an exact, complete board feature map with images on by default", () => {
     expect(BOARD_FEATURE_KEYS).toHaveLength(25);
-    expect(DEFAULT_BOARD_FEATURES.images).toBe(false);
+    expect(DEFAULT_BOARD_FEATURES.images).toBe(true);
     expect(normalizeBoardFeatures(DEFAULT_BOARD_FEATURES)).toEqual(DEFAULT_BOARD_FEATURES);
     expect(() => normalizeBoardFeatures({ ...DEFAULT_BOARD_FEATURES, protractor: "yes" })).toThrow(
       /protractor must be a boolean/,

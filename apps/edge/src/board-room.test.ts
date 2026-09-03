@@ -552,7 +552,7 @@ describe("BoardRoom initialization", () => {
     const value = (await bootstrap.json()) as Record<string, unknown>;
     expect(value).toMatchObject({
       protocolVersion: 1,
-      board: { features: { images: false, rectangle: true, protractor: true } },
+      board: { features: { images: true, rectangle: true, protractor: true } },
       creators: [],
     });
   });

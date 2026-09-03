@@ -23,9 +23,9 @@ async function enableImages(page: Page): Promise<void> {
   await page.getByTestId("settings-button").click();
   const drawer = page.getByTestId("settings-drawer");
   await expect(drawer).toBeVisible();
+  // Images are on by default; the helper only confirms the setting and the tool are live.
   const toggle = drawer.getByRole("checkbox", { name: "Enable Images" });
-  await expect(toggle).not.toBeChecked();
-  await toggle.check();
+  await expect(toggle).toBeChecked();
   await expect(page.getByTestId("tool-image")).toBeEnabled();
   await drawer.getByRole("button", { name: "Close settings" }).click();
   await expect(drawer).toBeHidden();
@@ -89,7 +89,7 @@ test("image cards converge, remain private, persist, and obey live classroom pol
   test.skip(testInfo.project.name !== "chromium", "Focused Image Card QA runs in Chromium.");
 
   const boardUrl = await createBoard(page, "Image card lab");
-  await expect(page.getByTestId("tool-image")).toBeDisabled();
+  await expect(page.getByTestId("tool-image")).toBeEnabled();
   await enableImages(page);
 
   const editorInvite = await createInvite(page);
