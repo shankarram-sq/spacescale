@@ -1368,13 +1368,30 @@ button:disabled {
   min-height: 100%;
   height: auto;
   overflow: visible;
+  /*
+   * The other three surfaces hide their overflow, which already stops a child's margin escaping.
+   * This one shows it, so without a block formatting context the formula's own top margin collapses
+   * out of the div and pushes it below the box the board drew, and the box clips the glyphs.
+   */
+  display: flow-root;
 }
 
+/*
+ * The `[jax][display="true"]` half of this list is not redundant: MathJax ships
+ * `mjx-container[jax="SVG"][display="true"] { margin: 1em 0 }` for prose documents, which outranks a
+ * bare `mjx-container` selector. On a board that 1em pushed display formulae out of their boxes, so
+ * the board's own spacing has to be stated at matching weight to win.
+ */
 .board-math-content mjx-container,
 .sticky-math-content mjx-container,
 .table-math-content mjx-container,
 .zone-math-content mjx-container,
-.comment-body mjx-container {
+.comment-body mjx-container,
+.board-math-content mjx-container[jax][display="true"],
+.sticky-math-content mjx-container[jax][display="true"],
+.table-math-content mjx-container[jax][display="true"],
+.zone-math-content mjx-container[jax][display="true"],
+.comment-body mjx-container[jax][display="true"] {
   max-width: 100%;
   margin-block: 0.1em;
 }
