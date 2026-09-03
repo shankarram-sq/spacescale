@@ -24,26 +24,28 @@ test("a collaborator edit produces an undo conflict without changing authoritati
   const collaborator = await collaboratorContext.newPage();
   try {
     await openInvite(collaborator, inviteUrl);
-    const start = await canvasPoint(page, 0.34, 0.36);
-    const ownerItem = await drawShape(page, "Rectangle", start, {
+    // Editors may only move their own work, so the collaborator draws the item and
+    // the owner (who may move anything) changes it before the collaborator undoes.
+    const start = await canvasPoint(collaborator, 0.34, 0.36);
+    const collaboratorItem = await drawShape(collaborator, "Rectangle", start, {
       x: start.x + 110,
       y: start.y + 70,
     });
-    const itemId = await ownerItem.getAttribute("data-item-id");
+    const itemId = await collaboratorItem.getAttribute("data-item-id");
     expect(itemId).toBeTruthy();
-    const collaboratorItem = collaborator.locator(`#drawing-area [data-item-id="${itemId}"]`);
-    await expect(collaboratorItem).toHaveCount(1);
-    const movedTransform = await moveItem(collaborator, collaboratorItem, 48, 26);
-    await expect(ownerItem).toHaveAttribute("transform", movedTransform);
+    const ownerItem = page.locator(`#drawing-area [data-item-id="${itemId}"]`);
+    await expect(ownerItem).toHaveCount(1);
+    const movedTransform = await moveItem(page, ownerItem, 48, 26);
+    await expect(collaboratorItem).toHaveAttribute("transform", movedTransform);
 
-    const undo = page.getByTestId("undo-button");
+    const undo = collaborator.getByTestId("undo-button");
     await expect(undo).toBeEnabled();
     await undo.click();
-    await expect(page.getByTestId("toast-region")).toContainText(
+    await expect(collaborator.getByTestId("toast-region")).toContainText(
       "Undo stopped because a collaborator changed that item.",
     );
-    await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
-    await expect(page.getByTestId("save-status")).toContainText("Saved · 2");
+    await expect(collaborator.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+    await expect(collaborator.getByTestId("save-status")).toContainText("Saved · 2");
     await expect(ownerItem).toHaveAttribute("transform", movedTransform);
     await expect(collaboratorItem).toHaveAttribute("transform", movedTransform);
     await expect(page.locator("#drawing-area [data-item-id]")).toHaveCount(1);

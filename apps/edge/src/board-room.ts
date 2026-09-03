@@ -4339,6 +4339,7 @@ export class BoardRoom extends DurableObject<Env> {
         effects,
         undo ? "before" : "after",
         topologyItems,
+        { actorId: attachment.actorId, role: access.role },
       );
       const snapshotAccounting = this.projectSnapshotAccounting(
         board,

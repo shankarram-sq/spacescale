@@ -5711,6 +5711,110 @@ describe("BoardRoom move/copy closure admission", () => {
     editor.socket.close(1000, "done");
   });
 
+  it("re-checks group ownership when history replays a grouping", async () => {
+    const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    const secondEditorId = `a_${"E".repeat(21)}A`;
+    await runInDurableObject(stub, (_instance, durableState) => {
+      const now = Date.now();
+      durableState.storage.sql.exec(
+        `INSERT INTO members(actor_id, role, display_name, created_at_ms, updated_at_ms)
+         VALUES (?, 'editor', 'Second editor', ?, ?)`,
+        secondEditorId,
+        now,
+        now,
+      );
+    });
+    const first = await connect(stub, editorId);
+    const second = await connect(stub, secondEditorId);
+    const groupId = topologyId(990);
+    const rectangle = (index: number, x: number, withGroup: boolean) => ({
+      id: topologyId(index),
+      ...(withGroup ? { groupId } : {}),
+      kind: "rectangle",
+      style: { kind: "stroke", color: "#112233", width: 2, opacity: 1 },
+      transform: [1, 0, 0, 1, 0, 0],
+      geometry: { x, y: 50, width: 120, height: 80 },
+    });
+    const send = async (
+      socket: Awaited<ReturnType<typeof connect>>,
+      index: number,
+      baseSeq: number,
+      op: unknown,
+    ) => {
+      const frame = {
+        v: 1,
+        t: "client.commit",
+        commandId: topologyId(index),
+        actionId: topologyId(index + 1),
+        baseSeq,
+        op,
+      };
+      socket.socket.send(JSON.stringify(frame));
+      return frame;
+    };
+
+    const created = await send(first, 991, 0, {
+      kind: "items.batch",
+      operations: [
+        { kind: "item.create", item: rectangle(993, 40, false) },
+        { kind: "item.create", item: rectangle(994, 200, false) },
+      ],
+    });
+    await first.next(
+      (frame) => frame.t === "server.action" && frame.commandId === created.commandId,
+    );
+    const grouped = await send(first, 995, 1, {
+      kind: "items.batch",
+      operations: [
+        { kind: "item.update", itemId: topologyId(993), expectedVersion: 1, patch: { groupId } },
+        { kind: "item.update", itemId: topologyId(994), expectedVersion: 1, patch: { groupId } },
+      ],
+    });
+    await first.next(
+      (frame) => frame.t === "server.action" && frame.commandId === grouped.commandId,
+    );
+    const undone = await send(first, 997, 2, {
+      kind: "history.undo",
+      expectedHistoryVersion: 2,
+      targetActionId: grouped.actionId,
+    });
+    await first.next(
+      (frame) => frame.t === "server.action" && frame.commandId === undone.commandId,
+    );
+    await second.next(
+      (frame) => frame.t === "server.action" && frame.commandId === undone.commandId,
+    );
+
+    // The group is empty again, so the second editor may reuse its id.
+    const reused = await send(second, 1001, 3, {
+      kind: "item.create",
+      item: rectangle(1003, 400, true),
+    });
+    await second.next(
+      (frame) => frame.t === "server.action" && frame.commandId === reused.commandId,
+    );
+    await first.next(
+      (frame) => frame.t === "server.action" && frame.commandId === reused.commandId,
+    );
+
+    // Redoing the grouping would now bind the first editor's items to a group
+    // holding another participant's item, which a fresh commit also rejects.
+    const redone = await send(first, 1005, 4, {
+      kind: "history.redo",
+      expectedHistoryVersion: 3,
+      targetActionId: grouped.actionId,
+    });
+    expect(
+      await first.next(
+        (frame) => frame.t === "server.rejected" && frame.commandId === redone.commandId,
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", latestSeq: 4, groupId });
+    first.socket.close(1000, "done");
+    second.socket.close(1000, "done");
+  });
+
   it("rejects an editor joining a group made of another actor's items", async () => {
     const stub = (env as unknown as Env).BOARD_ROOMS.getByName(boardId);
     await initializeBoard(stub);

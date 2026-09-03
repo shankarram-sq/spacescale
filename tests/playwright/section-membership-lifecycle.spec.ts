@@ -132,7 +132,7 @@ test("translated copies and Section deletion keep exported membership current", 
   expect(browserErrors).toEqual([]);
 });
 
-test("Section deletion rejects foreign member cleanup without partial writes", async ({
+test("Section deletion by its creator detaches foreign members without deleting them", async ({
   browser,
   page,
 }, testInfo) => {
@@ -184,25 +184,24 @@ test("Section deletion rejects foreign member cleanup without partial writes", a
     );
     await expect(editor.getByRole("button", { name: "Delete selected items" })).toBeEnabled();
     await editor.getByRole("button", { name: "Delete selected items" }).click();
-    await expect(editor.getByTestId("toast-region")).toContainText(
-      "This Section contains an item you cannot remove from the Section.",
-    );
+    await expect(editor.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
 
-    await expect(page.locator("#drawing-area .board-item-zone")).toHaveCount(1);
-    await expect(editor.locator("#drawing-area .board-item-zone")).toHaveCount(1);
+    // The Section's creator may detach members they do not own, so the Section
+    // goes away while the owner's sticky survives unparented on both clients.
+    await expect(page.locator("#drawing-area .board-item-zone")).toHaveCount(0);
+    await expect(editor.locator("#drawing-area .board-item-zone")).toHaveCount(0);
     await expect(page.locator("#drawing-area .board-item-sticky")).toHaveCount(1);
     await expect(editor.locator("#drawing-area .board-item-sticky")).toHaveCount(1);
 
     const exported = await exportRelationships(page, boardUrl);
     expect(exported.status).toBe(200);
-    const [section] = exported.body.sections;
     const sticky = exported.body.items.find((item) => item.kind === "sticky");
-    expect(section).toBeDefined();
-    expect(sticky?.sectionId).toBe(section?.id);
-    expect(section?.memberItemIds).toContain(sticky?.id);
+    expect(exported.body.sections).toEqual([]);
+    expect(sticky).toBeDefined();
+    expect(sticky?.sectionId).toBeUndefined();
 
     await editor.screenshot({
-      path: "/tmp/spacescale-section-delete-foreign-member-rejected.png",
+      path: "/tmp/spacescale-section-delete-foreign-member-detached.png",
     });
     expect(browserErrors).toEqual([]);
   } finally {

@@ -143,6 +143,7 @@ test("scaling a shape outside a Section removes its exported membership", async 
   await selectItem(page, shape);
   const scaleHandle = page.locator("#selection-layer [data-scale-handle='southeast']");
   const scaleStart = await handlePoint(scaleHandle, ".selection-scale-hit-target");
+  const transformBefore = await shape.getAttribute("transform");
   await drag(
     page,
     scaleStart,
@@ -152,6 +153,7 @@ test("scaling a shape outside a Section removes its exported membership", async 
     },
     { steps: 12 },
   );
+  await expect.poll(() => shape.getAttribute("transform")).not.toBe(transformBefore);
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
 
   const after = await exportRelationships(page, boardId);

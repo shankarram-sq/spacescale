@@ -12,6 +12,7 @@ import {
   buildTextStyleOperations,
   CommentStore,
   canActorComment,
+  canResolveComment,
   clampImageAlt,
   clampStickyText,
   deriveCommentStates,
@@ -1058,6 +1059,14 @@ describe("object comment permissions", () => {
     expect(canActorComment("archived", "owner", "editors_enabled")).toBe(false);
     expect(canActorComment("reload_required", "owner", "editors_enabled")).toBe(false);
     expect(canActorComment("stopped", "owner", "editors_enabled")).toBe(false);
+  });
+
+  it("offers Resolve only to the comment author or a board owner", () => {
+    const authored = { author: { id: "a_author", displayName: "Author" } };
+    expect(canResolveComment(authored, "a_author", "editor")).toBe(true);
+    expect(canResolveComment(authored, "a_other", "editor")).toBe(false);
+    expect(canResolveComment(authored, "a_other", "viewer")).toBe(false);
+    expect(canResolveComment(authored, "a_other", "owner")).toBe(true);
   });
 });
 

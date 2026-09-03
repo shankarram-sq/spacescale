@@ -81,14 +81,17 @@ test("named Sections, grouped movement, typography, links, and export relationsh
   );
   await expect(page.locator("#selection-layer [data-resize-handle='southeast']")).toBeVisible();
   const sectionTitle = section.locator(".zone-title");
+  // Section titles are bold by default, so the first press turns bold off.
   const sectionBold = selectionActions.getByRole("button", { name: "Bold" });
-  await sectionBold.click();
   await expect(sectionBold).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
   await sectionBold.click();
   await expect(sectionBold).toHaveAttribute("aria-pressed", "false");
   await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
   await expect(sectionTitle).toHaveAttribute("font-weight", "normal");
+  await sectionBold.click();
+  await expect(sectionBold).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+  await expect(sectionTitle).toHaveAttribute("font-weight", "700");
 
   const sectionBefore = await section.getAttribute("transform");
   const stickyBefore = await sticky.getAttribute("transform");

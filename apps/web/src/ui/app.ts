@@ -5512,7 +5512,10 @@ export class BoardApp {
         orphan.textContent = "Deleted object";
         actions.append(orphan);
       }
-      if (comment.state !== "resolved") {
+      if (
+        comment.state !== "resolved" &&
+        canResolveComment(comment, this.bootstrap.actor.id, this.bootstrap.actor.role)
+      ) {
         const resolve = document.createElement("button");
         resolve.type = "button";
         resolve.className = "comment-resolve";
@@ -7361,6 +7364,15 @@ export function globalShortcutFor(
 }
 
 /** Mirrors the server gate: commenting needs a live Space and drawing rights. */
+/** Mirrors the server rule: only the comment's author or a board owner may resolve it. */
+export function canResolveComment(
+  comment: Pick<BoardComment, "author">,
+  actorId: string,
+  role: Role,
+): boolean {
+  return role === "owner" || comment.author.id === actorId;
+}
+
 export function canActorComment(
   phase: ConnectionPhase,
   role: Role,

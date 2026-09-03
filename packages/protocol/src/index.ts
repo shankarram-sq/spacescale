@@ -86,6 +86,16 @@ export const MAX_IMAGE_RADIUS = 256;
 export const MAX_TABLE_CELL_TEXT_CODE_POINTS = 500;
 export const MAX_TABLE_TEXT_CODE_POINTS = 8_000;
 export const MAX_ZONE_TITLE_CODE_POINTS = 120;
+/**
+ * Upper bound of the export-only Section index appended to canonical exports.
+ * Every live item contributes at most one summary entry (a Section: id, title
+ * of up to MAX_ZONE_TITLE_CODE_POINTS four-byte code points, lock flag and
+ * framing) or one member id, so the index can never exceed this many bytes.
+ */
+export const MAX_SECTION_EXPORT_INDEX_BYTES =
+  MAX_LIVE_ITEMS * (MAX_ZONE_TITLE_CODE_POINTS * 4 + 160);
+/** Largest canonical export a consumer must accept: the snapshot plus its Section index. */
+export const MAX_CANONICAL_EXPORT_BYTES = MAX_SNAPSHOT_BYTES + MAX_SECTION_EXPORT_INDEX_BYTES;
 export const LINE_ARROWHEADS = ["none", "arrow"] as const;
 export const TEXT_FONT_FAMILIES = ["sans", "serif", "handwritten", "mono"] as const;
 export const TEXT_FONT_WEIGHTS = ["normal", "bold"] as const;
