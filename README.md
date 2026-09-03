@@ -160,11 +160,14 @@ npm run check
 ```
 
 Run the focused checks relevant to a change during normal development. The full
-`npm run check` and Playwright suites are available on demand and are not release
-gates. `npm run build` verifies the production bundle with `wrangler deploy --dry-run`;
-on a checkout without deployment details it substitutes non-deployable `dry-run`
-placeholders for `DEPLOYMENT_NAME`, `APP_HOSTNAME`, and `TURNSTILE_SITE_KEY`, while
-`deployment:init` keeps strict validation.
+`npm run check` runs automatically in CI and is the required gate for pull
+requests into `main`; running it locally before opening one avoids a failed
+check. The Playwright suite stays manual-only and is not a release gate: CI runs
+it only on an explicit workflow dispatch. `npm run build` verifies the production
+bundle with `wrangler deploy --dry-run`; on a checkout without deployment details
+it substitutes non-deployable `dry-run` placeholders for `DEPLOYMENT_NAME`,
+`APP_HOSTNAME`, and `TURNSTILE_SITE_KEY`, while `deployment:init` keeps strict
+validation.
 
 ## Cloudflare setup
 
@@ -328,11 +331,12 @@ staging separation, and rollout tradeoffs are documented in
 The retained GitHub Actions path is deliberately direct. A push to `staging` or
 `main` checks out that exact SHA, idempotently creates or reuses both private R2
 buckets, builds the web assets, uploads a Worker version, deploys it at 100%, and
-makes a small five-attempt health probe. It does not wait for CI, require an
-attestation or approval, stage a candidate, run load/browser suites, or automate
-rollback. Focused development checks are the normal promotion criterion; moving
-the same SHA through `staging` and then `main` is recommended but not enforced.
-Full CI and Playwright are manual-only.
+makes a small five-attempt health probe. Pull requests into `main` require an
+approval plus the full `validate` job; CI repeats on the resulting push to `main`.
+Playwright browser E2E is run explicitly with a manual CI workflow dispatch. The
+deployment itself still does not wait for that post-merge run, stage a candidate,
+run load suites, or automate rollback. Moving the same SHA through `staging`
+before opening the production PR remains recommended.
 
 For GitHub deployments, add `ORGANISATION_SIGNING_KEYS` as an encrypted secret
 in both the `staging` and `production` GitHub environments. The workflow uploads

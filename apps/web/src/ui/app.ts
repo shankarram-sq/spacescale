@@ -30,6 +30,7 @@ import { buildClearVoteDeletes, isVoteTable, summarizeVotes } from "../activitie
 import { VIDEO_EMBED_HEIGHT, VIDEO_EMBED_WIDTH, videoEmbedFromText } from "../board/links";
 import { BoardModel, SequenceError } from "../board/model";
 import { BoardRenderer, STICKY_PADDING } from "../board/renderer";
+import { randomBoardName } from "../board-name";
 import {
   BRAND_MARK_HTML,
   brandedDocumentTitle,
@@ -6871,22 +6872,27 @@ export async function acknowledgeRecoveredOwnership(
 
 export function renderLanding(root: HTMLElement, api: ApiClient): void {
   document.title = brandedDocumentTitle();
+  const suggestedBoardName = randomBoardName();
   root.innerHTML = `
     <main class="landing" data-testid="landing-page">
       <div class="landing-glow" aria-hidden="true"></div>
-      <header><a class="wordmark" href="/" aria-label="${PRODUCT_HOME_LABEL}">${BRAND_MARK_HTML}<span>${PRODUCT_NAME}</span></a><span class="landing-badge">Cloudflare-native</span></header>
+      <header>
+        <a class="wordmark landing-wordmark" href="/" aria-label="${PRODUCT_HOME_LABEL}">${BRAND_MARK_HTML}<span>${PRODUCT_NAME}</span></a>
+        <span class="landing-badge landing-webmcp-badge"><span aria-hidden="true"></span>WebMCP enabled</span>
+      </header>
       <section class="landing-copy">
-        <span class="eyebrow">A room for unfinished ideas</span>
-        <h1>Think together,<br /><em>in the open.</em></h1>
-        <p>Sketch, explain, and move ideas around a shared infinite canvas. No account required.</p>
+        <div class="landing-hero-mark" aria-hidden="true">${BRAND_MARK_HTML}</div>
+        <span class="eyebrow">A shared canvas for classrooms</span>
+        <h1>Learn together,<br /><em>with AI.</em></h1>
+        <p>Turn lessons, problems, and group thinking into a live visual workspace. Sketch, explain, organise, and invite AI to help without losing the human conversation.</p>
       </section>
       <form class="create-card" data-create-form>
-        <div><span class="card-step">Start a board</span><h2>What are you working on?</h2></div>
-        <label><span class="sr-only">Board title</span><input name="title" maxlength="100" value="Untitled board" required autocomplete="off" /></label>
+        <div><span class="card-step">Start a learning board</span><h2>What will you explore?</h2></div>
+        <label><span class="sr-only">Board title</span><input name="title" maxlength="100" value="${suggestedBoardName}" required autocomplete="off" /></label>
         <button class="primary-button" type="submit">Open a fresh canvas <span aria-hidden="true">→</span></button>
-        <small>Private owner controls · automatic saving · SVG export</small>
+        <small>No account required · automatic saving · WebMCP-ready</small>
       </form>
-      <footer><span>Built for 2–20 people</span><span>Pointer, pen & touch ready</span></footer>
+      <footer><span>Built for educators, learners & study groups</span><span>People and AI, thinking on one canvas</span></footer>
     </main>
   `;
   const form = query(root, "[data-create-form]", HTMLFormElement);
