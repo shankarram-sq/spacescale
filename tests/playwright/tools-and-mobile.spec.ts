@@ -483,3 +483,43 @@ test("the complete board remains usable at a 320px viewport", async ({ page }, t
   await expect(page.locator("#board-canvas")).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("pocket-canvas.png") });
 });
+
+test("the saved chip is the icon alone, while other states keep their label", async ({ page }) => {
+  await createBoard(page, "Save chip");
+  const chip = page.getByTestId("save-status");
+  await expect(chip).toHaveAttribute("data-state", "saved");
+
+  const saved = await page.evaluate(() => {
+    const label = document.querySelector("[data-save-status-text]") as HTMLElement;
+    const status = document.querySelector("[data-testid='save-status']") as HTMLElement;
+    return {
+      text: label.textContent,
+      labelWidth: label.getBoundingClientRect().width,
+      chipWidth: status.getBoundingClientRect().width,
+      live: status.getAttribute("aria-live"),
+    };
+  });
+  // The green check carries the meaning; the word is clipped to nothing on screen but stays in
+  // the DOM so the live region still announces that the board saved.
+  expect(saved.text).toBe("Saved");
+  expect(saved.labelWidth).toBeLessThan(2);
+  expect(saved.live).toBe("polite");
+
+  // A state the icon cannot express keeps its visible label, and the chip grows to fit it.
+  await page.evaluate(() => {
+    const status = document.querySelector("[data-testid='save-status']") as HTMLElement;
+    const label = document.querySelector("[data-save-status-text]") as HTMLElement;
+    status.dataset.state = "saving";
+    label.textContent = "Saving…";
+  });
+  const saving = await page.evaluate(() => {
+    const label = document.querySelector("[data-save-status-text]") as HTMLElement;
+    const status = document.querySelector("[data-testid='save-status']") as HTMLElement;
+    return {
+      labelWidth: label.getBoundingClientRect().width,
+      chipWidth: status.getBoundingClientRect().width,
+    };
+  });
+  expect(saving.labelWidth).toBeGreaterThan(20);
+  expect(saving.chipWidth).toBeGreaterThan(saved.chipWidth);
+});

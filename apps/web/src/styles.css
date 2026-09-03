@@ -320,6 +320,24 @@ button:disabled {
   display: block;
 }
 
+/*
+ * The green cloud with its check already says "saved", so the word beside it is redundant on a
+ * state people read constantly. It stays in the DOM rather than being emptied: the chip is an
+ * aria-live region, and a screen reader still needs to hear that the board saved. Every other
+ * state keeps its visible label, because none of them is self-evident from the icon alone.
+ */
+.save-status[data-state="saved"] [data-save-status-text] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .save-status[data-state="saving"],
 .save-status[data-state="reconnecting"] {
   color: #ad7416;
@@ -3553,7 +3571,8 @@ button:disabled {
     height: 18px;
   }
 
-  .save-status [data-save-status-text] {
+  /* Matches the saved-state rule's specificity so this later, narrower rule still wins. */
+  .save-status[data-state] [data-save-status-text] {
     display: none;
   }
 
