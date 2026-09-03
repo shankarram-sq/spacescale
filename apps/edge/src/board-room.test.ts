@@ -7628,4 +7628,243 @@ describe("object comments", () => {
     );
     expect(invalidTransition.status).toBe(400);
   });
+
+  it("rejects comment bodies containing unpaired surrogates", async () => {
+    const stub = env.BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const owner = await connect(stub, actorId);
+    const itemId = "018f0000-0000-7000-8000-000000000c20";
+    owner.socket.send(
+      JSON.stringify(
+        createCommit(
+          "018f0000-0000-7000-8000-000000000c21",
+          "018f0000-0000-7000-8000-000000000c22",
+          itemId,
+        ),
+      ),
+    );
+    await owner.next((frame) => frame.t === "server.action" && frame.seq === 1);
+
+    const loneSurrogate = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/comments`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ itemId, body: "unpaired\ud800 surrogate" }),
+      }),
+    );
+    expect(loneSurrogate.status).toBe(400);
+    const listed = await stub.fetch(internalRequest(`/api/v1/boards/${boardId}/comments`));
+    expect(await listed.json()).toEqual({ comments: [] });
+    owner.socket.close(1000, "done");
+  });
+
+  it("gates comment creation like drawing and resolution to the author or an owner", async () => {
+    const stub = env.BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    await addEditor(stub);
+    await runInDurableObject(stub, (_instance, durableState) => {
+      const now = Date.now();
+      durableState.storage.sql.exec(
+        `INSERT INTO members(actor_id, role, display_name, created_at_ms, updated_at_ms)
+         VALUES (?, 'viewer', 'Viewer', ?, ?)`,
+        coOwnerId,
+        now,
+        now,
+      );
+    });
+    const owner = await connect(stub, actorId);
+    const itemId = "018f0000-0000-7000-8000-000000000c30";
+    owner.socket.send(
+      JSON.stringify(
+        createCommit(
+          "018f0000-0000-7000-8000-000000000c31",
+          "018f0000-0000-7000-8000-000000000c32",
+          itemId,
+        ),
+      ),
+    );
+    await owner.next((frame) => frame.t === "server.action" && frame.seq === 1);
+
+    const createAs = (actor: string, body: string) =>
+      stub.fetch(
+        internalActorRequest(actor, `/api/v1/boards/${boardId}/comments`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ itemId, body }),
+        }),
+      );
+    const resolveAs = (actor: string, commentId: string) =>
+      stub.fetch(
+        internalActorRequest(actor, `/api/v1/boards/${boardId}/comments/${commentId}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ state: "resolved" }),
+        }),
+      );
+
+    // studentId is not a member; on a link_view board it is an anonymous viewer.
+    const anonymous = await createAs(studentId, "Anonymous viewers cannot comment.");
+    expect(anonymous.status).toBe(403);
+    expect(await anonymous.json()).toMatchObject({ error: { code: "FORBIDDEN" } });
+    const viewer = await createAs(coOwnerId, "Viewer members cannot comment.");
+    expect(viewer.status).toBe(403);
+    expect(await viewer.json()).toMatchObject({ error: { code: "FORBIDDEN" } });
+
+    const ownerCreated = await createAs(actorId, "Owner comment.");
+    expect(ownerCreated.status).toBe(201);
+    const ownerCommentId = String(((await ownerCreated.json()) as { id: string }).id);
+    const editorCreated = await createAs(editorId, "Editor comment.");
+    expect(editorCreated.status).toBe(201);
+    const editorCommentId = String(((await editorCreated.json()) as { id: string }).id);
+
+    const editorOnOwners = await resolveAs(editorId, ownerCommentId);
+    expect(editorOnOwners.status).toBe(403);
+    expect(await editorOnOwners.json()).toMatchObject({ error: { code: "FORBIDDEN" } });
+    const viewerOnEditors = await resolveAs(coOwnerId, editorCommentId);
+    expect(viewerOnEditors.status).toBe(403);
+    expect(await viewerOnEditors.json()).toMatchObject({ error: { code: "FORBIDDEN" } });
+    const anonymousOnEditors = await resolveAs(studentId, editorCommentId);
+    expect(anonymousOnEditors.status).toBe(403);
+    await anonymousOnEditors.arrayBuffer();
+
+    const listed = await stub.fetch(internalRequest(`/api/v1/boards/${boardId}/comments`));
+    expect(await listed.json()).toMatchObject({
+      comments: [
+        { id: ownerCommentId, state: "open" },
+        { id: editorCommentId, state: "open" },
+      ],
+    });
+
+    const editorOnOwn = await resolveAs(editorId, editorCommentId);
+    expect(editorOnOwn.status).toBe(200);
+    expect(await editorOnOwn.json()).toMatchObject({
+      id: editorCommentId,
+      state: "resolved",
+      resolvedBy: { id: editorId, displayName: "Editor" },
+    });
+
+    const secondEditorCreated = await createAs(editorId, "Second editor comment.");
+    expect(secondEditorCreated.status).toBe(201);
+    const secondEditorCommentId = String(((await secondEditorCreated.json()) as { id: string }).id);
+    const ownerOnEditors = await resolveAs(actorId, secondEditorCommentId);
+    expect(ownerOnEditors.status).toBe(200);
+    expect(await ownerOnEditors.json()).toMatchObject({
+      id: secondEditorCommentId,
+      state: "resolved",
+      resolvedBy: { id: actorId, displayName: "Owner 1" },
+    });
+    owner.socket.close(1000, "done");
+  });
+
+  it("reopens orphaned comments when undo, redo, or restore brings the object back", async () => {
+    const stub = env.BOARD_ROOMS.getByName(boardId);
+    await initializeBoard(stub);
+    const owner = await connect(stub, actorId);
+    const itemId = "018f0000-0000-7000-8000-000000000c40";
+    owner.socket.send(
+      JSON.stringify(
+        createCommit(
+          "018f0000-0000-7000-8000-000000000c41",
+          "018f0000-0000-7000-8000-000000000c42",
+          itemId,
+        ),
+      ),
+    );
+    await owner.next((frame) => frame.t === "server.action" && frame.seq === 1);
+
+    const createdResponse = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/comments`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ itemId, body: "Still relevant after undo." }),
+      }),
+    );
+    expect(createdResponse.status).toBe(201);
+    const commentId = String(((await createdResponse.json()) as { id: string }).id);
+    await owner.next((frame) => frame.t === "server.comments.refresh");
+
+    const snapshot = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/snapshots`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "comment-restore-snapshot-0001",
+        },
+        body: JSON.stringify({ label: "Before delete" }),
+      }),
+    );
+    expect(snapshot.status).toBe(201);
+    await snapshot.arrayBuffer();
+
+    const expectComments = async (state: string) => {
+      const response = await stub.fetch(internalRequest(`/api/v1/boards/${boardId}/comments`));
+      expect(await response.json()).toMatchObject({ comments: [{ id: commentId, itemId, state }] });
+    };
+
+    const deleteActionId = "018f0000-0000-7000-8000-000000000c44";
+    owner.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000c43",
+        actionId: deleteActionId,
+        baseSeq: 1,
+        op: { kind: "item.delete", itemId, expectedVersion: 1 },
+      }),
+    );
+    await owner.next((frame) => frame.t === "server.action" && frame.seq === 2);
+    await owner.next((frame) => frame.t === "server.comments.refresh");
+    await expectComments("orphaned");
+
+    owner.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000c45",
+        actionId: "018f0000-0000-7000-8000-000000000c46",
+        baseSeq: 2,
+        op: { kind: "history.undo", expectedHistoryVersion: 2, targetActionId: deleteActionId },
+      }),
+    );
+    const undone = await owner.next((frame) => frame.t === "server.action" && frame.seq === 3);
+    expect(undone).toMatchObject({
+      op: { changes: [{ kind: "item.replace", item: { id: itemId } }] },
+    });
+    await owner.next((frame) => frame.t === "server.comments.refresh");
+    await expectComments("open");
+
+    owner.socket.send(
+      JSON.stringify({
+        v: 1,
+        t: "client.commit",
+        commandId: "018f0000-0000-7000-8000-000000000c47",
+        actionId: "018f0000-0000-7000-8000-000000000c48",
+        baseSeq: 3,
+        op: { kind: "history.redo", expectedHistoryVersion: 3, targetActionId: deleteActionId },
+      }),
+    );
+    const redone = await owner.next((frame) => frame.t === "server.action" && frame.seq === 4);
+    expect(redone).toMatchObject({
+      op: { changes: [{ kind: "item.remove", itemId }] },
+    });
+    await owner.next((frame) => frame.t === "server.comments.refresh");
+    await expectComments("orphaned");
+
+    const restored = await stub.fetch(
+      internalRequest(`/api/v1/boards/${boardId}/restore/1`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "comment-restore-apply-0002",
+        },
+        body: JSON.stringify({ expectedBoardSeq: 4 }),
+      }),
+    );
+    expect(restored.status).toBe(200);
+    expect(await restored.json()).toMatchObject({ seq: 5 });
+    await owner.next((frame) => frame.t === "server.action" && frame.seq === 5);
+    await owner.next((frame) => frame.t === "server.comments.refresh");
+    await expectComments("open");
+    owner.socket.close(1000, "done");
+  });
 });

@@ -1304,6 +1304,7 @@ function canonicalItem(item: BoardItem): BoardItem {
     z: normalized.z,
     version: normalized.version,
     createdBy: normalized.createdBy,
+    ...(normalized.assistedBy === undefined ? {} : { assistedBy: normalized.assistedBy }),
     style,
     transform: [...normalized.transform],
     geometry,
