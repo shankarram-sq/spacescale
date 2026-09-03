@@ -916,6 +916,9 @@ describe("whole-board watching", () => {
     const share = (result.boardShares as Array<{ prompt: string }>)[0];
     expect(share?.prompt).toContain("reply as comments");
     expect(share?.prompt).toContain("debug");
+    expect(result.responseGuidance).toMatchObject({
+      action: expect.stringContaining("boardShares"),
+    });
     feed.destroy();
   });
 
