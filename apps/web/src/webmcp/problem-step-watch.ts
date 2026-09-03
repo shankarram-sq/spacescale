@@ -13,7 +13,7 @@ export const ASSIST_NOTE_MAX_LENGTH = 280;
 export const MAX_ASSIST_COMMENTS_PER_WATCH = 20;
 
 /** Items one watch can follow, sized to cover a whole classroom board rather than a few steps. */
-const MAX_WATCHED_ITEMS = 1_000;
+export const MAX_WATCHED_ITEMS = 1_000;
 /**
  * Characters one watch may carry across all of its steps. Item count alone cannot bound a
  * result: a board holds up to 10,000 items and one canvas text item up to 5,000 characters, so
@@ -35,6 +35,8 @@ type WatchedStep = {
   kind: BoardItem["kind"];
   /** Written work carries its saved text. */
   text?: string;
+  /** Set when the character budget cut this step's text short. */
+  textTruncated?: true;
   /**
    * Drawn work carries what it is and the saved version it is at. Pixels never cross this
    * channel, so the host is pointed at the visual inspector when it needs to see the marks.
@@ -411,8 +413,19 @@ export class ProblemStepWatchFeed {
       }
       if (steps.length === 0) continue;
       session.lastReportedSeq = Math.max(session.lastReportedSeq, action.seq);
-      session.changes.push({ seq: action.seq, changedAt, actor, steps });
-      while (session.changes.length > MAX_RETAINED_CHANGES) {
+      session.changes.push({
+        seq: action.seq,
+        changedAt,
+        actor,
+        steps: withinTextBudget<StepChange>(steps),
+      });
+      // Retained history is bounded by characters as well as by count: a hundred changes each
+      // carrying a full text item would otherwise blow the budget the snapshot respects.
+      while (
+        session.changes.length > MAX_RETAINED_CHANGES ||
+        (session.changes.length > 1 &&
+          retainedCodePoints(session.changes) > MAX_WATCHED_TEXT_CODE_POINTS)
+      ) {
         const discarded = session.changes.shift();
         if (discarded) session.discardedThroughSeq = discarded.seq;
       }
@@ -807,8 +820,12 @@ export class ProblemStepWatchFeed {
   }
 
   private currentSteps(session: WatchSession): WatchedStep[] {
-    return [...session.steps.values()].sort((left, right) =>
-      left.alias.localeCompare(right.alias, undefined, { numeric: true }),
+    // Objects grow after a watch starts, so the budget is applied to what leaves the page,
+    // not only to what was on the board when it began.
+    return withinTextBudget<WatchedStep>(
+      [...session.steps.values()].sort((left, right) =>
+        left.alias.localeCompare(right.alias, undefined, { numeric: true }),
+      ),
     );
   }
 
@@ -1029,6 +1046,39 @@ function visualDescription(item: BoardItem): string {
     default:
       return item.kind;
   }
+}
+
+/**
+ * Trims step text so one result can never exceed the watch's character budget. A trimmed step
+ * says so, rather than quietly handing the host a truncated answer it would treat as complete.
+ */
+function withinTextBudget<Step extends { alias: string; text?: string; textTruncated?: true }>(
+  steps: readonly Step[],
+): Step[] {
+  let remaining = MAX_WATCHED_TEXT_CODE_POINTS;
+  return steps.map((step) => {
+    if (step.text === undefined) return step;
+    const points = [...step.text];
+    if (points.length <= remaining) {
+      remaining -= points.length;
+      return step;
+    }
+    const truncated: Step = {
+      ...step,
+      text: points.slice(0, remaining).join(""),
+      textTruncated: true,
+    };
+    remaining = 0;
+    return truncated;
+  });
+}
+
+function retainedCodePoints(changes: readonly WatchChange[]): number {
+  let total = 0;
+  for (const change of changes) {
+    for (const step of change.steps) total += [...("text" in step ? (step.text ?? "") : "")].length;
+  }
+  return total;
 }
 
 /** Everything about a step that a saved change could alter. */

@@ -910,3 +910,46 @@ describe("whole-board watching", () => {
     feed.destroy();
   });
 });
+
+describe("character budget over the life of a watch", () => {
+  it("trims a step that grows past the budget after the watch started", async () => {
+    const small = sticky("short");
+    const board = [small];
+    const items = new Map<string, BoardItem>([[small.id, small]]);
+    const feed = new ProblemStepWatchFeed({
+      getBoardItems: () => board,
+      getAuthoritativeItem: (itemId) => items.get(itemId),
+      getSequence: () => 7,
+      getParticipantDisplayName: () => "Sam",
+    });
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    expect(started.steps).toMatchObject([{ text: "short" }]);
+
+    // The board grew after the budget was checked at start.
+    const grown = sticky("y".repeat(200_000), 2);
+    items.set(small.id, grown);
+    board[0] = grown;
+    feed.recordAuthoritativeAction(serverAction(8, grown), new Set([small.id]));
+
+    const changed = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    const changedStep = (changed.changes as Array<{ steps: Array<Record<string, unknown>> }>)[0]
+      ?.steps[0];
+    expect(changedStep).toMatchObject({ textTruncated: true });
+    expect(String(changedStep?.text ?? "")).toHaveLength(120_000);
+
+    // The snapshot a resync hands back is bounded the same way.
+    feed.recordAuthoritativeReload(9);
+    const resync = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(resync).toMatchObject({ status: "resync" });
+    const resyncStep = (resync.steps as Array<Record<string, unknown>>)[0];
+    expect(resyncStep).toMatchObject({ textTruncated: true });
+    expect(String(resyncStep?.text ?? "")).toHaveLength(120_000);
+    feed.destroy();
+  });
+});

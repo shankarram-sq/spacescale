@@ -23,7 +23,9 @@ import {
 import type { Bounds } from "../board/model";
 import type { DurableOperation } from "../types";
 import type { CollectiveInquirySnapshot } from "./collective-inquiry";
+import { MAX_SHARED_VISUAL_ITEMS } from "./collective-inquiry";
 import {
+  MAX_WATCHED_ITEMS,
   PROBLEM_STEP_WATCH_DURATION_MS,
   PROBLEM_STEP_WATCH_MAX_WAIT_MS,
   PROBLEM_STEP_WATCH_TOOL,
@@ -725,7 +727,7 @@ export class EducationPartnerWebMcp {
       visualReader: {
         tool: "inspect_selected_board_visual",
         purpose: "handwriting_sketch_and_spatial_analysis",
-        maximumItems: 40,
+        maximumItems: MAX_SHARED_VISUAL_ITEMS,
         result: "isolated_live_page_preview",
         unselectedBoardMasked: true,
         stableItemIdentifiersReturned: false,
@@ -746,12 +748,14 @@ export class EducationPartnerWebMcp {
       },
       problemStepWatch: {
         tool: PROBLEM_STEP_WATCH_TOOL,
-        scope: "exact_saved_browser_selection",
+        scope: "entire_board",
         durationSeconds: PROBLEM_STEP_WATCH_DURATION_MS / 1_000,
         maximumWaitMs: PROBLEM_STEP_WATCH_MAX_WAIT_MS,
+        maximumObjects: MAX_WATCHED_ITEMS,
         reports: "authoritative_saved_changes",
+        watchesEveryObjectKind: true,
+        drawnWorkReportedAs: "description_only",
         unsavedKeystrokesIncluded: false,
-        sectionContentsExpanded: false,
         stableItemIdentifiersReturned: false,
       },
       textRendering: WEBMCP_TEXT_RENDERING_CAPABILITY,

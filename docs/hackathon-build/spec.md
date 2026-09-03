@@ -85,7 +85,7 @@ the DOM.
 
 Makes the current browser's saved visual selection inspectable in the same live page for handwriting, sketches, arrows, shapes, spatial groupings, and mixed visual notes.
 
-- Publicly discoverable and read-only; at most 40 selected saved items per inspection.
+- Publicly discoverable and read-only; at most 1,000 selected saved items per inspection.
 - Opens the isolated visual review directly from the authoritative saved selection.
 - Renders the selected items through SpaceScale's canonical SVG exporter, preserving pencil paths, transforms, layout, typed context, and source ordering.
 - Replaces stable item IDs with ephemeral aliases such as `visual_1`, returns each

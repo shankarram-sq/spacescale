@@ -34,7 +34,7 @@ const INSPECT_VISUAL_TOOL = "inspect_selected_board_visual";
 const INSPIRE_SELECTION_TOOL = "inspire_from_selected_ideas";
 const EXPLAIN_SELECTION_TOOL = "explain_selected_ideas";
 const MAX_SHARED_IDEAS = 1_000;
-const MAX_SHARED_VISUAL_ITEMS = 1_000;
+export const MAX_SHARED_VISUAL_ITEMS = 1_000;
 /** Bounds one read's payload independently of item count; see the watch's budget for why. */
 const MAX_SHARED_TEXT_CODE_POINTS = 120_000;
 /** Chat-minted and watch-minted tokens share this store, so leave room for both flows. */

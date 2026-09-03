@@ -265,3 +265,14 @@
 .ai-share-menu .ai-assist-note {
   padding-inline: 3px;
 }
+
+/* The topbar drops its labels before it runs out of room; the chip follows the same rule. */
+@media (max-width: 980px) {
+  .webmcp-status {
+    padding: 0 8px;
+  }
+
+  .webmcp-status [data-webmcp-status-text] {
+    display: none;
+  }
+}

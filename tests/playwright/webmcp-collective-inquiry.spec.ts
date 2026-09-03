@@ -96,7 +96,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
     visualReader: {
       tool: "inspect_selected_board_visual",
       purpose: "handwriting_sketch_and_spatial_analysis",
-      maximumItems: 40,
+      maximumItems: 1_000,
       result: "isolated_live_page_preview",
       unselectedBoardMasked: true,
       stableItemIdentifiersReturned: false,
@@ -114,12 +114,13 @@ test("a board participant can use headless WebMCP tools with neutral board attri
     },
     problemStepWatch: {
       tool: "watch_board",
-      scope: "exact_saved_browser_selection",
+      scope: "entire_board",
       durationSeconds: 900,
       maximumWaitMs: 20_000,
       reports: "authoritative_saved_changes",
       unsavedKeystrokesIncluded: false,
-      sectionContentsExpanded: false,
+      watchesEveryObjectKind: true,
+      drawnWorkReportedAs: "description_only",
       stableItemIdentifiersReturned: false,
     },
     guardrails: {

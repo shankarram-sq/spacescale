@@ -6813,9 +6813,12 @@ export class BoardApp {
     this.webMcpStatusText.textContent = hostPresent
       ? `WebMCP · ${toolCount} ${toolCount === 1 ? "tool" : "tools"}`
       : "WebMCP · not linked";
-    this.webMcpStatus.title = hostPresent
+    const description = hostPresent
       ? `An AI assistant is linked to this browser and can see ${toolCount} SpaceScale tools.`
       : "No AI assistant is linked to this browser.";
+    this.webMcpStatus.title = description;
+    // Narrow headers hide the label, so the chip names itself for assistive technology.
+    this.webMcpStatus.setAttribute("aria-label", description);
   }
 
   private setAiShareMenuOpen(open: boolean): void {
