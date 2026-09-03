@@ -2,7 +2,7 @@
 
 ## Outcome
 
-SpaceScale turns an AI agent into a shared thinking partner in a live classroom conversation. Every browser that can open the board discovers the WebMCP tools, and the agent reads only that browser's saved selection—either exact typed sticky-note text or an isolated visual rendering for handwriting and sketches. It can expand, connect, challenge, structure decisions, turn thinking into action through 27 live non-section education modes, or turn the discussion into a playful source-linked image or meme. Cross-Group Jigsaw is reserved for the separately tested section-context integration, bringing the complete catalog to 28 after that push lands. Every canvas mutation still requires normal board edit permission and is atomic, realtime, source-linked, attributed to the responsible participant, and undoable. Internal origin metadata is retained without AI-specific board labels.
+SpaceScale turns an AI agent into a shared thinking partner in a live classroom conversation. Every browser that can open the board discovers the WebMCP tools, and the agent reads only that browser's saved selection—exact typed content, a bounded 15-minute stream of saved problem-step changes, or an isolated visual rendering for handwriting and sketches. It can expand, connect, challenge, structure decisions, turn thinking into action through 27 live non-section education modes, or turn the discussion into a playful source-linked image or meme. Cross-Group Jigsaw is reserved for the separately tested section-context integration, bringing the complete catalog to 28 after that push lands. Every canvas mutation still requires normal board edit permission and is atomic, realtime, source-linked, attributed to the responsible participant, and undoable. Internal origin metadata is retained without AI-specific board labels.
 
 One-line pitch:
 
@@ -13,6 +13,7 @@ One-line pitch:
 - The agent and the class act on the same live canvas and signed-in session.
 - Semantic tools handle typed ideas and votes; a bounded canonical visual surface handles the genuinely visual case of handwriting and sketches without a whole-board screenshot or brittle DOM automation.
 - The most valuable context is ephemeral UI state: the teacher’s current selection and the class’s current aggregate vote.
+- A bounded watch converts authoritative saved changes to selected problem steps into cancelable WebMCP long polls, letting the agent respond in the conversation as the reasoning develops.
 - The AI is not a private tutor for each student. Its output becomes a shared object that students can challenge, vote on, revise, and undo.
 - Human control is part of the product experience: selected-content consent is visible in SpaceScale, every write is teacher-requested through WebMCP, and the headline inquiry/decision flows add a second in-app preview.
 
@@ -54,6 +55,17 @@ Makes the current browser's saved visual selection inspectable in the same live 
 - Opens the result in an opaque modal review surface that covers the unselected board. Codex inspects this post-tool live-page state rather than receiving a large image string in JSON.
 - Returns bounded metadata and explicit instructions to use identity only for attribution or clarification, mark uncertain handwriting as uncertain, avoid invention, and avoid grading, ranking, or profiling.
 - Closing the review removes the temporary visual surface. It never changes the shared canvas.
+
+### `watch_selected_problem_steps`
+
+Follows changes to exact saved text-bearing items selected in the current browser
+for 15 minutes so Codex can comment as a participant works through a problem.
+
+- `start` snapshots at most 30 selected canvas-text, sticky-note, table, or Section-title items and returns ephemeral `step_N` aliases plus the authoritative board sequence.
+- `wait` is a cancelable long poll, bounded to 20 seconds per call. It returns promptly when a selected item is saved, otherwise times out with the next cursor so the host can wait again.
+- The tool tells the host to comment briefly after every changed step—checking the reasoning, acknowledging what is valid, identifying the first concrete issue or uncertainty, and asking one useful next-step question—then continue waiting.
+- Only server-acknowledged changes enter the feed. Unsaved keystrokes, video embeds, unselected items, Section children, coordinates, presence, history, stable board/item/participant IDs, and contact or authentication data are excluded.
+- `stop`, request cancellation, page navigation, or the fixed 15-minute expiry ends the watch. Sessions and up to 100 retained change groups live only in page memory.
 
 ### Five education collaboration tools
 
@@ -133,12 +145,17 @@ Uses a vote token to propose a chosen direction, rationale, minority concern, sm
 10. The agent calls `stage_class_decision`; the teacher reviews a decision that keeps a minority concern and next question visible.
 11. The teacher approves; the whole class sees the decision record and can continue the inquiry.
 
+For live problem coaching, the participant instead selects the exact working
+steps and asks Codex to start `watch_selected_problem_steps`. Codex alternates
+between bounded `wait` calls and short conversational feedback until 15 minutes
+elapse or the participant asks it to stop.
+
 ## Architecture
 
 - Registration uses the top-level JavaScript `document.modelContext.registerTool` API. The app remains fully functional when WebMCP is absent.
 - No OpenAI API key or model call is embedded in SpaceScale. The visiting ChatGPT/Codex agent performs the reasoning.
 - Existing SpaceScale authentication, owner role, item validation, Durable Outbox, WebSocket commit path, history, and undo remain authoritative.
-- Text-selection, visual-inspection, and vote receipts live only in page memory and are bounded to ten recent snapshots.
+- Text-selection, visual-inspection, vote receipts, and problem-step watch sessions live only in page memory. Snapshots are bounded to ten recent receipts; watches are bounded to five active sessions, 30 exact selected items, 100 retained relevant changes, and 15 minutes.
 - Read tools expose bounded semantic data or one selected-only canonical SVG review surface. Mutation tools accept structured intent—not coordinates, raw board operations, or arbitrary HTML.
 - Five generic education tools compile model-authored semantic cards, source aliases, roles, and relationships into deterministic layouts to the right of all current board content, so consecutive moves do not overlap. A complete mode-contract registry is shared by capability discovery and runtime validation, preventing the catalog and accepted inputs from drifting apart. The visual writer applies the same alias, freshness, placement, attribution, acknowledgement, and undo boundaries to private raster assets.
 - Generated layout is compiled into protocol-valid ordinary board items and capped below the 100-operation batch limit.
@@ -148,6 +165,7 @@ Uses a vote token to propose a chosen direction, rationale, minority concern, sm
 
 - No grading, ranking, participation scoring, student profiling, or inferred ability.
 - No whole-board or section reads. Visual inspection is limited to the saved items the teacher selected, with an opaque modal masking everything else.
+- Problem-step watches include only exact text-bearing items selected at start, never expand Section contents, and report only authoritative saved changes rather than unsaved keystrokes.
 - No autonomous or silent board edits: the teacher initiates and permits every WebMCP write, and can undo the whole batch.
 - No identifying dissenters or claiming consensus.
 - No AI-assigned priorities, weights, scores, votes, response counts, or final choices.
@@ -160,7 +178,7 @@ Uses a vote token to propose a chosen direction, rationale, minority concern, sm
 - **Usefulness:** supports the full classroom arc from divergent thinking through mutual understanding, collective reasoning, explicit decisions, experiments, and reflection.
 - **Originality:** a capability-aware agent joins one shared class conversation, then leaves source-linked structures that students can challenge together instead of opening private AI chats.
 - **Execution:** strict schemas, 27 live non-section modes plus one reserved section mode, a discoverable and runtime-enforced contract for every live mode, a bounded source-linked visual writer, selected-only handwriting inspection, visible consent, deterministic non-overlapping layout, private raster sanitation/storage, atomic commits, server acknowledgement, realtime sync, AI attribution, and undo.
-- **Thoughtful WebMCP:** uses live selection, canonical board rendering, and live vote state that an open page uniquely owns; it avoids whole-board screenshot guessing and needs no separate MCP installation.
+- **Thoughtful WebMCP:** uses live selection, authoritative saved-change cursors, canonical board rendering, and live vote state that an open page uniquely owns; it avoids whole-board screenshot guessing and needs no separate MCP installation.
 - **Human-agent experience:** two genuine loops in which student response changes the agent’s second contribution and the teacher remains in control.
 
 ## Current verification gates
@@ -169,7 +187,7 @@ Uses a vote token to propose a chosen direction, rationale, minority concern, sm
 - Production Vite build passes.
 - Unit compiler tests cover all 28 catalog modes, including the reserved Jigsaw compiler path.
 - Public WebMCP contract tests inspect every published requirement, execute all 27 currently live modes through their registered tools, verify acknowledged AI-attributed batches, and reject invalid role structures. A separate provider-enabled contract test proves the conditional 28th mode, acknowledged Jigsaw write, authoritative-group flags, and same-group rejection.
-- Chromium exercises all twelve registrations, the selected-handwriting consent and masked review path, the published mode contracts and reserved-section boundary, three rejected unsafe structures, a representative write from each live education family, and a locally rendered/private-uploaded meme, then verifies save, AI attribution, and six independent undos.
+- Chromium exercises all fifteen registrations, the 15-minute watch capability contract, the selected-handwriting consent and masked review path, the published mode contracts and reserved-section boundary, three rejected unsafe structures, a representative write from each live education family, and a locally rendered/private-uploaded meme, then verifies save, AI attribution, and six independent undos.
 - Full web TypeScript, Vite, unit, edge, protocol compatibility, lint, environment-doc, and secret-leak gates pass before production deployment.
 
 Official implementation reference: [OpenAI Site tools / WebMCP](https://learn.chatgpt.com/docs/webmcp).

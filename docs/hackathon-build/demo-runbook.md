@@ -88,9 +88,23 @@ Draw or paste synthetic handwritten strokes on an otherwise quiet part of the bo
 
 Codex calls `inspect_selected_board_visual`. SpaceScale directly opens a selected-only visual review with an opaque backdrop. Point out that the SVG contains ephemeral aliases instead of board IDs, unselected notes are absent, private image pixels are placeholders, and closing the review leaves the shared canvas unchanged.
 
+### Optional live problem-coaching moment
+
+Select the exact saved notes, text items, table, or Section title that contain the
+participant's working steps, then ask:
+
+> Watch these selected problem steps for 15 minutes. Whenever I save a changed step, comment briefly on whether the reasoning follows, identify the first issue or uncertainty, ask one useful next-step question, and keep watching. Do not solve ahead unless I ask.
+
+Codex calls `watch_selected_problem_steps` with `action: "start"`, then alternates
+short feedback with bounded `wait` calls. Edit and finish saving a selected item
+to demonstrate immediate feedback. Point out that the tool observes only
+authoritative saved changes—not keystrokes—and that selecting a Section shares
+its title only, never its contents. Ask Codex to stop early, or let the watch end
+automatically after 15 minutes.
+
 ## Demo checks
 
-- Site tools menu lists all twelve tools; `list_class_collaboration_modes` reports 27 live modes, the separate bounded visual tool, an enforceable input contract for every mode, the reserved section boundary, and no unselected board data.
+- Site tools menu lists all fifteen tools; `list_class_collaboration_modes` reports 27 live modes, the bounded problem-step watch and visual tool, an enforceable input contract for every mode, the reserved section boundary, and no unselected board data.
 - Selection results include selected text, action type, and the creator's board-visible name and stable participant ID.
 - Thinking expansion rejects more than three additions; every critique card ends in a question.
 - Decision scaffolds leave weights, ratings, votes, response counts, and final choice blank.

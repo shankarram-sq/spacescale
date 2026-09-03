@@ -1324,6 +1324,8 @@ export class BoardApp {
           this.model.items,
           this.model.authoritativeItems,
         ),
+      getAuthoritativeItem: (itemId) => this.model.authoritativeItems.get(itemId),
+      getSequence: () => this.model.lastAppliedSeq,
       getParticipantDisplayName: (participantId) => this.creatorNames.get(participantId) ?? null,
       notify: (message, kind) => this.notify(message, kind),
     });
@@ -3765,6 +3767,11 @@ export class BoardApp {
     try {
       this.rememberCreators([action.actor, ...(action.creators ?? [])]);
       const result = this.model.applyAction(action);
+      try {
+        this.webMcp?.recordAuthoritativeAction(action, result.changedIds);
+      } catch {
+        this.notify("The problem-step watch could not process this saved change.", "warning");
+      }
       this.bootstrap.board.latestSeq = action.seq;
       if (result.acknowledged) {
         this.finishWebMcpCommit(action.commandId, true);
