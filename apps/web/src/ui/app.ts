@@ -1729,7 +1729,7 @@ export class BoardApp {
               ).join("")}
             </div>
             <label class="ai-assist-note"><span>Add a note (optional)</span><input type="text" maxlength="${ASSIST_NOTE_MAX_LENGTH}" data-ai-share-note placeholder="What should the assistant do?" autocomplete="off" /></label>
-            <p class="ai-assist-menu-note">Selects every saved object and asks the watching assistant to follow the whole board, then do what you picked.</p>
+            <p class="ai-assist-menu-note">Asks the assistant watching this Space to do what you picked, across the whole board.</p>
           </section>
           <section class="style-popover" data-testid="style-popover" id="style-popover" aria-label="Drawing style" hidden>
             <div class="popover-heading"><strong>Style</strong><span data-style-heading-context>New marks</span></div>

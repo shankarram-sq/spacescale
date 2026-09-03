@@ -2,7 +2,7 @@ import { ASSIST_ACTIONS, type AssistAction } from "@collab/protocol";
 import type { BoardItem, ServerAction } from "../types";
 import { enumValue, isRecord, optionalText, requiredText } from "./shared";
 
-export const PROBLEM_STEP_WATCH_TOOL = "watch_selected_problem_steps";
+export const PROBLEM_STEP_WATCH_TOOL = "watch_board";
 export const WATCHED_STEP_COMMENT_TOOL = "comment_on_watched_step";
 export const PROBLEM_STEP_WATCH_DURATION_MS = 15 * 60_000;
 export const PROBLEM_STEP_WATCH_DEFAULT_WAIT_MS = 15_000;
@@ -13,7 +13,7 @@ export const ASSIST_NOTE_MAX_LENGTH = 280;
 export const MAX_ASSIST_COMMENTS_PER_WATCH = 20;
 
 /** Items one watch can follow, sized to cover a whole classroom board rather than a few steps. */
-const MAX_WATCHED_ITEMS = 150;
+const MAX_WATCHED_ITEMS = 1_000;
 /**
  * Characters one watch may carry across all of its steps. Item count alone cannot bound a
  * result: a board holds up to 10,000 items and one canvas text item up to 5,000 characters, so
@@ -28,18 +28,24 @@ const COMMENT_BODY_PLACEHOLDER = "<your reply, at most 2000 characters>";
 /** Largest millisecond value the Date type can represent. */
 const MAX_TIMESTAMP_MS = 8.64e15;
 
-type WatchableItem = Extract<BoardItem, { kind: "text" | "sticky" | "table" | "zone" }>;
+type TextBearingItem = Extract<BoardItem, { kind: "text" | "sticky" | "table" | "zone" }>;
 
 type WatchedStep = {
   alias: string;
-  kind: WatchableItem["kind"];
-  text: string;
+  kind: BoardItem["kind"];
+  /** Written work carries its saved text. */
+  text?: string;
+  /**
+   * Drawn work carries what it is and the saved version it is at. Pixels never cross this
+   * channel, so the host is pointed at the visual inspector when it needs to see the marks.
+   */
+  visual?: { description: string; revision: number };
   createdBy: { displayName: string };
 };
 
 type StepChange =
   | (WatchedStep & { change: "created" | "updated" })
-  | { alias: string; kind: WatchableItem["kind"]; change: "deleted" };
+  | { alias: string; kind: BoardItem["kind"]; change: "deleted" };
 
 type WatchChange = {
   seq: number;
@@ -157,14 +163,15 @@ type WatchSession = {
   /** Latest action requested per step alias, attached to the comment that answers it. */
   requestedActions: Map<string, AssistAction>;
   commentsPosted: number;
+  /** Next step number, so objects created after the watch started can join it. */
+  nextAlias: number;
   commentInFlight: boolean;
   expiryTimer?: ReturnType<typeof setTimeout>;
 };
 
 export type ProblemStepWatchOptions = {
-  getSelectedItems: () => BoardItem[] | null;
-  /** Every saved item on the board, used when a watch starts with nothing selected. */
-  getBoardItems?: () => BoardItem[];
+  /** Every saved object on the board. A watch always follows the whole board. */
+  getBoardItems: () => BoardItem[];
   getAuthoritativeItem: (itemId: string) => BoardItem | undefined;
   getSequence: () => number;
   getParticipantDisplayName: (participantId: string) => string | null;
@@ -239,10 +246,9 @@ export class ProblemStepWatchFeed {
   }
 
   /**
-   * The board's AI tool shares every item the participant can see, rather than the steps this
-   * watch started with. The page cannot widen a running watch on its own, so this records the
-   * ask and the task prompt; the next wait hands both to the host, which restarts its watch
-   * over the new selection.
+   * The board's AI tool asks the assistant to work on the whole board. The watch already
+   * follows the board, so this only carries the task the participant picked; the next wait
+   * hands it to the host.
    */
   shareEntireBoard(input: { action: AssistAction; note?: string; itemCount: number }): {
     requestId: string;
@@ -368,8 +374,19 @@ export class ProblemStepWatchFeed {
       const steps: StepChange[] = [];
       const applied = new Map<string, WatchedStep | undefined>();
       for (const itemId of changedIds) {
-        if (!session.itemIds.has(itemId)) continue;
         const previous = session.steps.get(itemId);
+        if (!session.itemIds.has(itemId)) {
+          // The watch follows the whole board, so anything new joins it as it is saved.
+          const created = this.options.getAuthoritativeItem(itemId);
+          if (!created) continue;
+          this.trackItem(session, created);
+          const step = session.steps.get(itemId);
+          if (step) {
+            applied.set(itemId, step);
+            steps.push({ ...step, change: "created" });
+          }
+          continue;
+        }
         const item = this.options.getAuthoritativeItem(itemId);
         const current = item ? this.toWatchedStep(item, session.aliases.get(itemId)) : undefined;
         if (current) {
@@ -377,8 +394,7 @@ export class ProblemStepWatchFeed {
           if (!previous) {
             steps.push({ ...current, change: "created" });
           } else if (
-            previous.kind !== current.kind ||
-            previous.text !== current.text ||
+            stepSignature(previous) !== stepSignature(current) ||
             previous.createdBy.displayName !== current.createdBy.displayName
           ) {
             steps.push({ ...current, change: "updated" });
@@ -447,32 +463,20 @@ export class ProblemStepWatchFeed {
   }
 
   private start(): Record<string, unknown> {
-    const selection = this.options.getSelectedItems();
-    if (selection === null) throw new Error("Wait for every selected item to finish saving.");
-    // Starting with nothing selected is a request to follow the whole board, which is what a
-    // participant means when they ask for help without singling anything out first.
-    const wholeBoard = selection.length === 0;
-    const scope = wholeBoard ? (this.options.getBoardItems?.() ?? []) : selection;
-    const watchable = scope.filter(isWatchableItem);
-    if (watchable.length === 0) {
-      throw new Error(
-        wholeBoard
-          ? "This board has no saved text items, sticky notes, tables, or Section titles to watch yet."
-          : "Select one or more saved text items, sticky notes, tables, or Section titles first.",
-      );
-    }
+    const watchable = this.options.getBoardItems();
+    if (watchable.length === 0) throw new Error("This board has nothing saved to watch yet.");
     if (watchable.length > MAX_WATCHED_ITEMS) {
       throw new Error(
-        `This watch follows up to ${MAX_WATCHED_ITEMS} items; ${watchable.length} are selected. Select fewer and start again.`,
+        `This watch follows up to ${MAX_WATCHED_ITEMS} objects; this board holds ${watchable.length}.`,
       );
     }
-    const selectedCodePoints = watchable.reduce(
-      (total, item) => total + [...watchableText(item)].length,
+    const boardCodePoints = watchable.reduce(
+      (total, item) => total + [...(stepText(item) ?? "")].length,
       0,
     );
-    if (selectedCodePoints > MAX_WATCHED_TEXT_CODE_POINTS) {
+    if (boardCodePoints > MAX_WATCHED_TEXT_CODE_POINTS) {
       throw new Error(
-        `The selected items hold ${selectedCodePoints} characters, over this watch's ${MAX_WATCHED_TEXT_CODE_POINTS}-character budget. Select fewer and start again.`,
+        `This board holds ${boardCodePoints} characters of text, over this watch's ${MAX_WATCHED_TEXT_CODE_POINTS}-character budget.`,
       );
     }
 
@@ -497,14 +501,9 @@ export class ProblemStepWatchFeed {
       requestedActions: new Map(),
       commentsPosted: 0,
       commentInFlight: false,
+      nextAlias: 1,
     };
-    watchable.forEach((item, index) => {
-      const alias = `step_${index + 1}`;
-      session.itemIds.add(item.id);
-      session.aliases.set(item.id, alias);
-      const step = this.toWatchedStep(item, alias);
-      if (step) session.steps.set(item.id, step);
-    });
+    for (const item of watchable) this.trackItem(session, item);
     this.sessions.set(token, session);
     while (this.sessions.size > MAX_LIVE_SESSIONS) {
       const oldestToken = this.sessions.keys().next().value as string | undefined;
@@ -527,7 +526,7 @@ export class ProblemStepWatchFeed {
       durationSeconds: PROBLEM_STEP_WATCH_DURATION_MS / 1_000,
       nextSeq: startSeq,
       steps: this.currentSteps(session),
-      scope: wholeBoard ? "entire_board" : "browser_selection",
+      scope: "entire_board",
       ...this.selectionTokenFields(session),
       canComment: this.options.canComment?.() ?? false,
       canWrite: this.options.canWrite?.() ?? false,
@@ -538,7 +537,7 @@ export class ProblemStepWatchFeed {
       },
       ...watchGuidance(token, startSeq),
       privacy:
-        "This watch contains only the exact saved text-bearing items selected when it started. It does not include unsaved keystrokes, other Section contents, unselected board content, stable item IDs, positions, presence, history, authentication data, or contact details.",
+        "This watch follows the saved objects on this board. Drawn work is described, never rendered here. It does not include unsaved keystrokes, stable item IDs, positions, presence, history, authentication data, or contact details.",
     };
   }
 
@@ -637,10 +636,9 @@ export class ProblemStepWatchFeed {
               scope: "entire_board",
               prompt: ASSIST_GUIDANCE[boardShare.action].instruction,
               reply: {
-                via: "restart_watch",
+                via: "act_on_board",
                 instruction:
-                  "The participant shared the whole board and selected it in their browser. Call watch_selected_problem_steps with action start to re-scope this watch to that selection, then carry out the prompt.",
-                call: { tool: PROBLEM_STEP_WATCH_TOOL, input: { action: "start" } },
+                  "This watch already follows the whole board, so nothing needs re-scoping. Carry out the prompt across the steps it reports, replying the way the prompt asks.",
               },
             },
           }),
@@ -814,12 +812,28 @@ export class ProblemStepWatchFeed {
     );
   }
 
+  /** Gives an object a stable step alias for this watch and snapshots it. */
+  private trackItem(session: WatchSession, item: BoardItem): void {
+    let alias = session.aliases.get(item.id);
+    if (alias === undefined) {
+      alias = `step_${session.nextAlias}`;
+      session.nextAlias += 1;
+      session.aliases.set(item.id, alias);
+    }
+    session.itemIds.add(item.id);
+    const step = this.toWatchedStep(item, alias);
+    if (step) session.steps.set(item.id, step);
+  }
+
   private toWatchedStep(item: BoardItem, alias?: string): WatchedStep | undefined {
-    if (!alias || !isWatchableItem(item)) return undefined;
+    if (!alias) return undefined;
+    const text = stepText(item);
     return {
       alias,
       kind: item.kind,
-      text: watchableText(item),
+      ...(text === undefined
+        ? { visual: { description: visualDescription(item), revision: item.version } }
+        : { text }),
       createdBy: {
         displayName:
           this.options.getParticipantDisplayName(item.createdBy)?.trim() || "Unknown participant",
@@ -977,7 +991,7 @@ function replyPlan(
   };
 }
 
-function isWatchableItem(item: BoardItem): item is WatchableItem {
+function isTextBearingItem(item: BoardItem): item is TextBearingItem {
   return (
     item.kind === "sticky" ||
     item.kind === "table" ||
@@ -986,9 +1000,45 @@ function isWatchableItem(item: BoardItem): item is WatchableItem {
   );
 }
 
-function watchableText(item: WatchableItem): string {
+/** The saved text of written work, or undefined for work that is drawn rather than written. */
+function stepText(item: BoardItem): string | undefined {
+  if (!isTextBearingItem(item)) return undefined;
   if (item.kind === "table") return item.geometry.cells.map((row) => row.join("\t")).join("\n");
   return item.kind === "zone" ? item.geometry.title : item.geometry.text;
+}
+
+/** Names drawn work plainly enough that a host knows what it is looking at before inspecting it. */
+function visualDescription(item: BoardItem): string {
+  switch (item.kind) {
+    case "pencil":
+      return `handwriting or sketch of ${item.geometry.points.length} points`;
+    case "line":
+      return "line or connector";
+    case "rectangle":
+    case "ellipse":
+    case "polygon":
+      return `${item.kind} shape`;
+    case "image":
+      return item.geometry.alt?.trim() ? `image: ${item.geometry.alt.trim()}` : "image";
+    case "stamp":
+      return "stamp";
+    case "protractor":
+      return "protractor";
+    case "text":
+      return "embedded video";
+    default:
+      return item.kind;
+  }
+}
+
+/** Everything about a step that a saved change could alter. */
+function stepSignature(step: WatchedStep): string {
+  return [
+    step.kind,
+    step.text ?? "",
+    step.visual?.description ?? "",
+    step.visual?.revision ?? "",
+  ].join("\u0000");
 }
 
 function safeInteger(value: unknown, field: string, minimum: number, maximum?: number): number {

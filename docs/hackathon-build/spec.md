@@ -95,12 +95,12 @@ Makes the current browser's saved visual selection inspectable in the same live 
 - Returns bounded metadata and explicit instructions to use identity only for attribution or clarification, mark uncertain handwriting as uncertain, avoid invention, and avoid grading, ranking, or profiling.
 - Closing the review removes the temporary visual surface. It never changes the shared canvas.
 
-### `watch_selected_problem_steps`
+### `watch_board`
 
-Follows changes to exact saved text-bearing items selected in the current browser
+Follows changes to exact saved objects selected in the current browser, of any kind,
 for 15 minutes so Codex can comment as a participant works through a problem.
 
-- `start` snapshots up to 150 canvas-text, sticky-note, table, or Section-title items, bounded also by a 120,000-character budget, and returns ephemeral `step_N` aliases plus the authoritative board sequence. With nothing selected it follows the whole board and reports `scope: entire_board`; with a selection it follows exactly that and reports `scope: browser_selection`.
+- `start` snapshots up to 1,000 saved objects of any kind, bounded also by a 120,000-character text budget, and returns ephemeral `step_N` aliases plus the authoritative board sequence. Written work carries its text; drawn work (handwriting, shapes, images, stamps, video embeds) carries a short description and the saved version it is at, and the host is pointed at `inspect_selected_board_visual` when it needs to see the marks. With nothing selected it follows the whole board and reports `scope: entire_board`; with a selection it follows exactly that and reports `scope: browser_selection`.
 - `wait` is a cancelable long poll, bounded to 20 seconds per call. It returns promptly when a selected item is saved, otherwise times out with the next cursor so the host can wait again.
 - The tool tells the host to comment briefly after every changed step—checking the reasoning, acknowledging what is valid, identifying the first concrete issue or uncertainty, and asking one useful next-step question—then continue waiting.
 - Only server-acknowledged changes enter the feed. Unsaved keystrokes, video embeds, unselected items, Section children, coordinates, presence, history, stable board/item/participant IDs, and contact or authentication data are excluded.
@@ -204,7 +204,7 @@ Uses a vote token to propose a chosen direction, rationale, minority concern, sm
 11. The teacher approves; the whole class sees the decision record and can continue the inquiry.
 
 For live problem coaching, the participant instead selects the exact working
-steps and asks Codex to start `watch_selected_problem_steps`. Codex alternates
+steps and asks Codex to start `watch_board`. Codex alternates
 between bounded `wait` calls and short feedback until 15 minutes elapse or the
 participant asks it to stop. While the watch is live the participant can also
 select a step and press **Ask AI** on the board; the request arrives in the next
@@ -224,7 +224,7 @@ select a step and press **Ask AI** on the board; the request arrives in the next
 
 - No grading, ranking, participation scoring, student profiling, or inferred ability.
 - No whole-board or section reads. Visual inspection is limited to the saved items the teacher selected, with an opaque modal masking everything else.
-- Problem-step watches include only exact text-bearing items selected at start, never expand Section contents, and report only authoritative saved changes rather than unsaved keystrokes.
+- Problem-step watches include only the objects in scope at start, which is the exact selection or, when nothing was selected, the whole board. They never expand a selected Section into its contents and report only authoritative saved changes rather than unsaved keystrokes. Drawn work is described, never rendered into the watch.
 - No autonomous or silent board edits: the teacher initiates and permits every WebMCP write, and can undo the whole batch.
 - No identifying dissenters or claiming consensus.
 - No AI-assigned priorities, weights, scores, votes, response counts, or final choices.

@@ -33,8 +33,8 @@ const READ_SELECTION_TOOL = "read_selected_class_ideas";
 const INSPECT_VISUAL_TOOL = "inspect_selected_board_visual";
 const INSPIRE_SELECTION_TOOL = "inspire_from_selected_ideas";
 const EXPLAIN_SELECTION_TOOL = "explain_selected_ideas";
-const MAX_SHARED_IDEAS = 150;
-const MAX_SHARED_VISUAL_ITEMS = 150;
+const MAX_SHARED_IDEAS = 1_000;
+const MAX_SHARED_VISUAL_ITEMS = 1_000;
 /** Bounds one read's payload independently of item count; see the watch's budget for why. */
 const MAX_SHARED_TEXT_CODE_POINTS = 120_000;
 /** Chat-minted and watch-minted tokens share this store, so leave room for both flows. */
@@ -75,8 +75,8 @@ export type CollectiveInquirySnapshot = {
 export type CollectiveInquiryWebMcpOptions = {
   root: HTMLElement;
   getSelectedItems: () => BoardItem[] | null;
-  /** Every saved item on the board, used when a watch starts with nothing selected. */
-  getBoardItems?: () => BoardItem[];
+  /** Every saved object on the board. The watch always follows the whole board. */
+  getBoardItems: () => BoardItem[];
   getAuthoritativeItem: (itemId: string) => BoardItem | undefined;
   getSequence: () => number;
   getParticipantDisplayName: (participantId: string) => string | null;
@@ -100,8 +100,7 @@ export class CollectiveInquiryWebMcp {
 
   constructor(private readonly options: CollectiveInquiryWebMcpOptions) {
     this.problemStepWatch = new ProblemStepWatchFeed({
-      getSelectedItems: options.getSelectedItems,
-      ...(options.getBoardItems ? { getBoardItems: options.getBoardItems } : {}),
+      getBoardItems: options.getBoardItems,
       getAuthoritativeItem: options.getAuthoritativeItem,
       getSequence: options.getSequence,
       getParticipantDisplayName: options.getParticipantDisplayName,
@@ -137,7 +136,7 @@ export class CollectiveInquiryWebMcp {
     return this.problemStepWatch.requestAssistance(input);
   }
 
-  /** The board's AI tool shares every saved object with the assistant already watching. */
+  /** The board's AI tool asks the assistant already watching to work on the whole board. */
   shareEntireBoard(input: { action: AssistAction; note?: string; itemCount: number }): {
     requestId: string;
     delivered: boolean;
@@ -194,7 +193,7 @@ export class CollectiveInquiryWebMcp {
         modelContext,
         {
           name: PROBLEM_STEP_WATCH_TOOL,
-          description: `Start, continue, or stop a 15-minute read-only watch of the exact saved text items selected in this browser. Use this when a participant asks for real-time feedback while working through a problem. First call with action start; with nothing selected in the browser that watches the whole board, otherwise it watches exactly the selection. Briefly comment on every returned change, then call action wait again with the returned watchToken and nextSeq; repeat after timeouts until the watch expires or the participant asks to stop. Each wait returns once and lasts at most 20 seconds and reports status changed, requested, timeout, resync, stopped, expired, or replaced; every status except changed, requested, timeout and resync ends the watch, and resync carries a fresh snapshot after the board reloaded. While the watch is live the board shows an AI button; a requested result carries the participant's chosen action, the step text, an optional note, and a reply plan naming the exact next tool call (a comment on the step via ${WATCHED_STEP_COMMENT_TOOL}, or cards via an add_* tool with the returned selectionToken). Answer it, then wait again. A requested result may also carry boardShare when the participant used the board's AI tool to hand over the whole board: it names the task prompt and asks you to call start again to re-scope this watch to their new selection. The watch never includes unsaved keystrokes, other contents of a selected Section, unselected content, stable item IDs, coordinates, presence, or history. ${WEBMCP_MATHJAX_GUIDANCE}`,
+          description: `Start, continue, or stop a 15-minute read-only watch of the exact saved objects selected in this browser, of any kind. Written work (canvas text, sticky notes, table cells, Section titles) carries its text; drawn work (handwriting, shapes, lines, images, stamps, video embeds) carries a short description and the saved version it is at, so call inspect_selected_board_visual when you need to see the marks themselves. Use this when a participant asks for real-time feedback while working through a problem. First call with action start; with nothing selected in the browser that watches the whole board, otherwise it watches exactly the selection. Briefly comment on every returned change, then call action wait again with the returned watchToken and nextSeq; repeat after timeouts until the watch expires or the participant asks to stop. Each wait returns once and lasts at most 20 seconds and reports status changed, requested, timeout, resync, stopped, expired, or replaced; every status except changed, requested, timeout and resync ends the watch, and resync carries a fresh snapshot after the board reloaded. While the watch is live the board shows an AI button; a requested result carries the participant's chosen action, the step content, an optional note, and a reply plan naming the exact next tool call (a comment on the step via ${WATCHED_STEP_COMMENT_TOOL}, or cards via an add_* tool with the returned selectionToken). Answer it, then wait again. A requested result may also carry boardShare when the participant used the board's AI tool: it names the task they picked for the whole board, which this watch already follows. The watch never includes unsaved keystrokes, stable item IDs, coordinates, presence, or history. ${WEBMCP_MATHJAX_GUIDANCE}`,
           inputSchema: {
             type: "object",
             properties: {
@@ -242,7 +241,7 @@ export class CollectiveInquiryWebMcp {
               watchToken: {
                 type: "string",
                 maxLength: 128,
-                description: "Opaque token returned by watch_selected_problem_steps.",
+                description: "Opaque token returned by watch_board.",
               },
               stepAlias: {
                 type: "string",

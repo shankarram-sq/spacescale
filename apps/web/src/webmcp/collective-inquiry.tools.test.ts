@@ -57,6 +57,7 @@ function harness(options: { canComment?: boolean; canWrite?: boolean } = {}) {
   const inquiry = new CollectiveInquiryWebMcp({
     root: { append: () => undefined } as unknown as HTMLElement,
     getSelectedItems: () => [sticky()],
+    getBoardItems: () => [sticky()],
     getAuthoritativeItem: (itemId) => (itemId === STICKY_ID ? sticky() : undefined),
     getSequence: () => 3,
     getParticipantDisplayName: () => "Sam",
@@ -84,7 +85,7 @@ describe("watch reply tools", () => {
   it("registers the comment tool and documents the requested status", async () => {
     const { inquiry, tools } = harness();
     await vi.waitFor(() => expect(tools.has("comment_on_watched_step")).toBe(true));
-    expect(tools.get("watch_selected_problem_steps")?.description).toContain("requested");
+    expect(tools.get("watch_board")?.description).toContain("requested");
     expect(tools.get("comment_on_watched_step")?.annotations).toEqual({
       readOnlyHint: false,
       untrustedContentHint: true,
@@ -96,7 +97,7 @@ describe("watch reply tools", () => {
   it("mints a selection token the add_* tools can resolve and posts a tagged comment", async () => {
     const { inquiry, tools, created, notices, call } = harness();
     await vi.waitFor(() => expect(tools.has("comment_on_watched_step")).toBe(true));
-    const started = await call("watch_selected_problem_steps", { action: "start" });
+    const started = await call("watch_board", { action: "start" });
     const token = String(started.selectionToken);
     expect(started).toMatchObject({
       selectionSources: [{ stepAlias: "step_1", sourceAlias: "idea_1" }],
@@ -131,7 +132,7 @@ describe("watch reply tools", () => {
   it("rejects bad aliases, oversized bodies, and browsers that cannot comment", async () => {
     const { inquiry, tools, call } = harness({ canComment: false });
     await vi.waitFor(() => expect(tools.has("comment_on_watched_step")).toBe(true));
-    const started = await call("watch_selected_problem_steps", { action: "start" });
+    const started = await call("watch_board", { action: "start" });
     expect(started).toMatchObject({ canComment: false });
     const base = { watchToken: started.watchToken, stepAlias: "step_1", body: "Hello" };
     await expect(call("comment_on_watched_step", { ...base, stepAlias: "idea_1" })).rejects.toThrow(

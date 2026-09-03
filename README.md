@@ -222,8 +222,10 @@ metadata for MCP context and auditing, is attributed to the responsible particip
 ordinary author initials, and carries a small AI mark so tool and human are always
 distinguishable. Every generated contribution remains source-linked, realtime, and undoable. The
 problem-step watcher reports authoritative saved changes to the visiting host in bounded
-long polls, so Codex can respond after each selected step changes. Starting a watch with
-nothing selected follows the whole board, and while a watch is live the tool rail offers an
+long polls, so Codex can respond after each selected step changes. It follows saved objects of
+any kind: written work carries its text, and handwriting, shapes, images and embeds carry a
+short description plus their saved version, with the visual inspector for seeing the marks.
+Starting a watch with nothing selected follows the whole board, and while a watch is live the tool rail offers an
 **AI** action that hands the whole board over with a task prompt. The board header reports
 whether a WebMCP host is linked and how many tools it can see. The watcher
 never captures unsaved keystrokes, expands a selected section into its contents, or returns
