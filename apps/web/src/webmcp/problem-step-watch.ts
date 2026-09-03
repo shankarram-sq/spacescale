@@ -1,5 +1,6 @@
 import { ASSIST_ACTIONS, type AssistAction } from "@collab/protocol";
 import type { BoardItem, ServerAction } from "../types";
+import { type BoardImage, hasVisualContent } from "./board-image";
 import { enumValue, isRecord, optionalText, requiredText } from "./shared";
 
 export const PROBLEM_STEP_WATCH_TOOL = "watch_board";
@@ -174,6 +175,8 @@ type WatchSession = {
 export type ProblemStepWatchOptions = {
   /** Every saved object on the board. A watch always follows the whole board. */
   getBoardItems: () => BoardItem[];
+  /** Renders the board to a PNG so drawn work can be seen rather than described. */
+  captureBoardImage?: (items: readonly BoardItem[]) => Promise<BoardImage | undefined>;
   getAuthoritativeItem: (itemId: string) => BoardItem | undefined;
   getSequence: () => number;
   getParticipantDisplayName: (participantId: string) => string | null;
@@ -239,7 +242,7 @@ export class ProblemStepWatchFeed {
       session.droppedRequests += 1;
     }
     const delivered = session.pending !== undefined;
-    if (delivered) this.resolvePending(session, this.requestedResult(session));
+    if (delivered) this.resolvePendingWithImage(session, this.requestedResult(session));
     return {
       requestId: request.requestId,
       delivered,
@@ -280,7 +283,7 @@ export class ProblemStepWatchFeed {
     });
     while (session.boardShares.length > MAX_QUEUED_REQUESTS) session.boardShares.shift();
     const delivered = session.pending !== undefined;
-    if (delivered) this.resolvePending(session, this.requestedResult(session));
+    if (delivered) this.resolvePendingWithImage(session, this.requestedResult(session));
     return { requestId, delivered };
   }
 
@@ -342,7 +345,7 @@ export class ProblemStepWatchFeed {
     const action = enumValue(input.action, ["start", "wait", "stop"] as const, "action");
     if (action === "start") {
       this.expireSessions();
-      return Promise.resolve(this.start());
+      return this.withBoardImageForNewWatch(this.start());
     }
 
     const token = requiredText(input.watchToken, "watchToken", 128);
@@ -431,7 +434,10 @@ export class ProblemStepWatchFeed {
         if (discarded) session.discardedThroughSeq = discarded.seq;
       }
       if (session.pending && action.seq > session.pending.afterSeq) {
-        this.resolvePending(session, this.changesResult(session, session.pending.afterSeq));
+        this.resolvePendingWithImage(
+          session,
+          this.changesResult(session, session.pending.afterSeq),
+        );
       }
     }
   }
@@ -465,7 +471,7 @@ export class ProblemStepWatchFeed {
       // session with no wait in flight. Leaving it set would hand the same snapshot to the
       // very next call and have the agent process one reload twice.
       session.needsResync = session.pending === undefined;
-      if (session.pending) this.resolvePending(session, this.resyncResult(session));
+      if (session.pending) this.resolvePendingWithImage(session, this.resyncResult(session));
     }
   }
 
@@ -570,7 +576,7 @@ export class ProblemStepWatchFeed {
     // before validating afterSeq against it.
     if (session.needsResync) {
       session.needsResync = false;
-      return Promise.resolve(this.resyncResult(session));
+      return this.withBoardImage(this.resyncResult(session), session);
     }
     const afterSeq = safeInteger(input.afterSeq, "afterSeq", 0);
     if (afterSeq < session.startSeq) {
@@ -586,13 +592,13 @@ export class ProblemStepWatchFeed {
     // Requests embed the current step text, so they do not depend on the caller's cursor and
     // go out ahead of queued changes; nextSeq is unchanged and the changes follow next time.
     if (session.requests.length > 0 || session.boardShares.length > 0) {
-      return Promise.resolve(this.requestedResult(session));
+      return this.withBoardImage(this.requestedResult(session), session);
     }
     if (afterSeq <= session.discardedThroughSeq) {
-      return Promise.resolve(this.resyncResult(session));
+      return this.withBoardImage(this.resyncResult(session), session);
     }
     if (session.changes.some((change) => change.seq > afterSeq)) {
-      return Promise.resolve(this.changesResult(session, afterSeq));
+      return this.withBoardImage(this.changesResult(session, afterSeq), session);
     }
 
     const remainingMs = session.expiresAt - Date.now();
@@ -620,6 +626,59 @@ export class ProblemStepWatchFeed {
       this.emitState();
       if (signal.aborted) onAbort();
     });
+  }
+
+  private withBoardImageForNewWatch(
+    result: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const session = this.sessions.get(String(result.watchToken));
+    return session ? this.withBoardImage(result, session) : Promise.resolve(result);
+  }
+
+  /**
+   * Adds a picture of the board to a result that describes it. Handwriting cannot be read from
+   * a description, so a result about drawn work carries the drawing itself.
+   */
+  private async withBoardImage(
+    result: Record<string, unknown>,
+    session: WatchSession,
+  ): Promise<Record<string, unknown>> {
+    const capture = this.options.captureBoardImage;
+    if (!capture) return result;
+    const items = [...session.itemIds].flatMap((itemId) => {
+      const item = this.options.getAuthoritativeItem(itemId);
+      return item ? [item] : [];
+    });
+    if (!hasVisualContent(items)) return result;
+    try {
+      const image = await capture(items);
+      if (!image) return result;
+      return {
+        ...result,
+        boardImage: {
+          ...image,
+          capturedAt: new Date().toISOString(),
+          scope: "entire_board",
+          note: "A picture of the board as it is now. Private image cards render as placeholders.",
+        },
+      };
+    } catch {
+      return result;
+    }
+  }
+
+  /** Consumes the pending wait now, then answers it once the picture is ready. */
+  private resolvePendingWithImage(session: WatchSession, result: Record<string, unknown>): void {
+    const pending = session.pending;
+    if (!pending) return;
+    session.pending = undefined;
+    clearTimeout(pending.timer);
+    pending.signal.removeEventListener("abort", pending.onAbort);
+    void this.withBoardImage(result, session).then(
+      (withImage) => pending.resolve(withImage),
+      () => pending.resolve(result),
+    );
+    this.emitState();
   }
 
   private requestedResult(session: WatchSession): Record<string, unknown> {

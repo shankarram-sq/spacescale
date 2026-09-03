@@ -1,14 +1,8 @@
 import "./collective-inquiry.css";
 
-import { boundsForItems, boundsHeight, boundsWidth } from "@collab/geometry";
-import {
-  ASSIST_ACTIONS,
-  type AssistAction,
-  type Assistance,
-  normalizeBoardItem,
-} from "@collab/protocol";
-import { renderSvgItem } from "@collab/svg-export";
+import { ASSIST_ACTIONS, type AssistAction, type Assistance } from "@collab/protocol";
 import type { BoardItem, ServerAction } from "../types";
+import { captureBoardImage, serializeVisualPreview, visualAlias } from "./board-image";
 import {
   type AssistRequestInput,
   type AssistRequestReceipt,
@@ -101,6 +95,7 @@ export class CollectiveInquiryWebMcp {
   constructor(private readonly options: CollectiveInquiryWebMcpOptions) {
     this.problemStepWatch = new ProblemStepWatchFeed({
       getBoardItems: options.getBoardItems,
+      captureBoardImage: (items) => captureBoardImage(items),
       getAuthoritativeItem: options.getAuthoritativeItem,
       getSequence: options.getSequence,
       getParticipantDisplayName: options.getParticipantDisplayName,
@@ -193,7 +188,7 @@ export class CollectiveInquiryWebMcp {
         modelContext,
         {
           name: PROBLEM_STEP_WATCH_TOOL,
-          description: `Start, continue, or stop a 15-minute read-only watch of the exact saved objects selected in this browser, of any kind. Written work (canvas text, sticky notes, table cells, Section titles) carries its text; drawn work (handwriting, shapes, lines, images, stamps, video embeds) carries a short description and the saved version it is at, so call inspect_selected_board_visual when you need to see the marks themselves. Use this when a participant asks for real-time feedback while working through a problem. First call with action start; with nothing selected in the browser that watches the whole board, otherwise it watches exactly the selection. Briefly comment on every returned change, then call action wait again with the returned watchToken and nextSeq; repeat after timeouts until the watch expires or the participant asks to stop. Each wait returns once and lasts at most 20 seconds and reports status changed, requested, timeout, resync, stopped, expired, or replaced; every status except changed, requested, timeout and resync ends the watch, and resync carries a fresh snapshot after the board reloaded. While the watch is live the board shows an AI button; a requested result carries the participant's chosen action, the step content, an optional note, and a reply plan naming the exact next tool call (a comment on the step via ${WATCHED_STEP_COMMENT_TOOL}, or cards via an add_* tool with the returned selectionToken). Answer it, then wait again. A requested result may also carry boardShare when the participant used the board's AI tool: it names the task they picked for the whole board, which this watch already follows. The watch never includes unsaved keystrokes, stable item IDs, coordinates, presence, or history. ${WEBMCP_MATHJAX_GUIDANCE}`,
+          description: `Start, continue, or stop a 15-minute read-only watch of the exact saved objects selected in this browser, of any kind. Written work (canvas text, sticky notes, table cells, Section titles) carries its text; drawn work (handwriting, shapes, lines, images, stamps, video embeds) carries a short description and the saved version it is at. Whenever the board holds drawn work, every result also carries boardImage, a PNG of the board as it is at that moment, so you can see the handwriting rather than infer it. Private image cards render as placeholders in that picture. Use this when a participant asks for real-time feedback while working through a problem. First call with action start; with nothing selected in the browser that watches the whole board, otherwise it watches exactly the selection. Briefly comment on every returned change, then call action wait again with the returned watchToken and nextSeq; repeat after timeouts until the watch expires or the participant asks to stop. Each wait returns once and lasts at most 20 seconds and reports status changed, requested, timeout, resync, stopped, expired, or replaced; every status except changed, requested, timeout and resync ends the watch, and resync carries a fresh snapshot after the board reloaded. While the watch is live the board shows an AI button; a requested result carries the participant's chosen action, the step content, an optional note, and a reply plan naming the exact next tool call (a comment on the step via ${WATCHED_STEP_COMMENT_TOOL}, or cards via an add_* tool with the returned selectionToken). Answer it, then wait again. A requested result may also carry boardShare when the participant used the board's AI tool: it names the task they picked for the whole board, which this watch already follows. The watch never includes unsaved keystrokes, stable item IDs, coordinates, presence, or history. ${WEBMCP_MATHJAX_GUIDANCE}`,
           inputSchema: {
             type: "object",
             properties: {
@@ -631,48 +626,6 @@ function buildVisualPreview(items: readonly BoardItem[]): {
   image.dataset.visualScope = "browser-selected-items-only";
   image.src = objectUrl;
   return { image, objectUrl };
-}
-
-export function serializeVisualPreview(items: readonly BoardItem[]): {
-  viewBox: string;
-  ariaLabel: string;
-  content: string;
-} {
-  if (items.length === 0) throw new Error("A visual preview needs at least one item.");
-  const sanitized = items
-    .map((item, index) => {
-      const normalized = normalizeBoardItem(item);
-      const sanitized = {
-        ...normalized,
-        id: visualAlias(index),
-        createdBy: "shared-visual",
-      };
-      return sanitized.kind === "image"
-        ? {
-            ...sanitized,
-            geometry: { ...sanitized.geometry, alt: "Private image not shared" },
-          }
-        : sanitized;
-    })
-    .sort((left, right) => left.z - right.z);
-  const bounds = boundsForItems(sanitized);
-  if (bounds === null) throw new Error("The selected visual has no renderable bounds.");
-  const width = Math.max(1, boundsWidth(bounds));
-  const height = Math.max(1, boundsHeight(bounds));
-  const padding = Math.max(18, Math.min(72, Math.min(width, height) * 0.08));
-  const minX = bounds.minX - padding;
-  const minY = bounds.minY - padding;
-  const viewWidth = width + padding * 2;
-  const viewHeight = height + padding * 2;
-  return {
-    viewBox: `${minX} ${minY} ${viewWidth} ${viewHeight}`,
-    ariaLabel: `Board visual containing ${items.length} browser-selected item${items.length === 1 ? "" : "s"}`,
-    content: `<rect x="${minX}" y="${minY}" width="${viewWidth}" height="${viewHeight}" fill="#ffffff"/>${sanitized.map(renderSvgItem).join("")}`,
-  };
-}
-
-function visualAlias(index: number): string {
-  return `visual_${index + 1}`;
 }
 
 function countKinds(items: readonly BoardItem[]): Partial<Record<BoardItem["kind"], number>> {

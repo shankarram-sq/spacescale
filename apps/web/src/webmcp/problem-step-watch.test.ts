@@ -1011,3 +1011,96 @@ describe("whole-board reconciliation and queued shares", () => {
     feed.destroy();
   });
 });
+
+describe("pictures of drawn work", () => {
+  const strokes: Extract<BoardItem, { kind: "pencil" }> = {
+    id: "018f0000-0000-7000-8000-0000000000d1",
+    kind: "pencil",
+    z: 4,
+    version: 1,
+    createdBy: ACTOR_ID,
+    transform: [1, 0, 0, 1, 0, 0],
+    style: { kind: "stroke", color: "#123456", width: 4, opacity: 1 },
+    geometry: {
+      points: [
+        [0, 0],
+        [8, 9],
+      ],
+    },
+  };
+
+  function feedWithCamera(board: BoardItem[]) {
+    const captured: BoardItem[][] = [];
+    const feed = new ProblemStepWatchFeed({
+      getBoardItems: () => board,
+      getAuthoritativeItem: (itemId) => board.find((item) => item.id === itemId),
+      getSequence: () => 7,
+      getParticipantDisplayName: () => "Sam",
+      captureBoardImage: async (items) => {
+        captured.push([...items]);
+        return {
+          pngDataUrl: "data:image/png;base64,AAAA",
+          width: 320,
+          height: 240,
+          itemCount: items.length,
+        };
+      },
+    });
+    return { feed, captured };
+  }
+
+  it("sends a picture with every result once the board holds strokes", async () => {
+    const { feed, captured } = feedWithCamera([strokes, sticky()]);
+
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    expect(started).toMatchObject({
+      status: "started",
+      boardImage: { pngDataUrl: "data:image/png;base64,AAAA", scope: "entire_board", itemCount: 2 },
+    });
+    // The picture is taken of the whole board, not only of the drawn objects.
+    expect(captured.at(-1)).toHaveLength(2);
+
+    feed.recordAuthoritativeReload(9);
+    const resync = await feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+    expect(resync).toMatchObject({ status: "resync", boardImage: { width: 320, height: 240 } });
+    feed.destroy();
+  });
+
+  it("answers a pending wait with the picture alongside the change", async () => {
+    const board: BoardItem[] = [strokes];
+    const { feed } = feedWithCamera(board);
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+    const pending = feed.execute(
+      { action: "wait", watchToken: started.watchToken, afterSeq: started.nextSeq },
+      new AbortController().signal,
+    );
+
+    const redrawn = {
+      ...strokes,
+      version: 2,
+      geometry: { points: [...strokes.geometry.points, [20, 3] as [number, number]] },
+    };
+    board[0] = redrawn;
+    feed.recordAuthoritativeAction(serverAction(8, redrawn), new Set([strokes.id]));
+
+    const result = await pending;
+    expect(result).toMatchObject({
+      status: "changed",
+      changes: [{ steps: [{ change: "updated", visual: { revision: 2 } }] }],
+      boardImage: { pngDataUrl: "data:image/png;base64,AAAA" },
+    });
+    feed.destroy();
+  });
+
+  it("sends no picture when the board is only writing", async () => {
+    const { feed, captured } = feedWithCamera([sticky()]);
+    const started = await feed.execute({ action: "start" }, new AbortController().signal);
+
+    expect(started).not.toHaveProperty("boardImage");
+    expect(captured).toHaveLength(0);
+    feed.destroy();
+  });
+});

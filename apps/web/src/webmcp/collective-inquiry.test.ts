@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BoardItem } from "../types";
-import { serializeVisualPreview } from "./collective-inquiry";
+import { serializeVisualPreview } from "./board-image";
 
 const ACTOR_ID = "018f0000-0000-7000-8000-0000000000a1";
 const PENCIL_ID = "018f0000-0000-7000-8000-0000000000b1";

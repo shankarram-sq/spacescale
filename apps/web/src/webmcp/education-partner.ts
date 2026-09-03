@@ -754,7 +754,7 @@ export class EducationPartnerWebMcp {
         maximumObjects: MAX_WATCHED_ITEMS,
         reports: "authoritative_saved_changes",
         watchesEveryObjectKind: true,
-        drawnWorkReportedAs: "description_only",
+        drawnWorkReportedAs: "description_and_board_png",
         unsavedKeystrokesIncluded: false,
         stableItemIdentifiersReturned: false,
       },

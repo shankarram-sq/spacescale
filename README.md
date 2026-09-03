@@ -224,7 +224,8 @@ distinguishable. Every generated contribution remains source-linked, realtime, a
 problem-step watcher reports authoritative saved changes to the visiting host in bounded
 long polls, so Codex can respond after each selected step changes. It follows saved objects of
 any kind: written work carries its text, and handwriting, shapes, images and embeds carry a
-short description plus their saved version, with the visual inspector for seeing the marks.
+short description plus their saved version, and every result about a board holding drawn work
+also carries a PNG of the board so handwriting can be read directly.
 Starting a watch with nothing selected follows the whole board, and while a watch is live the tool rail offers an
 **AI** action that hands the whole board over with a task prompt. The board header reports
 whether a WebMCP host is linked and how many tools it can see. The watcher

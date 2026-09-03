@@ -120,7 +120,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
       reports: "authoritative_saved_changes",
       unsavedKeystrokesIncluded: false,
       watchesEveryObjectKind: true,
-      drawnWorkReportedAs: "description_only",
+      drawnWorkReportedAs: "description_and_board_png",
       stableItemIdentifiersReturned: false,
     },
     guardrails: {

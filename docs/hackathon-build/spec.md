@@ -100,7 +100,7 @@ Makes the current browser's saved visual selection inspectable in the same live 
 Follows changes to exact saved objects selected in the current browser, of any kind,
 for 15 minutes so Codex can comment as a participant works through a problem.
 
-- `start` snapshots up to 1,000 saved objects of any kind, bounded also by a 120,000-character text budget, and returns ephemeral `step_N` aliases plus the authoritative board sequence. Written work carries its text; drawn work (handwriting, shapes, images, stamps, video embeds) carries a short description and the saved version it is at, and the host is pointed at `inspect_selected_board_visual` when it needs to see the marks. With nothing selected it follows the whole board and reports `scope: entire_board`; with a selection it follows exactly that and reports `scope: browser_selection`.
+- `start` snapshots up to 1,000 saved objects of any kind, bounded also by a 120,000-character text budget, and returns ephemeral `step_N` aliases plus the authoritative board sequence. Written work carries its text; drawn work (handwriting, shapes, images, stamps, video embeds) carries a short description and the saved version it is at, plus a `boardImage` PNG of the whole board on every result, so handwriting can be read rather than guessed at. With nothing selected it follows the whole board and reports `scope: entire_board`; with a selection it follows exactly that and reports `scope: browser_selection`.
 - `wait` is a cancelable long poll, bounded to 20 seconds per call. It returns promptly when a selected item is saved, otherwise times out with the next cursor so the host can wait again.
 - The tool tells the host to comment briefly after every changed step—checking the reasoning, acknowledging what is valid, identifying the first concrete issue or uncertainty, and asking one useful next-step question—then continue waiting.
 - Only server-acknowledged changes enter the feed. Unsaved keystrokes, video embeds, unselected items, Section children, coordinates, presence, history, stable board/item/participant IDs, and contact or authentication data are excluded.
@@ -224,7 +224,7 @@ select a step and press **Ask AI** on the board; the request arrives in the next
 
 - No grading, ranking, participation scoring, student profiling, or inferred ability.
 - No whole-board or section reads. Visual inspection is limited to the saved items the teacher selected, with an opaque modal masking everything else.
-- Problem-step watches include only the objects in scope at start, which is the exact selection or, when nothing was selected, the whole board. They never expand a selected Section into its contents and report only authoritative saved changes rather than unsaved keystrokes. Drawn work is described, never rendered into the watch.
+- Problem-step watches include only the objects in scope at start, which is the exact selection or, when nothing was selected, the whole board. They never expand a selected Section into its contents and report only authoritative saved changes rather than unsaved keystrokes. Drawn work is described and, when the board holds any, pictured: results carry a PNG of the board capped at 1,280px on its long edge, with private image cards as placeholders.
 - No autonomous or silent board edits: the teacher initiates and permits every WebMCP write, and can undo the whole batch.
 - No identifying dissenters or claiming consensus.
 - No AI-assigned priorities, weights, scores, votes, response counts, or final choices.

@@ -73,10 +73,13 @@ reports only authoritative saved changes. This is the one tool whose scope is th
 whole board rather than the browser selection: every other read tool still reads
 only what the participant has selected.
 
-Written work is reported as its saved text. Drawn work is reported only as a
-short description of what it is and the saved version it is at, never as pixels;
-a host that needs to see the marks must go through the separately bounded visual
-inspection below, which the participant scopes by selecting.
+Written work is reported as its saved text. Drawn work is reported as a short
+description of what it is and the saved version it is at, and, because
+handwriting cannot be coached from a description, every result about a board
+holding drawn work also carries a PNG of that board. The picture is rendered in
+the page from saved objects only; private image cards appear as placeholders
+rather than their pixels, and its long edge is capped so a result stays a
+readable size. A board of writing alone carries no picture.
 
 The watch is a bounded sequence of cancelable long-poll tool calls rather than a
 background SpaceScale model connection. Its page-memory token expires after 15
