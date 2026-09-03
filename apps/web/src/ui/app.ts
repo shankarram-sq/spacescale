@@ -3600,6 +3600,7 @@ export class BoardApp {
     const editor = this.tableCellEditor;
     const edit = this.tableCellEdit;
     if (!editor) return;
+    this.dismissMathField(editor);
     const text = clampTableCellText(editor.value);
     const draft: TableCellDraftRecovery | null = edit
       ? {
@@ -3738,6 +3739,7 @@ export class BoardApp {
     const editor = this.zoneTitleEditor;
     const edit = this.zoneTitleEdit;
     if (!editor) return;
+    this.dismissMathField(editor);
     const title = clampZoneTitle(editor.value.replace(/[\r\n]/gu, " ")).trim() || "Section";
     const draft: ZoneTitleDraftRecovery | null = edit
       ? {
@@ -4645,6 +4647,7 @@ export class BoardApp {
   private async closeTextEditor(save: boolean): Promise<void> {
     const editor = this.textEditor;
     if (!editor) return;
+    this.dismissMathField(editor);
     if (!save) {
       this.discardTextEditor(editor);
       return;
@@ -7229,6 +7232,17 @@ export class BoardApp {
     this.mathFieldTarget = null;
     target?.editor.focus();
   };
+
+  /**
+   * Takes the maths field down with the editor it belongs to. An editor can close without focus
+   * ever reaching the panel, when a participant opens a formula and then clicks straight past it,
+   * and the panel would otherwise stay on screen writing into an editor that is already gone.
+   */
+  private dismissMathField(editor: HTMLTextAreaElement | HTMLInputElement): void {
+    if (this.mathFieldTarget?.editor !== editor) return;
+    this.mathFieldTarget = null;
+    this.mathFieldPanel?.close();
+  }
 
   /**
    * Focus left the maths field for something that is not the text it belongs to. The text editor

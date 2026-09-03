@@ -61,6 +61,24 @@ test("a delimiter opens the maths field, and its TeX lands back in the text", as
   await expect(panel).toBeHidden();
 });
 
+test("the maths field goes away with the editor it belongs to", async ({ page }) => {
+  await createBoard(page, "Maths keyboard dismissal");
+  await page.getByTestId("tool-text").click();
+  await page.locator("#board-canvas").click({ position: { x: 400, y: 300 } });
+  const editor = page.getByTestId("canvas-text-editor");
+  await expect(editor).toBeVisible();
+
+  await editor.type("Area $$r^2");
+  const panel = page.getByTestId("math-field-panel");
+  await expect(panel).toBeVisible({ timeout: 20_000 });
+
+  // Focus never entered the panel, so the editor's own blur closes it. The panel has to follow,
+  // or it stays on screen writing into an editor that no longer exists.
+  await page.locator("#board-canvas").click({ position: { x: 1050, y: 260 } });
+  await page.keyboard.press("Escape");
+  await expect(panel).toBeHidden();
+});
+
 test("clicking away from the maths field saves the text instead of losing it", async ({ page }) => {
   await createBoard(page, "Maths keyboard focus");
   await page.getByTestId("tool-text").click();
