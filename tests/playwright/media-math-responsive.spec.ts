@@ -91,6 +91,9 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   const selectionHeight = Number(await page.locator(".selection-outline").getAttribute("height"));
   expect(selectionHeight).toBeGreaterThanOrEqual(mathSize.height);
 
+  await page.getByRole("button", { name: "Zoom in" }).click();
+  await page.getByRole("button", { name: "Zoom in" }).click();
+  await expect(page.getByRole("button", { name: "Reset zoom" })).toContainText("156%");
   const compactPoint = await canvasPoint(page, 0.5, 0.18);
   await page.getByTestId("tool-text").click();
   await page.mouse.click(compactPoint.x, compactPoint.y);
@@ -102,11 +105,24 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   const compactFormula = compactMath.locator("mjx-container");
   await expect(compactFormula).toHaveAttribute("role", "math");
   await expect(compactFormula).toHaveAttribute("aria-label", "Formula: 2x");
-  const compactWidth = await compactMath.evaluate((content) =>
-    Number(content.closest("foreignObject")?.getAttribute("width")),
-  );
-  expect(compactWidth).toBeGreaterThan(0);
-  expect(compactWidth).toBeLessThan(180);
+  const compactSize = await compactMath.evaluate((content) => {
+    const foreign = content.closest("foreignObject");
+    return {
+      width: Number(foreign?.getAttribute("width")),
+      height: Number(foreign?.getAttribute("height")),
+      viewportWidth: foreign?.getBoundingClientRect().width ?? 0,
+      scrollWidth: (content as HTMLElement).scrollWidth,
+      scrollHeight: (content as HTMLElement).scrollHeight,
+      initialHeight: Number.parseFloat((content as HTMLElement).style.fontSize) * 2.2,
+    };
+  });
+  expect(compactSize.width).toBe(Math.ceil(compactSize.scrollWidth));
+  expect(compactSize.width).toBeLessThan(180);
+  expect(compactSize.viewportWidth).toBeGreaterThan(compactSize.width * 1.4);
+  expect(compactSize.height).toBe(Math.ceil(compactSize.scrollHeight));
+  expect(compactSize.height).toBeLessThan(compactSize.initialHeight);
+  await page.getByRole("button", { name: "Reset zoom" }).click();
+  await expect(page.getByRole("button", { name: "Reset zoom" })).toContainText("100%");
 
   const sectionPoint = await canvasPoint(page, 0.28, 0.68);
   await page.getByTestId("tool-zone").click();

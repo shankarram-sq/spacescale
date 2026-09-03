@@ -1596,17 +1596,15 @@ function mathForeignObject(
   if (options.fitContent) {
     content.style.width = "max-content";
     content.style.maxWidth = `${MAX_MATH_TEXT_WIDTH}px`;
+    content.style.minHeight = "0";
   }
   foreign.append(content);
   typesetMath(content, () => {
     if (!options.fitContent || !foreign.isConnected) return;
     const renderedWidth = Math.ceil(
-      Math.min(
-        MAX_MATH_TEXT_WIDTH,
-        Math.max(1, content.scrollWidth, content.getBoundingClientRect().width),
-      ),
+      Math.min(MAX_MATH_TEXT_WIDTH, Math.max(1, content.scrollWidth)),
     );
-    const renderedHeight = Math.ceil(Math.max(height, content.scrollHeight));
+    const renderedHeight = Math.ceil(Math.max(1, content.scrollHeight));
     foreign.setAttribute("width", String(renderedWidth));
     foreign.setAttribute("height", String(renderedHeight));
     options.onSize?.(renderedWidth, renderedHeight);
