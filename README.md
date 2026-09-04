@@ -223,10 +223,11 @@ anyone is doing.
 Each insert takes a board location and the content it needs, and lands one object as a single
 acknowledged realtime command. `insert_filled_template` is a two-call
 flow: `read_templates` names a template's text slots, and the write passes that templateId
-with the slot fills, landing the whole template as one batch. `insert_section` adds a titled region that adopts the saved objects
-it lands over, exactly as the board's own Section tool does, so dropping one on a cluster
-gathers that cluster rather than drawing a box around it; the result says how many objects it
-took in. `move_stickies` takes a list
+with the slot fills, landing the whole template as one batch. `insert_section` adds a titled region which, where the Space has
+grouping switched on, adopts the saved objects it lands over exactly as the board's own Section
+tool does, so dropping one on a cluster gathers that cluster rather than drawing a box around
+it; the result says how many objects it actually took in, which is zero when it covered none or
+when grouping is switched off. `move_stickies` takes a list
 instead: each entry names a sticky note, by an alias a live watch reported or by a point the
 note covers, and gives either an absolute destination for its centre or a relative shift in
 board pixels. `resize_sticky` names one note the same two ways and gives a new width, height
