@@ -113,6 +113,15 @@ export type WatchedStepTarget = {
 /** The object kinds the generic writes place, each gated on its own Space feature. */
 export type BoardWriteKind = "sticky" | "image" | "video" | "text" | "section";
 
+/**
+ * What a resize did to the note's Section membership. Changing a card's bounds can move it into
+ * or out of a Section, so a caller that only heard about the size would misjudge what a later
+ * Section move carries.
+ */
+export type StickyResizeOutcome = {
+  sectionMembership: "unchanged" | "joined" | "left";
+};
+
 /** One note the board has been asked to move, with how far it should travel. */
 export type StickyMove = {
   item: BoardItem;
@@ -162,8 +171,14 @@ export type BoardWriteWebMcpOptions = {
    * tool does, and reports how many it took in. Throws saying why it cannot.
    */
   createSection?: (operation: ZoneCreateOperation) => Promise<number>;
-  /** Resizes one saved card, reassigning Section membership for its new bounds, or throws. */
-  resizeCard?: (item: BoardItem, size: { width: number; height: number }) => Promise<void>;
+  /**
+   * Resizes one saved card, reassigning Section membership for its new bounds, and reports what
+   * that did to the membership. Throws saying why it cannot.
+   */
+  resizeCard?: (
+    item: BoardItem,
+    size: { width: number; height: number },
+  ) => Promise<StickyResizeOutcome>;
   commit: (operation: DurableOperation) => Promise<boolean>;
   /** Posts a comment as this browser's participant, tagged with the writing tool. */
   createComment: (
@@ -936,7 +951,7 @@ export class BoardWriteWebMcp {
       };
     }
     signal.throwIfAborted();
-    await resize(note, size);
+    const outcome = await resize(note, size);
     this.options.revealItems([note.id]);
     this.options.notify("Sticky note resized.", "info");
     return {
@@ -944,10 +959,12 @@ export class BoardWriteWebMcp {
       ...(typeof input.stepAlias === "string" ? { stepAlias: input.stepAlias } : {}),
       from,
       to: size,
+      sectionMembership: outcome.sectionMembership,
+      sectionNote: SECTION_MEMBERSHIP_NOTES[outcome.sectionMembership],
       changedCanvas: true,
       undoable: true,
       message:
-        "Resized as one acknowledged realtime command, undoable by any participant. The note keeps its author and its text and is not marked as AI-written; only its size changed.",
+        "Resized as one acknowledged realtime command, undoable by any participant. The note keeps its author, its text and its position, and is not marked as AI-written. Its new bounds can still change which Section holds it, which sectionMembership reports.",
       privacy:
         "Only the alias you supplied and the sizes the note held were returned. No board, item, or participant identifiers were returned.",
     };
@@ -1228,6 +1245,14 @@ function sectionCorners(centre: Point, width: number, height: number): [Point, P
   }
   return corners;
 }
+
+/** What each membership outcome means for the note, in the caller's terms. */
+const SECTION_MEMBERSHIP_NOTES: Record<StickyResizeOutcome["sectionMembership"], string> = {
+  unchanged: "The note belongs to whatever Section it belonged to before, or to none.",
+  joined:
+    "The note's new bounds sit inside a Section, so that Section now holds it and moving that Section will move this note too.",
+  left: "The note's new bounds no longer fit inside the Section that held it, so it now belongs to no Section and a move of that Section will leave it behind.",
+};
 
 /**
  * A coordinate taken from this participant's view rather than from the call. The board's own

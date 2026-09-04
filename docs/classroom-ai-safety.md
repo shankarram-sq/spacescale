@@ -212,7 +212,9 @@ would push the note's far edge off the board. Growing or shrinking across a
 Section's edge changes membership through the same path a participant's own
 drag-resize uses — which means, as for that drag, only a Space with grouping
 switched on lets a note join a Section this way; without it a note already in a
-Section still leaves when it no longer fits, but none ever joins. Like a move, it leaves the note's author and text alone
+Section still leaves when it no longer fits, but none ever joins. Because that
+changes what a later Section move carries, the result names the outcome rather
+than reporting the size alone. Like a move, it leaves the note's author and text alone
 and does not mark it as AI-written, because resizing someone's work is not
 authoring it.
 

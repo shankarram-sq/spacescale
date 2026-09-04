@@ -6,6 +6,7 @@ import {
   type BoardWriteKind,
   BoardWriteWebMcp,
   type StickyMove,
+  type StickyResizeOutcome,
   type WatchedStepTarget,
 } from "./board-writes";
 import { webMcpToolDefinitions } from "./shared";
@@ -45,7 +46,10 @@ function harness(
     moveItems?: (moves: readonly StickyMove[]) => Promise<void>;
     placementCenter?: [number, number];
     createSection?: (operation: ZoneCreateOperation) => Promise<number>;
-    resizeCard?: (item: BoardItem, size: { width: number; height: number }) => Promise<void>;
+    resizeCard?: (
+      item: BoardItem,
+      size: { width: number; height: number },
+    ) => Promise<StickyResizeOutcome>;
     commit?: (operation: DurableOperation) => Promise<boolean>;
   } = {},
 ) {
@@ -107,7 +111,9 @@ function harness(
     },
     resizeCard: async (item, size) => {
       resizes.push({ item, size });
-      await options.resizeCard?.(item, size);
+      return (
+        (await options.resizeCard?.(item, size)) ?? { sectionMembership: "unchanged" as const }
+      );
     },
     commit:
       options.commit ??
@@ -1007,6 +1013,23 @@ describe("generic board writes", () => {
     });
     expect(revealed).toEqual([[STICKY_ID]]);
     writes.destroy();
+  });
+
+  it("reports what the resize did to the note's Section membership", async () => {
+    // Changing a card's bounds can move it into or out of a Section, so a caller told only about
+    // the size would misjudge what a later Section move carries.
+    for (const membership of ["joined", "left", "unchanged"] as const) {
+      const { writes, call } = await ready({
+        itemAt: sticky(),
+        resizeCard: async () => ({ sectionMembership: membership }),
+      });
+      const result = await call("resize_sticky", { at: { x: 10, y: 10 }, width: 300 });
+      expect(result).toMatchObject({ status: "resized", sectionMembership: membership });
+      expect(String(result.sectionNote).length).toBeGreaterThan(0);
+      // The message must not claim the size was the only thing that changed.
+      expect(String(result.message)).not.toContain("only its size");
+      writes.destroy();
+    }
   });
 
   it("resizes a note named by a point, and refuses one already that size", async () => {

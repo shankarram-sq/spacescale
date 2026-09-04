@@ -114,7 +114,12 @@ import type {
 } from "../types";
 import { canRoleComment, canRoleDraw, createId, PROTOCOL_VERSION } from "../types";
 import { ActivityTemplateWebMcp } from "../webmcp/activity-templates";
-import { type BoardWriteKind, BoardWriteWebMcp, type StickyMove } from "../webmcp/board-writes";
+import {
+  type BoardWriteKind,
+  BoardWriteWebMcp,
+  type StickyMove,
+  type StickyResizeOutcome,
+} from "../webmcp/board-writes";
 import { ClassDecisionWebMcp } from "../webmcp/class-decision";
 import { CollectiveInquiryWebMcp } from "../webmcp/collective-inquiry";
 import {
@@ -3761,7 +3766,7 @@ export class BoardApp {
   private async resizeCardFromWebMcp(
     item: BoardItem,
     size: { width: number; height: number },
-  ): Promise<void> {
+  ): Promise<StickyResizeOutcome> {
     const [saved] =
       savedAuthoritativeItems([item.id], this.model.items, this.model.authoritativeItems) ?? [];
     if (!saved) throw new Error("Wait for the note to finish saving before resizing it.");
@@ -3775,6 +3780,13 @@ export class BoardApp {
     );
     const accepted = await this.commitAndWait(operation);
     if (!accepted) throw new Error("The resize could not be queued for saving.");
+    // The membership builder only patches sectionId when the new bounds changed it: absent means
+    // the note kept whatever it had, null means it fell out of its Section, an id means it is in
+    // one now. A caller told only about the size would misjudge what a later Section move carries.
+    const sectionId =
+      operation.kind === "item.update" ? operation.patch.sectionId : (undefined as never);
+    if (sectionId === undefined) return { sectionMembership: "unchanged" };
+    return { sectionMembership: sectionId === null ? "left" : "joined" };
   }
 
   /** The topmost saved object covering a board point, or undefined when none is saved there. */
