@@ -43,6 +43,7 @@ function harness(
       stepAliases: readonly string[],
     ) => Map<string, BoardItem>;
     moveItems?: (moves: readonly StickyMove[]) => Promise<void>;
+    placementCenter?: [number, number];
     createSection?: (operation: ZoneCreateOperation) => Promise<number>;
     resizeCard?: (item: BoardItem, size: { width: number; height: number }) => Promise<void>;
     commit?: (operation: DurableOperation) => Promise<boolean>;
@@ -88,7 +89,7 @@ function harness(
       textFontFamily: "sans",
       textOpacity: 1,
     }),
-    getPlacementCenter: () => [120, 80],
+    getPlacementCenter: () => options.placementCenter ?? [120, 80],
     itemAt: () => options.itemAt,
     getSelectedItem: () => options.selected ?? null,
     ...(options.resolveWatchedStep ? { resolveWatchedStep: options.resolveWatchedStep } : {}),
@@ -916,6 +917,31 @@ describe("generic board writes", () => {
       "height must be at least 100.",
     );
     expect(sections).toHaveLength(1);
+    writes.destroy();
+  });
+
+  it("refuses a write with no location when the view has been panned off the board", async () => {
+    // The board's own panning is unbounded, so the view centre is not automatically a coordinate
+    // the reducer will take, and every write that names no location lands on it.
+    const { writes, committed, sections, call } = await ready({
+      placementCenter: [1_000_400, 0],
+    });
+    for (const [name, input] of [
+      ["insert_text", { text: "A heading" }],
+      ["insert_sticky", { text: "A note" }],
+      ["insert_section", {}],
+    ] as const) {
+      await expect(call(name, input)).rejects.toThrow("past the edge of the board");
+    }
+    expect(committed).toEqual([]);
+    expect(sections).toEqual([]);
+
+    // A location the call names is still its own business, and lands as asked.
+    const inRange = await ready({ placementCenter: [1_000_400, 0] });
+    expect(
+      await inRange.call("insert_text", { location: { x: 10, y: 10 }, text: "A heading" }),
+    ).toMatchObject({ status: "inserted", location: { x: 10, y: 10 } });
+    inRange.writes.destroy();
     writes.destroy();
   });
 

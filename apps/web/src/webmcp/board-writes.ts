@@ -1135,8 +1135,10 @@ export class BoardWriteWebMcp {
 
   private placement(location: unknown): Point {
     if (location === undefined) {
+      // The view pans without a bound of its own, so the centre it reports is not automatically
+      // a coordinate the board will accept. A named location goes through the same check.
       const [x, y] = this.options.getPlacementCenter();
-      return [roundBoard(x), roundBoard(y)];
+      return [viewCoordinate(x, "x"), viewCoordinate(y, "y")];
     }
     return boardPoint(location);
   }
@@ -1225,6 +1227,21 @@ function sectionCorners(centre: Point, width: number, height: number): [Point, P
     }
   }
   return corners;
+}
+
+/**
+ * A coordinate taken from this participant's view rather than from the call. The board's own
+ * panning is unbounded, so a view can sit past the edge of the coordinate space; a write that
+ * named no location then has nowhere to land, and says so rather than failing at the reducer.
+ */
+function viewCoordinate(value: number, axis: string): number {
+  const coordinate = roundBoard(value);
+  if (!Number.isFinite(coordinate) || Math.abs(coordinate) > COORDINATE_LIMIT) {
+    throw new Error(
+      `This browser's view is centred at ${axis} = ${coordinate}, past the edge of the board, so a write that names no location has nowhere to land. Pass location, or scroll the board back into range.`,
+    );
+  }
+  return coordinate;
 }
 
 /**
