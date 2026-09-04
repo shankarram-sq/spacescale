@@ -152,9 +152,10 @@ answer cells, votes, ratings and the class's own conclusions blank.
 
 ### Generic board writes
 
-`insert_comment`, `insert_sticky`, `insert_image`, and `insert_video` each add
-one thing to the board where the call asks, `insert_filled_template` adds one
-template, and `move_stickies` rearranges notes that are already on the board. There is no separate authorization: every one refuses
+`insert_comment`, `insert_sticky`, `insert_text`, `insert_image`,
+`insert_video`, and `insert_section` each add one thing to the board where the
+call asks, `insert_filled_template` adds one template, and `move_stickies` and
+`resize_sticky` rearrange and resize notes already on the board. There is no separate authorization: every one refuses
 without the participant's own edit access, refuses an object kind the Space owner
 has switched off, and enters the same acknowledged realtime path as that
 participant's own edit, so it inherits the board's locks, limits, validation,
@@ -188,6 +189,34 @@ instructed to depict no real student and not to ridicule or target an individual
 
 `insert_video` accepts only a complete HTTPS YouTube or Vimeo link, which the
 board plays through its existing privacy-conscious embed.
+
+`insert_text` writes a canvas text object rather than a sticky note, for
+framing that belongs to the canvas itself — a heading over a region, a caption,
+a worked line — where a note would read as one more idea among the class's own.
+
+`insert_section` adds a titled region and, like the board's own Section tool,
+adopts the saved objects it already covers, so the objects it takes in move with
+it afterwards. Section membership is built on the Space's grouping feature, so a
+Space with grouping switched off gets the Section alone and adopts nothing. That
+adoption is the part worth watching either way: it changes what a later Section
+move carries, so the result reports how many objects were actually taken in
+rather than leaving the caller to infer it, and it refuses outright rather than
+partly applying when any covered object is still saving or is one this
+participant cannot modify. It is instructed to name a Section for the thinking
+it holds, never for the people in it.
+
+`resize_sticky` changes one note's size and nothing else. It holds the note's
+top-left corner, refuses anything below the board's own minimum, and writes
+nothing when the note already has the size asked for, or when the size asked for
+would push the note's far edge off the board. Growing or shrinking across a
+Section's edge changes membership through the same path a participant's own
+drag-resize uses — which means, as for that drag, only a Space with grouping
+switched on lets a note join a Section this way; without it a note already in a
+Section still leaves when it no longer fits, but none ever joins. Because that
+changes what a later Section move carries, the result names the outcome rather
+than reporting the size alone. Like a move, it leaves the note's author and text alone
+and does not mark it as AI-written, because resizing someone's work is not
+authoring it.
 
 `move_stickies` moves sticky notes so that notes carrying the same idea can be
 gathered together. It names each note the way a comment does—by an alias a live

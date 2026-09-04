@@ -7,14 +7,23 @@ import {
   MAX_BATCH_OPERATIONS,
   MAX_IMAGE_ALT_CODE_POINTS,
   MAX_STICKY_TEXT_CODE_POINTS,
+  MAX_TEXT_CODE_POINTS,
+  MAX_ZONE_TITLE_CODE_POINTS,
 } from "@collab/protocol";
 import { VIDEO_EMBED_HEIGHT, VIDEO_EMBED_WIDTH, videoEmbedFromText } from "../board/links";
 import { itemBounds } from "../board/model";
 import {
+  buildDraggedZoneCreateOperation,
   buildImageCreateOperation,
   buildStickyCreateOperation,
+  DEFAULT_ZONE_HEIGHT,
+  DEFAULT_ZONE_WIDTH,
   type ImageAssetMetadata,
+  MIN_RESIZED_STICKY_HEIGHT,
+  MIN_RESIZED_STICKY_WIDTH,
+  type ZoneCreateOperation,
 } from "../tools/controller";
+import { MIN_RESIZED_ZONE_HEIGHT, MIN_RESIZED_ZONE_WIDTH } from "../tools/resize";
 import type {
   BatchItemOperation,
   BoardItem,
@@ -37,6 +46,9 @@ export const INSERT_STICKY_TOOL = "insert_sticky";
 export const INSERT_IMAGE_TOOL = "insert_image";
 export const INSERT_VIDEO_TOOL = "insert_video";
 export const MOVE_STICKIES_TOOL = "move_stickies";
+export const INSERT_TEXT_TOOL = "insert_text";
+export const INSERT_SECTION_TOOL = "insert_section";
+export const RESIZE_STICKY_TOOL = "resize_sticky";
 
 /** Matches the edge's comment limit, counted in code points like the server does. */
 const MAX_COMMENT_CODE_POINTS = 2_000;
@@ -98,6 +110,18 @@ export type WatchedStepTarget = {
   release: (posted: boolean) => void;
 };
 
+/** The object kinds the generic writes place, each gated on its own Space feature. */
+export type BoardWriteKind = "sticky" | "image" | "video" | "text" | "section";
+
+/**
+ * What a resize did to the note's Section membership. Changing a card's bounds can move it into
+ * or out of a Section, so a caller that only heard about the size would misjudge what a later
+ * Section move carries.
+ */
+export type StickyResizeOutcome = {
+  sectionMembership: "unchanged" | "joined" | "left";
+};
+
 /** One note the board has been asked to move, with how far it should travel. */
 export type StickyMove = {
   item: BoardItem;
@@ -112,7 +136,7 @@ export type BoardWriteWebMcpOptions = {
   /** Whether this Space allows image cards at all. */
   imagesEnabled: () => boolean;
   /** Why this Space cannot take an object of this kind, or null when it can. */
-  featureIssue: (kind: "sticky" | "image" | "video") => string | null;
+  featureIssue: (kind: BoardWriteKind) => string | null;
   /** The board styles this participant is currently drawing with. */
   getStyle: () => BoardWriteStyle;
   /** Board coordinates a write lands on when the call names no location. */
@@ -142,6 +166,19 @@ export type BoardWriteWebMcpOptions = {
    * rather than the operations themselves.
    */
   moveItems?: (moves: readonly StickyMove[]) => Promise<void>;
+  /**
+   * Adds a Section, adopting the saved objects it already covers the way the board's own Section
+   * tool does, and reports how many it took in. Throws saying why it cannot.
+   */
+  createSection?: (operation: ZoneCreateOperation) => Promise<number>;
+  /**
+   * Resizes one saved card, reassigning Section membership for its new bounds, and reports what
+   * that did to the membership. Throws saying why it cannot.
+   */
+  resizeCard?: (
+    item: BoardItem,
+    size: { width: number; height: number },
+  ) => Promise<StickyResizeOutcome>;
   commit: (operation: DurableOperation) => Promise<boolean>;
   /** Posts a comment as this browser's participant, tagged with the writing tool. */
   createComment: (
@@ -392,6 +429,108 @@ export class BoardWriteWebMcp {
           },
           annotations: { readOnlyHint: false },
           execute: (input, { signal }) => this.moveStickies(input, signal),
+        },
+        { signal: this.registration.signal },
+      );
+      await registerWebMcpTool(
+        modelContext,
+        {
+          name: INSERT_TEXT_TOOL,
+          description: `Add one canvas text object to this board at a location you choose. Use this for writing that belongs to the canvas itself — a heading over a region, a caption, a worked line of algebra — where a sticky note would read as one more idea among the class's. Text is limited to ${MAX_TEXT_CODE_POINTS} characters and lands in this participant's current text style. The object lands as one ordinary realtime command, tagged as written by AI, with ordinary undo. ${WEBMCP_MATHJAX_GUIDANCE}`,
+          inputSchema: {
+            type: "object",
+            properties: {
+              location: LOCATION_SCHEMA,
+              text: {
+                type: "string",
+                minLength: 1,
+                maxLength: MAX_TEXT_CODE_POINTS,
+                description: "The text to write. Plain text with optional TeX; no HTML.",
+              },
+            },
+            required: ["text"],
+            additionalProperties: false,
+          },
+          annotations: { readOnlyHint: false },
+          execute: (input, { signal }) => this.insertText(input, signal),
+        },
+        { signal: this.registration.signal },
+      );
+      await registerWebMcpTool(
+        modelContext,
+        {
+          name: INSERT_SECTION_TOOL,
+          description: `Add one Section to this board: a titled region that frames part of the canvas and owns whatever sits inside it. Give a location for its centre and, optionally, a title and a size. Where the Space has grouping switched on, a Section adopts the saved objects it already covers when it lands, exactly as the board's own Section tool does — so placing one over a cluster of notes gathers them rather than merely drawing a box around them, and afterwards moving the Section moves everything it holds. The result says how many objects it actually took in, which is zero when it covered none or when this Space has grouping switched off. Default size is ${DEFAULT_ZONE_WIDTH} by ${DEFAULT_ZONE_HEIGHT}; the smallest a Section may be is ${MIN_RESIZED_ZONE_WIDTH} by ${MIN_RESIZED_ZONE_HEIGHT}. It lands as one realtime command, tagged as written by AI, with ordinary undo. Name a Section for the thinking it holds, never for the people in it. ${WEBMCP_MATHJAX_GUIDANCE}`,
+          inputSchema: {
+            type: "object",
+            properties: {
+              location: LOCATION_SCHEMA,
+              title: {
+                type: "string",
+                maxLength: MAX_ZONE_TITLE_CODE_POINTS,
+                description:
+                  "The Section's title, shown along its top edge. Omit for the board's default.",
+              },
+              width: {
+                type: "number",
+                minimum: MIN_RESIZED_ZONE_WIDTH,
+                maximum: COORDINATE_LIMIT,
+                description: `How wide the Section should be, at least ${MIN_RESIZED_ZONE_WIDTH}. Omit for ${DEFAULT_ZONE_WIDTH}.`,
+              },
+              height: {
+                type: "number",
+                minimum: MIN_RESIZED_ZONE_HEIGHT,
+                maximum: COORDINATE_LIMIT,
+                description: `How tall the Section should be, at least ${MIN_RESIZED_ZONE_HEIGHT}. Omit for ${DEFAULT_ZONE_HEIGHT}.`,
+              },
+            },
+            additionalProperties: false,
+          },
+          annotations: { readOnlyHint: false },
+          execute: (input, { signal }) => this.insertSection(input, signal),
+        },
+        { signal: this.registration.signal },
+      );
+      await registerWebMcpTool(
+        modelContext,
+        {
+          name: RESIZE_STICKY_TOOL,
+          description: `Change the size of one sticky note already on this board, for a note whose text does not fit or one taking more room than its idea deserves. Name the note the way ${INSERT_COMMENT_TOOL} does: pass watchToken and stepAlias for a note a live board watch reported, or at, a board coordinate the note covers. Then give width, height, or both; the one you leave out keeps its current value. A note's top-left corner stays where it is, so the note grows or shrinks rightwards and downwards. Where the Space has grouping switched on, a note that grows across a Section's edge joins that Section and one that shrinks out of it leaves; where grouping is switched off a note never joins a Section this way, though one already in a Section still leaves it when it no longer fits inside. The smallest a note may be is ${MIN_RESIZED_STICKY_WIDTH} by ${MIN_RESIZED_STICKY_HEIGHT}. The result reports the size before and after. Resizing changes only the note's size: it keeps its author and its text, and is not marked as AI-written.`,
+          inputSchema: {
+            type: "object",
+            properties: {
+              watchToken: {
+                type: "string",
+                maxLength: 128,
+                description: "Opaque token from watch_board, required when you pass stepAlias.",
+              },
+              stepAlias: {
+                type: "string",
+                pattern: "^step_(?:[1-9][0-9]{0,3}|10000)$",
+                description: "The step_N alias of the note to resize. Give this or at, not both.",
+              },
+              at: {
+                ...LOCATION_SCHEMA,
+                description:
+                  "A board coordinate the note covers, for naming a note without a watch. Give this or stepAlias, not both.",
+              },
+              width: {
+                type: "number",
+                minimum: MIN_RESIZED_STICKY_WIDTH,
+                maximum: COORDINATE_LIMIT,
+                description: `The note's new width, at least ${MIN_RESIZED_STICKY_WIDTH}. Omit to keep the width it has.`,
+              },
+              height: {
+                type: "number",
+                minimum: MIN_RESIZED_STICKY_HEIGHT,
+                maximum: COORDINATE_LIMIT,
+                description: `The note's new height, at least ${MIN_RESIZED_STICKY_HEIGHT}. Omit to keep the height it has.`,
+              },
+            },
+            additionalProperties: false,
+          },
+          annotations: { readOnlyHint: false },
+          execute: (input, { signal }) => this.resizeSticky(input, signal),
         },
         { signal: this.registration.signal },
       );
@@ -685,6 +824,191 @@ export class BoardWriteWebMcp {
     return this.writeResult("video", point, { provider: video.provider });
   }
 
+  private async insertText(input: unknown, signal: AbortSignal): Promise<Record<string, unknown>> {
+    signal.throwIfAborted();
+    if (!isRecord(input)) throw new Error("Text input must be an object.");
+    this.requireWritable("text");
+    if (typeof input.text !== "string") throw new Error("text must be text.");
+    const text = input.text.trim();
+    const characters = [...text].length;
+    if (characters === 0 || characters > MAX_TEXT_CODE_POINTS) {
+      throw new Error(`text must contain 1-${MAX_TEXT_CODE_POINTS} characters.`);
+    }
+    const style = this.options.getStyle();
+    const point = this.placement(input.location);
+    const itemId = createId();
+    await this.write(
+      {
+        id: itemId,
+        kind: "text",
+        style: {
+          kind: "text",
+          color: style.textColor,
+          fontSize: style.textFontSize,
+          fontFamily: style.textFontFamily,
+          opacity: style.textOpacity,
+        },
+        transform: [1, 0, 0, 1, 0, 0],
+        geometry: { x: point[0], y: point[1], text },
+      },
+      signal,
+      "The text could not be queued for saving.",
+    );
+    this.options.revealItems([itemId]);
+    this.options.notify("Text added.", "info");
+    return this.writeResult("text", point, { characters });
+  }
+
+  private async insertSection(
+    input: unknown,
+    signal: AbortSignal,
+  ): Promise<Record<string, unknown>> {
+    signal.throwIfAborted();
+    if (!isRecord(input)) throw new Error("Section input must be an object.");
+    this.requireWritable("section");
+    const create = this.options.createSection;
+    if (!create) throw new Error("This browser cannot add a Section to this Space.");
+    const title = sectionTitle(input.title);
+    const width = sectionSide(input.width, "width", DEFAULT_ZONE_WIDTH, MIN_RESIZED_ZONE_WIDTH);
+    const height = sectionSide(
+      input.height,
+      "height",
+      DEFAULT_ZONE_HEIGHT,
+      MIN_RESIZED_ZONE_HEIGHT,
+    );
+    const [x, y] = this.placement(input.location);
+    // A centre the schema accepts can still put a corner off the board once half a side is
+    // added to it, and the reducer would refuse that as a queue failure the caller cannot read.
+    const corners = sectionCorners([x, y], width, height);
+    const itemId = createId();
+    // The dragged builder takes the two corners a participant would sweep out, which keeps the
+    // Section tool's own sizing, rounding and default styling in one place.
+    const operation = buildDraggedZoneCreateOperation(
+      itemId,
+      corners[0],
+      corners[1],
+      ...(title === undefined ? [] : [title]),
+    );
+    signal.throwIfAborted();
+    const adopted = await create({
+      ...operation,
+      item: { ...operation.item, assistedBy: "ai" },
+    });
+    this.options.revealItems([itemId]);
+    this.options.notify(
+      adopted === 0
+        ? "Section added."
+        : `Section added, taking in ${adopted} object${adopted === 1 ? "" : "s"}.`,
+      "info",
+    );
+    return this.writeResult("section", [x, y], {
+      title: operation.item.geometry.title,
+      size: { width: operation.item.geometry.width, height: operation.item.geometry.height },
+      adoptedObjectCount: adopted,
+      // Nothing is claimed when nothing was taken in: a Space with grouping switched off adds
+      // the Section on its own, and saying otherwise would misdescribe the board.
+      ...(adopted === 0
+        ? {
+            adoptionNote:
+              "This Section took nothing in: either it covered no saved object, or this Space has grouping switched off, which is what Section membership is built on. Nothing on the board now belongs to it.",
+          }
+        : {
+            adoptionNote:
+              "Saved objects the Section covered when it landed now belong to it, so moving the Section moves them too.",
+          }),
+    });
+  }
+
+  private async resizeSticky(
+    input: unknown,
+    signal: AbortSignal,
+  ): Promise<Record<string, unknown>> {
+    signal.throwIfAborted();
+    if (!isRecord(input)) throw new Error("Resize input must be an object.");
+    this.requireWritable("sticky");
+    const resize = this.options.resizeCard;
+    if (!resize) throw new Error("This browser cannot resize objects on this Space.");
+    if (input.width === undefined && input.height === undefined) {
+      throw new Error("Give width, height, or both.");
+    }
+    const note = this.namedSticky(input);
+    signal.throwIfAborted();
+    const from = { width: note.geometry.width, height: note.geometry.height };
+    const size = {
+      width: stickySide(input.width, "width", from.width, MIN_RESIZED_STICKY_WIDTH),
+      height: stickySide(input.height, "height", from.height, MIN_RESIZED_STICKY_HEIGHT),
+    };
+    // A note keeps its top-left corner, so a size the schema accepts can still push the far edge
+    // off the board, and the reducer would refuse that as a queue failure the caller cannot read.
+    stickyEdge(note.geometry.x, size.width, "width", "right");
+    stickyEdge(note.geometry.y, size.height, "height", "bottom");
+    if (size.width === from.width && size.height === from.height) {
+      return {
+        status: "unchanged",
+        size: from,
+        changedCanvas: false,
+        message: "The note is already that size, so nothing was written.",
+      };
+    }
+    signal.throwIfAborted();
+    const outcome = await resize(note, size);
+    this.options.revealItems([note.id]);
+    this.options.notify("Sticky note resized.", "info");
+    return {
+      status: "resized",
+      ...(typeof input.stepAlias === "string" ? { stepAlias: input.stepAlias } : {}),
+      from,
+      to: size,
+      sectionMembership: outcome.sectionMembership,
+      sectionNote: SECTION_MEMBERSHIP_NOTES[outcome.sectionMembership],
+      changedCanvas: true,
+      undoable: true,
+      message:
+        "Resized as one acknowledged realtime command, undoable by any participant. The note keeps its author, its text and its position, and is not marked as AI-written. Its new bounds can still change which Section holds it, which sectionMembership reports.",
+      privacy:
+        "Only the alias you supplied and the sizes the note held were returned. No board, item, or participant identifiers were returned.",
+    };
+  }
+
+  /**
+   * The one saved sticky note a call names, by watch alias or by a point it covers. A resize
+   * touches a single note, so this is the singular form of what a move resolves in bulk.
+   */
+  private namedSticky(input: Record<string, unknown>): Extract<BoardItem, { kind: "sticky" }> {
+    const named = input.stepAlias !== undefined;
+    const located = input.at !== undefined;
+    if (named === located) {
+      throw new Error("Name the note either by stepAlias or by at, and not by both.");
+    }
+    let note: BoardItem | undefined;
+    if (named) {
+      const stepAlias = requiredText(input.stepAlias, "stepAlias", 16);
+      if (!/^step_(?:[1-9][0-9]{0,3}|10000)$/u.test(stepAlias)) {
+        throw new Error("stepAlias must look like step_1.");
+      }
+      const token = requiredText(input.watchToken, "watchToken", 128);
+      const resolve = this.options.resolveWatchedStickies;
+      if (!resolve) throw new Error("This browser cannot reach a watched note.");
+      note = resolve(token, [stepAlias]).get(stepAlias);
+      if (!note) throw new Error(`${stepAlias} is not part of this watch.`);
+    } else {
+      if (input.watchToken !== undefined) {
+        throw new Error("watchToken names the watch a stepAlias came from, so pass them together.");
+      }
+      const point = boardPoint(input.at, "at");
+      note = this.options.itemAt(point);
+      if (!note) {
+        throw new Error(
+          `No saved object covers ${point[0]}, ${point[1]}. Name a point on the note you want to resize.`,
+        );
+      }
+    }
+    if (note.kind !== "sticky") {
+      throw new Error(`That is a ${note.kind}, and this tool resizes sticky notes only.`);
+    }
+    return note;
+  }
+
   private async moveStickies(
     input: unknown,
     signal: AbortSignal,
@@ -808,7 +1132,7 @@ export class BoardWriteWebMcp {
     return notes;
   }
 
-  private requireWritable(kind: "sticky" | "image" | "video"): void {
+  private requireWritable(kind: BoardWriteKind): void {
     if (!this.options.canWrite()) {
       throw new Error("This browser needs board edit access to write to this Space.");
     }
@@ -828,8 +1152,10 @@ export class BoardWriteWebMcp {
 
   private placement(location: unknown): Point {
     if (location === undefined) {
+      // The view pans without a bound of its own, so the centre it reports is not automatically
+      // a coordinate the board will accept. A named location goes through the same check.
       const [x, y] = this.options.getPlacementCenter();
-      return [roundBoard(x), roundBoard(y)];
+      return [viewCoordinate(x, "x"), viewCoordinate(y, "y")];
     }
     return boardPoint(location);
   }
@@ -886,6 +1212,95 @@ function stickyFill(value: unknown): string | undefined {
     throw new Error(`fill must be one of: ${Object.keys(STICKY_FILLS).join(", ")}.`);
   }
   return STICKY_FILLS[value as StickyFillName];
+}
+
+/**
+ * A Section title, counted the way the board counts it. `MAX_ZONE_TITLE_CODE_POINTS` and the
+ * protocol validator both count Unicode code points, so measuring UTF-16 units here would refuse
+ * a title of emoji the board would happily take.
+ */
+function sectionTitle(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw new Error("title must be text.");
+  const title = value.trim();
+  const characters = [...title].length;
+  if (characters === 0 || characters > MAX_ZONE_TITLE_CODE_POINTS) {
+    throw new Error(`title must contain 1-${MAX_ZONE_TITLE_CODE_POINTS} characters.`);
+  }
+  return title;
+}
+
+/** The two corners a Section spans, refused when its size pushes one of them off the board. */
+function sectionCorners(centre: Point, width: number, height: number): [Point, Point] {
+  const corners: [Point, Point] = [
+    [roundBoard(centre[0] - width / 2), roundBoard(centre[1] - height / 2)],
+    [roundBoard(centre[0] + width / 2), roundBoard(centre[1] + height / 2)],
+  ];
+  for (const corner of corners) {
+    if (Math.abs(corner[0]) > COORDINATE_LIMIT || Math.abs(corner[1]) > COORDINATE_LIMIT) {
+      throw new Error(
+        `A ${width} by ${height} Section centred on ${centre[0]}, ${centre[1]} would reach past the edge of the board. Move its centre inwards or make it smaller.`,
+      );
+    }
+  }
+  return corners;
+}
+
+/** What each membership outcome means for the note, in the caller's terms. */
+const SECTION_MEMBERSHIP_NOTES: Record<StickyResizeOutcome["sectionMembership"], string> = {
+  unchanged: "The note belongs to whatever Section it belonged to before, or to none.",
+  joined:
+    "The note's new bounds sit inside a Section, so that Section now holds it and moving that Section will move this note too.",
+  left: "The note's new bounds no longer fit inside the Section that held it, so it now belongs to no Section and a move of that Section will leave it behind.",
+};
+
+/**
+ * A coordinate taken from this participant's view rather than from the call. The board's own
+ * panning is unbounded, so a view can sit past the edge of the coordinate space; a write that
+ * named no location then has nowhere to land, and says so rather than failing at the reducer.
+ */
+function viewCoordinate(value: number, axis: string): number {
+  const coordinate = roundBoard(value);
+  if (!Number.isFinite(coordinate) || Math.abs(coordinate) > COORDINATE_LIMIT) {
+    throw new Error(
+      `This browser's view is centred at ${axis} = ${coordinate}, past the edge of the board, so a write that names no location has nowhere to land. Pass location, or scroll the board back into range.`,
+    );
+  }
+  return coordinate;
+}
+
+/**
+ * Refuses a size whose far edge would leave the board. A resize holds the note's top-left
+ * corner, so `x + width` grows with the size, and `normalizeBoxGeometry` bounds that sum the
+ * same way it bounds a coordinate.
+ */
+function stickyEdge(origin: number, side: number, field: string, edge: string): void {
+  if (origin + side <= COORDINATE_LIMIT) return;
+  throw new Error(
+    `A ${field} of ${side} would put this note's ${edge} edge past the edge of the board, because a resize holds its top-left corner at ${origin}. Move the note first, or ask for at most ${roundBoard(COORDINATE_LIMIT - origin)}.`,
+  );
+}
+
+/** A Section side: what was asked for, the board's default when omitted, never below the minimum. */
+function sectionSide(value: unknown, field: string, fallback: number, minimum: number): number {
+  if (value === undefined) return fallback;
+  return boardSide(value, field, minimum);
+}
+
+/** A note's side: what was asked for, the size it already holds when omitted, never below the minimum. */
+function stickySide(value: unknown, field: string, current: number, minimum: number): number {
+  if (value === undefined) return current;
+  return boardSide(value, field, minimum);
+}
+
+function boardSide(value: unknown, field: string, minimum: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`${field} must be a finite number.`);
+  }
+  const side = roundBoard(value);
+  if (side < minimum) throw new Error(`${field} must be at least ${minimum}.`);
+  if (side > COORDINATE_LIMIT) throw new Error(`${field} must be at most ${COORDINATE_LIMIT}.`);
+  return side;
 }
 
 /** One validated entry of a move call: which note, and where it goes. */

@@ -5,7 +5,6 @@ import { enumValue, isRecord, optionalText, requiredText, textArray } from "./sh
 
 export const PROBLEM_STEP_WATCH_TOOL = "watch_board";
 export const WATCH_USERS_TOOL = "watch_users";
-export const WATCHED_STEP_COMMENT_TOOL = "comment_on_watched_step";
 export const PROBLEM_STEP_WATCH_DURATION_MS = 15 * 60_000;
 export const PROBLEM_STEP_WATCH_DEFAULT_WAIT_MS = 15_000;
 export const PROBLEM_STEP_WATCH_MAX_WAIT_MS = 20_000;
@@ -49,8 +48,8 @@ type WatchedStep = {
   /** Set when the character budget cut this step's text short. */
   textTruncated?: true;
   /**
-   * Drawn work carries what it is and the saved version it is at. Pixels never cross this
-   * channel, so the host is pointed at the visual inspector when it needs to see the marks.
+   * Drawn work carries what it is and the saved version it is at. The marks themselves travel
+   * separately, as the boardImage a result carries whenever the watched work holds drawn work.
    */
   visual?: { description: string; revision: number };
   createdBy: { displayName: string };
@@ -94,22 +93,6 @@ export type AssistRequestReceipt = {
   /** True when a pending wait carried the request immediately. */
   delivered: boolean;
   stepAliases: string[];
-};
-
-/** A sticky-note step in the shape the selection-token snapshot expects. */
-export type WatchSelectionSource = {
-  alias: string;
-  itemId: string;
-  version: number;
-  kind: "sticky";
-  text: string;
-};
-
-/** A minted token plus the writer alias (`idea_N`) each sticky step maps to. */
-type SelectionTokenFields = {
-  selectionToken: string;
-  /** Pass these aliases as sourceAliases to the add_* tools; watch aliases are not accepted. */
-  selectionSources: Array<{ stepAlias: string; sourceAlias: string }>;
 };
 
 export type WatchedStepCommentTarget = {
@@ -217,8 +200,6 @@ export type ProblemStepWatchOptions = {
   canComment?: () => boolean;
   /** Whether this browser may add board items; false routes generative replies to a comment. */
   canWrite?: () => boolean;
-  /** Stores a selection snapshot compatible with the add_* tools and returns its token. */
-  mintSelectionToken?: (sources: WatchSelectionSource[]) => string;
 };
 
 const IDLE_STATE: WatchState = { phase: "idle", expiresAt: null, watchedItemIds: new Set() };
@@ -754,7 +735,6 @@ export class ProblemStepWatchFeed {
       nextSeq: startSeq,
       steps: this.currentSteps(session),
       ...scopeFields(session.scope),
-      ...this.selectionTokenFields(session),
       canComment: this.options.canComment?.() ?? false,
       canWrite: this.options.canWrite?.() ?? false,
       participantRequests: {
@@ -894,7 +874,6 @@ export class ProblemStepWatchFeed {
     const boardShares = session.boardShares.splice(0);
     const droppedBoardShares = session.droppedBoardShares;
     session.droppedBoardShares = 0;
-    const selection = this.selectionTokenFields(session);
     const canComment = this.options.canComment?.() ?? false;
     const canWrite = this.options.canWrite?.() ?? false;
     return {
@@ -933,7 +912,6 @@ export class ProblemStepWatchFeed {
               },
             })),
           }),
-      ...selection,
       canComment,
       canWrite,
       // Participant requests are delivered before retained changes. Keeping the caller's
@@ -954,10 +932,10 @@ export class ProblemStepWatchFeed {
   }
 
   /**
-   * A request queued between polls carries the text captured at click time, while the
-   * selection token minted at delivery reflects the latest saved versions. Re-reading the
-   * steps at delivery keeps the two on one snapshot, so the host never generates from text
-   * the writers' version check would then silently link to newer content.
+   * A request queued between polls carries the text captured at click time, which may be
+   * behind what is saved by the time it is delivered. Re-reading the steps at delivery keeps
+   * the request on the latest saved versions, so the host never answers text that has since
+   * changed.
    */
   private refreshRequest(session: WatchSession, request: AssistRequest): DeliveredAssistRequest {
     const itemIdByAlias = new Map<string, string>();
@@ -971,46 +949,6 @@ export class ProblemStepWatchFeed {
           return current ?? { ...step, deleted: true as const };
         }),
       ),
-    };
-  }
-
-  /**
-   * Mints a snapshot over the watch's sticky-note steps. The add_* tool schemas only accept
-   * idea_N source aliases, so the snapshot uses those and the result reports how each step
-   * alias maps onto them.
-   */
-  private selectionTokenFields(session: WatchSession): SelectionTokenFields | Record<never, never> {
-    const mint = this.options.mintSelectionToken;
-    if (!mint) return {};
-    const stickySteps: Array<{ stepAlias: string; itemId: string; version: number; text: string }> =
-      [];
-    for (const [itemId, alias] of session.aliases) {
-      const item = this.options.getAuthoritativeItem(itemId);
-      if (item?.kind !== "sticky" || !session.steps.has(itemId)) continue;
-      stickySteps.push({
-        stepAlias: alias,
-        itemId,
-        version: item.version,
-        text: item.geometry.text.trim(),
-      });
-    }
-    if (stickySteps.length === 0) return {};
-    stickySteps.sort((left, right) =>
-      left.stepAlias.localeCompare(right.stepAlias, undefined, { numeric: true }),
-    );
-    const sources: WatchSelectionSource[] = stickySteps.map((step, index) => ({
-      alias: `idea_${index + 1}`,
-      itemId: step.itemId,
-      version: step.version,
-      kind: "sticky",
-      text: step.text,
-    }));
-    return {
-      selectionToken: mint(sources),
-      selectionSources: stickySteps.map((step, index) => ({
-        stepAlias: step.stepAlias,
-        sourceAlias: `idea_${index + 1}`,
-      })),
     };
   }
 
@@ -1075,13 +1013,10 @@ export class ProblemStepWatchFeed {
   }
 
   private changesResult(session: WatchSession, afterSeq: number): Record<string, unknown> {
-    // A change bumps item versions, which invalidates any earlier selection token, so every
-    // result that reports new text also carries a fresh one.
     return {
       status: "changed",
       watchToken: session.token,
       changes: session.changes.filter((change) => change.seq > afterSeq),
-      ...this.selectionTokenFields(session),
       nextSeq: session.lastReportedSeq,
       remainingSeconds: remainingSeconds(session),
       ...watchGuidance(session, session.token, session.lastReportedSeq),
@@ -1106,7 +1041,6 @@ export class ProblemStepWatchFeed {
       reason:
         "More changes occurred than this page retains for one watch. Use this fresh snapshot.",
       steps: this.currentSteps(session),
-      ...this.selectionTokenFields(session),
       nextSeq: session.lastReportedSeq,
       remainingSeconds: remainingSeconds(session),
       ...watchGuidance(session, session.token, session.lastReportedSeq),
