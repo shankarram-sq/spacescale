@@ -61,6 +61,20 @@ test("object comments follow moves, hide after orphaning, and resolve", async ({
     cy: node.getAttribute("cy"),
   }));
 
+  // The marker opens that object's comments alone: no composer, no other threads.
+  await marker.click();
+  await expect(drawer).toBeVisible();
+  await expect(drawer).toHaveAttribute("data-focus", "object");
+  await expect(drawer.locator("[data-comment-composer]")).toBeHidden();
+  await expect(drawer.getByRole("checkbox", { name: "Show resolved & orphaned" })).toBeHidden();
+  await expect(drawer.locator(".comment-card")).toHaveCount(1);
+  await expect(drawer.locator("h2")).toHaveText("Rectangle object");
+  // Settings widens the same drawer back to every comment.
+  await openSettingsDrawer(page);
+  await page.getByTestId("comments-button").click();
+  await expect(drawer).toHaveAttribute("data-focus", "all");
+  await expect(drawer.getByRole("checkbox", { name: "Show resolved & orphaned" })).toBeVisible();
+
   await drawer.getByRole("button", { name: "Close comments" }).click();
   await moveItem(page, shape, 76, 44);
   await expect

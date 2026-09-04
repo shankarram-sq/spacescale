@@ -1189,6 +1189,8 @@ export class BoardApp {
   );
   private readonly commentsResolving = new Set<string>();
   private activeCommentTargetId: string | null = null;
+  /** The one object whose comments the drawer shows, when opened from its marker. */
+  private commentsFocusItemId: string | null = null;
   private showHiddenComments = false;
   private commentSubmitting = false;
   private commentsLoading = true;
@@ -1244,6 +1246,9 @@ export class BoardApp {
   private readonly commentVideoField: HTMLElement;
   private readonly commentVideoUrl: HTMLInputElement;
   private readonly showHiddenCommentsInput: HTMLInputElement;
+  private readonly commentsFilter: HTMLElement;
+  private readonly commentsEyebrow: HTMLElement;
+  private readonly commentsHeading: HTMLElement;
   private readonly spotlightToggle: HTMLButtonElement;
   private readonly spotlightFollowBanner: HTMLElement;
   private readonly spotlightFollowText: HTMLElement;
@@ -1360,6 +1365,9 @@ export class BoardApp {
       "[data-show-hidden-comments]",
       HTMLInputElement,
     );
+    this.commentsFilter = query(this.commentsDrawer, "[data-comments-filter]", HTMLElement);
+    this.commentsEyebrow = query(this.commentsDrawer, "[data-comments-eyebrow]", HTMLElement);
+    this.commentsHeading = query(this.commentsDrawer, "[data-comments-heading]", HTMLElement);
     this.spotlightToggle = query(this.root, "[data-testid='spotlight-toggle']", HTMLButtonElement);
     this.spotlightFollowBanner = query(
       this.root,
@@ -2043,8 +2051,8 @@ export class BoardApp {
         </div>
 
         <aside class="side-drawer comments-drawer" id="comments-drawer" data-testid="comments-drawer" aria-label="Comments" hidden>
-          <div class="drawer-heading"><div><span class="eyebrow">Objects</span><h2>Comments</h2></div><button type="button" data-close-drawer aria-label="Close comments">×</button></div>
-          <label class="comments-filter"><input type="checkbox" data-show-hidden-comments /> <span>Show resolved &amp; orphaned</span></label>
+          <div class="drawer-heading"><div><span class="eyebrow" data-comments-eyebrow>Objects</span><h2 data-comments-heading>Comments</h2></div><button type="button" data-close-drawer aria-label="Close comments">×</button></div>
+          <label class="comments-filter" data-comments-filter><input type="checkbox" data-show-hidden-comments /> <span>Show resolved &amp; orphaned</span></label>
           <section class="comment-composer" data-comment-composer hidden>
             <span class="comment-target-label" data-comment-target></span>
             <form data-comment-form>
@@ -3379,8 +3387,18 @@ export class BoardApp {
     );
 
     this.commentsButton.addEventListener("click", () => {
+      if (!this.commentsDrawer.hidden && this.commentsFocusItemId !== null) {
+        // The drawer is showing one object's comments; widen it to every comment.
+        this.commentsFocusItemId = null;
+        this.activeCommentTargetId = null;
+        this.renderComments();
+        return;
+      }
       const opening = this.commentsDrawer.hidden;
-      if (opening) this.activeCommentTargetId = null;
+      if (opening) {
+        this.activeCommentTargetId = null;
+        this.commentsFocusItemId = null;
+      }
       this.toggleDrawer(this.commentsDrawer, this.commentsButton);
       this.renderComments();
     });
@@ -3438,7 +3456,7 @@ export class BoardApp {
     );
     this.renderer.svg.addEventListener("board-comment-open", (event) => {
       const detail = (event as CustomEvent<{ itemId?: unknown }>).detail;
-      if (typeof detail?.itemId === "string") this.openCommentsForItem(detail.itemId);
+      if (typeof detail?.itemId === "string") this.openCommentsFocused(detail.itemId);
     });
 
     query(this.root, "[data-testid='participants-button']", HTMLButtonElement).addEventListener(
@@ -6278,11 +6296,27 @@ export class BoardApp {
     if (!this.model.getItem(itemId)) return;
     if (this.activeCommentTargetId !== itemId) this.clearPendingCommentMedia();
     this.activeCommentTargetId = itemId;
+    this.commentsFocusItemId = null;
     this.closeDrawers();
     this.commentsDrawer.hidden = false;
     this.commentsButton.setAttribute("aria-expanded", "true");
     this.renderComments();
     this.commentInput.focus();
+  }
+
+  /**
+   * Opens the drawer on one object's comments alone: no composer, no other objects' threads.
+   * This is what a comment marker does. Every comment is still a click away in Settings.
+   */
+  private openCommentsFocused(itemId: string): void {
+    if (!this.model.getItem(itemId)) return;
+    this.commentsFocusItemId = itemId;
+    this.activeCommentTargetId = null;
+    this.closeDrawers();
+    this.commentsDrawer.hidden = false;
+    this.commentsButton.setAttribute("aria-expanded", "true");
+    this.renderComments();
+    query(this.commentsDrawer, "[data-close-drawer]", HTMLButtonElement).focus();
   }
 
   private async submitComment(): Promise<void> {
@@ -6630,9 +6664,21 @@ export class BoardApp {
     this.commentsRenderPending = false;
     this.showHiddenCommentsInput.checked = this.showHiddenComments;
 
-    const target = this.activeCommentTargetId
-      ? this.model.getItem(this.activeCommentTargetId)
+    const focused = this.commentsFocusItemId
+      ? this.model.getItem(this.commentsFocusItemId)
       : undefined;
+    if (this.commentsFocusItemId && !focused) this.commentsFocusItemId = null;
+    this.commentsDrawer.dataset.focus = focused ? "object" : "all";
+    this.commentsEyebrow.textContent = focused ? "Comments on" : "Objects";
+    this.commentsHeading.textContent = focused
+      ? capitalise(commentObjectLabel(focused))
+      : "Comments";
+    this.commentsFilter.hidden = focused !== undefined;
+
+    const target =
+      this.activeCommentTargetId && !focused
+        ? this.model.getItem(this.activeCommentTargetId)
+        : undefined;
     if (this.activeCommentTargetId && !target) this.activeCommentTargetId = null;
     this.commentComposer.hidden = target === undefined || !this.canComment();
     if (target) {
@@ -6645,6 +6691,7 @@ export class BoardApp {
 
     const visible = comments
       .filter((comment) => objectCommentVisible(comment.state, this.showHiddenComments))
+      .filter((comment) => focused === undefined || comment.itemId === focused.id)
       .sort((left, right) => {
         const leftTarget = left.itemId === this.activeCommentTargetId ? 0 : 1;
         const rightTarget = right.itemId === this.activeCommentTargetId ? 0 : 1;
@@ -6659,9 +6706,11 @@ export class BoardApp {
       empty.className = "comments-empty";
       empty.textContent = this.commentsLoading
         ? "Loading comments…"
-        : this.showHiddenComments
-          ? "No comments yet."
-          : "No open comments. Select an object to start one.";
+        : focused
+          ? "No open comments on this object."
+          : this.showHiddenComments
+            ? "No comments yet."
+            : "No open comments. Select an object to start one.";
       this.commentsList.append(empty);
       return;
     }
@@ -8860,6 +8909,10 @@ export function objectCommentVisible(
 /** How a comment names the service a video it carries comes from. */
 function videoProviderLabel(provider: "youtube" | "vimeo"): string {
   return provider === "vimeo" ? "Vimeo" : "YouTube";
+}
+
+function capitalise(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function commentObjectLabel(item: BoardItem): string {
