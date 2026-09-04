@@ -75,3 +75,35 @@ test("a drawn formula is never clipped by the box the board sizes for it", async
   expect(zoomed.left).toBeGreaterThanOrEqual(0);
   expect(zoomed.right).toBeGreaterThanOrEqual(0);
 });
+
+test("a double click with the select tool opens a text object for editing", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "Pointer double click runs in Chromium.");
+
+  await createBoard(page, "Text editing");
+  const at = await canvasPoint(page, 0.4, 0.4);
+  await page.getByTestId("tool-text").click();
+  await page.mouse.click(at.x, at.y);
+  const editor = page.getByTestId("canvas-text-editor");
+  await expect(editor).toBeFocused();
+  await editor.fill("First draft");
+  await editor.press("Enter");
+  await expect(page.locator("#drawing-area .board-item-text")).toContainText("First draft");
+
+  // With the select tool, one click selects and a second within the beat opens the text.
+  await page.getByRole("button", { name: /^Select/u }).click();
+  const text = page.locator("#drawing-area .board-item-text").first();
+  const box = await text.boundingBox();
+  if (!box) throw new Error("The text object has no layout bounds.");
+  const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await page.mouse.click(centre.x, centre.y);
+  await page.mouse.click(centre.x, centre.y);
+  await expect(editor).toBeFocused();
+  await expect(editor).toHaveValue("First draft");
+
+  await editor.fill("Second draft");
+  await editor.press("Enter");
+  await expect(page.locator("#drawing-area .board-item-text")).toContainText("Second draft");
+  await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+});

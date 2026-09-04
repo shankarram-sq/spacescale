@@ -1,14 +1,15 @@
 # SpaceScale
 
-**A WebMCP-enabled visual classroom where AI can understand handwriting,
-challenge a mistaken diagram, and add actionable feedback to the same live
-canvas where students are working.**
+**A live, collaborative environment where people and AI agents work
+together—built for education and adaptable to any team.**
 
 [Live demo](https://webmcp.spacescale.net/) ·
+[Hackathon pitch](docs/hackathon-build/pitch.md) ·
+[Codex skills for teachers](.agents/skills/README.md) ·
 [Devpost submission draft](devpost-submission.md) ·
 [3-minute demo runbook](docs/hackathon-build/demo-runbook.md) ·
 [Implementation spec](docs/hackathon-build/spec.md) ·
-[MIT license and authorship](LICENSE)
+[MIT license](LICENSE)
 
 SpaceScale turns classroom AI from a text reply into visible collaboration.
 Students and teachers draw, write, organize, embed videos, react, and vote
@@ -285,6 +286,12 @@ npx playwright install
 npm run test:e2e
 ```
 
+The E2E suite depends on a locally started HTTPS Cloudflare Worker. On flaky or
+resource-constrained infrastructure, a Worker startup or connection failure can
+cascade into many connection-refused or TLS errors and skipped tests. If that
+happens, rerun the affected spec or the full suite on stable infrastructure;
+repeatable assertion failures should still be treated as product regressions.
+
 Useful checks:
 
 ```sh
@@ -547,3 +554,9 @@ every object format, and signed webhooks are documented in the single partner re
 are available for
 [JavaScript](examples/partner-integration.mjs) and
 [Python](examples/partner_integration.py).
+
+## License and authorship
+
+SpaceScale is released under the [MIT License](LICENSE). It was originally
+authored and is maintained by Shankar Ram Akshayakumar while working within
+StayQrious.

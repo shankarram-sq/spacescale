@@ -732,7 +732,8 @@ build is unavailable (`launchOptions.executablePath`).
 - README (lines ~116-117) and `spec.md` (lines ~5, ~113-114): same rewrite —
   "retain internal `assistedBy` metadata and render a small AI mark beside the
   responsible participant's initials".
-- README tool count: fifteen becomes sixteen.
+- README tool count: keep the published surface aligned with the final enabled
+  tool set (currently fourteen).
 - `spec.md` `add_content_visuals` section: alt text optional, title fallback.
 
 ### Step 8 — Optional follow-ups (not in v1)

@@ -14,9 +14,9 @@
   },
   "project": {
     "name": "SpaceScale",
-    "summary": "A shared visual classroom where WebMCP agents work with handwriting, video, and live ideas under the exact permissions of the people who invite them.",
-    "ai_usage": "The visiting WebMCP agent connects and challenges selected class ideas, interprets selected handwriting, follows bounded saved problem steps, and creates source-linked shared learning structures without a separate SpaceScale model backend.",
-    "codex_usage": "Codex supported product scoping, WebMCP tool and permission architecture, implementation, automated tests, debugging, review, demo preparation, and submission documentation."
+    "summary": "SpaceScale is a multiplayer canvas where students draw and write together while AI coaches each learner in real time—using two-way WebMCP polling, guided by the teacher's own skill and knowledge files.",
+    "ai_usage": "The visiting WebMCP agent checks handwritten work, identifies reasoning errors, gives hints instead of answers, compares responses, suggests peer support, and brings relevant learning material onto the shared board under the teacher's permissions.",
+    "codex_usage": "Claude Code and Codex supported product exploration, architecture, WebMCP tool design, implementation, automated testing, debugging, review, documentation, demo preparation, and submission writing. Codex is also the reference demo agent."
   },
   "current_stage": "prepare-submission",
   "completed_stages": ["start-hackathon", "review", "prepare-submission"],

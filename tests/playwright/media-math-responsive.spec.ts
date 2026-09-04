@@ -92,7 +92,7 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   await page.mouse.click(stickyPoint.x, stickyPoint.y);
   const stickyEditor = page.getByTestId("canvas-text-editor");
   await expect(stickyEditor).toBeFocused();
-  await stickyEditor.fill("Reference $\\text{https://example.com }$");
+  await stickyEditor.fill("Reference \\(\\text{https://example.com }\\)");
   await stickyEditor.press("Control+Enter");
   await expect(page.getByTestId("tool-select")).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator(".sticky-math-content")).toHaveAttribute("data-math-state", "ready");
@@ -104,7 +104,7 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
 
   await page.getByRole("button", { name: "Comment on selected object" }).click();
   const comments = page.getByTestId("comments-drawer");
-  await comments.getByRole("textbox", { name: "Comment" }).fill("Because $c$ is constant.");
+  await comments.getByRole("textbox", { name: "Comment" }).fill("Because \\(c\\) is constant.");
   await comments.getByRole("button", { name: "Comment", exact: true }).click();
   await expect(comments.locator(".comment-body")).toHaveAttribute("data-math-state", "ready");
   await expect(comments.locator(".comment-body mjx-container")).toHaveCount(1);
@@ -154,7 +154,7 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   await page.getByTestId("tool-text").click();
   await page.mouse.click(compactPoint.x, compactPoint.y);
   const compactEditor = page.getByTestId("canvas-text-editor");
-  await compactEditor.fill("$2x$");
+  await compactEditor.fill("\\(2x\\)");
   await compactEditor.press("Enter");
   const compactMath = page.locator(".board-math-content").last();
   await expect(compactMath).toHaveAttribute("data-math-state", "ready");
@@ -172,7 +172,9 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
       initialHeight: Number.parseFloat((content as HTMLElement).style.fontSize) * 2.2,
     };
   });
-  expect(compactSize.width).toBe(Math.ceil(compactSize.scrollWidth));
+  // The renderer adds three pixels beyond the measured advance width so italic overhangs and
+  // whole-pixel rounding cannot clip the final glyph.
+  expect(compactSize.width).toBe(Math.ceil(compactSize.scrollWidth + 3));
   expect(compactSize.width).toBeLessThan(180);
   expect(compactSize.viewportWidth).toBeGreaterThan(compactSize.width * 1.4);
   expect(compactSize.height).toBe(Math.ceil(compactSize.scrollHeight));
@@ -184,7 +186,7 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   await page.getByTestId("tool-zone").click();
   await page.mouse.click(sectionPoint.x, sectionPoint.y);
   const sectionTitle = page.getByTestId("zone-title-editor");
-  await sectionTitle.fill("Results: $y=mx+b$");
+  await sectionTitle.fill("Results: \\(y=mx+b\\)");
   await sectionTitle.press("Enter");
   await expect(page.locator(".zone-math-content")).toHaveAttribute("data-math-state", "ready");
   expect(await page.locator(".zone-math-content").evaluate((node) => node.style.opacity)).toBe("");
@@ -281,7 +283,7 @@ test("videos, MathJax text surfaces, and compact canvas controls work together",
   const firstCell = table.locator('[data-table-cell][data-table-row="0"][data-table-column="0"]');
   await firstCell.dblclick();
   const cellEditor = page.getByTestId("table-cell-editor");
-  await cellEditor.fill("$x^2$");
+  await cellEditor.fill("\\(x^2\\)");
   await cellEditor.press("Control+Enter");
   await expect(table.locator(".table-math-content")).toHaveAttribute("data-math-state", "ready");
   expect(await table.locator(".table-math-content").evaluate((node) => node.style.opacity)).toBe(
