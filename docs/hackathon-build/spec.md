@@ -307,7 +307,7 @@ select a step and press **Ask AI** on the board; the request arrives in the next
 - Production Vite build passes.
 - Unit compiler tests cover all 28 catalog modes, including the reserved Jigsaw compiler path.
 - Public WebMCP contract tests inspect every published requirement, execute all 27 currently live modes through their registered tools, verify acknowledged AI-attributed batches, and reject invalid role structures. A separate provider-enabled contract test proves the conditional 28th mode, acknowledged Jigsaw write, authoritative-group flags, and same-group rejection.
-- Chromium exercises all fifteen registrations, the 15-minute watch capability contract, the selected-handwriting consent and masked review path, the published mode contracts and reserved-section boundary, three rejected unsafe structures, a representative write from each live education family, and a locally rendered/private-uploaded meme, then verifies save, AI attribution, and six independent undos.
+- Chromium exercises all fourteen enabled registrations, the 15-minute watch capability contract, the selected-handwriting consent and masked review path, the published mode contracts and reserved-section boundary, three rejected unsafe structures, a representative write from each live education family, and a locally rendered/private-uploaded meme, then verifies save, AI attribution, and six independent undos.
 - Full web TypeScript, Vite, unit, edge, protocol compatibility, lint, environment-doc, and secret-leak gates pass before production deployment.
 
 Official implementation reference: [OpenAI Site tools / WebMCP](https://learn.chatgpt.com/docs/webmcp).

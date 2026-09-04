@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "A WebMCP-enabled visual classroom where people and AI think together under participant-scoped permissions",
+  "description": "A live, collaborative environment where people and AI agents work together—built for education and adaptable to any team",
   "workspaces": [
     "apps/*",
     "packages/*"

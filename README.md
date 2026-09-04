@@ -1,8 +1,7 @@
 # SpaceScale
 
-**A WebMCP-enabled visual classroom where AI can understand handwriting,
-challenge a mistaken diagram, and add actionable feedback to the same live
-canvas where students are working.**
+**A live, collaborative environment where people and AI agents work
+together—built for education and adaptable to any team.**
 
 [Live demo](https://webmcp.spacescale.net/) ·
 [Hackathon pitch](docs/hackathon-build/pitch.md) ·
@@ -10,7 +9,7 @@ canvas where students are working.**
 [Devpost submission draft](devpost-submission.md) ·
 [3-minute demo runbook](docs/hackathon-build/demo-runbook.md) ·
 [Implementation spec](docs/hackathon-build/spec.md) ·
-[MIT license and authorship](LICENSE)
+[MIT license](LICENSE)
 
 SpaceScale turns classroom AI from a text reply into visible collaboration.
 Students and teachers draw, write, organize, embed videos, react, and vote
@@ -203,7 +202,7 @@ on shapes, sticky notes, tables, image cards, and sections. V1 stores the snappe
 coordinates as ordinary line geometry, so moving the target later does not move
 the connector automatically.
 
-Codex and other compatible browser hosts discover thirteen WebMCP tools directly from every
+Codex and other compatible browser hosts discover fourteen WebMCP tools directly from every
 board browser. Six read: `read_board`, `read_selection` and `read_user` each take one reading
 of a scope; `list_users` names the people with saved work and hands back the participant IDs
 the user tools take; `read_live_class_vote` reports aggregate counts; `read_templates` lists
@@ -282,6 +281,12 @@ the same credential-free local Worker automatically:
 npx playwright install
 npm run test:e2e
 ```
+
+The E2E suite depends on a locally started HTTPS Cloudflare Worker. On flaky or
+resource-constrained infrastructure, a Worker startup or connection failure can
+cascade into many connection-refused or TLS errors and skipped tests. If that
+happens, rerun the affected spec or the full suite on stable infrastructure;
+repeatable assertion failures should still be treated as product regressions.
 
 Useful checks:
 
@@ -545,3 +550,9 @@ every object format, and signed webhooks are documented in the single partner re
 are available for
 [JavaScript](examples/partner-integration.mjs) and
 [Python](examples/partner_integration.py).
+
+## License and authorship
+
+SpaceScale is released under the [MIT License](LICENSE). It was originally
+authored and is maintained by Shankar Ram Akshayakumar while working within
+StayQrious.

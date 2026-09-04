@@ -4,9 +4,8 @@ SpaceScale
 
 ## One-line Summary
 
-Multiplayer AI for the classroom: one shared canvas, a whole class, and one
-WebMCP agent that reads every student's handwriting and typed work, while the
-teacher's own skills and files decide what it knows and what it may do.
+SpaceScale is a live, collaborative environment where people and AI agents work
+together—built for education and adaptable to any team.
 
 ## Problem
 
@@ -26,12 +25,12 @@ the diagrams, is handwritten, which digital tools usually cannot assess at all.
 SpaceScale is a realtime visual classroom built on Cloudflare. Students and
 teachers draw, write by hand on a Huion or any other pen tablet, type, organize,
 comment, vote, and embed YouTube or Vimeo videos on one durable canvas. When the
-board is open in a WebMCP-capable host, the page registers twelve tools. Six
+board is open in a WebMCP-capable host, the page registers fourteen tools. Six
 read: one reading of the whole board, the current selection, or one named
 participant's work, plus a participant list, an aggregate vote reader, and an
 activity-template reader. Two follow the same three scopes live for fifteen
-minutes. Four write: comments that can carry a picture or a video, sticky
-notes, images, and videos.
+minutes. Six write: comments that can carry a picture or a video, sticky notes,
+images, videos, filled activity templates, and atomic sticky-note moves.
 
 The teacher starts a board watch from Codex with a coaching skill and the class
 documents loaded. From then on the agent follows every saved step across the
@@ -72,7 +71,7 @@ different coaching styles and a department can share and edit one on a Friday
 afternoon. Anything SpaceScale does not do today can be added the same way,
 without touching the site.
 
-Because the twelve tools are generic, the same board serves any domain. Swap the
+Because the fourteen tools are generic, the same board serves any domain. Swap the
 skill and it becomes a marketing war room that connects campaign ideas aimed at
 the same audience, a project retrospective that groups sticky notes by root
 cause, or a design critique that reads the sketches.
@@ -108,12 +107,12 @@ bound site actions.
 
 ## Key Features
 
-- Twelve discoverable WebMCP tools. Reads: `read_board`, `read_selection`,
+- Fourteen discoverable WebMCP tools. Reads: `read_board`, `read_selection`,
   `read_user`, `list_users`, `read_live_class_vote`, `read_templates`.
   Watches: `watch_board` with scope board or selection, and `watch_users`.
-  Writes: `insert_comment`, `insert_sticky`, `insert_image`, `insert_video`.
-  Each write places one object where the call asks, as a single acknowledged
-  realtime command.
+  Writes: `insert_comment`, `insert_sticky`, `insert_image`, `insert_video`,
+  `insert_filled_template`, and `move_stickies`. Inserts and atomic note moves
+  use acknowledged realtime commands and remain undoable.
 - Three scopes, read once or followed live: the whole board, the current
   selection, or one named student's work. Following a student is
   teacher-initiated, visible, and expiring, and reports strictly less than a
@@ -171,7 +170,7 @@ Collab Canvas foundation. During the WebMCP Challenge submission period it was
 extended from a secure collaborative whiteboard into an AI-enabled learning
 product. The challenge work added:
 
-- the twelve-tool WebMCP integration, with the surface kept to generic reads,
+- the fourteen-tool WebMCP integration, with the surface kept to generic reads,
   watches, and writes so skills carry the pedagogy;
 - three scopes for reading and watching: the whole board, the selection, or
   one participant's work, with a participant list derived from saved content;

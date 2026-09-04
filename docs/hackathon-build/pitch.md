@@ -138,11 +138,12 @@ Two more scenes, same machinery, different skill:
 
 ## Built for education, open to any room
 
-The twelve tools are deliberately generic. Read once or follow live, over
+The fourteen tools are deliberately generic. Read once or follow live, over
 three scopes: the whole board, the current selection, or one named person's
-work. A participant list, a vote reader, and a template reader. Four writes:
-comment, sticky note, image, video. Nothing in the protocol knows what a lesson
-is. The education behaviour lives in the skill.
+work. A participant list, a vote reader, and a template reader. Six writes:
+comment, sticky note, image, video, filled template, and atomic sticky-note
+movement. Nothing in the protocol knows what a lesson is. The education
+behaviour lives in the skill.
 
 Swap the skill and the same board becomes:
 
