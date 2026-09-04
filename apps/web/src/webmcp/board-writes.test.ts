@@ -998,6 +998,25 @@ describe("generic board writes", () => {
     writes.destroy();
   });
 
+  it("refuses a size whose far edge would leave the board", async () => {
+    // A note keeps its top-left corner, so x + width is what the reducer bounds.
+    const base = sticky() as Extract<BoardItem, { kind: "sticky" }>;
+    const note: BoardItem = { ...base, geometry: { ...base.geometry, x: 999_900, y: 0 } };
+    const { writes, resizes, call } = await ready({ itemAt: note });
+
+    await expect(call("resize_sticky", { at: { x: 999_950, y: 10 }, width: 200 })).rejects.toThrow(
+      "past the edge of the board",
+    );
+    expect(resizes).toEqual([]);
+
+    // The largest width that still fits is offered by the refusal and accepted.
+    expect(await call("resize_sticky", { at: { x: 999_950, y: 10 }, width: 100 })).toMatchObject({
+      status: "resized",
+      to: { width: 100, height: 140 },
+    });
+    writes.destroy();
+  });
+
   it("holds a resize to the board's minimum, one naming form, and sticky notes only", async () => {
     const note = sticky();
     const { writes, resizes, call } = await ready({ itemAt: note });

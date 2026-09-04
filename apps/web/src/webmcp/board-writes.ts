@@ -923,6 +923,10 @@ export class BoardWriteWebMcp {
       width: stickySide(input.width, "width", from.width, MIN_RESIZED_STICKY_WIDTH),
       height: stickySide(input.height, "height", from.height, MIN_RESIZED_STICKY_HEIGHT),
     };
+    // A note keeps its top-left corner, so a size the schema accepts can still push the far edge
+    // off the board, and the reducer would refuse that as a queue failure the caller cannot read.
+    stickyEdge(note.geometry.x, size.width, "width", "right");
+    stickyEdge(note.geometry.y, size.height, "height", "bottom");
     if (size.width === from.width && size.height === from.height) {
       return {
         status: "unchanged",
@@ -1221,6 +1225,18 @@ function sectionCorners(centre: Point, width: number, height: number): [Point, P
     }
   }
   return corners;
+}
+
+/**
+ * Refuses a size whose far edge would leave the board. A resize holds the note's top-left
+ * corner, so `x + width` grows with the size, and `normalizeBoxGeometry` bounds that sum the
+ * same way it bounds a coordinate.
+ */
+function stickyEdge(origin: number, side: number, field: string, edge: string): void {
+  if (origin + side <= COORDINATE_LIMIT) return;
+  throw new Error(
+    `A ${field} of ${side} would put this note's ${edge} edge past the edge of the board, because a resize holds its top-left corner at ${origin}. Move the note first, or ask for at most ${roundBoard(COORDINATE_LIMIT - origin)}.`,
+  );
 }
 
 /** A Section side: what was asked for, the board's default when omitted, never below the minimum. */
