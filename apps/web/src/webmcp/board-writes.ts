@@ -36,7 +36,6 @@ import { createId, roundBoard } from "../types";
 import {
   enumValue,
   isRecord,
-  optionalText,
   registerWebMcpTool,
   requiredText,
   WEBMCP_MATHJAX_GUIDANCE,
@@ -446,7 +445,7 @@ export class BoardWriteWebMcp {
         modelContext,
         {
           name: INSERT_SECTION_TOOL,
-          description: `Add one Section to this board: a titled region that frames part of the canvas and owns whatever sits inside it. Give a location for its centre and, optionally, a title and a size. A Section adopts the saved objects it already covers when it lands, exactly as the board's own Section tool does, and the result says how many it took in — so placing one over a cluster of notes gathers them rather than merely drawing a box around them. Afterwards, moving the Section moves everything it holds. Default size is ${DEFAULT_ZONE_WIDTH} by ${DEFAULT_ZONE_HEIGHT}; the smallest a Section may be is ${MIN_RESIZED_ZONE_WIDTH} by ${MIN_RESIZED_ZONE_HEIGHT}. It lands as one realtime command, tagged as written by AI, with ordinary undo. Name a Section for the thinking it holds, never for the people in it. ${WEBMCP_MATHJAX_GUIDANCE}`,
+          description: `Add one Section to this board: a titled region that frames part of the canvas and owns whatever sits inside it. Give a location for its centre and, optionally, a title and a size. Where the Space has grouping switched on, a Section adopts the saved objects it already covers when it lands, exactly as the board's own Section tool does — so placing one over a cluster of notes gathers them rather than merely drawing a box around them, and afterwards moving the Section moves everything it holds. The result says how many objects it actually took in, which is zero when it covered none or when this Space has grouping switched off. Default size is ${DEFAULT_ZONE_WIDTH} by ${DEFAULT_ZONE_HEIGHT}; the smallest a Section may be is ${MIN_RESIZED_ZONE_WIDTH} by ${MIN_RESIZED_ZONE_HEIGHT}. It lands as one realtime command, tagged as written by AI, with ordinary undo. Name a Section for the thinking it holds, never for the people in it. ${WEBMCP_MATHJAX_GUIDANCE}`,
           inputSchema: {
             type: "object",
             properties: {
@@ -854,7 +853,7 @@ export class BoardWriteWebMcp {
     this.requireWritable("section");
     const create = this.options.createSection;
     if (!create) throw new Error("This browser cannot add a Section to this Space.");
-    const title = optionalText(input.title, "title", MAX_ZONE_TITLE_CODE_POINTS);
+    const title = sectionTitle(input.title);
     const width = sectionSide(input.width, "width", DEFAULT_ZONE_WIDTH, MIN_RESIZED_ZONE_WIDTH);
     const height = sectionSide(
       input.height,
@@ -863,13 +862,16 @@ export class BoardWriteWebMcp {
       MIN_RESIZED_ZONE_HEIGHT,
     );
     const [x, y] = this.placement(input.location);
+    // A centre the schema accepts can still put a corner off the board once half a side is
+    // added to it, and the reducer would refuse that as a queue failure the caller cannot read.
+    const corners = sectionCorners([x, y], width, height);
     const itemId = createId();
     // The dragged builder takes the two corners a participant would sweep out, which keeps the
     // Section tool's own sizing, rounding and default styling in one place.
     const operation = buildDraggedZoneCreateOperation(
       itemId,
-      [roundBoard(x - width / 2), roundBoard(y - height / 2)],
-      [roundBoard(x + width / 2), roundBoard(y + height / 2)],
+      corners[0],
+      corners[1],
       ...(title === undefined ? [] : [title]),
     );
     signal.throwIfAborted();
@@ -888,8 +890,17 @@ export class BoardWriteWebMcp {
       title: operation.item.geometry.title,
       size: { width: operation.item.geometry.width, height: operation.item.geometry.height },
       adoptedObjectCount: adopted,
-      adoptionNote:
-        "Saved objects the Section covered when it landed now belong to it, so moving the Section moves them too.",
+      // Nothing is claimed when nothing was taken in: a Space with grouping switched off adds
+      // the Section on its own, and saying otherwise would misdescribe the board.
+      ...(adopted === 0
+        ? {
+            adoptionNote:
+              "This Section took nothing in: either it covered no saved object, or this Space has grouping switched off, which is what Section membership is built on. Nothing on the board now belongs to it.",
+          }
+        : {
+            adoptionNote:
+              "Saved objects the Section covered when it landed now belong to it, so moving the Section moves them too.",
+          }),
     });
   }
 
@@ -1178,6 +1189,38 @@ function stickyFill(value: unknown): string | undefined {
     throw new Error(`fill must be one of: ${Object.keys(STICKY_FILLS).join(", ")}.`);
   }
   return STICKY_FILLS[value as StickyFillName];
+}
+
+/**
+ * A Section title, counted the way the board counts it. `MAX_ZONE_TITLE_CODE_POINTS` and the
+ * protocol validator both count Unicode code points, so measuring UTF-16 units here would refuse
+ * a title of emoji the board would happily take.
+ */
+function sectionTitle(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw new Error("title must be text.");
+  const title = value.trim();
+  const characters = [...title].length;
+  if (characters === 0 || characters > MAX_ZONE_TITLE_CODE_POINTS) {
+    throw new Error(`title must contain 1-${MAX_ZONE_TITLE_CODE_POINTS} characters.`);
+  }
+  return title;
+}
+
+/** The two corners a Section spans, refused when its size pushes one of them off the board. */
+function sectionCorners(centre: Point, width: number, height: number): [Point, Point] {
+  const corners: [Point, Point] = [
+    [roundBoard(centre[0] - width / 2), roundBoard(centre[1] - height / 2)],
+    [roundBoard(centre[0] + width / 2), roundBoard(centre[1] + height / 2)],
+  ];
+  for (const corner of corners) {
+    if (Math.abs(corner[0]) > COORDINATE_LIMIT || Math.abs(corner[1]) > COORDINATE_LIMIT) {
+      throw new Error(
+        `A ${width} by ${height} Section centred on ${centre[0]}, ${centre[1]} would reach past the edge of the board. Move its centre inwards or make it smaller.`,
+      );
+    }
+  }
+  return corners;
 }
 
 /** A Section side: what was asked for, the board's default when omitted, never below the minimum. */

@@ -919,6 +919,47 @@ describe("generic board writes", () => {
     writes.destroy();
   });
 
+  it("counts a Section title in code points, the way the board counts it", async () => {
+    const { writes, sections, call } = await ready();
+    // 61 emoji are 122 UTF-16 units but 61 code points, and the board's limit is 120 of those.
+    const title = "\u{1F600}".repeat(61);
+    await call("insert_section", { location: { x: 0, y: 0 }, title });
+    expect(sections[0]?.item.geometry.title).toBe(title);
+
+    await expect(
+      call("insert_section", { location: { x: 0, y: 0 }, title: "x".repeat(121) }),
+    ).rejects.toThrow("title must contain 1-120 characters.");
+    expect(sections).toHaveLength(1);
+    writes.destroy();
+  });
+
+  it("refuses a Section whose size would push a corner off the board", async () => {
+    const { writes, sections, call } = await ready();
+    // The centre is inside the board, but half a default width past it is not, and the reducer
+    // would refuse that as a queue failure the caller could not read.
+    await expect(call("insert_section", { location: { x: -999_900, y: 0 } })).rejects.toThrow(
+      "would reach past the edge of the board",
+    );
+    expect(sections).toEqual([]);
+
+    // The same centre is fine once the Section is small enough to fit inside the edge.
+    await call("insert_section", { location: { x: -999_900, y: 0 }, width: 160, height: 100 });
+    expect(sections[0]?.item.geometry).toMatchObject({ x: -999_980, width: 160 });
+    writes.destroy();
+  });
+
+  it("does not claim an adoption when the Section took nothing in", async () => {
+    const { writes, call } = await ready({ createSection: async () => 0 });
+    const result = await call("insert_section", { location: { x: 0, y: 0 } });
+
+    // A Space with grouping switched off adds the Section alone, so the result says so rather
+    // than promising that covered objects will travel with it.
+    expect(result).toMatchObject({ adoptedObjectCount: 0 });
+    expect(String(result.adoptionNote)).toContain("took nothing in");
+    expect(String(result.adoptionNote)).not.toContain("now belong to it, so moving");
+    writes.destroy();
+  });
+
   it("resizes a watched note and keeps the side the call leaves out", async () => {
     const note = sticky();
     const { writes, resizes, revealed, call } = await ready({

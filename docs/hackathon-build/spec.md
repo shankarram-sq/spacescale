@@ -1,12 +1,13 @@
 # SpaceScale WebMCP visual collaboration — implementation spec
 
 > **Historical note.** This is the hackathon-build spec. The shipped WebMCP surface is the
-> twelve tools the [README](../../README.md) describes. The selection-token tools this spec
-> designs (`read_selected_class_ideas`, `inspire_from_selected_ideas`,
-> `explain_selected_ideas`, `inspect_selected_board_visual`, the `add_*` writers,
-> `list_class_collaboration_modes`, `stage_collective_inquiry`, `stage_class_decision`,
-> `comment_on_watched_step`, and `insert_filled_template`) were withdrawn in favour of the
-> generic reads, watches, and writes, and their code has since been removed.
+> tools the [README](../../README.md) describes. The selection-token tools this spec designs
+> (`read_selected_class_ideas`, `inspire_from_selected_ideas`, `explain_selected_ideas`,
+> `inspect_selected_board_visual`, the `add_*` writers, `list_class_collaboration_modes`,
+> `stage_collective_inquiry`, `stage_class_decision`, and `comment_on_watched_step`) were
+> withdrawn in favour of the generic reads, watches, and writes, and their code has since been
+> removed. `insert_filled_template`, designed here too, is the one that survived: it ships, and
+> `read_templates` names it as the writer to follow.
 
 ## Outcome
 
