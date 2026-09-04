@@ -192,6 +192,11 @@ test("shape palette, rotatable protractor, snapping, partial erase, and feature 
     if (await toggle.isChecked()) await toggle.uncheck();
   }
   const moreTools = page.getByTestId("tool-more");
+  // Feature updates are acknowledged asynchronously. Wait until Protractor is genuinely the only
+  // enabled nested tool before testing whether it controls the More trigger.
+  await expect
+    .poll(() => page.locator("[data-more-tools-grid] > button:not([hidden])").count())
+    .toBe(1);
   await expect(moreTools).toBeVisible();
   await protractorGate.uncheck();
   await expect(moreTools).toBeHidden();

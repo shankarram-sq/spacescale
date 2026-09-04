@@ -484,7 +484,9 @@ test("the complete board remains usable at a 320px viewport", async ({ page }, t
   await page.screenshot({ path: testInfo.outputPath("pocket-canvas.png") });
 });
 
-test("the saved chip is the icon alone, while other states keep their label", async ({ page }) => {
+test("the saved chip is icon-only while compact layouts preserve topbar space", async ({
+  page,
+}) => {
   await createBoard(page, "Save chip");
   const chip = page.getByTestId("save-status");
   await expect(chip).toHaveAttribute("data-state", "saved");
@@ -520,6 +522,13 @@ test("the saved chip is the icon alone, while other states keep their label", as
       chipWidth: status.getBoundingClientRect().width,
     };
   });
-  expect(saving.labelWidth).toBeGreaterThan(20);
-  expect(saving.chipWidth).toBeGreaterThan(saved.chipWidth);
+  if ((page.viewportSize()?.width ?? Number.POSITIVE_INFINITY) <= 650) {
+    // The compact topbar deliberately hides every status label; the live region still announces
+    // its text to assistive technology.
+    expect(saving.labelWidth).toBe(0);
+    expect(saving.chipWidth).toBe(saved.chipWidth);
+  } else {
+    expect(saving.labelWidth).toBeGreaterThan(20);
+    expect(saving.chipWidth).toBeGreaterThan(saved.chipWidth);
+  }
 });

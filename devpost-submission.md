@@ -4,192 +4,101 @@ SpaceScale
 
 ## One-line Summary
 
-SpaceScale is a live, collaborative environment where people and AI agents work
-together—built for education and adaptable to any team.
+SpaceScale is a multiplayer canvas where students draw and write together while AI coaches each learner in real time—using two-way WebMCP polling, guided by the teacher’s own skill and knowledge files.
 
 ## Problem
 
-AI is mainstream, but almost all of it is single-player: one person, one chat,
-one private answer. A classroom is the opposite. Thirty people work on the same
-problem at once, at different speeds, with different misconceptions, and the
-person who knows them best is standing at the front of the room.
+Most AI tools are designed for one person in a private chat. A classroom works differently: students learn together, progress at different speeds, and express their thinking through handwriting, diagrams, equations, sticky notes, and discussion.
 
-Multiplayer AI, where one agent watches a shared workspace and responds to each
-person inside it, is rare. Multiplayer AI that the host controls from their own
-device, with their own notes and rules, without anyone deploying a server, is
-rarer still. And the richest evidence of student thinking, the working steps and
-the diagrams, is handwritten, which digital tools usually cannot assess at all.
+Effective classroom AI must also understand the teacher’s intent. The same response may be helpful in one lesson and disruptive in another. The AI should reflect the teacher’s lesson plan, terminology, examples, learning objectives, and rules about when to give a hint, ask a question, show a video, or explain a concept.
 
-## Solution
+That context is difficult to capture in a generic prompt. Without it, AI can give premature answers or teach in a way that conflicts with the lesson. Teachers need an assistant personalized by their own plans and knowledge while retaining control over how it responds and what it may change.
 
-SpaceScale is a realtime visual classroom built on Cloudflare. Students and
-teachers draw, write by hand on a Huion or any other pen tablet, type, organize,
-comment, vote, and embed YouTube or Vimeo videos on one durable canvas. When the
-board is open in a WebMCP-capable host, the page registers fourteen tools. Six
-read: one reading of the whole board, the current selection, or one named
-participant's work, plus a participant list, an aggregate vote reader, and an
-activity-template reader. Two follow the same three scopes live for fifteen
-minutes. Six write: comments that can carry a picture or a video, sticky notes,
-images, videos, filled activity templates, and atomic sticky-note moves.
+## How SpaceScale Started
 
-The teacher starts a board watch from Codex with a coaching skill and the class
-documents loaded. From then on the agent follows every saved step across the
-class, analyses handwriting strokes and diagrams as well as text, and answers
-each student on their own work: a fast-finisher question for one, a hint (not
-the answer) for another, a short video attached to a comment for a third. When
-one student needs more attention, the teacher can point the watch at that
-student's work alone. Every reply lands as an ordinary canvas object, marked as
-AI-written, attributed to the teacher, visible in real time, and undoable in
-one step.
+I created Cloudflare Collab Canvas and made it open source from the beginning because I saw its potential beyond StayQrious. It is still a young foundation, but it was designed with AI collaboration in mind and runs entirely on the Cloudflare stack.
 
-WebMCP also runs the other way. While a watch is live, the board shows an
-**Ask AI** button in the selection toolbar and an **AI** action in the tool
-rail. A student picks a step and an action (Explain, Ideate, Critique, Check my
-work, Examples, Explain with a video); the request reaches Codex on the watch's
-next long poll with a reply plan naming the exact tool call to answer with. The
-page is a participant that can ask, not just a target of tool calls.
+Cloudflare Collab Canvas could already share board state through server-side calls, but that approach still required a central integration. A centralized AI system is difficult to personalize around each teacher’s lesson plans, knowledge, and preferred teaching style.
 
-## Why This Matters
+SpaceScale builds on that foundation and uses WebMCP to move the AI interaction into the browser. Teachers can use their own Codex, skills, and knowledge files instead of depending on a centrally configured assistant.
 
-Each piece exists somewhere. A tutor bot can hint. A chat can summarise a
-brainstorm. A vision model can read a graph. What did not exist is all of it at
-once, in real time, on a shared space, personal to one teacher's notes and
-rules, with the agent holding exactly that teacher's permissions and nothing
-more.
+## What SpaceScale Does
 
-The most valuable context in a lesson is not in any database. It is the live
-page: who is on which step, what they just saved, what they selected, how the
-class voted. WebMCP hands that context to the agent and hands the agent's
-answer back to the page, without DOM scraping, a browser extension, or a second
-server.
+SpaceScale is a live, multiplayer canvas where students, teachers, and AI agents work in the same shared environment.
 
-The logic of the lesson lives in the teacher's own skills and files. A skill
-encodes the pedagogy: when to hint, when to hold back, when to reach for a
-video. Local documents supply the knowledge: class notes, marking scheme, video
-list. A skill is a text file, so two teachers can run the same board with
-different coaching styles and a department can share and edit one on a Friday
-afternoon. Anything SpaceScale does not do today can be added the same way,
-without touching the site.
+Students and teachers can draw, write, organize ideas, comment, vote, use activity templates, and embed lesson videos. A WebMCP-capable agent can understand the board, follow saved work as it changes, and place useful material directly beside the work it relates to.
 
-Because the fourteen tools are generic, the same board serves any domain. Swap the
-skill and it becomes a marketing war room that connects campaign ideas aimed at
-the same audience, a project retrospective that groups sticky notes by root
-cause, or a design critique that reads the sketches.
+Instead of disappearing into a private chat, AI assistance becomes part of the shared canvas. It can appear as a hint attached to a calculation, a counterexample beside an incorrect graph, a relevant video near a lesson, a filled activity template, or a clearer arrangement of sticky notes.
 
-## How We Used AI
+Every AI-assisted contribution is visible to collaborators, synchronized in real time, attributed to the teacher who authorized it, and reversible with normal undo.
 
-The visiting WebMCP agent performs all reasoning; SpaceScale contributes the
-context only the live application has. A scope is the same question whether
-read once or followed live: the whole board, the selection, or one person's
-work. The watch delivers server-acknowledged saved changes to every object in
-its scope, including handwriting strokes, shapes, and diagrams, so the agent can
-follow a multi-step solution to the step that went wrong or check a drawing
-against the claim beside it. The vote reader returns aggregate counts only. The
-template reader lets the agent lay out a whole activity scaffold in one call.
+## Why WebMCP Matters
 
-AI is used to coach each student on their own step, hand out fast-finisher
-work, connect students who chose the same brainstorm issue, surface the
-assumptions under each side of a debate, and explain with a placed video.
-Schemas keep votes, grades, and student profiles out of model control.
+The most useful classroom context already exists inside the page: the current selection, handwritten working, diagrams, spatial relationships, saved changes, participant-authored objects, and aggregate class votes.
 
-## How We Used Codex
+WebMCP gives the teacher’s agent structured access to that live context without DOM scraping, a browser extension, or a separate SpaceScale AI backend.
 
-Codex was the primary engineering partner for the WebMCP Challenge work. It
-helped translate the classroom idea into semantic tool contracts, implement the
-WebMCP adapters, the two-way watch, and the participant-scoped write path,
-write unit, edge, and browser coverage, debug realtime acknowledgement, and
-prepare the demo, runbook, and submission.
+SpaceScale exposes fourteen WebMCP tools:
 
-Codex is also the reference demo agent. The teacher runs it with a coaching
-skill and local class documents; it discovers the tools from the live page,
-watches the board, receives Ask AI requests, and replies through permission-
-bound site actions.
+- Six reads inspect the board, current selection, one participant’s work, participant list, aggregate class votes, and available activity templates.
+- Two watches follow the board, a fixed selection, or named participants for up to fifteen minutes through bounded polling.
+- Six writes add comments, sticky notes, images, videos, filled templates, or atomically rearrange existing sticky notes.
 
-## Key Features
+The tools are intentionally generic. The teaching behavior comes from the teacher’s own skill and knowledge files. Those files determine how the agent should coach, which material it should use, what it should avoid, and when it should intervene.
 
-- Fourteen discoverable WebMCP tools. Reads: `read_board`, `read_selection`,
-  `read_user`, `list_users`, `read_live_class_vote`, `read_templates`.
-  Watches: `watch_board` with scope board or selection, and `watch_users`.
-  Writes: `insert_comment`, `insert_sticky`, `insert_image`, `insert_video`,
-  `insert_filled_template`, and `move_stickies`. Inserts and atomic note moves
-  use acknowledged realtime commands and remain undoable.
-- Three scopes, read once or followed live: the whole board, the current
-  selection, or one named student's work. Following a student is
-  teacher-initiated, visible, and expiring, and reports strictly less than a
-  board watch.
-- Comments that carry a picture or a public video beside their text, so a
-  reply can show the diagram or the clip it is talking about right on the
-  student's step.
-- Two-way WebMCP: an **Ask AI** button and a whole-board **AI** action deliver
-  participant requests to the host on the watch's next long poll, with a reply
-  plan naming the next tool call.
-- Handwriting and diagram analysis from strokes written on a Huion or any pen
-  tablet, so steps and diagrams that digital setups usually cannot evaluate
-  become assessable.
-- Skills and local files as the pedagogy: the teacher's Codex skill and
-  documents set the mode, rules, and background material for the class. Five
-  skills ship in the repo under `.agents/skills` with an install guide:
-  problem-set coach, brainstorm connector, debate mapper, working checker,
-  and follow one student.
-- Per-student Sections so feedback lands on one person's work while the rest
-  of the class stays visible beside it.
-- Same-author permission inheritance: no service account, no elevated agent
-  role, local preflight plus authoritative Worker enforcement, success only
-  after server acknowledgement.
-- Every AI contribution carries a visible AI mark and `assistedBy` provenance,
-  is attributed to the responsible participant, syncs in real time, and undoes
-  in one step.
-- Shared YouTube and Vimeo cards, MathJax with a MathLive keyboard, object
-  comments, templates, stamps, tables, sections, snapshots, and offline
-  recovery.
+Changing the skill allows the same canvas to support problem-set coaching, brainstorming, debates, design critiques, project retrospectives, and other collaborative work.
 
-## Architecture
+## Ask AI as a Teacher Coaching Tool
 
-The TypeScript browser application registers tools with
-`document.modelContext.registerTool` when the API is present and remains a full
-collaborative canvas when it is absent. The watch lives only in page memory,
-returns ephemeral aliases rather than stable IDs, never captures unsaved
-keystrokes, and expires after fifteen minutes. Write tools accept a location
-and content, never coordinates of other objects, arbitrary HTML, or an actor
-identity.
+**Ask AI** is designed as a coaching tool for the teacher, not as a shortcut that gives students answers.
 
-All writes flow through the participant's durable outbox and WebSocket session.
-One `BoardRoom` Durable Object per board validates role, item ownership,
-section locks, versions, and batch limits before a shared reducer sequences and
-persists the action to SQLite. The resulting authoritative action resolves the
-WebMCP promise and is broadcast to collaborators. Private raster assets,
-recovery checkpoints, and named snapshots use R2.
+A teacher can use it to quickly understand what is happening across the class: check responses from multiple students, identify a shared misconception, bring a relevant video onto the board, or suggest peer pairings based on the work students have shown.
 
-The site holds state and presentation; the client holds knowledge and rules.
-That split is deliberate, and it is why the same code serves any domain.
+The teacher can also select a specific student’s Section and request focused assistance through their own Codex. The agent receives the selected classroom context and responds using the teacher’s lesson plan, knowledge files, coaching approach, and permissions.
 
-## What We Built During the Challenge
+This creates a two-way WebMCP workflow. The agent can read and act on the page, while the teacher can send a request from the page back to the agent through the next watch poll. The result then returns to the shared canvas through a permission-bound WebMCP action.
 
-SpaceScale is an **existing project** based on the open-source Cloudflare
-Collab Canvas foundation. During the WebMCP Challenge submission period it was
-extended from a secure collaborative whiteboard into an AI-enabled learning
-product. The challenge work added:
+The teacher remains in control throughout the process.
 
-- the fourteen-tool WebMCP integration, with the surface kept to generic reads,
-  watches, and writes so skills carry the pedagogy;
-- three scopes for reading and watching: the whole board, the selection, or
-  one participant's work, with a participant list derived from saved content;
-- the two-way watch: bounded long polls, the Ask AI selection action, the
-  whole-board AI action, and reply plans that name the tool that continues;
-- comments that carry a picture or a video through the same asset pipeline and
-  link check as the canvas;
-- handwriting and diagram support through the watch;
-- the participant-scoped WebMCP commit and acknowledgement path with AI
-  provenance and a visible AI mark;
-- per-student Sections, demo boards, activity templates, shared video cards,
-  MathJax with a MathLive keyboard, object comments, and classroom roles;
-- contract, unit, edge, and Chromium coverage for the permission and WebMCP
-  boundaries;
-- five installable Codex skills with an install guide;
-- the implementation spec, safety gate, pitch, demo runbook, and screenshots.
+## Permission-Bound by Design
 
-The public repository history and the comparison with the upstream foundation
-show the complete functional delta.
+SpaceScale does not give the AI a privileged bot identity. Every WebMCP action uses the permissions of the participant who authorized it.
+
+A viewer’s agent remains read-only. An editor’s agent can create content but cannot rewrite another participant’s work. Owners and co-owners retain their normal controls.
+
+Before saving a WebMCP action, the Cloudflare Worker revalidates the participant’s role, ownership, section locks, object versions, and the complete action batch. Accepted changes follow the same acknowledged, real-time path as human edits.
+
+AI-assisted content carries visible provenance and remains undoable. Watches use temporary aliases rather than exposing stable internal object identifiers.
+
+## What I Built During the Challenge
+
+SpaceScale is an existing project built on the open-source Cloudflare Collab Canvas foundation. During the WebMCP Challenge, I extended it into an AI-enabled collaborative learning environment.
+
+I added the fourteen-tool WebMCP surface, board and participant watches, teacher-initiated **Ask AI** requests, permission-bound acknowledged writes, visible AI provenance, handwriting and diagram support, comments containing pictures or videos, activity templates, shared video cards, per-student Sections, classroom roles, demonstration boards, automated test coverage, and five installable Codex teaching skills.
+
+The application uses TypeScript, Cloudflare Workers, Durable Objects, SQLite, R2, Vite, and Playwright. A `BoardRoom` Durable Object validates, sequences, stores, and broadcasts each durable action. The application continues to work as a complete collaborative canvas when WebMCP is unavailable.
+
+## How I Used AI
+
+The visiting WebMCP agent provides the reasoning; SpaceScale provides the structured live context and safe actions. In the classroom examples, the agent checks handwritten working, identifies reasoning errors, gives hints instead of complete answers, compares responses, connects related ideas, suggests peer support, and brings relevant learning material onto the board.
+
+## How I Used Claude Code and Codex
+
+I used both Claude Code and Codex extensively while building SpaceScale. They supported product exploration, architecture, WebMCP tool design, implementation, automated testing, debugging, code review, documentation, demo preparation, and submission writing.
+
+Codex is also the reference agent for the live demonstration. It runs with teacher-authored skills and local knowledge files, discovers SpaceScale’s tools through WebMCP, and acts under the teacher’s existing permissions.
+
+## Try It
+
+Open the [live SpaceScale demo](https://webmcp.spacescale.net/) in ChatGPT’s in-app browser or Google Chrome with WebMCP enabled.
+
+Create a Space and insert **Graph check: one student’s working** from Templates. Select the graph and equation and ask the agent whether they agree. Then select the student’s claim and ask for a counterexample at `x = -4`.
+
+The AI should add feedback beside the work showing that `16 - 28 + 10 = -2` and asking the student to plot `(-4, -2)`.
+
+Open a viewer invitation in a second session to confirm that the feedback synchronizes, the viewer cannot perform the same write, and the owner can remove the contribution with one undo.
+
+The [public repository](https://github.com/shankarram-sq/spacescale) contains the source code, setup instructions, automated tests, technical specification, screenshots, and complete demo runbook.
 
 ## Testing Instructions
 
@@ -199,10 +108,10 @@ show the complete functional delta.
 2. Enter a board title, choose **Open a fresh canvas**, then **Continue to
    board**.
 3. Open **Templates** and insert **Problem set: six students**. Ask the host to
-   start `watch_board`. Edit one student's answer, then select a step, press
-   **Ask AI**, and choose **Check my work**. Confirm the reply arrives as a
-   comment on that step, marked as AI, attributed to you, synced to a second
-   session, and removed by one undo.
+   start `watch_board`. As the teacher, edit or review one student's answer,
+   select that student's step, press **Ask AI**, and choose **Check my work**.
+   Confirm the reply arrives as a comment on that step, marked as AI,
+   attributed to you, synced to a second session, and removed by one undo.
 4. For handwriting, insert **Graph check: one student's working**. Ask the
    agent to check the drawn curve against the equation, then ask it to add a
    counterexample at `x = -4`. Confirm the card computes `y = -2` and asks the
@@ -301,15 +210,17 @@ The following answers are prepared for the Devpost form:
 - **Organization name:** Leave blank
 - **App Status:** Existing
 - **If Existing, what was updated during the submission period?** Use the
-  “What We Built During the Challenge” section above.
+  “What I Built During the Challenge” section above.
 - **Live URL:** https://webmcp.spacescale.net/
 - **Testing instructions:** Use the numbered “Testing Instructions” above.
 - **Public repository:** https://github.com/shankarram-sq/spacescale
 - **Agents/clients tested:** Codex in a WebMCP-compatible browser host; Chromium
   with a standards-shaped `document.modelContext` harness for automated tests.
-- **AI tools leveraged:** Codex for product scoping, architecture, implementation,
-  tests, debugging, review, and submission preparation, and as the demo agent
-  driven by teacher-authored skills and files.
+- **AI tools leveraged:** Claude Code and Codex for product exploration,
+  architecture, WebMCP tool design, implementation, automated testing,
+  debugging, review, documentation, demo preparation, and submission writing.
+  Codex is also the reference demo agent, driven by teacher-authored skills and
+  local knowledge files.
 - **Learning level:** Significant
 - **Gained AI career value:** Yes
 - **Demo video:** TODO — paste the final public YouTube URL.

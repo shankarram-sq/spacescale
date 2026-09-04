@@ -62,6 +62,8 @@ test("object comments follow moves, hide after orphaning, and resolve", async ({
   }));
 
   // The marker opens that object's comments alone: no composer, no other threads.
+  await drawer.getByRole("button", { name: "Close comments" }).click();
+  await expect(drawer).toBeHidden();
   await marker.click();
   await expect(drawer).toBeVisible();
   await expect(drawer).toHaveAttribute("data-focus", "object");
