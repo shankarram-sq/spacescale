@@ -51,8 +51,11 @@ export const ENABLED_WEBMCP_TOOLS: ReadonlySet<string> = new Set([
   "insert_sticky",
   "insert_image",
   "insert_video",
+  "insert_text",
+  "insert_section",
   "insert_filled_template",
   "move_stickies",
+  "resize_sticky",
 ]);
 
 export function webMcpToolEnabled(name: string): boolean {

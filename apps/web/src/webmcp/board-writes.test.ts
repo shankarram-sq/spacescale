@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { ZoneCreateOperation } from "../tools/controller";
 import type { BoardItem, DurableOperation, NewBoardItem } from "../types";
-import { BoardWriteWebMcp, type StickyMove, type WatchedStepTarget } from "./board-writes";
+import {
+  type BoardWriteKind,
+  BoardWriteWebMcp,
+  type StickyMove,
+  type WatchedStepTarget,
+} from "./board-writes";
 import { webMcpToolDefinitions } from "./shared";
 import type { RegisteredWebMcpTool, WebMcpRegisterToolOptions } from "./types";
 
@@ -28,7 +34,7 @@ function harness(
     canWrite?: boolean;
     canComment?: boolean;
     imagesEnabled?: boolean;
-    featureIssue?: (kind: "sticky" | "image" | "video") => string | null;
+    featureIssue?: (kind: BoardWriteKind) => string | null;
     itemAt?: BoardItem | undefined;
     selected?: BoardItem | null;
     resolveWatchedStep?: (watchToken: string, stepAlias: string) => WatchedStepTarget;
@@ -37,6 +43,8 @@ function harness(
       stepAliases: readonly string[],
     ) => Map<string, BoardItem>;
     moveItems?: (moves: readonly StickyMove[]) => Promise<void>;
+    createSection?: (operation: ZoneCreateOperation) => Promise<number>;
+    resizeCard?: (item: BoardItem, size: { width: number; height: number }) => Promise<void>;
     commit?: (operation: DurableOperation) => Promise<boolean>;
   } = {},
 ) {
@@ -61,6 +69,8 @@ function harness(
   }> = [];
   const revealed: string[][] = [];
   const movedBatches: StickyMove[][] = [];
+  const sections: ZoneCreateOperation[] = [];
+  const resizes: Array<{ item: BoardItem; size: { width: number; height: number } }> = [];
   const notices: string[] = [];
   const stored: string[] = [];
   const writes = new BoardWriteWebMcp({
@@ -90,6 +100,14 @@ function harness(
       (async (moves) => {
         movedBatches.push([...moves]);
       }),
+    createSection: async (operation) => {
+      sections.push(operation);
+      return (await options.createSection?.(operation)) ?? 0;
+    },
+    resizeCard: async (item, size) => {
+      resizes.push({ item, size });
+      await options.resizeCard?.(item, size);
+    },
     commit:
       options.commit ??
       (async (operation) => {
@@ -137,6 +155,8 @@ function harness(
     comments,
     revealed,
     movedBatches,
+    sections,
+    resizes,
     notices,
     stored,
     call,
@@ -165,9 +185,12 @@ describe("generic board writes", () => {
     expect([...exposed.keys()].sort()).toEqual([
       "insert_comment",
       "insert_image",
+      "insert_section",
       "insert_sticky",
+      "insert_text",
       "insert_video",
       "move_stickies",
+      "resize_sticky",
     ]);
     writes.destroy();
   });
@@ -807,6 +830,164 @@ describe("generic board writes", () => {
     expect(revealed).toEqual([]);
     expect(notices).toEqual([]);
     writes.destroy();
+  });
+
+  it("writes a canvas text object where the call asks, tagged as AI written", async () => {
+    const { writes, committed, revealed, call } = await ready();
+    const result = await call("insert_text", {
+      location: { x: 200.004, y: -40 },
+      text: "  Why does \\(x=3\\) work?  ",
+    });
+
+    const item = createdItem(committed[0]);
+    expect(item).toMatchObject({
+      kind: "text",
+      assistedBy: "ai",
+      // A text object carries no size: its point is where a participant's own click would put it.
+      geometry: { x: 200, y: -40, text: "Why does \\(x=3\\) work?" },
+    });
+    expect(item.geometry).not.toHaveProperty("embed");
+    expect(result).toMatchObject({
+      status: "inserted",
+      objectKind: "text",
+      location: { x: 200, y: -40 },
+      characters: 22,
+      aiAttributed: true,
+    });
+    expect(revealed).toEqual([[item.id]]);
+    writes.destroy();
+  });
+
+  it("refuses empty text and text the Space has switched off", async () => {
+    const { writes, committed, call } = await ready();
+    await expect(call("insert_text", { text: "   " })).rejects.toThrow("text must contain 1-");
+    expect(committed).toEqual([]);
+    writes.destroy();
+
+    const off = await ready({
+      featureIssue: (kind) => (kind === "text" ? "Enable text to add a text object." : null),
+    });
+    await expect(off.call("insert_text", { text: "A heading" })).rejects.toThrow(
+      "Enable text to add a text object.",
+    );
+    expect(off.committed).toEqual([]);
+    off.writes.destroy();
+  });
+
+  it("adds a Section at a size it validates, and reports what it took in", async () => {
+    const { writes, sections, revealed, notices, call } = await ready({
+      createSection: async () => 4,
+    });
+    const result = await call("insert_section", {
+      location: { x: 500, y: 400 },
+      title: "  Ideas worth testing  ",
+      width: 300,
+      height: 200,
+    });
+
+    // The location is the Section's centre, so the corners sit half a side away from it.
+    expect(sections[0]?.item).toMatchObject({
+      kind: "zone",
+      assistedBy: "ai",
+      geometry: { x: 350, y: 300, width: 300, height: 200, title: "Ideas worth testing" },
+    });
+    expect(result).toMatchObject({
+      status: "inserted",
+      objectKind: "section",
+      location: { x: 500, y: 400 },
+      title: "Ideas worth testing",
+      size: { width: 300, height: 200 },
+      adoptedObjectCount: 4,
+    });
+    expect(revealed).toEqual([[sections[0]?.item.id]]);
+    expect(notices).toEqual(["Section added, taking in 4 objects."]);
+    writes.destroy();
+  });
+
+  it("falls back to the board's own Section size and refuses one below the minimum", async () => {
+    const { writes, sections, call } = await ready();
+    await call("insert_section", { location: { x: 0, y: 0 } });
+    expect(sections[0]?.item.geometry).toMatchObject({ width: 520, height: 320 });
+
+    await expect(call("insert_section", { location: { x: 0, y: 0 }, width: 20 })).rejects.toThrow(
+      "width must be at least 160.",
+    );
+    await expect(call("insert_section", { location: { x: 0, y: 0 }, height: 20 })).rejects.toThrow(
+      "height must be at least 100.",
+    );
+    expect(sections).toHaveLength(1);
+    writes.destroy();
+  });
+
+  it("resizes a watched note and keeps the side the call leaves out", async () => {
+    const note = sticky();
+    const { writes, resizes, revealed, call } = await ready({
+      resolveWatchedStickies: () => new Map([["step_4", note]]),
+    });
+    const result = await call("resize_sticky", {
+      watchToken: "watch-1",
+      stepAlias: "step_4",
+      height: 260,
+    });
+
+    expect(resizes).toEqual([{ item: note, size: { width: 180, height: 260 } }]);
+    expect(result).toMatchObject({
+      status: "resized",
+      stepAlias: "step_4",
+      from: { width: 180, height: 140 },
+      to: { width: 180, height: 260 },
+      undoable: true,
+    });
+    expect(revealed).toEqual([[STICKY_ID]]);
+    writes.destroy();
+  });
+
+  it("resizes a note named by a point, and refuses one already that size", async () => {
+    const note = sticky();
+    const { writes, resizes, call } = await ready({ itemAt: note });
+    expect(await call("resize_sticky", { at: { x: 10, y: 10 }, width: 300 })).toMatchObject({
+      status: "resized",
+      to: { width: 300, height: 140 },
+    });
+    // Asking for the size it already holds writes nothing rather than bumping the note's version.
+    expect(
+      await call("resize_sticky", { at: { x: 10, y: 10 }, width: 180, height: 140 }),
+    ).toMatchObject({ status: "unchanged", changedCanvas: false });
+    expect(resizes).toHaveLength(1);
+    writes.destroy();
+  });
+
+  it("holds a resize to the board's minimum, one naming form, and sticky notes only", async () => {
+    const note = sticky();
+    const { writes, resizes, call } = await ready({ itemAt: note });
+    await expect(call("resize_sticky", { at: { x: 1, y: 1 } })).rejects.toThrow(
+      "Give width, height, or both.",
+    );
+    await expect(call("resize_sticky", { at: { x: 1, y: 1 }, width: 10 })).rejects.toThrow(
+      "width must be at least 96.",
+    );
+    await expect(call("resize_sticky", { at: { x: 1, y: 1 }, height: 10 })).rejects.toThrow(
+      "height must be at least 72.",
+    );
+    await expect(
+      call("resize_sticky", { stepAlias: "step_1", at: { x: 1, y: 1 }, width: 200 }),
+    ).rejects.toThrow("Name the note either by stepAlias or by at");
+    await expect(call("resize_sticky", { width: 200 })).rejects.toThrow(
+      "Name the note either by stepAlias or by at",
+    );
+    expect(resizes).toEqual([]);
+    writes.destroy();
+
+    const text: BoardItem = {
+      ...sticky(),
+      kind: "text",
+      geometry: { x: 0, y: 0, text: "A heading" },
+    } as BoardItem;
+    const other = await ready({ itemAt: text });
+    await expect(other.call("resize_sticky", { at: { x: 1, y: 1 }, width: 200 })).rejects.toThrow(
+      "That is a text, and this tool resizes sticky notes only.",
+    );
+    other.writes.destroy();
   });
 
   it("withdraws its tools when the page tears down", async () => {

@@ -53,7 +53,9 @@ import {
 import { type ArrangeKind, buildArrangeUpdates } from "../tools/arrange";
 import {
   buildCapturedTextUpdate,
+  buildCardResizeMembershipOperation,
   buildImageCreateOperation,
+  buildSectionCreateMembershipOperation,
   buildStickyCreateOperation,
   buildTranslationMembershipOperations,
   type CapturedTextEdit,
@@ -64,6 +66,7 @@ import {
   type ShapeVariant,
   sectionIdAfterBoundsChange,
   ToolController,
+  type ZoneCreateOperation,
 } from "../tools/controller";
 import { explicitGroupClosure, GroupingError } from "../tools/grouping";
 import {
@@ -111,7 +114,7 @@ import type {
 } from "../types";
 import { canRoleComment, canRoleDraw, createId, PROTOCOL_VERSION } from "../types";
 import { ActivityTemplateWebMcp } from "../webmcp/activity-templates";
-import { BoardWriteWebMcp, type StickyMove } from "../webmcp/board-writes";
+import { type BoardWriteKind, BoardWriteWebMcp, type StickyMove } from "../webmcp/board-writes";
 import { ClassDecisionWebMcp } from "../webmcp/class-decision";
 import { CollectiveInquiryWebMcp } from "../webmcp/collective-inquiry";
 import {
@@ -280,7 +283,7 @@ export function templateHiddenByVoting(
 
 /** Why this Space cannot take a WebMCP-written object of this kind, or null when it can. */
 export function webMcpWriteFeatureIssue(
-  kind: "sticky" | "image" | "video",
+  kind: BoardWriteKind,
   features: BoardFeatures,
 ): string | null {
   if (kind === "sticky") {
@@ -288,6 +291,12 @@ export function webMcpWriteFeatureIssue(
   }
   if (kind === "image") {
     return features.images ? null : "Enable images to add an image card to this Space.";
+  }
+  if (kind === "section") {
+    return features.sections ? null : "Enable Sections to add one to this Space.";
+  }
+  if (kind === "text") {
+    return features.text ? null : "Enable text to add a text object to this Space.";
   }
   // A video embed is a canvas text object carrying a video link, so it follows the text feature.
   return features.text ? null : "Enable text to embed a video in this Space.";
@@ -1543,6 +1552,8 @@ export class BoardApp {
         return inquiry.watchedStepItems(watchToken, stepAliases);
       },
       moveItems: (moves) => this.moveItemsFromWebMcp(moves),
+      createSection: (operation) => this.createSectionFromWebMcp(operation),
+      resizeCard: (item, size) => this.resizeCardFromWebMcp(item, size),
       commit: (operation) => this.commitAndWait(operation),
       createComment: (itemId, body, assistance, media) =>
         this.commentFromWebMcp(itemId, body, assistance, media),
@@ -3697,6 +3708,55 @@ export class BoardApp {
     }
     const accepted = await this.commitAndWait({ kind: "items.batch", operations });
     if (!accepted) throw new Error("The move could not be queued for saving.");
+  }
+
+  /**
+   * Adds a Section from WebMCP the way the board's own Section tool does, so a Section landing
+   * over existing work takes that work in rather than merely overlapping it. Returns how many
+   * saved objects it adopted, which is what makes the difference visible to the caller.
+   */
+  private async createSectionFromWebMcp(operation: ZoneCreateOperation): Promise<number> {
+    let durable: DurableOperation = operation;
+    if (this.bootstrap.board.features.grouping) {
+      try {
+        durable = buildSectionCreateMembershipOperation(
+          operation,
+          this.model.items.values(),
+          (item) => this.canModifyItem(item),
+        );
+      } catch (error) {
+        if (!(error instanceof GroupingError)) throw error;
+        throw new Error(error.message);
+      }
+    }
+    const accepted = await this.commitAndWait(durable);
+    if (!accepted) throw new Error("The Section could not be queued for saving.");
+    // Everything past the Section's own create is an adoption, so the count is the batch's tail.
+    return durable.kind === "items.batch" ? durable.operations.length - 1 : 0;
+  }
+
+  /**
+   * Resizes one saved card from WebMCP. Growing or shrinking across a Section's edge changes
+   * membership, which is why this goes through the board's own resize path rather than patching
+   * geometry directly.
+   */
+  private async resizeCardFromWebMcp(
+    item: BoardItem,
+    size: { width: number; height: number },
+  ): Promise<void> {
+    const [saved] =
+      savedAuthoritativeItems([item.id], this.model.items, this.model.authoritativeItems) ?? [];
+    if (!saved) throw new Error("Wait for the note to finish saving before resizing it.");
+    if (saved.kind !== "sticky") throw new Error("That object is not a sticky note.");
+    if (!this.canModifyItem(saved)) throw new Error("This browser cannot modify that note.");
+    const operation = buildCardResizeMembershipOperation(
+      { item: saved, expectedVersion: saved.version },
+      { ...saved.geometry, width: size.width, height: size.height },
+      this.model.items.values(),
+      this.bootstrap.board.features.grouping,
+    );
+    const accepted = await this.commitAndWait(operation);
+    if (!accepted) throw new Error("The resize could not be queued for saving.");
   }
 
   /** The topmost saved object covering a board point, or undefined when none is saved there. */

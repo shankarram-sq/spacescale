@@ -69,7 +69,9 @@ test("a board participant can use headless WebMCP tools with neutral board attri
       "insert_comment",
       "insert_filled_template",
       "insert_image",
+      "insert_section",
       "insert_sticky",
+      "insert_text",
       "insert_video",
       "list_users",
       "move_stickies",
@@ -78,6 +80,7 @@ test("a board participant can use headless WebMCP tools with neutral board attri
       "read_selection",
       "read_templates",
       "read_user",
+      "resize_sticky",
       "watch_board",
       "watch_users",
     ]);
@@ -564,4 +567,66 @@ test("a board participant can use headless WebMCP tools with neutral board attri
   await page.getByTestId("undo-button").click();
   await expect(canvasItems).toHaveCount(14);
   await expect(page.locator("#drawing-area")).not.toContainText("Volcanoes");
+
+  // Framing work: a text heading, a Section that takes in what it lands over, and a resize.
+  const framed = await page.evaluate(async () => {
+    const signal = new AbortController().signal;
+    const tools = window.__spaceScaleWebMcpTools;
+    for (const name of ["insert_text", "insert_section", "resize_sticky"]) {
+      if (!tools[name]) throw new Error(`${name} was not registered.`);
+    }
+    const heading = await tools.insert_text?.execute(
+      { location: { x: 1200, y: 1200 }, text: "Ideas worth testing" },
+      { signal },
+    );
+    // One note inside the Section's footprint, one well outside it.
+    await tools.insert_sticky?.execute(
+      { location: { x: 1300, y: 1300 }, text: "Inside" },
+      { signal },
+    );
+    await tools.insert_sticky?.execute(
+      { location: { x: 2600, y: 2600 }, text: "Outside" },
+      { signal },
+    );
+    const section = await tools.insert_section?.execute(
+      { location: { x: 1390, y: 1370 }, title: "Cluster", width: 400, height: 300 },
+      { signal },
+    );
+    const resized = await tools.resize_sticky?.execute(
+      // The centre of the 180x140 note written at 1300, 1300.
+      { at: { x: 1390, y: 1370 }, width: 260, height: 200 },
+      { signal },
+    );
+    return { heading, section, resized };
+  });
+  expect(framed.heading).toMatchObject({
+    status: "inserted",
+    objectKind: "text",
+    location: { x: 1200, y: 1200 },
+    characters: 19,
+  });
+  // The Section covers the note written inside it and not the one written far away.
+  expect(framed.section).toMatchObject({
+    status: "inserted",
+    objectKind: "section",
+    title: "Cluster",
+    size: { width: 400, height: 300 },
+    adoptedObjectCount: 1,
+  });
+  expect(framed.resized).toMatchObject({
+    status: "resized",
+    from: { width: 180, height: 140 },
+    to: { width: 260, height: 200 },
+  });
+  expect(JSON.stringify(framed)).not.toContain("itemId");
+  await expect(page.getByTestId("save-status")).toHaveAttribute("data-state", "saved");
+  await expect(canvasItems).toHaveCount(18);
+  await expect(page.locator("#drawing-area")).toContainText("Ideas worth testing");
+  // The resize reached the canvas, not just the result: the note is drawn at its new size.
+  const resizedNote = page
+    .locator("#drawing-area svg")
+    .filter({ has: page.locator(".sticky-background") })
+    .filter({ hasText: "Inside" });
+  await expect(resizedNote).toHaveAttribute("width", "260");
+  await expect(resizedNote).toHaveAttribute("height", "200");
 });

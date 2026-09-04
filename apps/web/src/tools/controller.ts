@@ -786,7 +786,7 @@ export function buildTableCreateOperation(
   };
 }
 
-type ZoneCreateOperation = Extract<BatchItemOperation, { kind: "item.create" }> & {
+export type ZoneCreateOperation = Extract<BatchItemOperation, { kind: "item.create" }> & {
   item: Extract<NewBoardItem, { kind: "zone" }>;
 };
 
